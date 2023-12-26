@@ -1,0 +1,12 @@
+[package]
+name = "genomeshader"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+nannou = { git = "https://github.com/tychedelia/nannou.git" }
+nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
+#nannou_egui = "*"
+#nannou_wgpu = "*"
