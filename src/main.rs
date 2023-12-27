@@ -172,11 +172,28 @@ fn update(_app: &App, model: &mut Model, update: Update) {
     egui.set_elapsed_time(update.since_start);
     let ctx = egui.begin_frame();
 
-    egui::TopBottomPanel::top("header").show(&ctx, |ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Toggle rotation").clicked() {
-                settings.rotation = !settings.rotation;
-            }
+    // egui::TopBottomPanel::top("header").show(&ctx, |ui| {
+    //     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    //         if ui.small_button("Toggle rotation").clicked() {
+    //             settings.rotation = !settings.rotation;
+    //         }
+    //     });
+    // });
+
+    egui::SidePanel::left("left_panel").show(&ctx, |ui| {
+        ui.label("Left Panel");
+    });
+
+    egui::SidePanel::right("right_panel").show(&ctx, |ui| {
+        ui.label("Right Panel");
+    });
+
+    egui::TopBottomPanel::bottom("bottom_panel").show(&ctx, |ui| {
+        ui.label("Bottom Panel");
+    });
+
+    egui::CentralPanel::default().show(&ctx, |ui| {
+        egui::Window::new("Settings").show(&ctx, |ui| {
         });
     });
 

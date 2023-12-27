@@ -8,5 +8,4 @@ edition = "2021"
 [dependencies]
 nannou = { git = "https://github.com/tychedelia/nannou.git" }
 nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
-#nannou_egui = "*"
-#nannou_wgpu = "*"
+egui_dock = "0.9.1"
