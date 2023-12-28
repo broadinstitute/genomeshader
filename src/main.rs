@@ -4,7 +4,6 @@ use nannou::{prelude::*, glam};
 use nannou_egui::*;
 
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
-use egui::{Ui, WidgetText};
 
 const GS_UI_BACKGROUND: rgb::Srgb<u8> = rgb::Srgb { red: 255, green: 255, blue: 255, standard: ::core::marker::PhantomData };
 const GS_UI_TRACK_1: rgb::Srgb<u8> = rgb::Srgb { red: 196, green: 209, blue: 217, standard: ::core::marker::PhantomData };
@@ -28,14 +27,12 @@ struct Settings {
     resolution: u32,
     scale: f32,
     rotation: bool,
-    flip: bool,
     pan: bool,
     last_position: Vec2,
     position: Vec2,
     stretch: f32,
     zoom: f32,
     show_settings: bool,
-    show_context_menu: bool,
     tree: DockState<String>,
 }
 
@@ -66,15 +63,10 @@ fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event:
     if let nannou::winit::event::WindowEvent::MouseInput { state, button, .. } = event {
         if *state == nannou::winit::event::ElementState::Pressed && *button == nannou::state::mouse::Button::Left {
             model.settings.pan = true;
-            model.settings.show_context_menu = false;
         }
 
         if *state == nannou::winit::event::ElementState::Released && *button == nannou::state::mouse::Button::Left {
             model.settings.pan = false;
-        }
-
-        if *state == nannou::winit::event::ElementState::Pressed && *button == nannou::state::mouse::Button::Right {
-            model.settings.show_context_menu = true;
         }
     }
 
@@ -104,12 +96,6 @@ fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event:
                 model.settings.rotation = !model.settings.rotation;
             }
         }
-
-        if let Some(nannou::winit::event::VirtualKeyCode::F) = input.virtual_keycode {
-            if input.state == nannou::winit::event::ElementState::Pressed {
-                model.settings.flip = !model.settings.flip;
-            }
-        }
     }
 }
 
@@ -134,14 +120,12 @@ fn model(app: &App) -> Model {
             resolution: 10,
             scale: 200.0,
             rotation: true,
-            flip: false,
             pan: false,
             last_position: vec2(INFINITY, INFINITY),
             position: vec2(0.0, 0.0),
             stretch: 1.0,
             zoom: 1.0,
             show_settings: false,
-            show_context_menu: false,
             tree: tree
         },
     }
@@ -207,7 +191,6 @@ fn update(app: &App, model: &mut Model, update: Update) {
 
             if ui.small_button("+").clicked() {
                 let tab_id = format!("Tab{}", settings.tree.main_surface().num_tabs() + 1);
-                // settings.tree.main_surface_mut().split_right(NodeIndex::root(), 0.3, vec![tab_id.to_owned()]);
                 if let Some(root_node) = settings.tree.main_surface_mut().root_node_mut() {
                     root_node.append_tab(tab_id.to_owned());
                 } else {
@@ -217,17 +200,11 @@ fn update(app: &App, model: &mut Model, update: Update) {
         });
     });
 
-    let mut status_height = 0.0;
     egui::TopBottomPanel::bottom("footer").show(&ctx, |ui| {
-        let status_label = ui.label("Status");
-        status_height = status_label.rect.height();
+        ui.label("Status");
     });
 
     egui::CentralPanel::default().show(&ctx, |ui| {
-        let mut style = Style::from_egui(ui.style());
-
-        // style.tab
-
         DockArea::new(&mut settings.tree)
             .style(Style::from_egui(ctx.style().as_ref()))
             .show(&ctx, &mut TabViewer {});
@@ -243,10 +220,6 @@ fn update(app: &App, model: &mut Model, update: Update) {
             ui.label("Scale:");
             ui.add(egui::Slider::new(&mut settings.scale, 0.0..=1000.0));
         });
-    }
-
-    if settings.show_context_menu {
-
     }
 }
 
