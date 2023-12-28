@@ -2,11 +2,27 @@ use std::f32::INFINITY;
 
 use nannou::{prelude::*, glam};
 use nannou_egui::*;
-// use nannou_egui::*;
+
+use egui_dock::{DockArea, DockState, NodeIndex, Style};
+use egui::{Ui, WidgetText};
 
 const GS_UI_BACKGROUND: rgb::Srgb<u8> = rgb::Srgb { red: 255, green: 255, blue: 255, standard: ::core::marker::PhantomData };
 const GS_UI_TRACK_1: rgb::Srgb<u8> = rgb::Srgb { red: 196, green: 209, blue: 217, standard: ::core::marker::PhantomData };
 const GS_UI_TRACK_2: rgb::Srgb<u8> = rgb::Srgb { red: 113, green: 131, blue: 143, standard: ::core::marker::PhantomData };
+
+struct TabViewer {}
+
+impl egui_dock::TabViewer for TabViewer {
+    type Tab = String;
+
+    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        (&*tab).into()
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        ui.label(format!("Content of {tab}"));
+    }
+}
 
 struct Settings {
     resolution: u32,
@@ -18,7 +34,8 @@ struct Settings {
     stretch: f32,
     zoom: f32,
     show_settings: bool,
-    show_context_menu: bool
+    show_context_menu: bool,
+    tree: DockState<String>,
 }
 
 struct Model {
@@ -103,6 +120,12 @@ fn model(app: &App) -> Model {
 
     let egui = Egui::from_window(&window);
 
+    let mut tree = DockState::new(vec!["tab1".to_owned(), "tab2".to_owned()]);
+
+    let [a, b] = tree.main_surface_mut().split_left(NodeIndex::root(), 0.3, vec!["tab3".to_owned()]);
+    let [_, _] = tree.main_surface_mut().split_below(a, 0.7, vec!["tab4".to_owned()]);
+    let [_, _] = tree.main_surface_mut().split_below(b, 0.5, vec!["tab5".to_owned()]);
+
     Model {
         egui,
         settings: Settings {
@@ -115,7 +138,8 @@ fn model(app: &App) -> Model {
             stretch: 1.0,
             zoom: 1.0,
             show_settings: false,
-            show_context_menu: false
+            show_context_menu: false,
+            tree: tree
         },
     }
 }
@@ -165,7 +189,7 @@ fn view(app: &App, model: &Model, frame: Frame) {
     model.egui.draw_to_frame(&frame).unwrap();
 }
 
-fn update(_app: &App, model: &mut Model, update: Update) {
+fn update(app: &App, model: &mut Model, update: Update) {
     let egui = &mut model.egui;
     let settings = &mut model.settings;
 
@@ -180,21 +204,16 @@ fn update(_app: &App, model: &mut Model, update: Update) {
     //     });
     // });
 
-    egui::SidePanel::left("left_panel").show(&ctx, |ui| {
-        ui.label("Left Panel");
-    });
-
-    egui::SidePanel::right("right_panel").show(&ctx, |ui| {
-        ui.label("Right Panel");
-    });
-
-    egui::TopBottomPanel::bottom("bottom_panel").show(&ctx, |ui| {
-        ui.label("Bottom Panel");
+    let mut status_height = 0.0;
+    egui::TopBottomPanel::bottom("footer").show(&ctx, |ui| {
+        let status_label = ui.label("Status");
+        status_height = status_label.rect.height();
     });
 
     egui::CentralPanel::default().show(&ctx, |ui| {
-        egui::Window::new("Settings").show(&ctx, |ui| {
-        });
+        DockArea::new(&mut settings.tree)
+            .style(Style::from_egui(ctx.style().as_ref()))
+            .show(&ctx, &mut TabViewer {});
     });
 
     if settings.show_settings {
