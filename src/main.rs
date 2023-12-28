@@ -28,6 +28,7 @@ struct Settings {
     resolution: u32,
     scale: f32,
     rotation: bool,
+    flip: bool,
     pan: bool,
     last_position: Vec2,
     position: Vec2,
@@ -103,6 +104,12 @@ fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event:
                 model.settings.rotation = !model.settings.rotation;
             }
         }
+
+        if let Some(nannou::winit::event::VirtualKeyCode::F) = input.virtual_keycode {
+            if input.state == nannou::winit::event::ElementState::Pressed {
+                model.settings.flip = !model.settings.flip;
+            }
+        }
     }
 }
 
@@ -119,12 +126,7 @@ fn model(app: &App) -> Model {
     let window = app.window(window_id).unwrap();
 
     let egui = Egui::from_window(&window);
-
-    let mut tree = DockState::new(vec!["tab1".to_owned(), "tab2".to_owned()]);
-
-    let [a, b] = tree.main_surface_mut().split_left(NodeIndex::root(), 0.3, vec!["tab3".to_owned()]);
-    let [_, _] = tree.main_surface_mut().split_below(a, 0.7, vec!["tab4".to_owned()]);
-    let [_, _] = tree.main_surface_mut().split_below(b, 0.5, vec!["tab5".to_owned()]);
+    let tree = DockState::new(vec!["Tab1".to_owned()]);
 
     Model {
         egui,
@@ -132,6 +134,7 @@ fn model(app: &App) -> Model {
             resolution: 10,
             scale: 200.0,
             rotation: true,
+            flip: false,
             pan: false,
             last_position: vec2(INFINITY, INFINITY),
             position: vec2(0.0, 0.0),
@@ -196,13 +199,23 @@ fn update(app: &App, model: &mut Model, update: Update) {
     egui.set_elapsed_time(update.since_start);
     let ctx = egui.begin_frame();
 
-    // egui::TopBottomPanel::top("header").show(&ctx, |ui| {
-    //     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-    //         if ui.small_button("Toggle rotation").clicked() {
-    //             settings.rotation = !settings.rotation;
-    //         }
-    //     });
-    // });
+    egui::TopBottomPanel::top("header").show(&ctx, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("Rotate").clicked() {
+                settings.rotation = !settings.rotation;
+            }
+
+            if ui.small_button("+").clicked() {
+                let tab_id = format!("Tab{}", settings.tree.main_surface().num_tabs() + 1);
+                // settings.tree.main_surface_mut().split_right(NodeIndex::root(), 0.3, vec![tab_id.to_owned()]);
+                if let Some(root_node) = settings.tree.main_surface_mut().root_node_mut() {
+                    root_node.append_tab(tab_id.to_owned());
+                } else {
+                    settings.tree = DockState::new(vec!["Tab1".to_owned()]);
+                }
+            }
+        });
+    });
 
     let mut status_height = 0.0;
     egui::TopBottomPanel::bottom("footer").show(&ctx, |ui| {
@@ -211,6 +224,10 @@ fn update(app: &App, model: &mut Model, update: Update) {
     });
 
     egui::CentralPanel::default().show(&ctx, |ui| {
+        let mut style = Style::from_egui(ui.style());
+
+        // style.tab
+
         DockArea::new(&mut settings.tree)
             .style(Style::from_egui(ctx.style().as_ref()))
             .show(&ctx, &mut TabViewer {});
