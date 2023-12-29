@@ -3,7 +3,7 @@ use nannou::{prelude::*, glam};
 use nannou_egui::*;
 
 use crate::raw_window_event;
-use crate::styles::colors;
+use crate::styles::{colors, sizes};
 
 pub struct Settings {
     pub pan: Vec2,
@@ -27,7 +27,7 @@ pub fn model(app: &App) -> Model {
     let window_id = app
         .new_window()
         .title("GenomeShader")
-        .size(1000, 500)
+        .size(sizes::GS_UI_APP_WIDTH, sizes::GS_UI_APP_HEIGHT)
         .view(view)
         .raw_event(raw_window_event)
         .build()
@@ -73,17 +73,17 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         draw.text(format!("Sample {}", i).as_str())
             .color(colors::GS_UI_TEXT)
             .center_justify()
-            .font_size(10)
-            .x(-50.0)
-            .y((i as f32) * -15.0);
+            .font_size(sizes::GS_UI_TRACK_FONT_SIZE)
+            .x(sizes::GS_UI_TRACK_LABEL_SPACING)
+            .y((i as f32) * sizes::GS_UI_TRACK_SPACING);
 
         draw.rect()
             .stroke_weight(1.0)
             .caps_round()
             .x(200.0)
-            .y((i as f32) * -15.0)
+            .y((i as f32) * sizes::GS_UI_TRACK_SPACING)
             .width(400.0)
-            .height(10.0)
+            .height(sizes::GS_UI_TRACK_HEIGHT)
             .color(colors::GS_UI_TRACK_1);
     }
 
@@ -143,6 +143,8 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
             if ui.button("reset").clicked() {
                 settings.pan.x = 0.0;
                 settings.pan.y = 0.0;
+                settings.rotate = true;
+                settings.zoom = 1.0;
             }
         });
     }
