@@ -129,30 +129,23 @@ fn view(app: &App, model: &Model, frame: Frame) {
 
     draw.background().color(GS_UI_BACKGROUND);
 
-    draw.text("Sample 1")
-        .color(GS_UI_TEXT)
-        .center_justify()
-        .font_size(10)
-        .x(-50.0)
-        .y(0.0);
+    for i in 0..3 {
+        draw.text(format!("Sample {}", i).as_str())
+            .color(GS_UI_TEXT)
+            .center_justify()
+            .font_size(10)
+            .x(-50.0)
+            .y((i as f32) * -15.0);
 
-    draw.rect()
-        .stroke_weight(1.0)
-        .caps_round()
-        .x(200.0)
-        .y(0.0)
-        .width(400.0)
-        .height(10.0)
-        .color(GS_UI_TRACK_1);
-
-    draw.rect()
-        .stroke_weight(1.0)
-        .caps_round()
-        .x(200.0)
-        .y(15.0)
-        .width(400.0)
-        .height(10.0)
-        .color(GS_UI_TRACK_2);
+        draw.rect()
+            .stroke_weight(1.0)
+            .caps_round()
+            .x(200.0)
+            .y((i as f32) * -15.0)
+            .width(400.0)
+            .height(10.0)
+            .color(GS_UI_TRACK_1);
+    }
 
     draw.to_frame(app, &frame).unwrap();
 
