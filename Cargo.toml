@@ -3,10 +3,28 @@ name = "genomeshader"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "genomeshader"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-nannou = { git = "https://github.com/tychedelia/nannou.git" }
-nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
+anyhow = "1.0"
+cloud-storage = { version = "*", features = ["sync"] }
 egui = "0.23.0"
 egui_dock = "0.8.2"
+fs_extra = "1.2"
+google-cloud-storage = "*"
+glob = "0.3"
+indicatif = { version = "*", features = ["rayon"] }
+nannou = { git = "https://github.com/tychedelia/nannou.git" }
+nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
+polars = { version = "*", features = ["performant", "lazy", "parquet", "dtype-categorical", "fmt"] }
+pollster = "0.3"
+pyo3 = { version = "*", features = ["extension-module"] }
+pyo3-polars = "*"
+rand = "*"
+rayon = "*"
+regex = "*"
+rust-htslib = { version = "*", features = ["gcs"] }
+tokio = "*"
+url = "*"

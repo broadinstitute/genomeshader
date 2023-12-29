@@ -1,3 +1,7 @@
 /target
 /scratch
+/venv
 .vscode/
+*.fa
+*.bam
+*.bai
