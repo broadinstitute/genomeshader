@@ -22,6 +22,23 @@ fn gcs_list_files(path: &String) -> Result<Vec<ObjectList>, cloud_storage::Error
     file_list
 }
 
+pub fn gcs_authorize_data_access() {
+    // Execute the command and capture the output
+    let output = std::process::Command::new("gcloud")
+        .args(&["auth", "application-default", "print-access-token"])
+        .output()
+        .expect("Failed to execute command");
+
+    // Decode the output and remove trailing newline
+    let token = String::from_utf8(output.stdout)
+        .expect("Failed to decode output")
+        .trim_end()
+        .to_string();
+
+    // Set the environment variable
+    std::env::set_var("GCS_OAUTH_TOKEN", token);
+}
+
 #[pyfunction]
 pub fn gcs_list_files_of_type(path: String, suffix: &str) -> PyResult<Vec<String>> {
     let file_list = gcs_list_files(&path).unwrap();

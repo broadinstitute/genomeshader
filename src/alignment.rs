@@ -1,5 +1,6 @@
 use std::collections::{HashSet, HashMap};
 use std::env;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use rayon::iter::{ParallelIterator, IntoParallelRefIterator};
@@ -232,8 +233,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
     df
 }
 
-#[pyfunction]
-pub fn stage_data(cache_path: String, bam_paths: HashSet<String>, loci: HashSet<(String, u64, u64)>) -> PyResult<()> {
+pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>) -> PyResult<()> {
     loci.par_iter()
         .progress_count(loci.len() as u64)
         .for_each(|l| {
@@ -251,25 +251,13 @@ pub fn stage_data(cache_path: String, bam_paths: HashSet<String>, loci: HashSet<
                 outer_df.vstack_mut(&df).unwrap();
             }
 
-            let filename = format!("{}_{}_{}.parquet", chr, start, stop);
+            let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
             let mut file = std::fs::File::create(filename).unwrap();
             ParquetWriter::new(&mut file).finish(&mut outer_df).unwrap();
         });
 
     Ok(())
 }
-
-/// A Python module implemented in Rust. The name of this function must match
-/// the `lib.name` setting in the `Cargo.toml`, else Python will not be able to
-/// import the module.
-// #[pymodule]
-// fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
-//     m.add_function(wrap_pyfunction!(gcs_list_files_of_type, m)?)?;
-//     m.add_function(wrap_pyfunction!(stage_data, m)?)?;
-//     m.add_function(wrap_pyfunction!(show, m)?)?;
-
-//     Ok(())
-// }
 
 #[cfg(test)]
 mod tests {

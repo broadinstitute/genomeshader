@@ -4,6 +4,7 @@ use nannou_egui::*;
 
 use crate::raw_window_event;
 use crate::styles::{colors, sizes};
+use crate::DATA;
 
 pub struct Settings {
     pub pan: Vec2,
@@ -69,8 +70,10 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
 
     draw.background().color(colors::GS_UI_BACKGROUND);
 
+    let sample_prefix = &*DATA;
+
     for i in 0..3 {
-        draw.text(format!("Sample {}", i).as_str())
+        draw.text(format!("{} {}", *sample_prefix, i).as_str())
             .color(colors::GS_UI_TEXT)
             .center_justify()
             .font_size(sizes::GS_UI_TRACK_FONT_SIZE)
@@ -106,9 +109,6 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
 
     match app.mouse.buttons.right().if_down() {
         Some(mouse_pos) => {
-            // egui::show_tooltip_text(&ctx, egui::Id::new("my_tooltip"), "Hello");
-            // egui::show_tooltip_at_pointer(&ctx, egui::Id::new("my_tooltip"), |ui| {});
-
             if !settings.show_popup {
                 settings.show_popup = true;
                 settings.pos_popup = Pos2::new(
