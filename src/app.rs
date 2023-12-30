@@ -4,7 +4,7 @@ use nannou_egui::*;
 
 use crate::raw_window_event;
 use crate::styles::{colors, sizes};
-use crate::DATA;
+use crate::GLOBAL_DATA;
 
 pub struct Settings {
     pub pan: Vec2,
@@ -36,6 +36,10 @@ pub fn model(app: &App) -> Model {
     let window = app.window(window_id).unwrap();
 
     let egui = Egui::from_window(&window);
+
+    GLOBAL_DATA.with(|text| {
+        println!("Global string is {:?}", *text.borrow());
+    });
 
     Model {
         egui,
@@ -70,10 +74,12 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
 
     draw.background().color(colors::GS_UI_BACKGROUND);
 
-    let sample_prefix = &*DATA;
+    let sample_prefix = GLOBAL_DATA.with(|data| {
+        data.borrow().to_str().unwrap().to_string()
+    });
 
     for i in 0..3 {
-        draw.text(format!("{} {}", *sample_prefix, i).as_str())
+        draw.text(format!("{} {}", sample_prefix, i).as_str())
             .color(colors::GS_UI_TEXT)
             .center_justify()
             .font_size(sizes::GS_UI_TRACK_FONT_SIZE)

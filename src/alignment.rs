@@ -14,6 +14,8 @@ use pyo3_polars::PyDataFrame;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::bam::{Read, IndexedReader, self, ext::BamRecordExtensions};
 
+use crate::storage::gcs_authorize_data_access;
+
 #[derive(Debug, PartialEq)]
 enum ElementType {
     READ,
@@ -233,7 +235,9 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
     df
 }
 
-pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>) -> PyResult<()> {
+pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
+    gcs_authorize_data_access();
+
     loci.par_iter()
         .progress_count(loci.len() as u64)
         .for_each(|l| {
@@ -252,11 +256,19 @@ pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashS
             }
 
             let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
-            let mut file = std::fs::File::create(filename).unwrap();
-            ParquetWriter::new(&mut file).finish(&mut outer_df).unwrap();
+            let file = std::fs::File::create(&filename).unwrap();
+            ParquetWriter::new(&file).finish(&mut outer_df).unwrap();
         });
 
-    Ok(())
+    let mut locus_to_file = HashMap::new();
+    for l in loci {
+        let (chr, start, stop) = l;
+        let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
+
+        locus_to_file.insert((chr.to_owned(), *start, *stop), filename);
+    }
+
+    Ok(locus_to_file)
 }
 
 #[cfg(test)]
