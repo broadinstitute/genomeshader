@@ -14,13 +14,12 @@ egui = "0.23.0"
 egui_dock = "0.8.2"
 fs_extra = "1.2"
 google-cloud-storage = "*"
-google-cloud-auth = "0.13.0"
 glob = "0.3"
 indicatif = { version = "*", features = ["rayon"] }
 lazy_static = "*"
 nannou = { git = "https://github.com/tychedelia/nannou.git" }
 nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
-polars = { version = "*", features = ["performant", "lazy", "parquet", "dtype-categorical", "fmt"] }
+polars = { version = "*", features = ["performant", "parquet", "dtype-categorical", "fmt"] }
 pollster = "0.3"
 pyo3 = { version = "*", features = ["extension-module"] }
 pyo3-polars = "*"

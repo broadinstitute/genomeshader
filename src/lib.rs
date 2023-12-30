@@ -9,11 +9,15 @@ use events::raw_window_event;
 use alignment::stage_data;
 use storage::gcs_list_files_of_type;
 
-use pyo3::prelude::*;
 use std::{collections::{HashSet, HashMap}, path::PathBuf, cell::RefCell};
 
+use polars::prelude::*;
+use pyo3::prelude::*;
+use pyo3_polars::PyDataFrame;
+
 // Needed to pass some data into our Nannou app.
-thread_local!(static GLOBAL_DATA: RefCell<PathBuf> = RefCell::new(PathBuf::new()));
+// thread_local!(static GLOBAL_DATA: RefCell<PathBuf> = RefCell::new(PathBuf::new()));
+thread_local!(static GLOBAL_DATA: RefCell<PyDataFrame> = RefCell::new(PyDataFrame(DataFrame::default())));
 
 #[pyclass]
 pub struct Session {
@@ -98,12 +102,52 @@ impl Session {
 
         match stage_data(cache_path, &self.bams, &self.loci) {
             Ok(staged_data) => { self.staged_data = staged_data; },
-            Err(e) => {
+            Err(_) => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                     format!("Failed to stage data.")
                 ));
             }
         }
+
+        Ok(())
+    }
+
+    fn get_staged_locus(&self, locus: String) -> PyResult<PyDataFrame> {
+        let l_fmt = self.parse_locus(locus.to_owned())?;
+
+        if self.staged_data.contains_key(&l_fmt) {
+            let filename = self.staged_data.get(&l_fmt).unwrap().to_owned();
+            let file = std::fs::File::open(&filename).unwrap();
+
+            let df = ParquetReader::new(file).finish().unwrap();
+
+            Ok(PyDataFrame(df))
+        } else {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Locus '{}' is not staged.", locus)
+            ))
+        }
+    }
+
+    fn display_locus(&self, locus: String) -> PyResult<()> {
+        match self.get_staged_locus(locus) {
+            Ok(df) => { return self.display(df) },
+            Err(e) => return Err(e),
+        }
+    }
+
+    fn display(&self, df: PyDataFrame) -> PyResult<()> {
+        // This hack is required because there doesn't seem to be a
+        // convenient way of passing arbitrary variables from the
+        // current scope into a Nannou app.
+        GLOBAL_DATA.with(|pydf| {
+            *pydf.borrow_mut() = df;
+        });
+
+        nannou::app(model)
+            .update(update)
+            .loop_mode(nannou::LoopMode::Wait)
+            .run();
 
         Ok(())
     }
@@ -118,32 +162,11 @@ impl Session {
         for locus in &self.loci {
             println!(" - {:?}", locus);
         }
-    }
 
-    fn show(&self, locus: String) -> PyResult<()> {
-        let l_fmt = self.parse_locus(locus.to_owned())?;
-
-        if self.staged_data.contains_key(&l_fmt) {
-            let p = self.staged_data.get(&l_fmt).unwrap().to_owned();
-
-            // This is a hack required because there doesn't seem to be a
-            // convenient way of passing arbitrary variables from the
-            // current scope into our Nannou app.
-            GLOBAL_DATA.with(|path| {
-                *path.borrow_mut() = p;
-            });
-
-            nannou::app(model)
-                .update(update)
-                .loop_mode(nannou::LoopMode::Wait)
-                .run();
-        } else {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Locus '{}' is not staged.", locus)
-            ));
+        println!("Staging:");
+        for (l_fmt, p) in &self.staged_data {
+            println!(" - {}:{}-{} : {:?}", l_fmt.0, l_fmt.1, l_fmt.2, p);
         }
-
-        Ok(())
     }
 }
 

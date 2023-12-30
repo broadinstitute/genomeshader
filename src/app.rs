@@ -37,8 +37,10 @@ pub fn model(app: &App) -> Model {
 
     let egui = Egui::from_window(&window);
 
-    GLOBAL_DATA.with(|text| {
-        println!("Global string is {:?}", *text.borrow());
+    GLOBAL_DATA.with(|data| {
+        let df = &data.borrow().0;
+
+        println!("{:?}", df.head(Some(10)));
     });
 
     Model {
@@ -74,12 +76,14 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
 
     draw.background().color(colors::GS_UI_BACKGROUND);
 
-    let sample_prefix = GLOBAL_DATA.with(|data| {
-        data.borrow().to_str().unwrap().to_string()
-    });
+    // GLOBAL_DATA.with(|data| {
+    //     let df = &data.borrow().0;
+
+    //     println!("{:?}", *df);
+    // });
 
     for i in 0..3 {
-        draw.text(format!("{} {}", sample_prefix, i).as_str())
+        draw.text(format!("{} {}", "test", i).as_str())
             .color(colors::GS_UI_TEXT)
             .center_justify()
             .font_size(sizes::GS_UI_TRACK_FONT_SIZE)
