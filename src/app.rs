@@ -1,6 +1,7 @@
 use egui::{Pos2, Vec2, vec2};
 use nannou::{prelude::*, glam};
 use nannou_egui::*;
+use polars::prelude::*;
 
 use crate::raw_window_event;
 use crate::styles::{colors, sizes};
@@ -37,12 +38,6 @@ pub fn model(app: &App) -> Model {
 
     let egui = Egui::from_window(&window);
 
-    GLOBAL_DATA.with(|data| {
-        let df = &data.borrow().0;
-
-        println!("{:?}", df.head(Some(10)));
-    });
-
     Model {
         egui,
         settings: Settings {
@@ -76,29 +71,50 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
 
     draw.background().color(colors::GS_UI_BACKGROUND);
 
-    // GLOBAL_DATA.with(|data| {
-    //     let df = &data.borrow().0;
+    GLOBAL_DATA.with(|data| {
+        let of = &data.borrow().0;
 
-    //     println!("{:?}", *df);
-    // });
+        let df = of.sort(
+            &["sample_name", "query_name", "reference_start"],
+            false,
+            true
+        ).unwrap();
 
-    for i in 0..3 {
-        draw.text(format!("{} {}", "test", i).as_str())
-            .color(colors::GS_UI_TEXT)
-            .center_justify()
-            .font_size(sizes::GS_UI_TRACK_FONT_SIZE)
-            .x(sizes::GS_UI_TRACK_LABEL_SPACING)
-            .y((i as f32) * sizes::GS_UI_TRACK_SPACING);
+        let mut prev_sample_name = df.column("sample_name").unwrap().get(0).unwrap().to_string();
+        let mut y0s = vec![0.0 as f32];
+        let mut y0 = 0.0 as f32;
 
-        draw.rect()
-            .stroke_weight(1.0)
-            .caps_round()
-            .x(200.0)
-            .y((i as f32) * sizes::GS_UI_TRACK_SPACING)
-            .width(400.0)
-            .height(sizes::GS_UI_TRACK_HEIGHT)
-            .color(colors::GS_UI_TRACK_1);
-    }
+        for sample_name in df.column("sample_name").unwrap().iter() {
+            let sample_name = sample_name.to_string();
+
+            if prev_sample_name != sample_name {
+                y0 += 1.0;
+                prev_sample_name = sample_name;
+            }
+
+            y0s.push(y0);
+        }
+
+        let sample_names = df.column("sample_name").unwrap().utf8().unwrap();
+        let reference_starts = df.column("reference_start").unwrap().u32().unwrap();
+        let reference_ends = df.column("reference_end").unwrap().u32().unwrap();
+        let element_types = df.column("element_type").unwrap().u8().unwrap();
+
+        let reference_start_0 = df.column("reference_start").unwrap().u32().unwrap().get(0).unwrap();
+
+        for i in 0..sample_names.len() {
+            let y = *y0s.get(i).unwrap();
+
+            draw.rect()
+                .stroke_weight(1.0)
+                .caps_round()
+                .x((reference_starts.get(i).unwrap() - reference_start_0) as f32)
+                .width((reference_ends.get(i).unwrap() - reference_starts.get(i).unwrap()) as f32)
+                .y(y * sizes::GS_UI_TRACK_SPACING)
+                .height(sizes::GS_UI_TRACK_HEIGHT)
+                .color(colors::GS_UI_TRACK_1);
+        }
+    });
 
     draw.to_frame(app, &frame).unwrap();
 

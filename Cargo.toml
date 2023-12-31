@@ -19,7 +19,7 @@ indicatif = { version = "*", features = ["rayon"] }
 lazy_static = "*"
 nannou = { git = "https://github.com/tychedelia/nannou.git" }
 nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
-polars = { version = "*", features = ["performant", "parquet", "dtype-categorical", "fmt"] }
+polars = { version = "*", features = ["performant", "parquet", "dtype-categorical", "fmt", "rows"] }
 pollster = "0.3"
 pyo3 = { version = "*", features = ["extension-module"] }
 pyo3-polars = "*"
