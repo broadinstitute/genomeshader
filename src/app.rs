@@ -5,8 +5,9 @@ use polars::prelude::*;
 
 use crate::raw_window_event;
 use crate::styles::{colors, sizes};
-use crate::alignment::ElementType;
 use crate::GLOBAL_DATA;
+
+const KB_IN_GB: u64 = 1048576;
 
 pub struct Settings {
     pub pan: Vec2,
@@ -35,8 +36,8 @@ pub fn model(app: &App) -> Model {
         .raw_event(raw_window_event)
         .build()
         .unwrap();
-    let window = app.window(window_id).unwrap();
 
+    let window = app.window(window_id).unwrap();
     let egui = Egui::from_window(&window);
 
     Model {
@@ -76,14 +77,14 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         ).unwrap();
 
         let mut prev_sample_name = df.column("sample_name").unwrap().get(0).unwrap().to_string();
-        let mut y0s = vec![0.0 as f32];
-        let mut y0 = 0.0 as f32;
+        let mut y0s = vec![0 as u32];
+        let mut y0: u32 = 0;
 
         for sample_name in df.column("sample_name").unwrap().iter() {
             let sample_name = sample_name.to_string();
 
             if prev_sample_name != sample_name {
-                y0 += 1.0;
+                y0 += 1;
                 prev_sample_name = sample_name;
             }
 
@@ -94,6 +95,7 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         let reference_starts = df.column("reference_start").unwrap().u32().unwrap();
         let reference_ends = df.column("reference_end").unwrap().u32().unwrap();
         let element_types = df.column("element_type").unwrap().u8().unwrap();
+        let sequence = df.column("sequence").unwrap().utf8().unwrap();
 
         let reference_start_0 = df.column("reference_start").unwrap().u32().unwrap().get(0).unwrap() as f32;
         let reference_end_n = df.column("reference_end").unwrap().u32().unwrap().last().unwrap() as f32;
@@ -113,14 +115,21 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
             let width = (reference_ends.get(i).unwrap() - reference_starts.get(i).unwrap()) as f32;
             let height = sizes::GS_UI_TRACK_HEIGHT;
             let x = reference_starts.get(i).unwrap() as f32 + (width/2.0) - reference_start_0;
-            let y = *y0s.get(i).unwrap() * sizes::GS_UI_TRACK_SPACING;
+            let y = *y0s.get(i).unwrap() as f32 * sizes::GS_UI_TRACK_SPACING;
+            let seq = sequence.get(i).unwrap();
 
             let color = match element_types.get(i).unwrap() {
-                0 => GRAY,   // read
-                1 => RED,    // diff
-                2 => PURPLE, // insertion
-                3 => BLACK,  // deletion
-                _ => YELLOW  // unknown
+                0 => if *y0s.get(i).unwrap() % 2 == 0 { colors::GS_UI_TRACK_EVEN } else { colors::GS_UI_TRACK_ODD },   // read
+                1 => match seq {
+                    "A" => colors::GS_UI_ELEMENT_DIFF_A,
+                    "C" => colors::GS_UI_ELEMENT_DIFF_C,
+                    "G" => colors::GS_UI_ELEMENT_DIFF_G,
+                    "T" => colors::GS_UI_ELEMENT_DIFF_T,
+                    _ => WHITE,
+                },
+                2 => colors::GS_UI_ELEMENT_INSERTION, // insertion
+                3 => colors::GS_UI_ELEMENT_DELETION,  // deletion
+                _ => WHITE // unknown
             };
 
             draw.rect()
@@ -147,7 +156,9 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
     let ctx = egui.begin_frame();
 
     egui::TopBottomPanel::bottom("footer").show(&ctx, |ui| {
-        ui.label(format!("Status: {:?} {:?}", app.mouse.position(), app.mouse.buttons));
+        let mem_info = sys_info::mem_info().unwrap();
+
+        ui.label(format!("[RAM] {:.1}/{:.1}", ((mem_info.total - mem_info.avail) / KB_IN_GB) as f64, mem_info.total as f64 / KB_IN_GB as f64));
     });
 
     match app.mouse.buttons.right().if_down() {

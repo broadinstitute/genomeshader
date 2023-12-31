@@ -21,11 +21,13 @@ nannou = { git = "https://github.com/tychedelia/nannou.git" }
 nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
 polars = { version = "*", features = ["performant", "parquet", "dtype-categorical", "fmt", "rows"] }
 pollster = "0.3"
+psutil = "3.2.2"
 pyo3 = { version = "*", features = ["extension-module"] }
 pyo3-polars = "*"
 rand = "*"
 rayon = "*"
 regex = "*"
 rust-htslib = { version = "*", features = ["gcs"] }
+sys-info = "0.9.1"
 tokio = "*"
 url = "*"
