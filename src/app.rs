@@ -100,19 +100,35 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         let reference_ends = df.column("reference_end").unwrap().u32().unwrap();
         let element_types = df.column("element_type").unwrap().u8().unwrap();
 
-        let reference_start_0 = df.column("reference_start").unwrap().u32().unwrap().get(0).unwrap();
+        let reference_start_0 = df.column("reference_start").unwrap().u32().unwrap().get(0).unwrap() as f32;
+        let reference_end_n = df.column("reference_end").unwrap().u32().unwrap().last().unwrap() as f32;
+
+        // draw.translate(vec3(reference_start_0 as f32, 0.0, 0.0));
+        // draw.scale_x(sizes::GS_UI_APP_WIDTH as f32 / ((reference_end_n - reference_start_0) as f32));
+
+        // println!("{:?}", df);
 
         for i in 0..sample_names.len() {
-            let y = *y0s.get(i).unwrap();
+            let width = (reference_ends.get(i).unwrap() - reference_starts.get(i).unwrap()) as f32;
+            let height = sizes::GS_UI_TRACK_HEIGHT;
+            let x = reference_starts.get(i).unwrap() as f32 + (width/2.0) - reference_start_0;
+            let y = *y0s.get(i).unwrap() * sizes::GS_UI_TRACK_SPACING;
+
+            let color = match element_types.get(i).unwrap() {
+                0 => GRAY,   // read
+                1 => RED,    // diff
+                2 => PURPLE, // insertion
+                3 => BLACK,  // deletion
+                _ => YELLOW  // unknown
+            };
 
             draw.rect()
-                .stroke_weight(1.0)
-                .caps_round()
-                .x((reference_starts.get(i).unwrap() - reference_start_0) as f32)
-                .width((reference_ends.get(i).unwrap() - reference_starts.get(i).unwrap()) as f32)
-                .y(y * sizes::GS_UI_TRACK_SPACING)
-                .height(sizes::GS_UI_TRACK_HEIGHT)
-                .color(colors::GS_UI_TRACK_1);
+                .stroke_weight(0.0)
+                .x(x)
+                .y(y)
+                .width(width)
+                .height(height)
+                .color(color);
         }
     });
 
@@ -160,11 +176,11 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
         egui::Window::new("Settings").show(&ctx, |ui| {
             // Pan X slider
             ui.label("Pan X:");
-            ui.add(egui::Slider::new(&mut settings.pan.x, -1000.0..=1000.0));
+            ui.add(egui::Slider::new(&mut settings.pan.x, -1000000.0..=1000000.0));
 
             // Pan Y slider
             ui.label("Pan Y:");
-            ui.add(egui::Slider::new(&mut settings.pan.y, -1000.0..=1000.0));
+            ui.add(egui::Slider::new(&mut settings.pan.y, -1000000.0..=1000000.0));
 
             if ui.button("reset").clicked() {
                 settings.pan.x = 0.0;
