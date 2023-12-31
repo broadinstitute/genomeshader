@@ -5,6 +5,7 @@ use polars::prelude::*;
 
 use crate::raw_window_event;
 use crate::styles::{colors, sizes};
+use crate::alignment::ElementType;
 use crate::GLOBAL_DATA;
 
 pub struct Settings {
@@ -65,12 +66,6 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         glam::Vec3::new(settings.pan.x, settings.pan.y, 0.0)
     );
 
-    let draw = app
-        .draw()
-        .transform(transform);
-
-    draw.background().color(colors::GS_UI_BACKGROUND);
-
     GLOBAL_DATA.with(|data| {
         let of = &data.borrow().0;
 
@@ -107,6 +102,12 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         // draw.scale_x(sizes::GS_UI_APP_WIDTH as f32 / ((reference_end_n - reference_start_0) as f32));
 
         // println!("{:?}", df);
+        let draw = app
+            .draw()
+            .scale_x(sizes::GS_UI_APP_WIDTH as f32 / ((reference_end_n - reference_start_0) as f32))
+            .transform(transform);
+
+        draw.background().color(colors::GS_UI_BACKGROUND);
 
         for i in 0..sample_names.len() {
             let width = (reference_ends.get(i).unwrap() - reference_starts.get(i).unwrap()) as f32;
@@ -130,9 +131,9 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
                 .height(height)
                 .color(color);
         }
-    });
 
-    draw.to_frame(app, &frame).unwrap();
+        draw.to_frame(app, &frame).unwrap();
+    });
 
     // Now we're done! The commands we added will be submitted after `view` completes.
     model.egui.draw_to_frame(&frame).unwrap();

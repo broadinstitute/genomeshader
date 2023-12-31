@@ -17,7 +17,7 @@ use rust_htslib::bam::{Read, IndexedReader, self, ext::BamRecordExtensions};
 use crate::storage::gcs_authorize_data_access;
 
 #[derive(Debug, PartialEq)]
-enum ElementType {
+pub enum ElementType {
     READ,
     DIFF,
     INSERTION,
@@ -26,7 +26,7 @@ enum ElementType {
 }
 
 impl ElementType {
-    fn to_u8(&self) -> u8 {
+    pub fn to_u8(&self) -> u8 {
         match self {
             ElementType::READ => 0,
             ElementType::DIFF => 1,
