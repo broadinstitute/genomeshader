@@ -55,6 +55,30 @@ fn handle_hotkeys(event: &nannou::winit::event::WindowEvent<'_>, model: &mut Mod
                     model.settings.rotate = !model.settings.rotate;
                 }
             },
+            Some(nannou::winit::event::VirtualKeyCode::Up) => {
+                if input.state == nannou::winit::event::ElementState::Pressed {
+                    let shift_multiplier = if model.egui.ctx().input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
+                    model.settings.pan.y -= 10.0 * shift_multiplier;
+                }
+            },
+            Some(nannou::winit::event::VirtualKeyCode::Down) => {
+                if input.state == nannou::winit::event::ElementState::Pressed {
+                    let shift_multiplier = if model.egui.ctx().input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
+                    model.settings.pan.y += 10.0 * shift_multiplier;
+                }
+            },
+            Some(nannou::winit::event::VirtualKeyCode::Left) => {
+                if input.state == nannou::winit::event::ElementState::Pressed {
+                    let shift_multiplier = if model.egui.ctx().input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
+                    model.settings.pan.x += 1000.0 * shift_multiplier;
+                }
+            },
+            Some(nannou::winit::event::VirtualKeyCode::Right) => {
+                if input.state == nannou::winit::event::ElementState::Pressed {
+                    let shift_multiplier = if model.egui.ctx().input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
+                    model.settings.pan.x -= 1000.0 * shift_multiplier;
+                }
+            },
             _ => {}
         }
     }

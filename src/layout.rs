@@ -1,9 +1,12 @@
-use std::{collections::HashSet, cmp::max};
+use std::{collections::{HashSet, HashMap}, cmp::max};
+use nannou::Draw;
 use polars::prelude::*;
 use sprs::{CsMat, TriMat};
 
-pub fn layout(df: DataFrame) {
-    let df = df.sort(
+use crate::styles::sizes::GS_UI_TRACK_SPACING;
+
+pub fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
+    let df = df_in.sort(
         &["sample_name", "query_name", "reference_start"],
         false,
         true
@@ -23,11 +26,9 @@ pub fn layout(df: DataFrame) {
 
     let mut cur_sample_name = "";
     let mut cur_sample_index: i32 = -1;
+    let mut mask = HashMap::new();
 
-    // let mut mat = TriMat::new((num_samples, num_bases));
-    let mut ls = Vec::new();
-
-    for i in 0..sample_names.len() {
+    for i in 0..reference_starts.len() {
         let sample_name = sample_names.get(i).unwrap();
         if cur_sample_name != sample_name {
             cur_sample_name = sample_name;
@@ -37,31 +38,70 @@ pub fn layout(df: DataFrame) {
             let mask = df.filter(&df["sample_name"].equal(&cur_sample_name_series).unwrap()).unwrap();
             let num_reads = mask.column("query_name").unwrap().unique().unwrap().len();
 
-            ls.push(TriMat::new((num_reads, num_bases)));
+            // ls.push(TriMat::new((num_reads, num_bases)));
         }
 
         if cur_sample_index >= 0 {
-            let l = ls.get_mut(cur_sample_index as usize).unwrap();
+            // let l = ls.get_mut(cur_sample_index as usize).unwrap();
 
             let reference_start = reference_starts.get(i).unwrap();
             let reference_end = reference_ends.get(i).unwrap();
             let element_type = element_types.get(i).unwrap();
+            let sequence = sequence.get(i).unwrap();
+            let sequence_length = if element_type == 3 { (reference_end - reference_start) as usize } else { sequence.len() };
 
-            for p in reference_start..reference_end {
-                if element_type != 0 {
-                    l.add_triplet(cur_sample_index as usize, (p - reference_start_min) as usize, element_type);
-                }
+            if element_type > 0 {
+                mask.entry(reference_start)
+                    .and_modify(|e| *e = std::cmp::max(*e, sequence_length))
+                    .or_insert(sequence_length);
             }
+
+            // for p in reference_start..reference_end {
+            //     if element_type != 0 {
+            //         let position = (p - reference_start_min) as usize;
+            //         let sequence_length = if element_type == 3 { (reference_end - reference_start) as usize } else { sequence.len() };
+            //         mask.entry(position)
+            //             .and_modify(|e| *e = std::cmp::max(*e, sequence_length))
+            //             .or_insert(sequence_length);
+
+            //         l.add_triplet(cur_sample_index as usize, position, sequence);
+            //     }
+            // }
         }
     }
 
-    for l in &mut ls {
-        let m = l.to_csr::<usize>();
-
-        println!("{:?}", m);
+    for (key, value) in &mask {
+        println!("{}: {}", key, value);
     }
 
-    println!("nums {} {}", num_samples, num_bases);
+    // for (a, b) in mask.triplet_iter() {
+    //     println!("mask {} {:?}", a, b);
+    // }
+    // let csc = mask.to_csc::<usize>();
+
+    // for l in ls.iter_mut() {
+    //     for (a, b) in l.triplet_iter() {
+            // let len = mask.get(&b.1);
+
+            // println!("{} {} {} {:?}", b.0, b.1, *a, len);
+
+            // let width = 
+            // let x = b.1 as f32;
+            // let y = b.0 as f32 * GS_UI_TRACK_SPACING;
+
+            // draw.rect()
+            //     .stroke_weight(0.0)
+            //     .x(x)
+            //     .y(y)
+            //     .width(width)
+            //     .height(height)
+            //     .color(color);
+    //     }
+    // }
+
+    // println!("nums {} {}", num_samples, num_bases);
+
+    mask
 }
 
 #[cfg(test)]
@@ -75,6 +115,6 @@ mod tests {
         let file = std::fs::File::open(&filename).unwrap();
         let df = ParquetReader::new(file).finish().unwrap();
 
-        layout(df);
+        layout(&df);
     }
 }

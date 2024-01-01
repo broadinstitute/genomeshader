@@ -59,7 +59,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
         }
     }
 
-    // let mut read_nums = Vec::new();
+    // let mut sample_index = Vec::new();
     let mut reference_contigs = Vec::new();
     let mut reference_starts = Vec::new();
     let mut reference_ends = Vec::new();
@@ -69,6 +69,8 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
     let mut sample_names = Vec::new();
     let mut element_types = Vec::new();
     let mut sequence = Vec::new();
+
+    let mut mask = HashMap::new();
 
     bam.fetch((chr.as_bytes(), start, stop));
     for (i, r) in bam.records().enumerate() {
@@ -123,6 +125,10 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
                     element_types.push(ElementType::INSERTION);
                     sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
 
+                    mask.entry(ref_pos - 1)
+                        .and_modify(|e| *e = std::cmp::max(*e, cigar_seq.len()))
+                        .or_insert(cigar_seq.len());
+
                     read_pos += len;
                 },
                 Cigar::Del(len) => {
@@ -143,6 +149,10 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
 
                     element_types.push(ElementType::DELETION);
                     sequence.push(String::from_utf8_lossy(&[]).into_owned());
+
+                    mask.entry(ref_pos)
+                        .and_modify(|e| *e = std::cmp::max(*e, *len as usize))
+                        .or_insert(*len as usize);
 
                     ref_pos += len;
                 },
@@ -171,6 +181,10 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
 
                     element_types.push(ElementType::DIFF);
                     sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
+
+                    mask.entry(ref_pos)
+                        .and_modify(|e| *e = std::cmp::max(*e, 1))
+                        .or_insert(1);
 
                     ref_pos += len;
                     read_pos += len;
@@ -203,6 +217,10 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
                         element_types.push(ElementType::SOFTCLIP);
                         sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
 
+                        mask.entry(ref_pos)
+                            .and_modify(|e| *e = std::cmp::max(*e, cigar_seq.len()))
+                            .or_insert(cigar_seq.len());
+
                         read_pos += 1;
                         adj_ref_pos += 1;
                     }
@@ -217,6 +235,11 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
         }
     }
 
+    let mut column_width = Vec::new();
+    for start in &reference_starts {
+        column_width.push(*mask.get(start).unwrap_or(&1) as u32);
+    }
+
     let element_types: Vec<u8> = element_types.iter().map(|e| e.to_u8()).collect();
 
     let df = DataFrame::new(vec![
@@ -229,7 +252,8 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
         Series::new("read_group", read_groups),
         Series::new("sample_name", sample_names),
         Series::new("element_type", element_types),
-        Series::new("sequence", sequence)
+        Series::new("sequence", sequence),
+        Series::new("column_width", column_width)
     ]).unwrap();
 
     df

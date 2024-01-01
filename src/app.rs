@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use rayon::prelude::*; 
 
 use egui::{Pos2, Vec2, vec2};
 use nannou::{prelude::*, glam};
@@ -59,16 +60,6 @@ pub fn model(app: &App) -> Model {
 pub fn view(app: &App, model: &Model, frame: Frame) {
     let settings = &model.settings;
 
-    let transform = glam::Mat4::from_scale_rotation_translation(
-        glam::Vec3::new(settings.zoom, settings.zoom, 1.0),
-        if settings.rotate {
-            glam::Quat::IDENTITY
-        } else {
-            glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)
-        },
-        glam::Vec3::new(settings.pan.x, settings.pan.y, 0.0)
-    );
-
     GLOBAL_DATA.with(|data| {
         let of = &data.borrow().0;
 
@@ -98,29 +89,38 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         let reference_ends = df.column("reference_end").unwrap().u32().unwrap();
         let element_types = df.column("element_type").unwrap().u8().unwrap();
         let sequence = df.column("sequence").unwrap().utf8().unwrap();
+        let column_widths = df.column("column_width").unwrap().u32().unwrap();
 
         let reference_start_min = df.column("reference_start").unwrap().u32().unwrap().min().unwrap();
         let reference_end_max = df.column("reference_end").unwrap().u32().unwrap().max().unwrap();
         let num_samples = df.column("sample_name").unwrap().utf8().unwrap().into_iter().collect::<HashSet<_>>().len();
 
-        // layout(df);
+        let transform = glam::Mat4::from_scale_rotation_translation(
+            glam::Vec3::new(settings.zoom, settings.zoom, 1.0),
+            if settings.rotate {
+                glam::Quat::IDENTITY
+            } else {
+                glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)
+            },
+            glam::Vec3::new(settings.pan.x, settings.pan.y, 0.0)
+        );
 
         let draw = app
             .draw()
-            .scale_x(sizes::GS_UI_APP_WIDTH as f32 / ((reference_end_max - reference_start_min) as f32))
+            // .scale_x(sizes::GS_UI_APP_WIDTH as f32 / ((reference_end_max - reference_start_min) as f32))
             .transform(transform);
 
         draw.background().color(colors::GS_UI_BACKGROUND);
 
-        for i in 0..sample_names.len() {
-            let width = (reference_ends.get(i).unwrap() - reference_starts.get(i).unwrap()) as f32;
+        let rects: Vec<_> = (0..reference_starts.len()).into_par_iter().map(|i| {
+            let width = column_widths.get(i).unwrap() as f32;
             let height = sizes::GS_UI_TRACK_HEIGHT;
             let x = reference_starts.get(i).unwrap() as f32 + (width/2.0) - (reference_start_min as f32);
             let y = *y0s.get(i).unwrap() as f32 * sizes::GS_UI_TRACK_SPACING;
             let seq = sequence.get(i).unwrap();
 
             let color = match element_types.get(i).unwrap() {
-                0 => if *y0s.get(i).unwrap() % 2 == 0 { colors::GS_UI_TRACK_EVEN } else { colors::GS_UI_TRACK_ODD },   // read
+                // 0 => if *y0s.get(i).unwrap() % 2 == 0 { colors::GS_UI_TRACK_EVEN } else { colors::GS_UI_TRACK_ODD },
                 1 => match seq {
                     "A" => colors::GS_UI_ELEMENT_DIFF_A,
                     "C" => colors::GS_UI_ELEMENT_DIFF_C,
@@ -128,11 +128,15 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
                     "T" => colors::GS_UI_ELEMENT_DIFF_T,
                     _ => WHITE,
                 },
-                2 => colors::GS_UI_ELEMENT_INSERTION, // insertion
-                3 => colors::GS_UI_ELEMENT_DELETION,  // deletion
+                2 => colors::GS_UI_ELEMENT_INSERTION,
+                3 => colors::GS_UI_ELEMENT_DELETION,
                 _ => WHITE // unknown
             };
 
+            (x, y, width, height, color)
+        }).collect();
+
+        for (x, y, width, height, color) in rects {
             draw.rect()
                 .stroke_weight(0.0)
                 .x(x)
