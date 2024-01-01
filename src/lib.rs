@@ -3,11 +3,13 @@ pub mod events;
 pub mod styles;
 pub mod alignment;
 pub mod storage;
+pub mod layout;
 
 use app::{model, update};
 use events::raw_window_event;
 use alignment::stage_data;
 use storage::gcs_list_files_of_type;
+use layout::layout;
 
 use std::{collections::{HashSet, HashMap}, path::PathBuf, cell::RefCell};
 

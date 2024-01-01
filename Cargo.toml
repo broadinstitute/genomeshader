@@ -24,10 +24,12 @@ pollster = "0.3"
 psutil = "3.2.2"
 pyo3 = { version = "*", features = ["extension-module"] }
 pyo3-polars = "*"
+ndarray = { version = "0.15.6", features = ["rayon"] }
 rand = "*"
 rayon = "*"
 regex = "*"
 rust-htslib = { version = "*", features = ["gcs"] }
+sprs = "0.11.1"
 sys-info = "0.9.1"
 tokio = "*"
 url = "*"

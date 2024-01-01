@@ -1,9 +1,11 @@
+use std::collections::HashSet;
+
 use egui::{Pos2, Vec2, vec2};
 use nannou::{prelude::*, glam};
 use nannou_egui::*;
 use polars::prelude::*;
 
-use crate::raw_window_event;
+use crate::{raw_window_event, layout};
 use crate::styles::{colors, sizes};
 use crate::GLOBAL_DATA;
 
@@ -97,16 +99,15 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         let element_types = df.column("element_type").unwrap().u8().unwrap();
         let sequence = df.column("sequence").unwrap().utf8().unwrap();
 
-        let reference_start_0 = df.column("reference_start").unwrap().u32().unwrap().get(0).unwrap() as f32;
-        let reference_end_n = df.column("reference_end").unwrap().u32().unwrap().last().unwrap() as f32;
+        let reference_start_min = df.column("reference_start").unwrap().u32().unwrap().min().unwrap();
+        let reference_end_max = df.column("reference_end").unwrap().u32().unwrap().max().unwrap();
+        let num_samples = df.column("sample_name").unwrap().utf8().unwrap().into_iter().collect::<HashSet<_>>().len();
 
-        // draw.translate(vec3(reference_start_0 as f32, 0.0, 0.0));
-        // draw.scale_x(sizes::GS_UI_APP_WIDTH as f32 / ((reference_end_n - reference_start_0) as f32));
+        // layout(df);
 
-        // println!("{:?}", df);
         let draw = app
             .draw()
-            .scale_x(sizes::GS_UI_APP_WIDTH as f32 / ((reference_end_n - reference_start_0) as f32))
+            .scale_x(sizes::GS_UI_APP_WIDTH as f32 / ((reference_end_max - reference_start_min) as f32))
             .transform(transform);
 
         draw.background().color(colors::GS_UI_BACKGROUND);
@@ -114,7 +115,7 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         for i in 0..sample_names.len() {
             let width = (reference_ends.get(i).unwrap() - reference_starts.get(i).unwrap()) as f32;
             let height = sizes::GS_UI_TRACK_HEIGHT;
-            let x = reference_starts.get(i).unwrap() as f32 + (width/2.0) - reference_start_0;
+            let x = reference_starts.get(i).unwrap() as f32 + (width/2.0) - (reference_start_min as f32);
             let y = *y0s.get(i).unwrap() as f32 * sizes::GS_UI_TRACK_SPACING;
             let seq = sequence.get(i).unwrap();
 
