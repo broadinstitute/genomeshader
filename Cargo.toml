@@ -11,7 +11,9 @@ crate-type = ["cdylib", "rlib"]
 anyhow = "1.0"
 cloud-storage = { version = "*", features = ["sync"] }
 egui = "0.23.0"
-egui_dock = "0.8.2"
+#egui_dock = "0.8.2"
+#egui = "*"
+eframe = "*"
 fs_extra = "1.2"
 google-cloud-storage = "*"
 glob = "0.3"
@@ -23,7 +25,9 @@ polars = { version = "*", features = ["performant", "parquet", "dtype-categorica
 pollster = "0.3"
 psutil = "3.2.2"
 pyo3 = { version = "*", features = ["extension-module"] }
+#pyo3 = { git = "https://github.com/PyO3/pyo3.git", branch="main", features = ["extension-module"] }
 pyo3-polars = "*"
+pyo3-asyncio = { version = "*", features = ["attributes", "async-std-runtime", "tokio-runtime"] }
 ndarray = { version = "0.15.6", features = ["rayon"] }
 rand = "*"
 rayon = "*"
@@ -33,3 +37,14 @@ sprs = "0.11.1"
 sys-info = "0.9.1"
 tokio = "*"
 url = "*"
+
+winit = "*"
+async-std = { version = "1.10.0", features = ["unstable"] }
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+wasm-bindgen = "0.2.83"
+
+[profile.release]
+opt-level = 2 # fast and small wasm
