@@ -260,8 +260,6 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
 }
 
 pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
-    gcs_authorize_data_access();
-
     loci.par_iter()
         .progress_count(loci.len() as u64)
         .for_each(|l| {

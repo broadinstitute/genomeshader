@@ -29,6 +29,10 @@ pub fn gcs_authorize_data_access() {
         .output()
         .expect("Failed to execute command");
 
+    if !output.status.success() {
+        panic!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+
     // Decode the output and remove trailing newline
     let token = String::from_utf8(output.stdout)
         .expect("Failed to decode output")
@@ -40,7 +44,7 @@ pub fn gcs_authorize_data_access() {
 }
 
 #[pyfunction]
-pub fn gcs_list_files_of_type(path: String, suffix: &str) -> PyResult<Vec<String>> {
+pub fn _gcs_list_files_of_type(path: String, suffix: &str) -> PyResult<Vec<String>> {
     let file_list = gcs_list_files(&path).unwrap();
 
     let bam_files: Vec<_> = file_list.iter().flat_map(|fs| {

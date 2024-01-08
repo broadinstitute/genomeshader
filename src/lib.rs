@@ -8,7 +8,7 @@ pub mod layout;
 use app::{model, update, exit};
 use events::raw_window_event;
 use alignment::stage_data;
-use storage::gcs_list_files_of_type;
+use storage::{_gcs_list_files_of_type,gcs_authorize_data_access};
 use layout::*;
 
 use std::{collections::{HashSet, HashMap}, path::PathBuf, cell::RefCell};
@@ -23,7 +23,7 @@ thread_local!(static GLOBAL_DATA: RefCell<PyDataFrame> = RefCell::new(PyDataFram
 
 #[pyclass]
 pub struct Session {
-    bams: HashSet<String>,
+    reads: HashSet<String>,
     loci: HashSet<(String, u64, u64)>,
     staged_data: HashMap<(String, u64, u64), PathBuf>
 }
@@ -33,14 +33,24 @@ impl Session {
     #[new]
     fn new() -> Self {
         Session {
-            bams: HashSet::new(),
+            reads: HashSet::new(),
             loci: HashSet::new(),
             staged_data: HashMap::new()
         }
     }
 
-    fn attach_bams(&mut self, bams: Vec<String>) {
-        self.bams = bams.into_iter().collect();
+    fn attach_reads(&mut self, reads: Vec<String>) -> PyResult<()> {
+        for read in &reads {
+            if !read.ends_with(".bam") && !read.ends_with(".cram") {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("File '{}' is not a .bam or .cram file.", read)
+                ));
+            }
+        }
+
+        self.reads = reads.into_iter().collect();
+
+        Ok(())
     }
 
     fn parse_locus(&self, locus: String) -> PyResult<(String, u64, u64)> {
@@ -100,9 +110,11 @@ impl Session {
     }
 
     fn stage(&mut self) -> PyResult<()> {
+        gcs_authorize_data_access();
+
         let cache_path = std::env::temp_dir();
 
-        match stage_data(cache_path, &self.bams, &self.loci) {
+        match stage_data(cache_path, &self.reads, &self.loci) {
             Ok(staged_data) => { self.staged_data = staged_data; },
             Err(_) => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -158,9 +170,9 @@ impl Session {
     }
 
     fn print(&self) {
-        println!("BAMs:");
-        for bam in &self.bams {
-            println!(" - {}", bam);
+        println!("Reads:");
+        for reads in &self.reads {
+            println!(" - {}", reads);
         }
 
         println!("Loci:");
@@ -176,7 +188,7 @@ impl Session {
 }
 
 #[pyfunction]
-fn init() -> PyResult<Session> {
+fn _init() -> PyResult<Session> {
     Ok(Session::new())
 }
 
@@ -185,8 +197,8 @@ fn init() -> PyResult<Session> {
 /// import the module.
 #[pymodule]
 fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(gcs_list_files_of_type, m)?)?;
-    m.add_function(wrap_pyfunction!(init, m)?)?;
+    m.add_function(wrap_pyfunction!(_gcs_list_files_of_type, m)?)?;
+    m.add_function(wrap_pyfunction!(_init, m)?)?;
 
     Ok(())
 }

@@ -2,6 +2,7 @@ import os
 import re
 import warnings
 from enum import Enum
+from typing import Union, List
 
 import polars as pl
 import holoviews as hv
@@ -37,16 +38,21 @@ class GenomeShader:
         self.session_name = session_name
 
         if gcs_session_dir is None:
-            bucket = os.environ['GOOGLE_BUCKET']
-            gcs_session_dir = f"{bucket}/GenomeShader/{session_name}"
+            if 'GOOGLE_BUCKET' in os.environ:
+                bucket = os.environ['GOOGLE_BUCKET']
+                gcs_session_dir = f"{bucket}/GenomeShader/{session_name}"
+            else:
+                raise ValueError(
+                    "gcs_session_dir is None and "
+                    "GOOGLE_BUCKET is not set in environment variables"
+                )
 
         self._validate_gcs_session_dir(gcs_session_dir)
         self.gcs_session_dir = gcs_session_dir
 
         self.genome_build: GenomeBuild = genome_build
 
-        self.reads = set()
-        self.loci = set()
+        self._session = _init()
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
@@ -68,38 +74,37 @@ class GenomeShader:
 
     def __str__(self):
         return (
-            f'GenomeShader: '
-            f'session_name={self.session_name}, '
-            f'gcs_session_dir={self.gcs_session_dir}, '
-            f'genome_build={self.genome_build}'
+            f'GenomeShader:\n'
+            f' - session_name: {self.session_name}\n'
+            f' - gcs_session_dir: {self.gcs_session_dir}\n'
+            f' - genome_build: {self.genome_build}\n'
         )
 
     def get_session_name(self):
         return self.session_name
 
-    def attach_reads(self, gcs_path: str):
-        if gcs_path.endswith('.bam') or gcs_path.endswith('.cram'):
-            self.reads.add(gcs_path)
+    def attach_reads(self, gcs_paths: Union[str, List[str]]):
+        if isinstance(gcs_paths, str):
+            gcs_paths = [gcs_paths]  # Convert single string to list
+
+        for gcs_path in gcs_paths:
+            if gcs_path.endswith(".bam") or gcs_path.endswith(".cram"):
+                self._session.attach_reads([gcs_path])
+            else:
+                bams = _gcs_list_files_of_type(gcs_path, ".bam")
+                crams = _gcs_list_files_of_type(gcs_path, ".cram")
+
+                self._session.attach_reads(bams)
+                self._session.attach_reads(crams)
+
+    def attach_loci(self, loci: Union[str, List[str]]):
+        if isinstance(loci, str):
+            self._session.attach_loci([loci])
         else:
-            bams = gcs_list_files_of_type(gcs_path, ".bam")
-            crams = gcs_list_files_of_type(gcs_path, ".cram")
-
-            self.reads.update(bams)
-            self.reads.update(crams)
-
-    def attach_locus(self, locus: str):
-        pieces = re.split("[:-]", re.sub(",", "", locus))
-
-        chr = pieces[0]
-        start = int(pieces[1])
-        stop = int(pieces[2]) if len(pieces) > 2 else start
-
-        self.loci.add((chr, start, stop))
+            self._session.attach_loci(loci)
 
     def stage(self):
-        df = stage_data(self.gcs_session_dir, self.reads, self.loci)
-
-        return df
+        self._session.stage()
 
     def show(self,
              locus: str,
@@ -115,6 +120,8 @@ class GenomeShader:
         filename = f'{chr}_{start}_{stop}.parquet'
         df = pl.read_parquet(filename)
         df = df.sort(["sample_name", "query_name", "reference_start"])
+
+        print(filename)
 
         y0s = []
         y0 = 0
@@ -144,6 +151,7 @@ class GenomeShader:
                 y0s.append(y0)
 
         df = df.with_columns(pl.Series(name="read_num", values=y0s))
+        df = df.with_columns(pl.Series(name="height", values=[1.0]*len(y0s)))
 
         df = df.with_columns(
             pl.col("read_num").alias("y0") * -1 - pl.col("height") / 2
@@ -180,8 +188,11 @@ class GenomeShader:
             default_tools=['reset', 'save']
         )
 
+    def print(self):
+        self._session.print()
+        
 
-def init(session_name,
+def init(session_name: str,
          gcs_session_dir: str = None,
          genome_build: GenomeBuild = GenomeBuild.GRCh38) -> GenomeShader:
     session = GenomeShader(session_name=session_name,
