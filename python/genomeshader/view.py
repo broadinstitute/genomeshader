@@ -8,6 +8,9 @@ import polars as pl
 import holoviews as hv
 from bokeh.models.formatters import BasicTickFormatter
 
+import datashader as ds
+import datashader.transfer_functions as tf
+
 from genomeshader.genomeshader import *
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -188,9 +191,69 @@ class GenomeShader:
             default_tools=['reset', 'save']
         )
 
+    def show_polygons(self,
+                      locus: str,
+                      width: int = 980,
+                      height: int = 400,
+                      collapse: bool = False):
+        pieces = re.split("[:-]", re.sub(",", "", locus))
+
+        chr = pieces[0]
+        start = int(pieces[1])
+        stop = int(pieces[2]) if len(pieces) > 2 else start
+
+        filename = f'{chr}_{start}_{stop}.parquet'
+        df = pl.read_parquet(filename)
+        df = df.sort(["sample_name", "query_name", "reference_start"])
+
+        print(filename)
+
+        y0s = []
+        y0 = 0
+        if collapse:
+            sample_name = None
+            for row in df.iter_rows(named=True):
+                if sample_name is None:
+                    sample_name = row['sample_name']
+                    y0 = 0
+
+                if sample_name != row['sample_name']:
+                    sample_name = row['sample_name']
+                    y0 += 1
+
+                y0s.append(y0)
+        else:
+            query_name = None
+            for row in df.iter_rows(named=True):
+                if query_name is None:
+                    query_name = row['query_name']
+                    y0 = 0
+
+                if query_name != row['query_name']:
+                    query_name = row['query_name']
+                    y0 += 1
+
+                y0s.append(y0)
+
+        df = df.with_columns(pl.Series(name="read_num", values=y0s))
+        df = df.with_columns(pl.Series(name="height", values=[1.0]*len(y0s)))
+
+        df = df.with_columns(
+            pl.col("read_num").alias("y0") * -1 - pl.col("height") / 2
+        )
+        df = df.with_columns(
+            pl.col("read_num").alias("y1") * -1 + pl.col("height") / 2
+        )
+
+        cvs = ds.Canvas(plot_width=width, plot_height=height)
+        agg = cvs.polygons(df, 'reference_start', ['y0', 'y1'], agg=ds.count())
+        img = tf.shade(agg)
+
+        return img
+
     def print(self):
         self._session.print()
-        
+
 
 def init(session_name: str,
          gcs_session_dir: str = None,
