@@ -5,3 +5,7 @@
 *.fa
 *.bam
 *.bai
+.ipynb_checkpoints/
+python/genomeshader/__pycache__/
+python/genomeshader/__pycache__/
+*.so
