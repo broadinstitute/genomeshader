@@ -2,6 +2,8 @@
 name = "genomeshader"
 version = "0.1.0"
 edition = "2021"
+authors = ["Kiran V Garimella <kiran@broadinstitute.org>"]
+description = "Fast visualization of genomic data"
 
 [lib]
 name = "genomeshader"
