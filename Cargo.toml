@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Kiran V Garimella <kiran@broadinstitute.org>"]
 description = "Fast visualization of genomic data"
+license = "BSD 3-Clause"
+license-file = "LICENSE"
+documentation = "https://github.com/broadinstitute/genomeshader"
+homepage = "https://github.com/broadinstitute/genomeshader"
+repository = "https://github.com/broadinstitute/genomeshader"
 
 [lib]
 name = "genomeshader"
