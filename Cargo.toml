@@ -29,6 +29,7 @@ indicatif = { version = "*", features = ["rayon"] }
 lazy_static = "*"
 nannou = { git = "https://github.com/tychedelia/nannou.git" }
 nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
+openssl = { version = "0.10", features = ["vendored"] }
 polars = { version = "*", features = ["performant", "parquet", "dtype-categorical", "fmt", "rows"] }
 pollster = "0.3"
 psutil = "3.2.2"
