@@ -6,6 +6,6 @@
 For detailed documentation and examples, see the README.
 """
 
-__version__ = '0.1.7'
+__version__ = '0.1.8'
 
 from .view import *
