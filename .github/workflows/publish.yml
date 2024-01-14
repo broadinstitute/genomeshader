@@ -12,9 +12,6 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   release:
     # Automatic release will run on a Github-hosted machine
