@@ -98,6 +98,11 @@ jobs:
         id: previoustag
         uses: "WyriHaximus/github-action-get-previous-tag@v1"
 
+      - name: Checkout specific tag
+        uses: actions/checkout@v2
+        with:
+          ref: ${{ steps.previoustag.outputs.tag }}
+
       # - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
@@ -145,6 +150,11 @@ jobs:
         id: previoustag
         uses: "WyriHaximus/github-action-get-previous-tag@v1"
 
+      - name: Checkout specific tag
+        uses: actions/checkout@v2
+        with:
+          ref: ${{ steps.previoustag.outputs.tag }}
+
       # - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
@@ -172,6 +182,11 @@ jobs:
       - name: 'Get Previous tag'
         id: previoustag
         uses: "WyriHaximus/github-action-get-previous-tag@v1"
+
+      - name: Checkout specific tag
+        uses: actions/checkout@v2
+        with:
+          ref: ${{ steps.previoustag.outputs.tag }}
 
       # - uses: actions/checkout@v3
       - name: Build sdist
