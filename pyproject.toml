@@ -4,6 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "genomeshader"
+dependencies = [
+    "polars",
+    "holoviews",
+    "datashader"
+]
 
 [tool.maturin]
 python-source = "python"
