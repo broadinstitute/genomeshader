@@ -1831,7 +1831,7 @@ dependencies = [
 
 [[package]]
 name = "genomeshader"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-std",
@@ -1852,7 +1852,7 @@ dependencies = [
  "pyo3",
  "pyo3-asyncio",
  "pyo3-polars",
- "rand 0.8.5",
+ "rand 0.7.3",
  "rayon",
  "regex",
  "rust-htslib",
