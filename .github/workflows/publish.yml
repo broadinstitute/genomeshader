@@ -46,7 +46,7 @@ jobs:
         run: |
           perl -V:make
           cpanm -v
-          cpanm File::Spec Getopt::Long version
+          cpanm File::Spec Getopt::Long version IPC::Cmd
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
