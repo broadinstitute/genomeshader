@@ -90,15 +90,13 @@ jobs:
         #target: [x86_64, x86, aarch64, armv7, s390x, ppc64le]
         target: [x86_64]
     steps:
-      - name: Get latest tag
-        id: latesttag
-        run: echo ::set-output name=tag::$(git describe --tags `git rev-list --tags --max-count=1`)
-        shell: bash
-  
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
         with:
-          ref: ${{ steps.latesttag.outputs.tag }}
+          fetch-depth: 0 # Required due to the way Git works, without it this action won't be able to find any or the correct tags
+
+      - name: 'Get Previous tag'
+        id: previoustag
+        uses: "WyriHaximus/github-action-get-previous-tag@v1"
 
       # - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
@@ -139,15 +137,13 @@ jobs:
       matrix:
         target: [x86_64, aarch64]
     steps:
-      - name: Get latest tag
-        id: latesttag
-        run: echo ::set-output name=tag::$(git describe --tags `git rev-list --tags --max-count=1`)
-        shell: bash
-  
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
         with:
-          ref: ${{ steps.latesttag.outputs.tag }}
+          fetch-depth: 0 # Required due to the way Git works, without it this action won't be able to find any or the correct tags
+
+      - name: 'Get Previous tag'
+        id: previoustag
+        uses: "WyriHaximus/github-action-get-previous-tag@v1"
 
       # - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
@@ -169,15 +165,13 @@ jobs:
     needs: [release]
     runs-on: ubuntu-latest
     steps:
-      - name: Get latest tag
-        id: latesttag
-        run: echo ::set-output name=tag::$(git describe --tags `git rev-list --tags --max-count=1`)
-        shell: bash
-  
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
         with:
-          ref: ${{ steps.latesttag.outputs.tag }}
+          fetch-depth: 0 # Required due to the way Git works, without it this action won't be able to find any or the correct tags
+
+      - name: 'Get Previous tag'
+        id: previoustag
+        uses: "WyriHaximus/github-action-get-previous-tag@v1"
 
       # - uses: actions/checkout@v3
       - name: Build sdist
