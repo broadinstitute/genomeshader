@@ -18,6 +18,7 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = "1.0"
 cloud-storage = { version = "*", features = ["sync"] }
+crossbeam-utils = "0.8.19"
 egui = "0.23.0"
 eframe = "*"
 fs_extra = "1.2"
@@ -33,6 +34,7 @@ pollster = "0.3"
 pyo3 = { version = "*", features = ["abi3-py37", "extension-module"] }
 pyo3-polars = "*"
 pyo3-asyncio = { version = "*", features = ["attributes", "async-std-runtime", "tokio-runtime"] }
+memoffset = "0.9.0"
 ndarray = { version = "0.15.6", features = ["rayon"] }
 rand = "*"
 rayon = "*"

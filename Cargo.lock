@@ -476,7 +476,7 @@ dependencies = [
  "async-io 1.13.0",
  "async-lock 2.8.0",
  "async-process",
- "crossbeam-utils 0.8.18",
+ "crossbeam-utils 0.8.19",
  "futures-channel",
  "futures-core",
  "futures-io",
@@ -979,7 +979,7 @@ version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d16048cd947b08fa32c24458a22f5dc5e835264f689f4f5653210c69fd107363"
 dependencies = [
- "crossbeam-utils 0.8.18",
+ "crossbeam-utils 0.8.19",
 ]
 
 [[package]]
@@ -1066,7 +1066,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82a9b73a36529d9c47029b9fb3a6f0ea3cc916a261195352ba19e770fc1748b2"
 dependencies = [
  "cfg-if 1.0.0",
- "crossbeam-utils 0.8.18",
+ "crossbeam-utils 0.8.19",
 ]
 
 [[package]]
@@ -1088,7 +1088,7 @@ checksum = "fca89a0e215bab21874660c67903c5f143333cab1da83d041c7ded6053774751"
 dependencies = [
  "cfg-if 1.0.0",
  "crossbeam-epoch 0.9.17",
- "crossbeam-utils 0.8.18",
+ "crossbeam-utils 0.8.19",
 ]
 
 [[package]]
@@ -1114,7 +1114,7 @@ checksum = "0e3681d554572a651dda4186cd47240627c3d0114d45a95f6ad27f2f22e7548d"
 dependencies = [
  "autocfg",
  "cfg-if 1.0.0",
- "crossbeam-utils 0.8.18",
+ "crossbeam-utils 0.8.19",
 ]
 
 [[package]]
@@ -1124,7 +1124,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adc6598521bb5a83d491e8c1fe51db7296019d2ca3cb93cc6c2a20369a4d78a2"
 dependencies = [
  "cfg-if 1.0.0",
- "crossbeam-utils 0.8.18",
+ "crossbeam-utils 0.8.19",
 ]
 
 [[package]]
@@ -1140,12 +1140,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-utils"
-version = "0.8.18"
+version = "0.8.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3a430a770ebd84726f584a90ee7f020d28db52c6d02138900f22341f866d39c"
-dependencies = [
- "cfg-if 1.0.0",
-]
+checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 
 [[package]]
 name = "crossterm"
@@ -1831,11 +1828,12 @@ dependencies = [
 
 [[package]]
 name = "genomeshader"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "async-std",
  "cloud-storage",
+ "crossbeam-utils 0.8.19",
  "eframe",
  "egui",
  "fs_extra",
@@ -1843,6 +1841,7 @@ dependencies = [
  "google-cloud-storage",
  "indicatif",
  "lazy_static",
+ "memoffset 0.9.0",
  "nannou",
  "nannou_egui",
  "ndarray",
@@ -1852,7 +1851,7 @@ dependencies = [
  "pyo3",
  "pyo3-asyncio",
  "pyo3-polars",
- "rand 0.7.3",
+ "rand 0.8.5",
  "rayon",
  "regex",
  "rust-htslib",
@@ -4322,7 +4321,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ce3fb6ad83f861aac485e76e1985cd109d9a3713802152be56c3b1f0e0658ed"
 dependencies = [
  "crossbeam-deque 0.8.4",
- "crossbeam-utils 0.8.18",
+ "crossbeam-utils 0.8.19",
 ]
 
 [[package]]
