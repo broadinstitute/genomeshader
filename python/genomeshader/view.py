@@ -36,7 +36,7 @@ class GenomeShader:
     def __init__(self,
                  session_name: str = None,
                  gcs_session_dir: str = None,
-                 genome_build: GenomeBuild = None):
+                 genome_build: GenomeBuild = GenomeBuild.GRCh38):
         self._validate_session_name(session_name)
         self.session_name = session_name
 
@@ -83,10 +83,34 @@ class GenomeShader:
             f' - genome_build: {self.genome_build}\n'
         )
 
+    def get_version(self):
+        """
+        This function returns the version of the library.
+
+        Returns:
+            str: The version of the library.
+        """
+        return self._session.version()
+
     def get_session_name(self):
+        """
+        This function returns the name of the current session.
+
+        Returns:
+            str: The name of the current session.
+        """
         return self.session_name
 
     def attach_reads(self, gcs_paths: Union[str, List[str]]):
+        """
+        This function attaches reads from the provided GCS paths to the
+        current session. The GCS paths can be a single string or a list.
+        Each GCS path can be a direct path to a .bam or .cram file, or a
+        directory containing .bam and/or .cram files.
+
+        Args:
+            gcs_paths (Union[str, List[str]]): The GCS paths to attach reads.
+        """
         if isinstance(gcs_paths, str):
             gcs_paths = [gcs_paths]  # Convert single string to list
 
@@ -101,12 +125,23 @@ class GenomeShader:
                 self._session.attach_reads(crams)
 
     def attach_loci(self, loci: Union[str, List[str]]):
+        """
+        Attaches loci to the current session from the provided list.
+        The loci can be a single string or a list of strings.
+
+        Args:
+            loci (Union[str, List[str]]): Loci to be attached.
+        """
         if isinstance(loci, str):
             self._session.attach_loci([loci])
         else:
             self._session.attach_loci(loci)
 
     def stage(self):
+        """
+        This function stages the current session. It prepares the session
+        for subsequent operations like attaching reads or loci.
+        """
         self._session.stage()
 
     def show(self,
@@ -114,6 +149,19 @@ class GenomeShader:
              width: int = 980,
              height: int = 400,
              collapse: bool = False):
+        """
+        Visualizes genomic data in a rectangular format.
+
+        Args:
+            locus (str): Genomic locus to visualize. Format: 'chr:start-stop'.
+            width (int, optional): Visualization width. Defaults to 980.
+            height (int, optional): Visualization height. Defaults to 400.
+            collapse (bool, optional): If True, collapses visualization.
+                                       Defaults to False.
+
+        Returns:
+            hv.Rectangles: HoloViews Rectangles object for visualization.
+        """
         pieces = re.split("[:-]", re.sub(",", "", locus))
 
         chr = pieces[0]

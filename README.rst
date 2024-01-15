@@ -28,7 +28,8 @@ Building from source
 
 To build from source, follow the procedure below.
 
-::
+.. code-block:: bash
+
    # Clone repository.
    git clone https://github.com/broadinstitute/genomeshader.git
    cd genomeshader

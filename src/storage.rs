@@ -1,6 +1,10 @@
 use pyo3::prelude::*;
 
 use cloud_storage::{sync::*, ListRequest, object::ObjectList};
+use chrono::{DateTime, Utc};
+
+use std::path::PathBuf;
+use std::fs::metadata;
 
 fn gcs_split_path(path: &String) -> (String, String) {
     let re = regex::Regex::new(r"^gs://").unwrap();
@@ -20,6 +24,22 @@ fn gcs_list_files(path: &String) -> Result<Vec<ObjectList>, cloud_storage::Error
     let file_list = client.object().list(&bucket_name, ListRequest { prefix: Some(prefix), ..Default::default() });
 
     file_list
+}
+
+pub fn gcs_get_file_update_time(path: &String) -> Result<DateTime<Utc>, cloud_storage::Error> {
+    let (bucket_name, prefix) = gcs_split_path(path);
+
+    let client = Client::new()?;
+    let object = client.object().read(&bucket_name, &prefix)?;
+
+    Ok(object.updated)
+}
+
+pub fn local_get_file_update_time(path: &PathBuf) -> std::io::Result<DateTime<Utc>> {
+    let metadata = metadata(path)?;
+    let modified_time = metadata.modified()?;
+
+    Ok(DateTime::<Utc>::from(modified_time))
 }
 
 pub fn gcs_authorize_data_access() {

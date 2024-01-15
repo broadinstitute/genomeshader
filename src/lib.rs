@@ -1,15 +1,8 @@
-pub mod app;
-pub mod events;
-pub mod styles;
 pub mod alignment;
 pub mod storage;
-pub mod layout;
 
-use app::{model, update, exit};
-use events::raw_window_event;
 use alignment::stage_data;
-use storage::{_gcs_list_files_of_type,gcs_authorize_data_access};
-use layout::*;
+use storage::*;
 
 use std::{collections::{HashSet, HashMap}, path::PathBuf, cell::RefCell};
 
@@ -18,8 +11,7 @@ use pyo3::prelude::*;
 use pyo3_polars::PyDataFrame;
 
 // Needed to pass some data into our Nannou app.
-// thread_local!(static GLOBAL_DATA: RefCell<PathBuf> = RefCell::new(PathBuf::new()));
-thread_local!(static GLOBAL_DATA: RefCell<PyDataFrame> = RefCell::new(PyDataFrame(DataFrame::default())));
+// thread_local!(static GLOBAL_DATA: RefCell<PyDataFrame> = RefCell::new(PyDataFrame(DataFrame::default())));
 
 #[pyclass]
 pub struct Session {
@@ -110,10 +102,11 @@ impl Session {
     }
 
     fn stage(&mut self) -> PyResult<()> {
-        gcs_authorize_data_access();
-
         let cache_path = std::env::temp_dir();
 
+        println!("{:?} {:?} {:?}", cache_path, &self.reads, &self.loci);
+
+        gcs_authorize_data_access();
         match stage_data(cache_path, &self.reads, &self.loci) {
             Ok(staged_data) => { self.staged_data = staged_data; },
             Err(_) => {
@@ -143,32 +136,6 @@ impl Session {
         }
     }
 
-    fn display_locus(&self, locus: String) -> PyResult<()> {
-        match self.get_staged_locus(locus) {
-            Ok(df) => { return self.display(df) },
-            Err(e) => return Err(e),
-        }
-    }
-
-    fn display(&self, df: PyDataFrame) -> PyResult<()> {
-        // This hack is required because there doesn't seem to be a
-        // convenient way of passing arbitrary variables from the
-        // current scope into a Nannou app.
-        GLOBAL_DATA.with(|pydf| {
-            *pydf.borrow_mut() = df;
-        });
-
-        nannou::app(model)
-            .update(update)
-            .loop_mode(nannou::LoopMode::Wait)
-            .exit(exit)
-            .run();
-
-        println!("Done!");
-
-        Ok(())
-    }
-
     fn print(&self) {
         println!("Reads:");
         for reads in &self.reads {
@@ -184,6 +151,10 @@ impl Session {
         for (l_fmt, p) in &self.staged_data {
             println!(" - {}:{}-{} : {:?}", l_fmt.0, l_fmt.1, l_fmt.2, p);
         }
+    }
+
+    fn version(&self) -> PyResult<String> {
+        Ok("0.1.11".to_string())
     }
 }
 
