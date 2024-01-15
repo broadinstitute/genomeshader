@@ -7,7 +7,8 @@ name = "genomeshader"
 dependencies = [
     "polars",
     "holoviews",
-    "datashader"
+    "datashader",
+    "pyarrow>=14.0.1"
 ]
 
 [tool.maturin]
