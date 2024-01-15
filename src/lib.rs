@@ -40,7 +40,9 @@ impl Session {
             }
         }
 
-        self.reads = reads.into_iter().collect();
+        for read in reads {
+            self.reads.insert(read);
+        }
 
         Ok(())
     }
@@ -101,13 +103,11 @@ impl Session {
         Ok(())
     }
 
-    fn stage(&mut self) -> PyResult<()> {
+    fn stage(&mut self, use_cache: bool) -> PyResult<()> {
         let cache_path = std::env::temp_dir();
 
-        println!("{:?} {:?} {:?}", cache_path, &self.reads, &self.loci);
-
         gcs_authorize_data_access();
-        match stage_data(cache_path, &self.reads, &self.loci) {
+        match stage_data(cache_path, &self.reads, &self.loci, use_cache) {
             Ok(staged_data) => { self.staged_data = staged_data; },
             Err(_) => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -136,6 +136,14 @@ impl Session {
         }
     }
 
+    fn reset(&mut self) -> PyResult<()> {
+        self.reads = HashSet::new();
+        self.loci = HashSet::new();
+        self.staged_data = HashMap::new();
+
+        Ok(())
+    }
+
     fn print(&self) {
         println!("Reads:");
         for reads in &self.reads {
@@ -154,7 +162,7 @@ impl Session {
     }
 
     fn version(&self) -> PyResult<String> {
-        Ok("0.1.11".to_string())
+        Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 }
 

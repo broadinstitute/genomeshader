@@ -18,6 +18,8 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 hv.extension("bokeh")
 hv.output(backend="bokeh")
 
+warnings.resetwarnings()
+
 base_colors = {
     'A': '#00F100',
     'C': '#341BFF',
@@ -137,12 +139,12 @@ class GenomeShader:
         else:
             self._session.attach_loci(loci)
 
-    def stage(self):
+    def stage(self, use_cache=True):
         """
         This function stages the current session. It prepares the session
         for subsequent operations like attaching reads or loci.
         """
-        self._session.stage()
+        self._session.stage(use_cache)
 
     def show(self,
              locus: str,
@@ -298,6 +300,9 @@ class GenomeShader:
         img = tf.shade(agg)
 
         return img
+
+    def reset(self):
+        self._session.reset()
 
     def print(self):
         self._session.print()

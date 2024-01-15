@@ -259,18 +259,18 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
     df
 }
 
-pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
+pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>, use_cache: bool) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
     let temp_dir = env::temp_dir();
     env::set_current_dir(&temp_dir).unwrap();
 
-    loci.par_iter()
-        .progress_count(loci.len() as u64)
+    loci.iter()
+        // .progress_count(loci.len() as u64)
         .for_each(|l| {
             let (chr, start, stop) = l;
 
-            if true { // locus_should_be_fetched(&cache_path, chr, start, stop, bam_paths) {
+            if !use_cache || locus_should_be_fetched(&cache_path, chr, start, stop, bam_paths) {
                 let dfs = Mutex::new(Vec::new());
-                bam_paths.par_iter()
+                bam_paths.iter()
                     .for_each(|f| {
                         let df = extract_reads(f, chr.to_string(), *start, *stop);
                         dfs.lock().unwrap().push(df);
@@ -281,7 +281,7 @@ pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashS
                     outer_df.vstack_mut(&df).unwrap();
                 }
 
-                let filename = cache_path.join(format!("{}_{}_{}.v2.parquet", chr, start, stop));
+                let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
                 let file_w = std::fs::File::create(&filename).unwrap();
                 ParquetWriter::new(&file_w).finish(&mut outer_df).unwrap();
             }
@@ -290,7 +290,7 @@ pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashS
     let mut locus_to_file = HashMap::new();
     for l in loci {
         let (chr, start, stop) = l;
-        let filename = cache_path.join(format!("{}_{}_{}.v2.parquet", chr, start, stop));
+        let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
 
         locus_to_file.insert((chr.to_owned(), *start, *stop), filename);
     }
@@ -298,37 +298,34 @@ pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashS
     Ok(locus_to_file)
 }
 
-// fn locus_should_be_fetched(cache_path: &PathBuf, chr: &String, start: &u64, stop: &u64, bam_paths: &HashSet<String>) -> bool {
-//     let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
-//     if !filename.exists() {
-//         println!("Hello!");
-//         return true
-//     } else {
-//         let file_r = std::fs::File::open(&filename).unwrap();
-//         let df = ParquetReader::new(file_r).finish().unwrap();
+fn locus_should_be_fetched(cache_path: &PathBuf, chr: &String, start: &u64, stop: &u64, bam_paths: &HashSet<String>) -> bool {
+    let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
+    if !filename.exists() {
+        return true
+    } else {
+        let file_r = std::fs::File::open(&filename).unwrap();
+        let df = ParquetReader::new(file_r).finish().unwrap();
 
-//         let bam_path_series: HashSet<String> = df.column("bam_path").unwrap().utf8().unwrap().into_iter().map(|s| s.unwrap().to_string()).collect();
-//         let bam_path_values: HashSet<String> = bam_paths.iter().map(|s| s.to_string()).collect();
-//         let intersection = bam_path_series.intersection(&bam_path_values);
-//         if bam_path_series.len() != intersection.count() {
-//             println!("Intersection!");
-//             return true
-//         }
+        let bam_path_series: HashSet<String> = df.column("bam_path").unwrap().str().unwrap().into_iter().map(|s| s.unwrap().to_string()).collect();
+        let bam_path_values: HashSet<String> = bam_paths.iter().map(|s| s.to_string()).collect();
+        let intersection = bam_path_series.intersection(&bam_path_values);
+        if bam_path_series.len() != intersection.count() {
+            return true
+        }
 
-//         let local_time = local_get_file_update_time(&filename).unwrap();
-//         for bam_path in bam_path_values {
-//             let remote_time = gcs_get_file_update_time(&bam_path).unwrap();
+        // let local_time = local_get_file_update_time(&filename).unwrap();
+        // for bam_path in bam_path_values {
+        //     let remote_time = gcs_get_file_update_time(&bam_path).unwrap();
 
-//             if remote_time > local_time {
-//                 println!("Newer!");
-//                 return true
-//             }
-//         }
-//     }
+        //     if remote_time > local_time {
+        //         println!("Newer!");
+        //         return true
+        //     }
+        // }
+    }
 
-//     println!("Nuffin!");
-//     false
-// }
+    false
+}
 
 #[cfg(test)]
 mod tests {
@@ -384,7 +381,7 @@ mod tests {
 
         gcs_authorize_data_access();
 
-        let r = stage_data(cache_path, &bam_paths, &loci);
+        let r = stage_data(cache_path, &bam_paths, &loci, true);
     }
 
     // #[test]
