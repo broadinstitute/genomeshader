@@ -1,0 +1,7 @@
+datashader==0.15.2
+holoviews==1.17.1
+ipykernel==6.28.0
+maturin==1.4.0
+panel==1.2.3
+polars==0.20.4
+pyparsing==3.1.1

@@ -24,6 +24,9 @@ rely on the `Datashader <https://datashader.org/>`_ library for rapid visualizat
 of large datasets, and the `Polars <https://github.com/pola-rs/polars>`_ library
 for manipulation of large genomic dataframes.
 
+Developers need not know both languages to meaningfully contribute to Genomeshader
+development. We welcome improvements and additional features to both the
+front-end and back-end parts of the library.
 
 Setting up your development environment
 ---------------------------------------
@@ -86,7 +89,7 @@ Follow the steps below to set up your development environment:
 
    .. code-block:: bash
 
-       pip install -r requirements.txt
+       pip install -r dev-requirements.txt
 
    - When you are done with your work, you can deactivate the virtual environment by running the following command:
 
@@ -118,7 +121,7 @@ Follow the steps below to set up your development environment:
    If the library imports successfully, you are ready to start using Genomeshader in your notebook.
 
 Each time you make changes to the codebase, recompile the library by rerunning
-step 5, and then trying out the changes in step 6.
+step 5, then trying out the changes in step 6.
 
 Now, you are ready to start developing with Genomeshader!
 
@@ -171,24 +174,30 @@ Contributing to Genomeshader
 
 Code Style Guidelines
 ---------------------
+
 We follow the official style guides for our code. For Rust, we adhere to the `Rust Style Guide <https://rust-lang.github.io/rfcs/1607-style-guide.html>`_. For Python, we follow the `PEP 8 Style Guide <https://pep8.org/>`_. Please ensure your contributions adhere to these standards.
 
 Testing
 -------
+
 We use pytest for our Python tests and cargo test for our Rust tests. Please add tests for new features and ensure all tests pass before submitting a pull request.
 
 Documentation
 -------------
+
 Please update the documentation to reflect any changes you make to the codebase. This includes comments in the code, docstrings, and our user guides.
 
 Issue Tracking
 --------------
+
 We use GitHub issues to track work on Genomeshader. If you're adding a new feature or fixing a bug, please create an issue describing the work.
 
 Communication
 -------------
+
 If you have any questions or want to discuss your work, please join our community chat on Slack or by email. Our team is always happy to help.
 
 Code Review Process
 -------------------
-After you submit your pull request, it will be reviewed by at least one core contributor. We'll provide feedback and may request changes. Once your pull request is approved, it will be merged into the main codebase.
+
+After you submit your pull request, it will be reviewed by at least one core contributor. We'll provide feedback and may request changes. Once your pull request is approved, it will be merged into the main codebase and automatically released as an incremental version update on Pypi.
