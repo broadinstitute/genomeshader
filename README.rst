@@ -9,7 +9,7 @@ genomeshader
 .. |PyPI version genomeshader| image:: https://img.shields.io/pypi/v/genomeshader.svg
    :target: https://pypi.python.org/pypi/genomeshader/
 
-Genomeshader is a Rust/Python library for rapid visualization of read-level data spanning variants across huge numbers of samples.
+Genomeshader is a Rust-backed Python library for rapid visualization of read-level data spanning variants across huge numbers of samples. It is intended for use within Jupyter notebooks.
 
 Documentation for the API can be found on the `documentation page <https://broadinstitute.github.io/genomeshader/>`_.
 
@@ -26,7 +26,7 @@ Installation
 Building from source
 --------------------
 
-To build from source, follow the procedure below.
+To build from source (particularly for those interested in contributing to the code), follow the procedure below.
 
 .. code-block:: bash
 
@@ -34,7 +34,8 @@ To build from source, follow the procedure below.
    git clone https://github.com/broadinstitute/genomeshader.git
    cd genomeshader
 
-   # Create a Python virtual environment and install Maturin.
+   # Create a Python virtual environment and install Maturin, the tool that
+   # will compile the Rust and Python code into a complete library.
    # For more information on Maturin, visit https://github.com/PyO3/maturin .
    python -mvenv venv
    . venv/bin/activate
@@ -47,7 +48,7 @@ To build from source, follow the procedure below.
 Supported platforms
 -------------------
 
-Genomeshader is compiled for Linux (x86_64) and MacOSX (x86_64, aarch64). Windows support is not currently available.
+Genomeshader is compiled for Linux and MacOSX. Windows is not currently supported.
 
 Getting help
 ------------
@@ -57,4 +58,4 @@ If you encounter bugs or have questions/comments/concerns, please file an issue 
 Developers' guide
 -----------------
 
-For information on contributing to Genomeshader development, visit our `developer documentation <DEVELOP.md>`_.
+For information on contributing to Genomeshader development, visit our `developer documentation <DEVELOP.rst>`_.

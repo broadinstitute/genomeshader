@@ -139,7 +139,7 @@ class GenomeShader:
         else:
             self._session.attach_loci(loci)
 
-    def stage(self, use_cache=True):
+    def stage(self, use_cache: bool = True):
         """
         This function stages the current session. It prepares the session
         for subsequent operations like attaching reads or loci.
@@ -150,6 +150,7 @@ class GenomeShader:
              locus: str,
              width: int = 980,
              height: int = 400,
+             horiz: bool = False,
              collapse: bool = False):
         """
         Visualizes genomic data in a rectangular format.
