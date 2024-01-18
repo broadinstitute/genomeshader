@@ -263,14 +263,14 @@ pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashS
     let temp_dir = env::temp_dir();
     env::set_current_dir(&temp_dir).unwrap();
 
-    loci.iter()
-        // .progress_count(loci.len() as u64)
+    loci.par_iter()
         .for_each(|l| {
             let (chr, start, stop) = l;
 
             if !use_cache || locus_should_be_fetched(&cache_path, chr, start, stop, bam_paths) {
                 let dfs = Mutex::new(Vec::new());
-                bam_paths.iter()
+                bam_paths
+                    .par_iter()
                     .for_each(|f| {
                         let df = extract_reads(f, chr.to_string(), *start, *stop);
                         dfs.lock().unwrap().push(df);

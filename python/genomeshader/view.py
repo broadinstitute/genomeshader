@@ -146,52 +146,53 @@ class GenomeShader:
         """
         self._session.stage(use_cache)
 
+    def get_locus(self, locus: str) -> pl.DataFrame:
+        """
+        This function retrieves the data for a staged locus from the
+        current session.
+
+        Args:
+            locus (str): The locus to retrieve data for.
+
+        Returns:
+            pl.DataFrame: The data for the specified locus.
+        """
+        return self._session.get_locus(locus)
+
     def show(self,
-             locus: str,
+             locus_or_dataframe: Union[str, pl.DataFrame],
              width: int = 980,
              height: int = 400,
-             horiz: bool = False,
-             collapse: bool = False):
+             vertical: bool = False,
+             expand: bool = False) -> hv.Rectangles:
         """
         Visualizes genomic data in a rectangular format.
 
         Args:
-            locus (str): Genomic locus to visualize. Format: 'chr:start-stop'.
+            locus_or_dataframe (str or DataFrame): Genomic locus to visualize.
+            Can either be specified as a locus string (e.g. 'chr:start-stop')
+            or a Polars DataFrame (usually from the get_locus() method,
+            optionally modified by the user).
             width (int, optional): Visualization width. Defaults to 980.
             height (int, optional): Visualization height. Defaults to 400.
-            collapse (bool, optional): If True, collapses visualization.
-                                       Defaults to False.
+            expand (bool, optional): If True, expands each sample to show all
+            reads. Defaults to False.
 
         Returns:
             hv.Rectangles: HoloViews Rectangles object for visualization.
         """
-        pieces = re.split("[:-]", re.sub(",", "", locus))
 
-        chr = pieces[0]
-        start = int(pieces[1])
-        stop = int(pieces[2]) if len(pieces) > 2 else start
-
-        filename = f'{chr}_{start}_{stop}.parquet'
-        df = pl.read_parquet(filename)
-        df = df.sort(["sample_name", "query_name", "reference_start"])
-
-        print(filename)
+        if isinstance(locus_or_dataframe, str):
+            df = self.get_locus(locus_or_dataframe)
+        elif isinstance(locus_or_dataframe, pl.DataFrame):
+            df = locus_or_dataframe
+        else:
+            raise ValueError("locus_or_dataframe must be a locus string or a"
+                             "Polars DataFrame.")
 
         y0s = []
         y0 = 0
-        if collapse:
-            sample_name = None
-            for row in df.iter_rows(named=True):
-                if sample_name is None:
-                    sample_name = row['sample_name']
-                    y0 = 0
-
-                if sample_name != row['sample_name']:
-                    sample_name = row['sample_name']
-                    y0 += 1
-
-                y0s.append(y0)
-        else:
+        if expand:
             query_name = None
             for row in df.iter_rows(named=True):
                 if query_name is None:
@@ -200,6 +201,18 @@ class GenomeShader:
 
                 if query_name != row['query_name']:
                     query_name = row['query_name']
+                    y0 += 1
+
+                y0s.append(y0)
+        else:
+            sample_name = None
+            for row in df.iter_rows(named=True):
+                if sample_name is None:
+                    sample_name = row['sample_name']
+                    y0 = 0
+
+                if sample_name != row['sample_name']:
+                    sample_name = row['sample_name']
                     y0 += 1
 
                 y0s.append(y0)
@@ -241,66 +254,6 @@ class GenomeShader:
             active_tools=['xwheel_zoom', 'pan'],
             default_tools=['reset', 'save']
         )
-
-    def show_polygons(self,
-                      locus: str,
-                      width: int = 980,
-                      height: int = 400,
-                      collapse: bool = False):
-        pieces = re.split("[:-]", re.sub(",", "", locus))
-
-        chr = pieces[0]
-        start = int(pieces[1])
-        stop = int(pieces[2]) if len(pieces) > 2 else start
-
-        filename = f'{chr}_{start}_{stop}.parquet'
-        df = pl.read_parquet(filename)
-        df = df.sort(["sample_name", "query_name", "reference_start"])
-
-        print(filename)
-
-        y0s = []
-        y0 = 0
-        if collapse:
-            sample_name = None
-            for row in df.iter_rows(named=True):
-                if sample_name is None:
-                    sample_name = row['sample_name']
-                    y0 = 0
-
-                if sample_name != row['sample_name']:
-                    sample_name = row['sample_name']
-                    y0 += 1
-
-                y0s.append(y0)
-        else:
-            query_name = None
-            for row in df.iter_rows(named=True):
-                if query_name is None:
-                    query_name = row['query_name']
-                    y0 = 0
-
-                if query_name != row['query_name']:
-                    query_name = row['query_name']
-                    y0 += 1
-
-                y0s.append(y0)
-
-        df = df.with_columns(pl.Series(name="read_num", values=y0s))
-        df = df.with_columns(pl.Series(name="height", values=[1.0]*len(y0s)))
-
-        df = df.with_columns(
-            pl.col("read_num").alias("y0") * -1 - pl.col("height") / 2
-        )
-        df = df.with_columns(
-            pl.col("read_num").alias("y1") * -1 + pl.col("height") / 2
-        )
-
-        cvs = ds.Canvas(plot_width=width, plot_height=height)
-        agg = cvs.polygons(df, 'reference_start', ['y0', 'y1'], agg=ds.count())
-        img = tf.shade(agg)
-
-        return img
 
     def reset(self):
         self._session.reset()

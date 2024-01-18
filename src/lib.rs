@@ -119,7 +119,7 @@ impl Session {
         Ok(())
     }
 
-    fn get_staged_locus(&self, locus: String) -> PyResult<PyDataFrame> {
+    fn get_locus(&self, locus: String) -> PyResult<PyDataFrame> {
         let l_fmt = self.parse_locus(locus.to_owned())?;
 
         if self.staged_data.contains_key(&l_fmt) {
