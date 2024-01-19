@@ -63,6 +63,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
     let mut reference_ends = Vec::new();
     let mut is_forwards = Vec::new();
     let mut query_names = Vec::new();
+    let mut haplotypes = Vec::new();
     let mut read_groups = Vec::new();
     let mut sample_names = Vec::new();
     let mut element_types = Vec::new();
@@ -74,11 +75,17 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
     for (_, r) in bam.records().enumerate() {
         let record = r.unwrap();
 
+        let hap = match record.aux(b"HP") {
+            Ok(Aux::I32(val)) => val,
+            _ => 0,
+        };
+
         reference_contigs.push(chr.to_owned());
         reference_starts.push(record.reference_start() as u32 + 1);
         reference_ends.push(record.reference_end() as u32);
         is_forwards.push(!record.is_reverse());
         query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
+        haplotypes.push(hap);
         
         if let Ok(Aux::String(rg)) = record.aux(b"RG") {
             read_groups.push(rg.to_owned());
@@ -111,6 +118,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
                     reference_ends.push(ref_pos);
                     is_forwards.push(!record.is_reverse());
                     query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
+                    haplotypes.push(hap);
 
                     if let Ok(Aux::String(rg)) = record.aux(b"RG") {
                         read_groups.push(rg.to_owned());
@@ -136,6 +144,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
                     reference_ends.push(ref_pos + (*len));
                     is_forwards.push(!record.is_reverse());
                     query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
+                    haplotypes.push(hap);
 
                     if let Ok(Aux::String(rg)) = record.aux(b"RG") {
                         read_groups.push(rg.to_owned());
@@ -168,6 +177,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
                     reference_ends.push(ref_pos + 1);
                     is_forwards.push(!record.is_reverse());
                     query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
+                    haplotypes.push(hap);
 
                     if let Ok(Aux::String(rg)) = record.aux(b"RG") {
                         read_groups.push(rg.to_owned());
@@ -203,6 +213,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
                         reference_ends.push(adj_ref_pos + 1);
                         is_forwards.push(!record.is_reverse());
                         query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
+                        haplotypes.push(hap);
 
                         if let Ok(Aux::String(rg)) = record.aux(b"RG") {
                             read_groups.push(rg.to_owned());
@@ -249,6 +260,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
         Series::new("reference_end", reference_ends),
         Series::new("is_forward", is_forwards),
         Series::new("query_name", query_names),
+        Series::new("haplotype", haplotypes),
         Series::new("read_group", read_groups),
         Series::new("sample_name", sample_names),
         Series::new("element_type", element_types),
@@ -259,18 +271,68 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
     df
 }
 
+pub fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
+    let df = df_in.sort(
+        &["sample_name", "query_name", "reference_start"],
+        false,
+        true
+    ).unwrap();
+
+    let sample_names = df.column("sample_name").unwrap().str().unwrap();
+    let reference_starts = df.column("reference_start").unwrap().u32().unwrap();
+    let reference_ends = df.column("reference_end").unwrap().u32().unwrap();
+    let element_types = df.column("element_type").unwrap().u8().unwrap();
+    let sequence = df.column("sequence").unwrap().str().unwrap();
+
+    let mut cur_sample_name = "";
+    let mut cur_sample_index: i32 = -1;
+    let mut mask = HashMap::new();
+
+    for i in 0..reference_starts.len() {
+        let sample_name = sample_names.get(i).unwrap();
+        if cur_sample_name != sample_name {
+            cur_sample_name = sample_name;
+            cur_sample_index += 1;
+
+            let cur_sample_name_series = Series::new("", vec![cur_sample_name; df.height()]);
+            let mask = df.filter(&df["sample_name"].equal(&cur_sample_name_series).unwrap()).unwrap();
+        }
+
+        if cur_sample_index >= 0 {
+            let reference_start = reference_starts.get(i).unwrap();
+            let reference_end = reference_ends.get(i).unwrap();
+            let element_type = element_types.get(i).unwrap();
+            let sequence = sequence.get(i).unwrap();
+            let sequence_length = if element_type == 3 { (reference_end - reference_start) as usize } else { sequence.len() };
+
+            if element_type > 0 {
+                mask.entry(reference_start)
+                    .and_modify(|e| *e = std::cmp::max(*e, sequence_length))
+                    .or_insert(sequence_length);
+            }
+        }
+    }
+
+    for (key, value) in &mask {
+
+        println!("{}: {}", key, value);
+    }
+
+    mask
+}
+
 pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>, use_cache: bool) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
     let temp_dir = env::temp_dir();
     env::set_current_dir(&temp_dir).unwrap();
 
-    loci.par_iter()
+    loci.par_iter() // iterate over loci
         .for_each(|l| {
             let (chr, start, stop) = l;
 
             if !use_cache || locus_should_be_fetched(&cache_path, chr, start, stop, bam_paths) {
                 let dfs = Mutex::new(Vec::new());
                 bam_paths
-                    .par_iter()
+                    .par_iter() // iterate over BAMs
                     .for_each(|f| {
                         let df = extract_reads(f, chr.to_string(), *start, *stop);
                         dfs.lock().unwrap().push(df);
@@ -381,7 +443,7 @@ mod tests {
 
         gcs_authorize_data_access();
 
-        let r = stage_data(cache_path, &bam_paths, &loci, true);
+        let r = stage_data(cache_path, &bam_paths, &loci, false);
     }
 
     // #[test]
