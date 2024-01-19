@@ -37,7 +37,7 @@ impl ElementType {
     }
 }
 
-fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataFrame {
+fn extract_reads(cohort: &String, bam_path: &String, chr: String, start: u64, stop: u64) -> DataFrame {
     let url = if bam_path.starts_with("file://") || bam_path.starts_with("gs://") {
         url::Url::parse(bam_path).unwrap()
     } else {
@@ -56,7 +56,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
         }
     }
 
-    // let mut sample_index = Vec::new();
+    let mut cohorts = Vec::new();
     let mut bam_paths = Vec::new();
     let mut reference_contigs = Vec::new();
     let mut reference_starts = Vec::new();
@@ -246,6 +246,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
 
     let mut column_width = Vec::new();
     for start in &reference_starts {
+        cohorts.push(cohort.to_owned());
         bam_paths.push(bam_path.to_owned());
         column_width.push(*mask.get(start).unwrap_or(&1) as u32);
     }
@@ -253,7 +254,7 @@ fn extract_reads(bam_path: &String, chr: String, start: u64, stop: u64) -> DataF
     let element_types: Vec<u8> = element_types.iter().map(|e| e.to_u8()).collect();
 
     let df = DataFrame::new(vec![
-        // Series::new("read_num", read_nums),
+        Series::new("cohort", cohorts),
         Series::new("bam_path", bam_paths),
         Series::new("reference_contig", reference_contigs),
         Series::new("reference_start", reference_starts),
@@ -321,7 +322,7 @@ pub fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
     mask
 }
 
-pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>, use_cache: bool) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
+pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>, use_cache: bool, cohort: String) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
     let temp_dir = env::temp_dir();
     env::set_current_dir(&temp_dir).unwrap();
 
@@ -334,7 +335,7 @@ pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashS
                 bam_paths
                     .par_iter() // iterate over BAMs
                     .for_each(|f| {
-                        let df = extract_reads(f, chr.to_string(), *start, *stop);
+                        let df = extract_reads(&cohort, f, chr.to_string(), *start, *stop);
                         dfs.lock().unwrap().push(df);
                     });
 
@@ -401,11 +402,12 @@ mod tests {
         let test_read = String::from("src/tests/test_read.bam");
         let bam_path = cwd.join(&test_read).to_str().unwrap().to_string();
 
+        let cohort = String::from("all");
         let chr = String::from("chr2");
         let start = 66409693;
         let stop = 66410667;
 
-        let act_df = extract_reads(&bam_path, chr, start, stop);
+        let act_df = extract_reads(&cohort, &bam_path, chr, start, stop);
 
         let exp_df = DataFrame::new(vec![
             Series::new("bam_path", vec![bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned()]),
@@ -434,6 +436,7 @@ mod tests {
             "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_222816_s4/reads/ccs/aligned/m84175_231021_222816_s4.bam".to_string()]
             .iter().cloned().collect();
 
+        let cohort = "all".to_string();
         let chr: String = "chr15".to_string();
         let start: u64 = 23960193;
         let stop: u64 = 23963918;
@@ -443,7 +446,7 @@ mod tests {
 
         gcs_authorize_data_access();
 
-        let r = stage_data(cache_path, &bam_paths, &loci, false);
+        let r = stage_data(cache_path, &bam_paths, &loci, false, cohort);
     }
 
     // #[test]

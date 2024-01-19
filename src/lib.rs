@@ -4,13 +4,14 @@ pub mod storage;
 use alignment::stage_data;
 use storage::*;
 
-use std::{collections::{HashSet, HashMap}, path::PathBuf, cell::RefCell};
+use std::{collections::{HashSet, HashMap}, path::PathBuf};
 
 use polars::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::PyDataFrame;
 
 // Needed to pass some data into our Nannou app.
+// use std::cell::RefCell;
 // thread_local!(static GLOBAL_DATA: RefCell<PyDataFrame> = RefCell::new(PyDataFrame(DataFrame::default())));
 
 #[pyclass]
@@ -103,11 +104,11 @@ impl Session {
         Ok(())
     }
 
-    fn stage(&mut self, use_cache: bool) -> PyResult<()> {
+    fn stage(&mut self, use_cache: bool, cohort: String) -> PyResult<()> {
         let cache_path = std::env::temp_dir();
 
         gcs_authorize_data_access();
-        match stage_data(cache_path, &self.reads, &self.loci, use_cache) {
+        match stage_data(cache_path, &self.reads, &self.loci, use_cache, cohort) {
             Ok(staged_data) => { self.staged_data = staged_data; },
             Err(_) => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(

@@ -130,12 +130,18 @@ class GenomeShader:
         else:
             self._session.attach_loci(loci)
 
-    def stage(self, use_cache: bool = True):
+    def stage(self, use_cache: bool = True, cohort: str = 'all'):
         """
-        This function stages the current session. It prepares the session
-        for subsequent operations like attaching reads or loci.
+        This function stages the current session. Staging fetches the specified
+        loci from the BAM files and formats the results for fast visualization.
+
+        Args:
+            use_cache (bool, optional): If True, the function will attempt to
+            use cached data if available. Defaults to True.
+            cohort (str, optional): An optional cohort label for the dataset.
+            Defaults to 'all'.
         """
-        self._session.stage(use_cache)
+        self._session.stage(use_cache, cohort)
 
     def get_locus(self, locus: str) -> pl.DataFrame:
         """
