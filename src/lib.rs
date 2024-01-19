@@ -160,15 +160,16 @@ impl Session {
             println!(" - {}:{}-{} : {:?}", l_fmt.0, l_fmt.1, l_fmt.2, p);
         }
     }
-
-    fn version(&self) -> PyResult<String> {
-        Ok(env!("CARGO_PKG_VERSION").to_string())
-    }
 }
 
 #[pyfunction]
 fn _init() -> PyResult<Session> {
     Ok(Session::new())
+}
+
+#[pyfunction]
+fn version() -> PyResult<String> {
+    Ok(env!("CARGO_PKG_VERSION").to_string())
 }
 
 /// A Python module implemented in Rust. The name of this function must match
@@ -178,6 +179,7 @@ fn _init() -> PyResult<Session> {
 fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_gcs_list_files_of_type, m)?)?;
     m.add_function(wrap_pyfunction!(_init, m)?)?;
+    m.add_function(wrap_pyfunction!(version, m)?)?;
 
     Ok(())
 }

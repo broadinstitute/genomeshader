@@ -85,15 +85,6 @@ class GenomeShader:
             f' - genome_build: {self.genome_build}\n'
         )
 
-    def get_version(self):
-        """
-        This function returns the version of the library.
-
-        Returns:
-            str: The version of the library.
-        """
-        return self._session.version()
-
     def get_session_name(self):
         """
         This function returns the name of the current session.
