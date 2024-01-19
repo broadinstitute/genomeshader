@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "genomeshader"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1132,6 +1132,7 @@ dependencies = [
  "glob",
  "google-cloud-storage",
  "indicatif",
+ "kdam",
  "lazy_static",
  "memoffset",
  "ndarray",
@@ -1550,6 +1551,18 @@ dependencies = [
  "serde",
  "serde_json",
  "simple_asn1 0.6.2",
+]
+
+[[package]]
+name = "kdam"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2f08e037030a8ae7807e4edc2a12fad4a0cce624d227f422e3879fea8c89908"
+dependencies = [
+ "pyo3",
+ "rayon",
+ "terminal_size",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3209,6 +3222,16 @@ dependencies = [
  "redox_syscall",
  "rustix 0.38.30",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21bebf2b7c9e0a515f6e0f8c51dc0f8e4696391e6f1ff30379559f8365fb0df7"
+dependencies = [
+ "rustix 0.38.30",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

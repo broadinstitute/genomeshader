@@ -16,7 +16,7 @@ use pyo3_polars::PyDataFrame;
 
 #[pyclass]
 pub struct Session {
-    reads: HashSet<String>,
+    reads: HashSet<(String, String)>,
     loci: HashSet<(String, u64, u64)>,
     staged_data: HashMap<(String, u64, u64), PathBuf>
 }
@@ -32,7 +32,7 @@ impl Session {
         }
     }
 
-    fn attach_reads(&mut self, reads: Vec<String>) -> PyResult<()> {
+    fn attach_reads(&mut self, reads: Vec<String>, cohort: String) -> PyResult<()> {
         for read in &reads {
             if !read.ends_with(".bam") && !read.ends_with(".cram") {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -42,7 +42,7 @@ impl Session {
         }
 
         for read in reads {
-            self.reads.insert(read);
+            self.reads.insert((read, cohort.to_owned()));
         }
 
         Ok(())
@@ -104,11 +104,11 @@ impl Session {
         Ok(())
     }
 
-    fn stage(&mut self, use_cache: bool, cohort: String) -> PyResult<()> {
+    fn stage(&mut self, use_cache: bool) -> PyResult<()> {
         let cache_path = std::env::temp_dir();
 
         gcs_authorize_data_access();
-        match stage_data(cache_path, &self.reads, &self.loci, use_cache, cohort) {
+        match stage_data(cache_path, &self.reads, &self.loci, use_cache) {
             Ok(staged_data) => { self.staged_data = staged_data; },
             Err(_) => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -147,18 +147,37 @@ impl Session {
 
     fn print(&self) {
         println!("Reads:");
-        for reads in &self.reads {
-            println!(" - {}", reads);
+        if self.reads.len() <= 10 {
+            for (reads, cohort) in &self.reads {
+                println!(" - {} ({})", reads, cohort);
+            }
+        } else {
+            let mut cohort_counts = HashMap::new();
+            for (_, cohort) in &self.reads {
+                *cohort_counts.entry(cohort).or_insert(0) += 1;
+            }
+
+            for (cohort, count) in cohort_counts {
+                println!(" - {}: {} files", cohort, count);
+            }
         }
 
         println!("Loci:");
-        for locus in &self.loci {
-            println!(" - {:?}", locus);
+        if self.loci.len() <= 10 {
+            for locus in &self.loci {
+                println!(" - {:?}", locus);
+            }
+        } else {
+            println!(" - {} loci", self.loci.len());
         }
 
         println!("Staging:");
-        for (l_fmt, p) in &self.staged_data {
-            println!(" - {}:{}-{} : {:?}", l_fmt.0, l_fmt.1, l_fmt.2, p);
+        if self.staged_data.len() <= 10 {
+            for (l_fmt, p) in &self.staged_data {
+                println!(" - {}:{}-{} : {:?}", l_fmt.0, l_fmt.1, l_fmt.2, p);
+            }
+        } else {
+            println!(" - {} loci staged", self.staged_data.len());
         }
     }
 }
@@ -169,7 +188,7 @@ fn _init() -> PyResult<Session> {
 }
 
 #[pyfunction]
-fn version() -> PyResult<String> {
+fn _version() -> PyResult<String> {
     Ok(env!("CARGO_PKG_VERSION").to_string())
 }
 
@@ -180,7 +199,7 @@ fn version() -> PyResult<String> {
 fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_gcs_list_files_of_type, m)?)?;
     m.add_function(wrap_pyfunction!(_init, m)?)?;
-    m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(_version, m)?)?;
 
     Ok(())
 }
