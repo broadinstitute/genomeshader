@@ -4,12 +4,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use rayon::iter::{ParallelIterator, IntoParallelRefIterator};
-use indicatif::ParallelProgressIterator;
+use kdam::{rayon::prelude::*, TqdmIterator, TqdmParallelIterator};
 
 use polars::prelude::*;
-
-use pyo3::{prelude::*, exceptions};
-use pyo3_polars::PyDataFrame;
 
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::bam::{Read, IndexedReader, self, ext::BamRecordExtensions};
@@ -37,11 +34,11 @@ impl ElementType {
     }
 }
 
-fn extract_reads(cohort: &String, bam_path: &String, chr: String, start: u64, stop: u64) -> DataFrame {
-    let url = if bam_path.starts_with("file://") || bam_path.starts_with("gs://") {
-        url::Url::parse(bam_path).unwrap()
+fn extract_reads(cohort: &String, reads_path: &String, chr: String, start: u64, stop: u64) -> DataFrame {
+    let url = if reads_path.starts_with("file://") || reads_path.starts_with("gs://") {
+        url::Url::parse(reads_path).unwrap()
     } else {
-        url::Url::from_file_path(bam_path).unwrap()
+        url::Url::from_file_path(reads_path).unwrap()
     };
 
     let mut bam = IndexedReader::from_url(&url).unwrap();
@@ -247,7 +244,7 @@ fn extract_reads(cohort: &String, bam_path: &String, chr: String, start: u64, st
     let mut column_width = Vec::new();
     for start in &reference_starts {
         cohorts.push(cohort.to_owned());
-        bam_paths.push(bam_path.to_owned());
+        bam_paths.push(reads_path.to_owned());
         column_width.push(*mask.get(start).unwrap_or(&1) as u32);
     }
 
@@ -315,14 +312,13 @@ pub fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
     }
 
     for (key, value) in &mask {
-
         println!("{}: {}", key, value);
     }
 
     mask
 }
 
-pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashSet<(String, u64, u64)>, use_cache: bool, cohort: String) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
+pub fn stage_data(cache_path: PathBuf, reads_paths: &HashSet<(String, String)>, loci: &HashSet<(String, u64, u64)>, use_cache: bool) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
     let temp_dir = env::temp_dir();
     env::set_current_dir(&temp_dir).unwrap();
 
@@ -330,12 +326,12 @@ pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashS
         .for_each(|l| {
             let (chr, start, stop) = l;
 
-            if !use_cache || locus_should_be_fetched(&cache_path, chr, start, stop, bam_paths) {
+            if !use_cache || locus_should_be_fetched(&cache_path, chr, start, stop, reads_paths) {
                 let dfs = Mutex::new(Vec::new());
-                bam_paths
+                reads_paths
                     .par_iter() // iterate over BAMs
-                    .for_each(|f| {
-                        let df = extract_reads(&cohort, f, chr.to_string(), *start, *stop);
+                    .for_each(|(reads, cohort)| {
+                        let df = extract_reads(&cohort, reads, chr.to_string(), *start, *stop);
                         dfs.lock().unwrap().push(df);
                     });
 
@@ -361,7 +357,7 @@ pub fn stage_data(cache_path: PathBuf, bam_paths: &HashSet<String>, loci: &HashS
     Ok(locus_to_file)
 }
 
-fn locus_should_be_fetched(cache_path: &PathBuf, chr: &String, start: &u64, stop: &u64, bam_paths: &HashSet<String>) -> bool {
+fn locus_should_be_fetched(cache_path: &PathBuf, chr: &String, start: &u64, stop: &u64, reads_paths: &HashSet<(String, String)>) -> bool {
     let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
     if !filename.exists() {
         return true
@@ -370,7 +366,7 @@ fn locus_should_be_fetched(cache_path: &PathBuf, chr: &String, start: &u64, stop
         let df = ParquetReader::new(file_r).finish().unwrap();
 
         let bam_path_series: HashSet<String> = df.column("bam_path").unwrap().str().unwrap().into_iter().map(|s| s.unwrap().to_string()).collect();
-        let bam_path_values: HashSet<String> = bam_paths.iter().map(|s| s.to_string()).collect();
+        let bam_path_values: HashSet<String> = reads_paths.iter().map(|s| s.0.to_string()).collect();
         let intersection = bam_path_series.intersection(&bam_path_values);
         if bam_path_series.len() != intersection.count() {
             return true
@@ -430,13 +426,13 @@ mod tests {
     fn test_stage_data() {
         let cache_path = std::env::temp_dir();
 
+        let cohort = "all".to_string();
         let bam_paths: HashSet<_> = [
-            "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_212604_s2/reads/ccs/aligned/m84175_231021_212604_s2.bam".to_string(),
-            "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_215710_s3/reads/ccs/aligned/m84175_231021_215710_s3.bam".to_string(),
-            "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_222816_s4/reads/ccs/aligned/m84175_231021_222816_s4.bam".to_string()]
+            ("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_212604_s2/reads/ccs/aligned/m84175_231021_212604_s2.bam".to_string(), cohort.to_owned()),
+            ("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_215710_s3/reads/ccs/aligned/m84175_231021_215710_s3.bam".to_string(), cohort.to_owned()),
+            ("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_222816_s4/reads/ccs/aligned/m84175_231021_222816_s4.bam".to_string(), cohort.to_owned())]
             .iter().cloned().collect();
 
-        let cohort = "all".to_string();
         let chr: String = "chr15".to_string();
         let start: u64 = 23960193;
         let stop: u64 = 23963918;
@@ -446,7 +442,7 @@ mod tests {
 
         gcs_authorize_data_access();
 
-        let r = stage_data(cache_path, &bam_paths, &loci, false, cohort);
+        let r = stage_data(cache_path, &bam_paths, &loci, false);
     }
 
     // #[test]
