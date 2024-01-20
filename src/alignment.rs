@@ -336,6 +336,8 @@ pub fn stage_data(cache_path: PathBuf, reads_paths: &HashSet<(String, String)>, 
                 (0..reads_paths_list.len())
                     .into_par_iter() // iterate over BAMs
                     .for_each(|j| { //|(reads, cohort)| {
+                        println!("{}", env::var("GCS_OAUTH_TOKEN").unwrap_or("GCS_OAUTH_TOKEN not set".to_string()));
+
                         let (reads, cohort) = &reads_paths_list[j];
                         let df = extract_reads(&cohort, reads, chr.to_string(), *start, *stop);
                         dfs.lock().unwrap().push(df);
