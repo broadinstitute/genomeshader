@@ -3,8 +3,9 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use kdam::BarExt;
 use rayon::iter::{ParallelIterator, IntoParallelRefIterator};
-use kdam::{rayon::prelude::*, TqdmIterator, TqdmParallelIterator};
+use kdam::{tqdm, rayon::prelude::*, TqdmIterator, TqdmParallelIterator};
 
 use polars::prelude::*;
 
@@ -322,15 +323,20 @@ pub fn stage_data(cache_path: PathBuf, reads_paths: &HashSet<(String, String)>, 
     let temp_dir = env::temp_dir();
     env::set_current_dir(&temp_dir).unwrap();
 
-    loci.par_iter() // iterate over loci
-        .for_each(|l| {
-            let (chr, start, stop) = l;
+    let loci_list: Vec<(String, u64, u64)> = loci.iter().cloned().collect();
+    (0..loci_list.len())
+        .into_par_iter()
+        .for_each(|i| {
+            let (chr, start, stop) = &loci_list[i];
 
             if !use_cache || locus_should_be_fetched(&cache_path, chr, start, stop, reads_paths) {
                 let dfs = Mutex::new(Vec::new());
-                reads_paths
-                    .par_iter() // iterate over BAMs
-                    .for_each(|(reads, cohort)| {
+
+                let reads_paths_list: Vec<(String, String)> = reads_paths.iter().cloned().collect();
+                (0..reads_paths_list.len())
+                    .into_par_iter() // iterate over BAMs
+                    .for_each(|j| { //|(reads, cohort)| {
+                        let (reads, cohort) = &reads_paths_list[j];
                         let df = extract_reads(&cohort, reads, chr.to_string(), *start, *stop);
                         dfs.lock().unwrap().push(df);
                     });
@@ -440,7 +446,7 @@ mod tests {
         let mut loci = HashSet::new();
         loci.insert((chr, start, stop));
 
-        gcs_authorize_data_access();
+        // gcs_authorize_data_access();
 
         let r = stage_data(cache_path, &bam_paths, &loci, false);
     }
