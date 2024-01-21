@@ -19,16 +19,12 @@ anyhow = "1.0"
 cloud-storage = { version = "*", features = ["sync"] }
 chrono = "*"
 crossbeam-utils = "0.8.19"
-#egui = "0.23.0"
-#eframe = "*"
 fs_extra = "1.2"
 kdam = { version = "*", features = ["notebook", "rayon"] }
 google-cloud-storage = "*"
 glob = "0.3"
 indicatif = { version = "*", features = ["rayon"] }
 lazy_static = "*"
-#nannou = { git = "https://github.com/tychedelia/nannou.git" }
-#nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
 openssl = { version = "0.10", features = ["vendored"] }
 polars = { version = "*", features = ["performant", "parquet", "dtype-categorical", "fmt", "rows"] }
 pollster = "0.3"
@@ -40,19 +36,12 @@ ndarray = { version = "0.15.6", features = ["rayon"] }
 rand = "*"
 rayon = "*"
 regex = "*"
-rust-htslib = { version = "*", features = ["gcs"] }
+rust-htslib = { version = "*", features = ["curl", "gcs"] }
 sprs = "0.11.1"
 sys-info = "0.9.1"
 tokio = "*"
 url = "*"
-
-#winit = "*"
-#async-std = { version = "1.10.0", features = ["unstable"] }
-
-# web:
-#[target.'cfg(target_arch = "wasm32")'.dependencies]
-#wasm-bindgen-futures = "0.4"
-#wasm-bindgen = "0.2.83"
-
-[profile.release]
-opt-level = 2 # fast and small wasm
+#egui = "0.23.0"
+#eframe = "*"
+#nannou = { git = "https://github.com/tychedelia/nannou.git" }
+#nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
