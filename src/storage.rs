@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 use std::fs::metadata;
 
-fn gcs_split_path(path: &String) -> (String, String) {
+pub fn gcs_split_path(path: &String) -> (String, String) {
     let re = regex::Regex::new(r"^gs://").unwrap();
     let path = re.replace(&path, "");
     let split: Vec<&str> = path.split('/').collect();
@@ -17,7 +17,7 @@ fn gcs_split_path(path: &String) -> (String, String) {
     (bucket_name, prefix)
 }
 
-fn gcs_list_files(path: &String) -> Result<Vec<ObjectList>, cloud_storage::Error> {
+pub fn gcs_list_files(path: &String) -> Result<Vec<ObjectList>, cloud_storage::Error> {
     let (bucket_name, prefix) = gcs_split_path(path);
 
     let client = Client::new()?;
@@ -40,6 +40,15 @@ pub fn local_get_file_update_time(path: &PathBuf) -> std::io::Result<DateTime<Ut
     let modified_time = metadata.modified()?;
 
     Ok(DateTime::<Utc>::from(modified_time))
+}
+
+pub fn local_guess_curl_ca_bundle() {
+    // See https://github.com/rust-bio/rust-htslib/issues/404
+
+    // Set if CURL_CA_BUNDLE is unset or empty
+    if std::env::var("CURL_CA_BUNDLE").map_or(true, |v| v.is_empty()) {
+        std::env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
+    }
 }
 
 pub fn gcs_authorize_data_access() {

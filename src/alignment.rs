@@ -12,7 +12,10 @@ use polars::prelude::*;
 use rust_htslib::bam::record::{Aux, Cigar};
 use rust_htslib::bam::{Read, IndexedReader, self, ext::BamRecordExtensions};
 
-use crate::storage::{local_get_file_update_time, gcs_get_file_update_time};
+use crate::storage::{
+    local_get_file_update_time, gcs_get_file_update_time,
+    local_guess_curl_ca_bundle, gcs_authorize_data_access
+};
 
 #[derive(Debug, PartialEq)]
 pub enum ElementType {
@@ -42,7 +45,14 @@ fn extract_reads(cohort: &String, reads_path: &String, chr: String, start: u64, 
         url::Url::from_file_path(reads_path).unwrap()
     };
 
-    let mut bam = IndexedReader::from_url(&url).unwrap();
+    let mut bam = match IndexedReader::from_url(&url) {
+        Ok(bam) => bam,
+        Err(_) => {
+            local_guess_curl_ca_bundle();
+            IndexedReader::from_url(&url).unwrap()
+        }
+    };
+
     let header = bam::Header::from_template(bam.header());
 
     let mut rg_sm_map = HashMap::new();
@@ -323,6 +333,8 @@ pub fn stage_data(cache_path: PathBuf, reads_paths: &HashSet<(String, String)>, 
     let temp_dir = env::temp_dir();
     env::set_current_dir(&temp_dir).unwrap();
 
+    gcs_authorize_data_access();
+
     let loci_list: Vec<(String, u64, u64)> = loci.iter().cloned().collect();
     (0..loci_list.len())
         .into_par_iter()
@@ -336,8 +348,6 @@ pub fn stage_data(cache_path: PathBuf, reads_paths: &HashSet<(String, String)>, 
                 (0..reads_paths_list.len())
                     .into_par_iter() // iterate over BAMs
                     .for_each(|j| { //|(reads, cohort)| {
-                        println!("{}", env::var("GCS_OAUTH_TOKEN").unwrap_or("GCS_OAUTH_TOKEN not set".to_string()));
-
                         let (reads, cohort) = &reads_paths_list[j];
                         let df = extract_reads(&cohort, reads, chr.to_string(), *start, *stop);
                         dfs.lock().unwrap().push(df);
@@ -447,8 +457,6 @@ mod tests {
 
         let mut loci = HashSet::new();
         loci.insert((chr, start, stop));
-
-        // gcs_authorize_data_access();
 
         let r = stage_data(cache_path, &bam_paths, &loci, false);
     }
