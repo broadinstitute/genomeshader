@@ -44,9 +44,7 @@ pub fn local_get_file_update_time(path: &PathBuf) -> std::io::Result<DateTime<Ut
 
 pub fn local_guess_curl_ca_bundle() {
     // See https://github.com/rust-bio/rust-htslib/issues/404
-
-    // Set if CURL_CA_BUNDLE is unset or empty
-    if std::env::var("CURL_CA_BUNDLE").map_or(true, |v| v.is_empty()) {
+    if std::env::var("CURL_CA_BUNDLE").is_err() {
         std::env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
     }
 }
