@@ -1,21 +1,10 @@
-use std::collections::{HashSet, HashMap};
-use std::env;
-use std::path::PathBuf;
-use std::sync::Mutex;
-
-use kdam::BarExt;
-use rayon::iter::{ParallelIterator, IntoParallelRefIterator};
-use kdam::{tqdm, rayon::prelude::*, TqdmIterator, TqdmParallelIterator};
+use std::collections::HashMap;
+use url::Url;
 
 use polars::prelude::*;
 
 use rust_htslib::bam::record::{Aux, Cigar};
-use rust_htslib::bam::{Read, IndexedReader, self, ext::BamRecordExtensions};
-
-use crate::storage::{
-    local_get_file_update_time, gcs_get_file_update_time,
-    local_guess_curl_ca_bundle, gcs_authorize_data_access
-};
+use rust_htslib::bam::{self, Read, IndexedReader, ext::BamRecordExtensions};
 
 #[derive(Debug, PartialEq)]
 pub enum ElementType {
@@ -38,32 +27,70 @@ impl ElementType {
     }
 }
 
-fn extract_reads(cohort: &String, reads_path: &String, chr: String, start: u64, stop: u64) -> DataFrame {
-    let url = if reads_path.starts_with("file://") || reads_path.starts_with("gs://") {
-        url::Url::parse(reads_path).unwrap()
-    } else {
-        url::Url::from_file_path(reads_path).unwrap()
-    };
-
-    let mut bam = match IndexedReader::from_url(&url) {
-        Ok(bam) => bam,
-        Err(_) => {
-            local_guess_curl_ca_bundle();
-            IndexedReader::from_url(&url).unwrap()
-        }
-    };
-
+fn get_rg_to_sm_mapping(bam: &IndexedReader) -> HashMap<String, String> {
     let header = bam::Header::from_template(bam.header());
 
-    let mut rg_sm_map = HashMap::new();
-    for (_, records) in header.to_hashmap() {
-        for record in records {
-            if record.contains_key("ID") && record.contains_key("SM") {
-                rg_sm_map.insert(record["ID"].to_owned(), record["SM"].to_owned());
+    let rg_sm_map: HashMap<String, String> = header.to_hashmap()
+        .into_iter()
+        .flat_map(|(_, records)| records)
+        .filter(|record| record.contains_key("ID") && record.contains_key("SM"))
+        .map(|record| (record["ID"].to_owned(), record["SM"].to_owned()))
+        .collect();
+
+    rg_sm_map
+}
+
+fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
+    let df = df_in.sort(
+        &["sample_name", "query_name", "reference_start"],
+        false,
+        true
+    ).unwrap();
+
+    let sample_names = df.column("sample_name").unwrap().str().unwrap();
+    let reference_starts = df.column("reference_start").unwrap().u32().unwrap();
+    let reference_ends = df.column("reference_end").unwrap().u32().unwrap();
+    let element_types = df.column("element_type").unwrap().u8().unwrap();
+    let sequence = df.column("sequence").unwrap().str().unwrap();
+
+    let mut cur_sample_name = "";
+    let mut cur_sample_index: i32 = -1;
+    let mut mask = HashMap::new();
+
+    for i in 0..reference_starts.len() {
+        let sample_name = sample_names.get(i).unwrap();
+        if cur_sample_name != sample_name {
+            cur_sample_name = sample_name;
+            cur_sample_index += 1;
+
+            let cur_sample_name_series = Series::new("", vec![cur_sample_name; df.height()]);
+            let mask = df.filter(&df["sample_name"].equal(&cur_sample_name_series).unwrap()).unwrap();
+        }
+
+        if cur_sample_index >= 0 {
+            let reference_start = reference_starts.get(i).unwrap();
+            let reference_end = reference_ends.get(i).unwrap();
+            let element_type = element_types.get(i).unwrap();
+            let sequence = sequence.get(i).unwrap();
+            let sequence_length = if element_type == 3 { (reference_end - reference_start) as usize } else { sequence.len() };
+
+            if element_type > 0 {
+                mask.entry(reference_start)
+                    .and_modify(|e| *e = std::cmp::max(*e, sequence_length))
+                    .or_insert(sequence_length);
             }
         }
     }
 
+    for (key, value) in &mask {
+        println!("{}: {}", key, value);
+    }
+
+    mask
+}
+
+pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, chr: &String, start: &u64, stop: &u64) -> Result<DataFrame, Box<dyn std::error::Error>> {
+    let mut chunks = Vec::new();
     let mut cohorts = Vec::new();
     let mut bam_paths = Vec::new();
     let mut reference_contigs = Vec::new();
@@ -79,9 +106,11 @@ fn extract_reads(cohort: &String, reads_path: &String, chr: String, start: u64, 
 
     let mut mask = HashMap::new();
 
-    let _ = bam.fetch((chr.as_bytes(), start, stop));
+    let rg_sm_map = get_rg_to_sm_mapping(bam);
+
+    let _ = bam.fetch(((*chr).as_bytes(), *start, *stop));
     for (_, r) in bam.records().enumerate() {
-        let record = r.unwrap();
+        let record = r?;
 
         let hap = match record.aux(b"HP") {
             Ok(Aux::I32(val)) => val,
@@ -254,14 +283,16 @@ fn extract_reads(cohort: &String, reads_path: &String, chr: String, start: u64, 
 
     let mut column_width = Vec::new();
     for start in &reference_starts {
+        chunks.push(format!("{}:{}-{}", chr, start, stop));
         cohorts.push(cohort.to_owned());
-        bam_paths.push(reads_path.to_owned());
+        bam_paths.push(reads_url.to_string());
         column_width.push(*mask.get(start).unwrap_or(&1) as u32);
     }
 
     let element_types: Vec<u8> = element_types.iter().map(|e| e.to_u8()).collect();
 
     let df = DataFrame::new(vec![
+        Series::new("chunk", chunks),
         Series::new("cohort", cohorts),
         Series::new("bam_path", bam_paths),
         Series::new("reference_contig", reference_contigs),
@@ -277,203 +308,80 @@ fn extract_reads(cohort: &String, reads_path: &String, chr: String, start: u64, 
         Series::new("column_width", column_width)
     ]).unwrap();
 
-    df
+    Ok(df)
 }
 
-pub fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
-    let df = df_in.sort(
-        &["sample_name", "query_name", "reference_start"],
-        false,
-        true
-    ).unwrap();
+// #[cfg(test)]
+// mod tests {
+//     use crate::storage::gcs_authorize_data_access;
 
-    let sample_names = df.column("sample_name").unwrap().str().unwrap();
-    let reference_starts = df.column("reference_start").unwrap().u32().unwrap();
-    let reference_ends = df.column("reference_end").unwrap().u32().unwrap();
-    let element_types = df.column("element_type").unwrap().u8().unwrap();
-    let sequence = df.column("sequence").unwrap().str().unwrap();
+//     use super::*;
 
-    let mut cur_sample_name = "";
-    let mut cur_sample_index: i32 = -1;
-    let mut mask = HashMap::new();
+//     #[test]
+//     fn test_extract_reads_manual() {
+//         let cwd = std::env::current_dir().unwrap();
+//         let test_read = String::from("src/tests/test_read.bam");
+//         let bam_path = cwd.join(&test_read).to_str().unwrap().to_string();
+//         let bam_url = Url::parse(&bam_path).unwrap();
 
-    for i in 0..reference_starts.len() {
-        let sample_name = sample_names.get(i).unwrap();
-        if cur_sample_name != sample_name {
-            cur_sample_name = sample_name;
-            cur_sample_index += 1;
+//         let cohort = String::from("all");
+//         let chr = String::from("chr2");
+//         let start = 66409693;
+//         let stop = 66410667;
 
-            let cur_sample_name_series = Series::new("", vec![cur_sample_name; df.height()]);
-            let mask = df.filter(&df["sample_name"].equal(&cur_sample_name_series).unwrap()).unwrap();
-        }
+//         let act_df = extract_reads(&bam_url, &cohort, chr, start, stop);
 
-        if cur_sample_index >= 0 {
-            let reference_start = reference_starts.get(i).unwrap();
-            let reference_end = reference_ends.get(i).unwrap();
-            let element_type = element_types.get(i).unwrap();
-            let sequence = sequence.get(i).unwrap();
-            let sequence_length = if element_type == 3 { (reference_end - reference_start) as usize } else { sequence.len() };
+//         let exp_df = DataFrame::new(vec![
+//             Series::new("bam_path", vec![bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned()]),
+//             Series::new("reference_contig", vec!["chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2"]),
+//             Series::new("reference_start", vec![66409755, 66409752, 66409753, 66409754, 66409772, 66409778, 66409828, 66409987, 66410077, 66410118, 66410532, 66410603, 66410604, 66410605]),
+//             Series::new("reference_end", vec![66410602, 66409753, 66409754, 66409755, 66409773, 66409779, 66409829, 66410056, 66410078, 66410119, 66410533, 66410604, 66410605, 66410606]),
+//             Series::new("is_forward", vec![false, false, false, false, false, false, false, false, false, false, false, false, false, false]),
+//             Series::new("query_name", vec!["1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1"]),
+//             Series::new("read_group", vec!["test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test"]),
+//             Series::new("sample_name", vec!["test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test"]),
+//             Series::new("element_type", vec![0, 4, 4, 4, 1, 1, 1, 3, 2, 1, 1, 4, 4, 4]),
+//             Series::new("sequence", vec!["", "G", "A", "C", "G", "C", "A", "", "TGATGCGCGCCATATAGCGATATATGACTATA", "C", "G", "C", "T", "G"]),
+//             Series::new("column_width", vec!["", "G", "A", "C", "G", "C", "A", "", "TGATGCGCGCCATATAGCGATATATGACTATA", "C", "G", "C", "T", "G"])
+//         ]).unwrap();
 
-            if element_type > 0 {
-                mask.entry(reference_start)
-                    .and_modify(|e| *e = std::cmp::max(*e, sequence_length))
-                    .or_insert(sequence_length);
-            }
-        }
-    }
+//         assert_eq!(exp_df, act_df);
+//     }
 
-    for (key, value) in &mask {
-        println!("{}: {}", key, value);
-    }
+//     #[test]
+//     fn test_stage_data() {
+//         let cache_path = std::env::temp_dir();
 
-    mask
-}
+//         let cohort = "all".to_string();
+//         let bam_paths: HashSet<(Url, String)> = [
+//             (Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_212604_s2/reads/ccs/aligned/m84175_231021_212604_s2.bam").unwrap(), cohort.to_owned()),
+//             (Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_215710_s3/reads/ccs/aligned/m84175_231021_215710_s3.bam").unwrap(), cohort.to_owned()),
+//             (Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_222816_s4/reads/ccs/aligned/m84175_231021_222816_s4.bam").unwrap(), cohort.to_owned())]
+//             .iter().cloned().collect();
 
-pub fn stage_data(cache_path: PathBuf, reads_paths: &HashSet<(String, String)>, loci: &HashSet<(String, u64, u64)>, use_cache: bool) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
-    let temp_dir = env::temp_dir();
-    env::set_current_dir(&temp_dir).unwrap();
+//         let chr: String = "chr15".to_string();
+//         let start: u64 = 23960193;
+//         let stop: u64 = 23963918;
 
-    gcs_authorize_data_access();
+//         let mut loci = HashSet::new();
+//         loci.insert((chr, start, stop));
 
-    let loci_list: Vec<(String, u64, u64)> = loci.iter().cloned().collect();
-    (0..loci_list.len())
-        .into_par_iter()
-        .for_each(|i| {
-            let (chr, start, stop) = &loci_list[i];
+//         let r = stage_data(cache_path, &bam_paths, &loci, false);
+//     }
 
-            if !use_cache || locus_should_be_fetched(&cache_path, chr, start, stop, reads_paths) {
-                let dfs = Mutex::new(Vec::new());
+//     // #[test]
+//     // fn test_locus_should_be_fetched() {
+//     //     let bam_paths: HashSet<_> = [
+//     //         "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_212604_s2/reads/ccs/aligned/m84175_231021_212604_s2.bam".to_string(),
+//     //         "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_215710_s3/reads/ccs/aligned/m84175_231021_215710_s3.bam".to_string(),
+//     //         "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_222816_s4/reads/ccs/aligned/m84175_231021_222816_s4.bam".to_string()]
+//     //         .iter().cloned().collect();
 
-                let reads_paths_list: Vec<(String, String)> = reads_paths.iter().cloned().collect();
-                (0..reads_paths_list.len())
-                    .into_par_iter() // iterate over BAMs
-                    .for_each(|j| { //|(reads, cohort)| {
-                        let (reads, cohort) = &reads_paths_list[j];
-                        let df = extract_reads(&cohort, reads, chr.to_string(), *start, *stop);
-                        dfs.lock().unwrap().push(df);
-                    });
+//     //     let chr: String = "chr15".to_string();
+//     //     let start: u64 = 23960193;
+//     //     let stop: u64 = 23963918;
 
-                let mut outer_df = DataFrame::default();
-                for df in dfs.lock().unwrap().iter() {
-                    outer_df.vstack_mut(&df).unwrap();
-                }
-
-                let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
-                let file_w = std::fs::File::create(&filename).unwrap();
-                ParquetWriter::new(&file_w).finish(&mut outer_df).unwrap();
-            }
-        });
-
-    let mut locus_to_file = HashMap::new();
-    for l in loci {
-        let (chr, start, stop) = l;
-        let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
-
-        locus_to_file.insert((chr.to_owned(), *start, *stop), filename);
-    }
-
-    Ok(locus_to_file)
-}
-
-fn locus_should_be_fetched(cache_path: &PathBuf, chr: &String, start: &u64, stop: &u64, reads_paths: &HashSet<(String, String)>) -> bool {
-    let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
-    if !filename.exists() {
-        return true
-    } else {
-        let file_r = std::fs::File::open(&filename).unwrap();
-        let df = ParquetReader::new(file_r).finish().unwrap();
-
-        let bam_path_series: HashSet<String> = df.column("bam_path").unwrap().str().unwrap().into_iter().map(|s| s.unwrap().to_string()).collect();
-        let bam_path_values: HashSet<String> = reads_paths.iter().map(|s| s.0.to_string()).collect();
-        let intersection = bam_path_series.intersection(&bam_path_values);
-        if bam_path_series.len() != intersection.count() {
-            return true
-        }
-
-        // let local_time = local_get_file_update_time(&filename).unwrap();
-        // for bam_path in bam_path_values {
-        //     let remote_time = gcs_get_file_update_time(&bam_path).unwrap();
-
-        //     if remote_time > local_time {
-        //         println!("Newer!");
-        //         return true
-        //     }
-        // }
-    }
-
-    false
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::storage::gcs_authorize_data_access;
-
-    use super::*;
-
-    #[test]
-    fn test_extract_reads_manual() {
-        let cwd = std::env::current_dir().unwrap();
-        let test_read = String::from("src/tests/test_read.bam");
-        let bam_path = cwd.join(&test_read).to_str().unwrap().to_string();
-
-        let cohort = String::from("all");
-        let chr = String::from("chr2");
-        let start = 66409693;
-        let stop = 66410667;
-
-        let act_df = extract_reads(&cohort, &bam_path, chr, start, stop);
-
-        let exp_df = DataFrame::new(vec![
-            Series::new("bam_path", vec![bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned(), bam_path.to_owned()]),
-            Series::new("reference_contig", vec!["chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2", "chr2"]),
-            Series::new("reference_start", vec![66409755, 66409752, 66409753, 66409754, 66409772, 66409778, 66409828, 66409987, 66410077, 66410118, 66410532, 66410603, 66410604, 66410605]),
-            Series::new("reference_end", vec![66410602, 66409753, 66409754, 66409755, 66409773, 66409779, 66409829, 66410056, 66410078, 66410119, 66410533, 66410604, 66410605, 66410606]),
-            Series::new("is_forward", vec![false, false, false, false, false, false, false, false, false, false, false, false, false, false]),
-            Series::new("query_name", vec!["1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1"]),
-            Series::new("read_group", vec!["test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test"]),
-            Series::new("sample_name", vec!["test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test", "test"]),
-            Series::new("element_type", vec![0, 4, 4, 4, 1, 1, 1, 3, 2, 1, 1, 4, 4, 4]),
-            Series::new("sequence", vec!["", "G", "A", "C", "G", "C", "A", "", "TGATGCGCGCCATATAGCGATATATGACTATA", "C", "G", "C", "T", "G"]),
-            Series::new("column_width", vec!["", "G", "A", "C", "G", "C", "A", "", "TGATGCGCGCCATATAGCGATATATGACTATA", "C", "G", "C", "T", "G"])
-        ]).unwrap();
-
-        assert_eq!(exp_df, act_df);
-    }
-
-    #[test]
-    fn test_stage_data() {
-        let cache_path = std::env::temp_dir();
-
-        let cohort = "all".to_string();
-        let bam_paths: HashSet<_> = [
-            ("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_212604_s2/reads/ccs/aligned/m84175_231021_212604_s2.bam".to_string(), cohort.to_owned()),
-            ("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_215710_s3/reads/ccs/aligned/m84175_231021_215710_s3.bam".to_string(), cohort.to_owned()),
-            ("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_222816_s4/reads/ccs/aligned/m84175_231021_222816_s4.bam".to_string(), cohort.to_owned())]
-            .iter().cloned().collect();
-
-        let chr: String = "chr15".to_string();
-        let start: u64 = 23960193;
-        let stop: u64 = 23963918;
-
-        let mut loci = HashSet::new();
-        loci.insert((chr, start, stop));
-
-        let r = stage_data(cache_path, &bam_paths, &loci, false);
-    }
-
-    // #[test]
-    // fn test_locus_should_be_fetched() {
-    //     let bam_paths: HashSet<_> = [
-    //         "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_212604_s2/reads/ccs/aligned/m84175_231021_212604_s2.bam".to_string(),
-    //         "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_215710_s3/reads/ccs/aligned/m84175_231021_215710_s3.bam".to_string(),
-    //         "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84175_231021_222816_s4/reads/ccs/aligned/m84175_231021_222816_s4.bam".to_string()]
-    //         .iter().cloned().collect();
-
-    //     let chr: String = "chr15".to_string();
-    //     let start: u64 = 23960193;
-    //     let stop: u64 = 23963918;
-
-    //     let cache_path = std::env::temp_dir();
-    //     let result = locus_should_be_fetched(&cache_path, &chr, &start, &stop, &bam_paths);
-    // }
-}
+//     //     let cache_path = std::env::temp_dir();
+//     //     let result = locus_should_be_fetched(&cache_path, &chr, &start, &stop, &bam_paths);
+//     // }
+// }

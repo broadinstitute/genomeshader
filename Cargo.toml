@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0"
+backoff = "0.4.0"
 cloud-storage = { version = "*", features = ["sync"] }
 chrono = "*"
 crossbeam-utils = "0.8.19"

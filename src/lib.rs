@@ -1,22 +1,27 @@
 pub mod alignment;
-pub mod storage;
+pub mod env;
+pub mod stage;
+pub mod storage_gcs;
+pub mod storage_local;
 
-use alignment::stage_data;
-use storage::*;
+use stage::stage_data;
+use storage_gcs::*;
 
 use std::{collections::{HashSet, HashMap}, path::PathBuf};
-
-// Needed to pass some data into our Nannou app.
-// use std::cell::RefCell;
-// thread_local!(static GLOBAL_DATA: RefCell<PyDataFrame> = RefCell::new(PyDataFrame(DataFrame::default())));
+use url::Url;
 
 use polars::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::PyDataFrame;
 
+// Needed to pass some data into our Nannou app.
+// use std::cell::RefCell;
+// thread_local!(static GLOBAL_DATA: RefCell<PyDataFrame> = RefCell::new(PyDataFrame(DataFrame::default())));
+
+
 #[pyclass]
 pub struct Session {
-    reads: HashSet<(String, String)>,
+    reads_cohort: HashSet<(Url, String)>,
     loci: HashSet<(String, u64, u64)>,
     staged_data: HashMap<(String, u64, u64), PathBuf>
 }
@@ -26,23 +31,27 @@ impl Session {
     #[new]
     fn new() -> Self {
         Session {
-            reads: HashSet::new(),
+            reads_cohort: HashSet::new(),
             loci: HashSet::new(),
             staged_data: HashMap::new()
         }
     }
 
-    fn attach_reads(&mut self, reads: Vec<String>, cohort: String) -> PyResult<()> {
-        for read in &reads {
-            if !read.ends_with(".bam") && !read.ends_with(".cram") {
+    fn attach_reads(&mut self, read_files: Vec<String>, cohort: String) -> PyResult<()> {
+        for read_file in &read_files {
+            if !read_file.ends_with(".bam") && !read_file.ends_with(".cram") {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("File '{}' is not a .bam or .cram file.", read)
+                    format!("File '{}' is not a .bam or .cram file.", read_file)
                 ));
             }
-        }
 
-        for read in reads {
-            self.reads.insert((read, cohort.to_owned()));
+            let read_url = if read_file.starts_with("file://") || read_file.starts_with("gs://") {
+                Url::parse(&read_file).unwrap()
+            } else {
+                Url::from_file_path(&read_file).unwrap()
+            };
+
+            self.reads_cohort.insert((read_url, cohort.to_owned()));
         }
 
         Ok(())
@@ -107,8 +116,7 @@ impl Session {
     fn stage(&mut self, use_cache: bool) -> PyResult<()> {
         let cache_path = std::env::temp_dir();
 
-        // gcs_authorize_data_access();
-        match stage_data(cache_path, &self.reads, &self.loci, use_cache) {
+        match stage_data(&self.reads_cohort, &self.loci, &cache_path, use_cache) {
             Ok(staged_data) => { self.staged_data = staged_data; },
             Err(_) => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -138,7 +146,7 @@ impl Session {
     }
 
     fn reset(&mut self) -> PyResult<()> {
-        self.reads = HashSet::new();
+        self.reads_cohort = HashSet::new();
         self.loci = HashSet::new();
         self.staged_data = HashMap::new();
 
@@ -147,13 +155,13 @@ impl Session {
 
     fn print(&self) {
         println!("Reads:");
-        if self.reads.len() <= 10 {
-            for (reads, cohort) in &self.reads {
+        if self.reads_cohort.len() <= 10 {
+            for (reads, cohort) in &self.reads_cohort {
                 println!(" - {} ({})", reads, cohort);
             }
         } else {
             let mut cohort_counts = HashMap::new();
-            for (_, cohort) in &self.reads {
+            for (_, cohort) in &self.reads_cohort {
                 *cohort_counts.entry(cohort).or_insert(0) += 1;
             }
 
