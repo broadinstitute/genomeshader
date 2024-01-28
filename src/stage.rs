@@ -15,15 +15,25 @@ use crate::env::{gcs_authorize_data_access, local_guess_curl_ca_bundle};
 fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> IndexedReader {
     env::set_current_dir(cache_path).unwrap();
 
-    let mut bam = match IndexedReader::from_url(reads_url) {
+    println!("1 GCS_OAUTH_TOKEN: {:?}", std::env::var("GCS_OAUTH_TOKEN"));
+    println!("1 CURL_CA_BUNDLE: {:?}", std::env::var("CURL_CA_BUNDLE"));
+
+    let bam = match IndexedReader::from_url(reads_url) {
         Ok(bam) => bam,
         Err(_) => {
             gcs_authorize_data_access();
+
+            println!("2 GCS_OAUTH_TOKEN: {:?}", std::env::var("GCS_OAUTH_TOKEN"));
+            println!("2 CURL_CA_BUNDLE: {:?}", std::env::var("CURL_CA_BUNDLE"));
 
             match IndexedReader::from_url(reads_url) {
                 Ok(bam) => bam,
                 Err(_) => {
                     local_guess_curl_ca_bundle();
+
+                    println!("3 GCS_OAUTH_TOKEN: {:?}", std::env::var("GCS_OAUTH_TOKEN"));
+                    println!("3 CURL_CA_BUNDLE: {:?}", std::env::var("CURL_CA_BUNDLE"));
+
                     IndexedReader::from_url(reads_url).unwrap()
                 }
             }
@@ -41,6 +51,8 @@ fn stage_data_from_one_file(reads_url: &Url, cohort: &String, loci: &HashSet<(St
         let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop)?;
         outer_df.vstack_mut(&df);
     }
+
+    outer_df.align_chunks();
 
     Ok(outer_df)
 }

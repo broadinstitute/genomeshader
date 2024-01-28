@@ -1,8 +1,6 @@
 pub fn local_guess_curl_ca_bundle() {
     // See https://github.com/rust-bio/rust-htslib/issues/404
-    if std::env::var("CURL_CA_BUNDLE").is_err() {
-        std::env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
-    }
+    std::env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
 }
 
 pub fn gcs_authorize_data_access() {
