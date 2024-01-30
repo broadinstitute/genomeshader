@@ -47,6 +47,3 @@ url = "*"
 #nannou = { git = "https://github.com/tychedelia/nannou.git" }
 #nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
 #pollster = "0.3"
-
-[profile.release]
-debug = true
