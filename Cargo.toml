@@ -28,8 +28,7 @@ glob = "0.3"
 indicatif = { version = "*", features = ["rayon"] }
 lazy_static = "*"
 openssl = { version = "0.10", features = ["vendored"] }
-polars = { version = "*", features = ["performant", "parquet", "dtype-categorical", "fmt", "rows"] }
-pollster = "0.3"
+polars = { version = "*", features = ["performant", "parquet", "dtype-categorical", "fmt", "rows", "lazy"] }
 pyo3 = { version = "*", features = ["abi3-py37", "extension-module"] }
 pyo3-polars = "*"
 pyo3-asyncio = { version = "*", features = ["attributes", "async-std-runtime", "tokio-runtime"] }
@@ -47,3 +46,4 @@ url = "*"
 #eframe = "*"
 #nannou = { git = "https://github.com/tychedelia/nannou.git" }
 #nannou_egui = { git = "https://github.com/tychedelia/nannou.git" }
+#pollster = "0.3"

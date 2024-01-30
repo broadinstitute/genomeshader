@@ -18,7 +18,8 @@ fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader, Box<
 
     // Disable stderr from trying to open an IndexedReader a few times, so
     // that the Jupyter notebook user doesn't get confused by intermediate
-    // error messages that are nothing to worry about.
+    // error messages that are nothing to worry about. The gag will end
+    // automatically when it goes out of scope at the end of the function.
     let stderr_gag = Gag::stderr().unwrap();
 
     let bam = match IndexedReader::from_url(reads_url) {
@@ -86,7 +87,7 @@ fn write_to_disk(dfs: Vec<DataFrame>, cache_path: &PathBuf) -> Result<HashMap<(S
     let mut locus_to_file = HashMap::new();
 
     let groups = outer_df.group_by(["chunk"]).unwrap();
-    for mut group in groups.groups() {
+    for group in groups.groups() {
         let l_fmt = group.column("chunk").unwrap().str().unwrap().get(0).unwrap().to_string();
         let parts: Vec<&str> = l_fmt.split(|c| c == ':' || c == '-').collect();
 
@@ -94,12 +95,16 @@ fn write_to_disk(dfs: Vec<DataFrame>, cache_path: &PathBuf) -> Result<HashMap<(S
         let start = parts[1].parse::<u64>().unwrap();
         let stop = parts[2].parse::<u64>().unwrap();
 
+        let mut subset_df = outer_df.clone()
+                                               .lazy()
+                                               .filter(col("chunk").eq(lit(l_fmt)))
+                                               .collect()?;
+
         let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
         let file = std::fs::File::create(&filename).unwrap();
         let writer = ParquetWriter::new(file);
 
-        let _ = writer.finish(&mut group);
-
+        let _ = writer.finish(&mut subset_df);
         locus_to_file.insert((chr, start, stop), filename);
     }
 
