@@ -146,9 +146,9 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
                 },
                 Cigar::Ins(len) => {
                     // Handle Insertion case (consumes query)
-                    let start = read_pos as usize - 1;
-                    let end = (read_pos + (*len)) as usize - 1;
-                    let cigar_seq = &record.seq().as_bytes()[start..end];
+                    let cigar_start = read_pos as usize - 1;
+                    let cigar_end = (read_pos + (*len)) as usize - 1;
+                    let cigar_seq = &record.seq().as_bytes()[cigar_start..cigar_end];
 
                     reference_contigs.push(chr.to_owned());
                     reference_starts.push(ref_pos - 1);
@@ -282,11 +282,11 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
     }
 
     let mut column_width = Vec::new();
-    for start in &reference_starts {
+    for ref_start in &reference_starts {
         chunks.push(format!("{}:{}-{}", chr, start, stop));
         cohorts.push(cohort.to_owned());
         bam_paths.push(reads_url.to_string());
-        column_width.push(*mask.get(start).unwrap_or(&1) as u32);
+        column_width.push(*mask.get(ref_start).unwrap_or(&1) as u32);
     }
 
     let element_types: Vec<u8> = element_types.iter().map(|e| e.to_u8()).collect();

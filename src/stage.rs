@@ -49,7 +49,7 @@ fn stage_data_from_one_file(reads_url: &Url, cohort: &String, loci: &HashSet<(St
 
     for (chr, start, stop) in loci.iter() {
         let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop)?;
-        outer_df.vstack_mut(&df);
+        let _ = outer_df.vstack_mut(&df);
     }
 
     outer_df.align_chunks();
@@ -78,7 +78,7 @@ fn stage_data_from_all_files(reads_cohort: &HashSet<(Url, String)>, loci: &HashS
     Ok(dfs)
 }
 
-fn stage_to_disk(dfs: Mutex<Vec<DataFrame>>, cache_path: &PathBuf) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
+fn write_to_disk(dfs: Mutex<Vec<DataFrame>>, cache_path: &PathBuf) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
     let mut outer_df = DataFrame::default();
     for df in dfs.lock().unwrap().iter() {
         outer_df.vstack_mut(&df).unwrap();
@@ -87,7 +87,7 @@ fn stage_to_disk(dfs: Mutex<Vec<DataFrame>>, cache_path: &PathBuf) -> Result<Has
     let mut locus_to_file = HashMap::new();
 
     let groups = outer_df.group_by(["chunk"]).unwrap();
-    for group in groups.groups() {
+    while let Ok(mut group) = groups.groups() {
         let l_fmt = group.column("chunk").unwrap().str().unwrap().get(0).unwrap().to_string();
         let parts: Vec<&str> = l_fmt.split(|c| c == ':' || c == '-').collect();
 
@@ -97,7 +97,9 @@ fn stage_to_disk(dfs: Mutex<Vec<DataFrame>>, cache_path: &PathBuf) -> Result<Has
 
         let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
         let file = std::fs::File::create(&filename).unwrap();
-        let mut writer = ParquetWriter::new(file);
+        let writer = ParquetWriter::new(file);
+
+        let _ = writer.finish(&mut group);
 
         locus_to_file.insert((chr, start, stop), filename);
     }
@@ -136,7 +138,7 @@ fn locus_should_be_fetched(chr: &String, start: &u64, stop: &u64, reads_paths: &
 
 pub fn stage_data(reads_cohort: &HashSet<(Url, String)>, loci: &HashSet<(String, u64, u64)>, cache_path: &PathBuf, use_cache: bool) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn std::error::Error>> {
     let dfs = stage_data_from_all_files(reads_cohort, loci, cache_path, use_cache)?;
-    let locus_to_file = stage_to_disk(dfs, cache_path)?;
+    let locus_to_file = write_to_disk(dfs, cache_path)?;
 
     Ok(locus_to_file)
 }
