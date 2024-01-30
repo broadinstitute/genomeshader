@@ -22,6 +22,7 @@ chrono = "*"
 crossbeam-utils = "0.8.19"
 fs_extra = "1.2"
 kdam = { version = "*", features = ["notebook", "rayon"] }
+gag = "*"
 google-cloud-storage = "*"
 glob = "0.3"
 indicatif = { version = "*", features = ["rayon"] }

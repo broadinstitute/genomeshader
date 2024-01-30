@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use url::Url;
 
 use backoff::ExponentialBackoff;
+use gag::Gag;
 use polars::prelude::*;
 use rayon::prelude::*;
 use rust_htslib::bam::IndexedReader;
@@ -14,6 +15,11 @@ use crate::env::{gcs_authorize_data_access, local_guess_curl_ca_bundle};
 
 fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader, Box<dyn Error>> {
     env::set_current_dir(cache_path).unwrap();
+
+    // Disable stderr from trying to open an IndexedReader a few times, so
+    // that the Jupyter notebook user doesn't get confused by intermediate
+    // error messages that are nothing to worry about.
+    let stderr_gag = Gag::stderr().unwrap();
 
     let bam = match IndexedReader::from_url(reads_url) {
         Ok(bam) => bam,
