@@ -16,12 +16,6 @@ use crate::env::{gcs_authorize_data_access, local_guess_curl_ca_bundle};
 fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader, Box<dyn Error>> {
     env::set_current_dir(cache_path).unwrap();
 
-    // Disable stderr from trying to open an IndexedReader a few times, so
-    // that the Jupyter notebook user doesn't get confused by intermediate
-    // error messages that are nothing to worry about. The gag will end
-    // automatically when it goes out of scope at the end of the function.
-    let stderr_gag = Gag::stderr().unwrap();
-
     let bam = match IndexedReader::from_url(reads_url) {
         Ok(bam) => bam,
         Err(_) => {
@@ -98,6 +92,7 @@ fn write_to_disk(dfs: Vec<DataFrame>, cache_path: &PathBuf) -> Result<HashMap<(S
         let mut subset_df = outer_df.clone()
                                                .lazy()
                                                .filter(col("chunk").eq(lit(l_fmt)))
+                                               .drop(["chunk"])
                                                .collect()?;
 
         let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
@@ -141,6 +136,12 @@ fn locus_should_be_fetched(chr: &String, start: &u64, stop: &u64, reads_paths: &
 }
 
 pub fn stage_data(reads_cohort: &HashSet<(Url, String)>, loci: &HashSet<(String, u64, u64)>, cache_path: &PathBuf, use_cache: bool) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn Error>> {
+    // Disable stderr from trying to open an IndexedReader a few times, so
+    // that the Jupyter notebook user doesn't get confused by intermediate
+    // error messages that are nothing to worry about. The gag will end
+    // automatically when it goes out of scope at the end of the function.
+    let stderr_gag = Gag::stderr().unwrap();
+
     let dfs = stage_data_from_all_files(reads_cohort, loci, cache_path, use_cache)?;
     let locus_to_file = write_to_disk(dfs, cache_path)?;
 
@@ -150,6 +151,7 @@ pub fn stage_data(reads_cohort: &HashSet<(Url, String)>, loci: &HashSet<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyo3_polars::PyDataFrame;
     use url::Url;
     use std::collections::HashSet;
 
@@ -189,8 +191,133 @@ mod tests {
 
         let result = stage_data(&reads_cohort, &loci, &cache_path, use_cache);
 
-        assert!(result.is_ok(), "Failed to stage data from all files");
+        assert!(result.is_ok(), "Failed to stage data from file");
 
         println!("{:?}", result.unwrap());
+    }
+
+    #[test]
+    fn test_stage_multiple_data() {
+        let reads_url_1 = Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam").unwrap();
+        let reads_url_2 = Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230901_211947_s1/reads/ccs/aligned/m84043_230901_211947_s1.bam").unwrap();
+        let cohort = String::from("test_cohort_1");
+        let loci = HashSet::from([("chr15".to_string(), 23960193, 23963918)]);
+        let cache_path = std::env::temp_dir();
+        let use_cache = false;
+        let reads_cohort = HashSet::from([(reads_url_1, cohort.to_owned()), (reads_url_2, cohort.to_owned())]);
+
+        let result = stage_data(&reads_cohort, &loci, &cache_path, use_cache);
+
+        println!("{:?}", result);
+
+        assert!(result.is_ok(), "Failed to stage data from all files");
+    }
+
+    #[test]
+    fn test_convert_to_pydataframe() {
+        let reads_urls = [
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230901_211947_s1/reads/ccs/aligned/m84043_230901_211947_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230906_201655_s1/reads/ccs/aligned/m84043_230906_201655_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230911_201403_s4/reads/ccs/aligned/m84060_230911_201403_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230829_203026_s1/reads/ccs/aligned/m84056_230829_203026_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230907_202641_s1/reads/ccs/aligned/m84043_230907_202641_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230906_212009_s3/reads/ccs/aligned/m84056_230906_212009_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230911_193237_s1/reads/ccs/aligned/m84063_230911_193237_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230907_213037_s3/reads/ccs/aligned/m84056_230907_213037_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_213117_s3/reads/ccs/aligned/m84060_230907_213117_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230911_184019_s1/reads/ccs/aligned/m84056_230911_184019_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230829_210144_s2/reads/ccs/aligned/m84060_230829_210144_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230906_201842_s1/reads/ccs/aligned/m84056_230906_201842_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230829_220357_s4/reads/ccs/aligned/m84060_230829_220357_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230909_164146_s1/reads/ccs/aligned/m84056_230909_164146_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230828_202039_s1/reads/ccs/aligned/m84056_230828_202039_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230829_220344_s4/reads/ccs/aligned/m84056_230829_220344_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230906_215238_s3/reads/ccs/aligned/m84063_230906_215238_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230907_212853_s3/reads/ccs/aligned/m84043_230907_212853_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230909_174409_s2/reads/ccs/aligned/m84063_230909_174409_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230909_174319_s3/reads/ccs/aligned/m84060_230909_174319_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230909_164235_s4/reads/ccs/aligned/m84063_230909_164235_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230909_181515_s3/reads/ccs/aligned/m84063_230909_181515_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230907_210055_s1/reads/ccs/aligned/m84063_230907_210055_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230907_202825_s1/reads/ccs/aligned/m84056_230907_202825_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230911_191037_s2/reads/ccs/aligned/m84043_230911_191037_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230911_194257_s3/reads/ccs/aligned/m84060_230911_194257_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230828_205059_s2/reads/ccs/aligned/m84056_230828_205059_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230911_184131_s1/reads/ccs/aligned/m84060_230911_184131_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230906_201922_s1/reads/ccs/aligned/m84060_230906_201922_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_220223_s4/reads/ccs/aligned/m84060_230907_220223_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230909_174313_s3/reads/ccs/aligned/m84056_230909_174313_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230828_215311_s4/reads/ccs/aligned/m84056_230828_215311_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230901_215053_s2/reads/ccs/aligned/m84043_230901_215053_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230906_204902_s2/reads/ccs/aligned/m84056_230906_204902_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230909_171213_s2/reads/ccs/aligned/m84060_230909_171213_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230906_204717_s2/reads/ccs/aligned/m84043_230906_204717_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230909_164149_s1/reads/ccs/aligned/m84060_230909_164149_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230906_212132_s2/reads/ccs/aligned/m84063_230906_212132_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230828_202101_s1/reads/ccs/aligned/m84060_230828_202101_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230906_205026_s1/reads/ccs/aligned/m84063_230906_205026_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230906_215115_s4/reads/ccs/aligned/m84056_230906_215115_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230911_200343_s2/reads/ccs/aligned/m84063_230911_200343_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230907_220143_s4/reads/ccs/aligned/m84056_230907_220143_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230907_215959_s4/reads/ccs/aligned/m84043_230907_215959_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230911_201249_s4/reads/ccs/aligned/m84043_230911_201249_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230907_202949_s4/reads/ccs/aligned/m84063_230907_202949_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230911_194146_s3/reads/ccs/aligned/m84056_230911_194146_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230829_210132_s2/reads/ccs/aligned/m84056_230829_210132_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230911_190209_s4/reads/ccs/aligned/m84063_230911_190209_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230906_215200_s4/reads/ccs/aligned/m84060_230906_215200_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230909_171303_s1/reads/ccs/aligned/m84063_230909_171303_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230907_220307_s3/reads/ccs/aligned/m84063_230907_220307_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230911_191040_s2/reads/ccs/aligned/m84056_230911_191040_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230906_212054_s3/reads/ccs/aligned/m84060_230906_212054_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_202905_s1/reads/ccs/aligned/m84060_230907_202905_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230829_203038_s1/reads/ccs/aligned/m84060_230829_203038_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230829_213238_s3/reads/ccs/aligned/m84056_230829_213238_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230828_205127_s2/reads/ccs/aligned/m84060_230828_205127_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230909_171207_s2/reads/ccs/aligned/m84056_230909_171207_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230906_201957_s4/reads/ccs/aligned/m84063_230906_201957_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230828_212233_s3/reads/ccs/aligned/m84060_230828_212233_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230829_213250_s3/reads/ccs/aligned/m84060_230829_213250_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230909_181419_s4/reads/ccs/aligned/m84056_230909_181419_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230901_222159_s3/reads/ccs/aligned/m84043_230901_222159_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230911_201252_s4/reads/ccs/aligned/m84056_230911_201252_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230911_191151_s2/reads/ccs/aligned/m84060_230911_191151_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230901_225305_s4/reads/ccs/aligned/m84043_230901_225305_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230911_203449_s3/reads/ccs/aligned/m84063_230911_203449_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84063_230907_213201_s2/reads/ccs/aligned/m84063_230907_213201_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230907_205931_s2/reads/ccs/aligned/m84056_230907_205931_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230828_215339_s4/reads/ccs/aligned/m84060_230828_215339_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230911_184014_s1/reads/ccs/aligned/m84043_230911_184014_s1.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84056_230828_212205_s3/reads/ccs/aligned/m84056_230828_212205_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230907_205747_s2/reads/ccs/aligned/m84043_230907_205747_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230906_214929_s4/reads/ccs/aligned/m84043_230906_214929_s4.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230906_204947_s2/reads/ccs/aligned/m84060_230906_204947_s2.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84043_230911_194143_s3/reads/ccs/aligned/m84043_230911_194143_s3.bam").unwrap(),
+            Url::parse("gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230909_181425_s4/reads/ccs/aligned/m84060_230909_181425_s4.bam").unwrap(),
+        ];
+        let cohort = String::from("test_cohort_1");
+        let loci = HashSet::from([("chr15".to_string(), 23960193, 23963918)]);
+        let cache_path = std::env::temp_dir();
+        let use_cache = false;
+
+        let mut reads_cohort = HashSet::new();
+        for reads_url in reads_urls {
+            reads_cohort.insert((reads_url, cohort.to_owned()));
+        }
+
+        let result = stage_data(&reads_cohort, &loci, &cache_path, use_cache);
+
+        for (_, filename) in result.unwrap() {
+            let file = std::fs::File::open(&filename).unwrap();
+            let df = ParquetReader::new(file).finish().unwrap();
+
+            let pydf = PyDataFrame(df);
+
+            println!("{:?}", pydf);
+        }
+
+        // println!("{:?}", result);
+        // assert!(result.is_ok(), "Failed to stage data from all files");
     }
 }

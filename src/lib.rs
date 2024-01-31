@@ -8,8 +8,9 @@ use stage::stage_data;
 use storage_gcs::*;
 
 use std::{collections::{HashSet, HashMap}, path::PathBuf};
-use url::Url;
 
+use iset::*;
+use url::Url;
 use polars::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::PyDataFrame;
@@ -23,7 +24,8 @@ use pyo3_polars::PyDataFrame;
 pub struct Session {
     reads_cohort: HashSet<(Url, String)>,
     loci: HashSet<(String, u64, u64)>,
-    staged_data: HashMap<(String, u64, u64), PathBuf>
+    staged_data: HashMap<(String, u64, u64), PathBuf>,
+    staged_tree: HashMap<String, IntervalMap<u64, PathBuf>>
 }
 
 #[pymethods]
@@ -33,7 +35,8 @@ impl Session {
         Session {
             reads_cohort: HashSet::new(),
             loci: HashSet::new(),
-            staged_data: HashMap::new()
+            staged_data: HashMap::new(),
+            staged_tree: HashMap::new()
         }
     }
 
@@ -117,7 +120,18 @@ impl Session {
         let cache_path = std::env::temp_dir();
 
         match stage_data(&self.reads_cohort, &self.loci, &cache_path, use_cache) {
-            Ok(staged_data) => { self.staged_data = staged_data; },
+            Ok(staged_data) => {
+                for (locus, path) in &staged_data {
+                    if !self.staged_tree.contains_key(&locus.0) {
+                        self.staged_tree.insert(locus.0.clone(), iset::IntervalMap::new());
+                    }
+
+                    let map = self.staged_tree.get_mut(&locus.0).unwrap();
+                    map.entry(locus.1..locus.2).or_insert(path.clone());
+                }
+
+                self.staged_data = staged_data;
+            },
             Err(_) => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                     format!("Failed to stage data.")
@@ -125,20 +139,20 @@ impl Session {
             }
         }
 
+        println!("{:?}", self.staged_tree);
+
         Ok(())
     }
 
-    fn get_locus(&self, locus: String) -> PyResult<PyDataFrame> {
+    fn get_locus(&self, locus: String) -> PyResult<String> {
         let l_fmt = self.parse_locus(locus.to_owned())?;
 
         if self.staged_data.contains_key(&l_fmt) {
             let filename = self.staged_data.get(&l_fmt).unwrap().to_owned();
-            let file = std::fs::File::open(&filename).unwrap();
 
-            let df = ParquetReader::new(file).finish().unwrap();
-
-            Ok(PyDataFrame(df))
+            Ok(String::from(filename.to_str().unwrap()))
         } else {
+            println!("get_locus 7");
             Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 format!("Locus '{}' is not staged.", locus)
             ))
