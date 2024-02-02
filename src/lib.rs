@@ -24,7 +24,6 @@ use pyo3_polars::PyDataFrame;
 pub struct Session {
     reads_cohort: HashSet<(Url, String)>,
     loci: HashSet<(String, u64, u64)>,
-    staged_data: HashMap<(String, u64, u64), PathBuf>,
     staged_tree: HashMap<String, IntervalMap<u64, PathBuf>>
 }
 
@@ -35,7 +34,6 @@ impl Session {
         Session {
             reads_cohort: HashSet::new(),
             loci: HashSet::new(),
-            staged_data: HashMap::new(),
             staged_tree: HashMap::new()
         }
     }
@@ -129,8 +127,6 @@ impl Session {
                     let map = self.staged_tree.get_mut(&locus.0).unwrap();
                     map.entry(locus.1..locus.2).or_insert(path.clone());
                 }
-
-                self.staged_data = staged_data;
             },
             Err(_) => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -144,25 +140,38 @@ impl Session {
         Ok(())
     }
 
-    fn get_locus(&self, locus: String) -> PyResult<String> {
-        let l_fmt = self.parse_locus(locus.to_owned())?;
+    fn get_locus(&self, locus: String) -> PyResult<PyDataFrame> {
+        let l_fmt = self.parse_locus(locus.clone())?;
 
-        if self.staged_data.contains_key(&l_fmt) {
-            let filename = self.staged_data.get(&l_fmt).unwrap().to_owned();
+        if let Some(subtree) = self.staged_tree.get(&l_fmt.0) {
+            println!("{:?}", subtree);
+            for (range, filename) in subtree.iter(l_fmt.1..l_fmt.2) {
+                let file_r = std::fs::File::open(&filename).unwrap();
+                let df = ParquetReader::new(file_r)
+                    .finish()
+                    .unwrap()
+                    .lazy()
+                    .filter(
+                        col("reference_end").gt(lit(range.start)).and(
+                        col("reference_start").gt(lit(range.end)))
+                    )
+                    .collect()
+                    .unwrap();
+                       
 
-            Ok(String::from(filename.to_str().unwrap()))
-        } else {
-            println!("get_locus 7");
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Locus '{}' is not staged.", locus)
-            ))
+                return Ok(PyDataFrame(df));
+            }
         }
+
+        Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            format!("Locus '{}' is not staged.", locus)
+        ))
     }
 
     fn reset(&mut self) -> PyResult<()> {
         self.reads_cohort = HashSet::new();
         self.loci = HashSet::new();
-        self.staged_data = HashMap::new();
+        self.staged_tree = HashMap::new();
 
         Ok(())
     }
@@ -194,12 +203,10 @@ impl Session {
         }
 
         println!("Staging:");
-        if self.staged_data.len() <= 10 {
-            for (l_fmt, p) in &self.staged_data {
-                println!(" - {}:{}-{} : {:?}", l_fmt.0, l_fmt.1, l_fmt.2, p);
+        for (chr, subtree) in &self.staged_tree {
+            for (range, path) in subtree.unsorted_iter() {
+                println!(" - {} {:?} {:?}", chr, range, path);
             }
-        } else {
-            println!(" - {} loci staged", self.staged_data.len());
         }
     }
 }

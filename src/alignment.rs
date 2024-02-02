@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::collections::HashMap;
 use url::Url;
 
@@ -89,7 +90,7 @@ fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
     mask
 }
 
-pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, chr: &String, start: &u64, stop: &u64) -> Result<DataFrame, Box<dyn std::error::Error>> {
+pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, chr: &String, start: &u64, stop: &u64) -> Result<DataFrame> {
     let mut chunks = Vec::new();
     let mut cohorts = Vec::new();
     let mut bam_paths = Vec::new();

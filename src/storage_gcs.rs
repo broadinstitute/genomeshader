@@ -1,3 +1,4 @@
+use anyhow::Result;
 use pyo3::prelude::*;
 
 use cloud_storage::{sync::*, ListRequest, object::ObjectList};
@@ -14,16 +15,16 @@ pub fn gcs_split_path(path: &String) -> (String, String) {
     (bucket_name, prefix)
 }
 
-pub fn gcs_list_files(path: &String) -> Result<Vec<ObjectList>, cloud_storage::Error> {
+pub fn gcs_list_files(path: &String) -> Result<Vec<ObjectList>> {
     let (bucket_name, prefix) = gcs_split_path(path);
 
     let client = Client::new()?;
-    let file_list = client.object().list(&bucket_name, ListRequest { prefix: Some(prefix), ..Default::default() });
+    let file_list = client.object().list(&bucket_name, ListRequest { prefix: Some(prefix), ..Default::default() })?;
 
-    file_list
+    Ok(file_list)
 }
 
-pub fn gcs_get_file_update_time(path: &String) -> Result<DateTime<Utc>, cloud_storage::Error> {
+pub fn gcs_get_file_update_time(path: &String) -> Result<DateTime<Utc>> {
     let (bucket_name, prefix) = gcs_split_path(path);
 
     let client = Client::new()?;

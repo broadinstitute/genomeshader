@@ -1,6 +1,6 @@
+use anyhow::Result;
 use std::collections::{HashSet, HashMap};
 use std::env;
-use std::error::Error;
 use std::path::PathBuf;
 use url::Url;
 
@@ -13,7 +13,7 @@ use rust_htslib::bam::IndexedReader;
 use crate::alignment::extract_reads;
 use crate::env::{gcs_authorize_data_access, local_guess_curl_ca_bundle};
 
-fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader, Box<dyn Error>> {
+fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader> {
     env::set_current_dir(cache_path).unwrap();
 
     let bam = match IndexedReader::from_url(reads_url) {
@@ -35,7 +35,7 @@ fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader, Box<
     Ok(bam)
 }
 
-fn stage_data_from_one_file(reads_url: &Url, cohort: &String, loci: &HashSet<(String, u64, u64)>, cache_path: &PathBuf, use_cache: bool) -> Result<DataFrame, Box<dyn Error>> {
+fn stage_data_from_one_file(reads_url: &Url, cohort: &String, loci: &HashSet<(String, u64, u64)>, cache_path: &PathBuf, use_cache: bool) -> Result<DataFrame> {
     let mut bam = open_bam(reads_url, cache_path)?;
     let mut outer_df = DataFrame::default();
 
@@ -49,12 +49,15 @@ fn stage_data_from_one_file(reads_url: &Url, cohort: &String, loci: &HashSet<(St
     Ok(outer_df)
 }
 
-fn stage_data_from_all_files(reads_cohort: &HashSet<(Url, String)>, loci: &HashSet<(String, u64, u64)>, cache_path: &PathBuf, use_cache: bool) -> Result<Vec<DataFrame>, Box<dyn Error>> {
+fn stage_data_from_all_files(reads_cohort: &HashSet<(Url, String)>,
+                             loci: &HashSet<(String, u64, u64)>,
+                             cache_path: &PathBuf,
+                             use_cache: bool) -> Result<Vec<DataFrame>> {
     let dfs: Vec<_> = reads_cohort
         .par_iter()
-        .map(|(reads, cohort)| {
+        .map(|(reads_url, cohort)| {
             let op = || {
-                let df = stage_data_from_one_file(reads, cohort, loci, cache_path, use_cache)?;
+                let df = stage_data_from_one_file(reads_url, cohort, loci, cache_path, use_cache)?;
                 Ok(df)
             };
 
@@ -72,7 +75,7 @@ fn stage_data_from_all_files(reads_cohort: &HashSet<(Url, String)>, loci: &HashS
     Ok(dfs)
 }
 
-fn write_to_disk(dfs: Vec<DataFrame>, cache_path: &PathBuf) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn Error>> {
+fn write_to_disk(dfs: Vec<DataFrame>, cache_path: &PathBuf) -> Result<HashMap<(String, u64, u64), PathBuf>> {
     let mut outer_df = DataFrame::default();
     for df in dfs {
         outer_df.vstack_mut(&df).unwrap();
@@ -89,11 +92,12 @@ fn write_to_disk(dfs: Vec<DataFrame>, cache_path: &PathBuf) -> Result<HashMap<(S
         let start = parts[1].parse::<u64>().unwrap();
         let stop = parts[2].parse::<u64>().unwrap();
 
-        let mut subset_df = outer_df.clone()
-                                               .lazy()
-                                               .filter(col("chunk").eq(lit(l_fmt)))
-                                               .drop(["chunk"])
-                                               .collect()?;
+        let mut subset_df =
+            outer_df.clone()
+                    .lazy()
+                    .filter(col("chunk").eq(lit(l_fmt)))
+                    .collect()?
+                    .drop("chunk")?;
 
         let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
         let file = std::fs::File::create(&filename).unwrap();
@@ -135,7 +139,7 @@ fn locus_should_be_fetched(chr: &String, start: &u64, stop: &u64, reads_paths: &
     false
 }
 
-pub fn stage_data(reads_cohort: &HashSet<(Url, String)>, loci: &HashSet<(String, u64, u64)>, cache_path: &PathBuf, use_cache: bool) -> Result<HashMap<(String, u64, u64), PathBuf>, Box<dyn Error>> {
+pub fn stage_data(reads_cohort: &HashSet<(Url, String)>, loci: &HashSet<(String, u64, u64)>, cache_path: &PathBuf, use_cache: bool) -> Result<HashMap<(String, u64, u64), PathBuf>> {
     // Disable stderr from trying to open an IndexedReader a few times, so
     // that the Jupyter notebook user doesn't get confused by intermediate
     // error messages that are nothing to worry about. The gag will end
