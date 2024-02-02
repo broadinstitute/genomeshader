@@ -199,7 +199,7 @@ class GenomeShader:
         if isinstance(locus_or_dataframe, str):
             df = self.get_locus(locus_or_dataframe)
         elif isinstance(locus_or_dataframe, pl.DataFrame):
-            df = locus_or_dataframe
+            df = locus_or_dataframe.clone()
         else:
             raise ValueError("locus_or_dataframe must be a locus string or a"
                              "Polars DataFrame.")
@@ -335,7 +335,7 @@ class GenomeShader:
 
             ylim=(-28, 1),
             ylabel="",
-            yticks=list(zip(range(0, -len(samples_df['sample_name']), -1), samples_df['sample_name'])),
+            #yticks=list(zip(range(0, -len(samples_df['sample_name']), -1), samples_df['sample_name'])),
 
             title=f"Read visualization ({chr}:{start:,}-{stop:,})",
             fontscale=1.3,
