@@ -5,22 +5,22 @@ from typing import Union, List
 
 import polars as pl
 
-import datashader as ds
-import datashader.transfer_functions as tf
+# import datashader as ds
+# import datashader.transfer_functions as tf
 
 import holoviews as hv
 from holoviews import opts
 
-import holoviews.operation.datashader as hd
+# import holoviews.operation.datashader as hd
 from holoviews.plotting.links import RangeToolLink
 
 from bokeh.models.formatters import BasicTickFormatter
-from bokeh.models import HoverTool
+# from bokeh.models import HoverTool
 from bokeh.resources import INLINE
 import bokeh.io
-from bokeh import *
+# from bokeh import *
 
-from genomeshader.genomeshader import *
+import genomeshader.genomeshader as gs
 
 hv.extension("bokeh")
 hv.output(backend="bokeh")
@@ -64,7 +64,7 @@ class GenomeShader:
 
         self.genome_build: GenomeBuild = genome_build
 
-        self._session = _init()
+        self._session = gs._init()
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
@@ -131,8 +131,8 @@ class GenomeShader:
             if gcs_path.endswith(".bam") or gcs_path.endswith(".cram"):
                 self._session.attach_reads([gcs_path], cohort)
             else:
-                bams = _gcs_list_files_of_type(gcs_path, ".bam")
-                crams = _gcs_list_files_of_type(gcs_path, ".cram")
+                bams = gs._gcs_list_files_of_type(gcs_path, ".bam")
+                crams = gs._gcs_list_files_of_type(gcs_path, ".cram")
 
                 self._session.attach_reads(bams, cohort)
                 self._session.attach_reads(crams, cohort)
@@ -306,11 +306,11 @@ class GenomeShader:
         df = df.with_columns(pl.col("reference_start").alias("reference_end_padded") + pl.col("column_width"))
 
         # Get sample names
-        samples_df = (df.filter(df['element_type'] == 0)
-            .group_by("sample_name")
-            .first()
-            .drop(['reference_contig', 'is_forward', 'query_name', 'read_group', 'element_type', 'sequence', 'color', 'read_num', 'y1'])
-            .sort("y0", descending=True))
+        # samples_df = (df.filter(df['element_type'] == 0)
+        #     .group_by("sample_name")
+        #     .first()
+        #     .drop(['reference_contig', 'is_forward', 'query_name', 'read_group', 'element_type', 'sequence', 'color', 'read_num', 'y1'])
+        #     .sort("y0", descending=True))
 
         # tooltips = [
         #     ('Sample Name', '@sample_name')
@@ -391,4 +391,4 @@ def init(session_name: str,
 
 
 def version():
-    return _version()
+    return gs._version()
