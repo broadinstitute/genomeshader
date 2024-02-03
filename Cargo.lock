@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "genomeshader"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "anyhow",
  "backoff",

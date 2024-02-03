@@ -13,13 +13,19 @@ from holoviews import opts
 
 import holoviews.operation.datashader as hd
 from holoviews.plotting.links import RangeToolLink
+
 from bokeh.models.formatters import BasicTickFormatter
 from bokeh.models import HoverTool
+from bokeh.resources import INLINE
+import bokeh.io
+from bokeh import *
 
 from genomeshader.genomeshader import *
 
 hv.extension("bokeh")
 hv.output(backend="bokeh")
+
+bokeh.io.output_notebook(INLINE)
 
 base_colors = {
     'A': '#00F100',

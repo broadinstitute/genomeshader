@@ -142,7 +142,6 @@ impl Session {
         let l_fmt = self.parse_locus(locus.clone())?;
 
         if let Some(subtree) = self.staged_tree.get(&l_fmt.0) {
-            println!("{:?}", subtree);
             for (range, filename) in subtree.iter(l_fmt.1..l_fmt.2) {
                 let file_r = std::fs::File::open(&filename).unwrap();
                 let df = ParquetReader::new(file_r)
