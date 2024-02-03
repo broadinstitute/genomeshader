@@ -1,6 +1,5 @@
 import os
 import re
-import warnings
 from enum import Enum
 from typing import Union, List
 
@@ -19,12 +18,8 @@ from bokeh.models import HoverTool
 
 from genomeshader.genomeshader import *
 
-warnings.simplefilter(action='ignore', category=FutureWarning)
-
 hv.extension("bokeh")
 hv.output(backend="bokeh")
-
-warnings.resetwarnings()
 
 base_colors = {
     'A': '#00F100',

@@ -13,6 +13,13 @@ Genomeshader is a Rust-backed Python library for rapid visualization of read-lev
 
 Documentation for the API can be found on the `documentation page <https://broadinstitute.github.io/genomeshader/>`_.
 
+
+Prerequisites
+-------------
+
+Genomeshader is designed to access local files or data in Google Cloud Storage (GCS). Within certain cloud-computing environments (i.e. Terra, All of Us Researcher Workbench), access to GCS is already configured. For accessing files in GCS on your local machine, you will also need to install the `Google Cloud CLI <https://cloud.google.com/sdk/docs/install-sdk>`_. Then, configure your `Application Default Credentials (ADC) <https://cloud.google.com/docs/authentication/provide-credentials-adc#local-dev>`_.
+
+
 Installation
 ------------
 
@@ -21,6 +28,7 @@ Installation
 ::
 
    pip install genomeshader 
+
 
 
 Building from source

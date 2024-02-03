@@ -135,8 +135,6 @@ impl Session {
             }
         }
 
-        println!("{:?}", self.staged_tree);
-
         Ok(())
     }
 
