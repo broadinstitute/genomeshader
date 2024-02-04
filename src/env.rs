@@ -13,10 +13,10 @@ fn gcs_gcloud_is_installed() -> bool {
     // Suppress stdout and stderr to prevent them from printing to the screen
     let mut cmd = std::process::Command::new("gcloud");
     cmd.arg("version")
-       .stdout(std::process::Stdio::null())
-       .stderr(std::process::Stdio::null())
-       .status()
-       .is_ok()
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
 }
 
 pub fn gcs_authorize_data_access() {
@@ -26,7 +26,8 @@ pub fn gcs_authorize_data_access() {
     }
 
     // Execute the command and capture the output
-    let output = std::process::Command::new("gcloud")
+    let output = std::process::Command
+        ::new("gcloud")
         .args(&["auth", "application-default", "print-access-token"])
         .output()
         .expect("Failed to execute command");

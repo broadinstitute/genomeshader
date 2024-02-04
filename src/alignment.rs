@@ -4,8 +4,8 @@ use url::Url;
 
 use polars::prelude::*;
 
-use rust_htslib::bam::record::{Aux, Cigar};
-use rust_htslib::bam::{self, Read, IndexedReader, ext::BamRecordExtensions};
+use rust_htslib::bam::record::{ Aux, Cigar };
+use rust_htslib::bam::{ self, Read, IndexedReader, ext::BamRecordExtensions };
 
 #[derive(Debug, PartialEq)]
 pub enum ElementType {
@@ -13,7 +13,7 @@ pub enum ElementType {
     DIFF,
     INSERTION,
     DELETION,
-    SOFTCLIP
+    SOFTCLIP,
 }
 
 impl ElementType {
@@ -31,7 +31,8 @@ impl ElementType {
 fn get_rg_to_sm_mapping(bam: &IndexedReader) -> HashMap<String, String> {
     let header = bam::Header::from_template(bam.header());
 
-    let rg_sm_map: HashMap<String, String> = header.to_hashmap()
+    let rg_sm_map: HashMap<String, String> = header
+        .to_hashmap()
         .into_iter()
         .flat_map(|(_, records)| records)
         .filter(|record| record.contains_key("ID") && record.contains_key("SM"))
@@ -42,11 +43,7 @@ fn get_rg_to_sm_mapping(bam: &IndexedReader) -> HashMap<String, String> {
 }
 
 fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
-    let df = df_in.sort(
-        &["sample_name", "query_name", "reference_start"],
-        false,
-        true
-    ).unwrap();
+    let df = df_in.sort(&["sample_name", "query_name", "reference_start"], false, true).unwrap();
 
     let sample_names = df.column("sample_name").unwrap().str().unwrap();
     let reference_starts = df.column("reference_start").unwrap().u32().unwrap();
@@ -65,7 +62,9 @@ fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
             cur_sample_index += 1;
 
             let cur_sample_name_series = Series::new("", vec![cur_sample_name; df.height()]);
-            let mask = df.filter(&df["sample_name"].equal(&cur_sample_name_series).unwrap()).unwrap();
+            let mask = df
+                .filter(&df["sample_name"].equal(&cur_sample_name_series).unwrap())
+                .unwrap();
         }
 
         if cur_sample_index >= 0 {
@@ -73,11 +72,17 @@ fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
             let reference_end = reference_ends.get(i).unwrap();
             let element_type = element_types.get(i).unwrap();
             let sequence = sequence.get(i).unwrap();
-            let sequence_length = if element_type == 3 { (reference_end - reference_start) as usize } else { sequence.len() };
+            let sequence_length = if element_type == 3 {
+                (reference_end - reference_start) as usize
+            } else {
+                sequence.len()
+            };
 
             if element_type > 0 {
                 mask.entry(reference_start)
-                    .and_modify(|e| *e = std::cmp::max(*e, sequence_length))
+                    .and_modify(|e| {
+                        *e = std::cmp::max(*e, sequence_length);
+                    })
                     .or_insert(sequence_length);
             }
         }
@@ -90,7 +95,14 @@ fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
     mask
 }
 
-pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, chr: &String, start: &u64, stop: &u64) -> Result<DataFrame> {
+pub fn extract_reads(
+    bam: &mut IndexedReader,
+    reads_url: &Url,
+    cohort: &String,
+    chr: &String,
+    start: &u64,
+    stop: &u64
+) -> Result<DataFrame> {
     let mut chunks = Vec::new();
     let mut cohorts = Vec::new();
     let mut bam_paths = Vec::new();
@@ -119,12 +131,12 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
         };
 
         reference_contigs.push(chr.to_owned());
-        reference_starts.push(record.reference_start() as u32 + 1);
+        reference_starts.push((record.reference_start() as u32) + 1);
         reference_ends.push(record.reference_end() as u32);
         is_forwards.push(!record.is_reverse());
         query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
         haplotypes.push(hap);
-        
+
         if let Ok(Aux::String(rg)) = record.aux(b"RG") {
             read_groups.push(rg.to_owned());
             sample_names.push(rg_sm_map.get(rg).unwrap().to_owned());
@@ -136,7 +148,7 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
         element_types.push(ElementType::READ);
         sequence.push(String::from_utf8_lossy(&[]).into_owned());
 
-        let mut ref_pos: u32 = record.reference_start() as u32 + 1;
+        let mut ref_pos: u32 = (record.reference_start() as u32) + 1;
         let mut read_pos: u32 = 1;
         for (idx, c) in record.cigar().iter().enumerate() {
             match c {
@@ -144,11 +156,11 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
                     // Handle Match case (consumes query, ref)
                     ref_pos += len;
                     read_pos += len;
-                },
+                }
                 Cigar::Ins(len) => {
                     // Handle Insertion case (consumes query)
-                    let cigar_start = read_pos as usize - 1;
-                    let cigar_end = (read_pos + (*len)) as usize - 1;
+                    let cigar_start = (read_pos as usize) - 1;
+                    let cigar_end = ((read_pos + *len) as usize) - 1;
                     let cigar_seq = &record.seq().as_bytes()[cigar_start..cigar_end];
 
                     reference_contigs.push(chr.to_owned());
@@ -170,16 +182,18 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
                     sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
 
                     mask.entry(ref_pos - 1)
-                        .and_modify(|e| *e = std::cmp::max(*e, cigar_seq.len()))
+                        .and_modify(|e| {
+                            *e = std::cmp::max(*e, cigar_seq.len());
+                        })
                         .or_insert(cigar_seq.len());
 
                     read_pos += len;
-                },
+                }
                 Cigar::Del(len) => {
                     // Handle Deletion case (consumes ref)
                     reference_contigs.push(chr.to_owned());
                     reference_starts.push(ref_pos);
-                    reference_ends.push(ref_pos + (*len));
+                    reference_ends.push(ref_pos + *len);
                     is_forwards.push(!record.is_reverse());
                     query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
                     haplotypes.push(hap);
@@ -196,16 +210,18 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
                     sequence.push(String::from_utf8_lossy(&[]).into_owned());
 
                     mask.entry(ref_pos)
-                        .and_modify(|e| *e = std::cmp::max(*e, *len as usize))
+                        .and_modify(|e| {
+                            *e = std::cmp::max(*e, *len as usize);
+                        })
                         .or_insert(*len as usize);
 
                     ref_pos += len;
-                },
+                }
                 Cigar::Equal(len) => {
                     // Handle Equal case (consumes query, ref)
                     ref_pos += len;
                     read_pos += len;
-                },
+                }
                 Cigar::Diff(len) => {
                     // Handle Difference case (consumes query, ref)
                     let cigar_seq: &[u8] = &[record.seq()[(read_pos - 1) as usize]];
@@ -229,16 +245,18 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
                     sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
 
                     mask.entry(ref_pos)
-                        .and_modify(|e| *e = std::cmp::max(*e, 1))
+                        .and_modify(|e| {
+                            *e = std::cmp::max(*e, 1);
+                        })
                         .or_insert(1);
 
                     ref_pos += len;
                     read_pos += len;
-                },
+                }
                 Cigar::RefSkip(len) => {
                     // Handle Reference Skip case (consumes ref)
                     ref_pos += len;
-                },
+                }
                 Cigar::SoftClip(len) => {
                     // Handle Soft Clip case (consumes query)
                     let mut adj_ref_pos = if idx == 0 { ref_pos - len } else { ref_pos };
@@ -265,19 +283,21 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
                         sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
 
                         mask.entry(ref_pos)
-                            .and_modify(|e| *e = std::cmp::max(*e, cigar_seq.len()))
+                            .and_modify(|e| {
+                                *e = std::cmp::max(*e, cigar_seq.len());
+                            })
                             .or_insert(cigar_seq.len());
 
                         read_pos += 1;
                         adj_ref_pos += 1;
                     }
-                },
+                }
                 Cigar::HardClip(_) => {
                     // Handle Hard Clip case (consumes nothing)
-                },
+                }
                 Cigar::Pad(_) => {
                     // Handle Padding case (consumes nothing)
-                },
+                }
             }
         }
     }
@@ -290,24 +310,29 @@ pub fn extract_reads(bam: &mut IndexedReader, reads_url: &Url, cohort: &String, 
         column_width.push(*mask.get(ref_start).unwrap_or(&1) as u32);
     }
 
-    let element_types: Vec<u8> = element_types.iter().map(|e| e.to_u8()).collect();
+    let element_types: Vec<u8> = element_types
+        .iter()
+        .map(|e| e.to_u8())
+        .collect();
 
-    let df = DataFrame::new(vec![
-        Series::new("chunk", chunks),
-        Series::new("cohort", cohorts),
-        Series::new("bam_path", bam_paths),
-        Series::new("reference_contig", reference_contigs),
-        Series::new("reference_start", reference_starts),
-        Series::new("reference_end", reference_ends),
-        Series::new("is_forward", is_forwards),
-        Series::new("query_name", query_names),
-        Series::new("haplotype", haplotypes),
-        Series::new("read_group", read_groups),
-        Series::new("sample_name", sample_names),
-        Series::new("element_type", element_types),
-        Series::new("sequence", sequence),
-        Series::new("column_width", column_width)
-    ]).unwrap();
+    let df = DataFrame::new(
+        vec![
+            Series::new("chunk", chunks),
+            Series::new("cohort", cohorts),
+            Series::new("bam_path", bam_paths),
+            Series::new("reference_contig", reference_contigs),
+            Series::new("reference_start", reference_starts),
+            Series::new("reference_end", reference_ends),
+            Series::new("is_forward", is_forwards),
+            Series::new("query_name", query_names),
+            Series::new("haplotype", haplotypes),
+            Series::new("read_group", read_groups),
+            Series::new("sample_name", sample_names),
+            Series::new("element_type", element_types),
+            Series::new("sequence", sequence),
+            Series::new("column_width", column_width)
+        ]
+    ).unwrap();
 
     Ok(df)
 }

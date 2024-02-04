@@ -7,7 +7,7 @@ pub mod storage_local;
 use stage::stage_data;
 use storage_gcs::*;
 
-use std::{collections::{HashSet, HashMap}, path::PathBuf};
+use std::{ collections::{ HashSet, HashMap }, path::PathBuf };
 
 use iset::*;
 use url::Url;
@@ -19,12 +19,11 @@ use pyo3_polars::PyDataFrame;
 // use std::cell::RefCell;
 // thread_local!(static GLOBAL_DATA: RefCell<PyDataFrame> = RefCell::new(PyDataFrame(DataFrame::default())));
 
-
 #[pyclass]
 pub struct Session {
     reads_cohort: HashSet<(Url, String)>,
     loci: HashSet<(String, u64, u64)>,
-    staged_tree: HashMap<String, IntervalMap<u64, PathBuf>>
+    staged_tree: HashMap<String, IntervalMap<u64, PathBuf>>,
 }
 
 #[pymethods]
@@ -34,16 +33,18 @@ impl Session {
         Session {
             reads_cohort: HashSet::new(),
             loci: HashSet::new(),
-            staged_tree: HashMap::new()
+            staged_tree: HashMap::new(),
         }
     }
 
     fn attach_reads(&mut self, read_files: Vec<String>, cohort: String) -> PyResult<()> {
         for read_file in &read_files {
             if !read_file.ends_with(".bam") && !read_file.ends_with(".cram") {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("File '{}' is not a .bam or .cram file.", read_file)
-                ));
+                return Err(
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        format!("File '{}' is not a .bam or .cram file.", read_file)
+                    )
+                );
             }
 
             let read_url = if read_file.starts_with("file://") || read_file.starts_with("gs://") {
@@ -60,8 +61,7 @@ impl Session {
 
     fn parse_locus(&self, locus: String) -> PyResult<(String, u64, u64)> {
         let l_fmt = locus.replace(",", "");
-        let parts: Vec<&str> = l_fmt.split(|c| c == ':' || c == '-')
-                                    .collect();
+        let parts: Vec<&str> = l_fmt.split(|c| (c == ':' || c == '-')).collect();
 
         let chr = parts[0].to_string();
 
@@ -69,9 +69,11 @@ impl Session {
             let start = match parts[1].parse::<u64>() {
                 Ok(val) => val,
                 Err(_) => {
-                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                        format!("Failed to parse start as u64 for locus '{}'.", locus)
-                    ));
+                    return Err(
+                        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            format!("Failed to parse start as u64 for locus '{}'.", locus)
+                        )
+                    );
                 }
             };
 
@@ -80,34 +82,44 @@ impl Session {
             let start = match parts[1].parse::<u64>() {
                 Ok(val) => val,
                 Err(_) => {
-                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                        format!("Failed to parse start as u64 for locus '{}'.", locus)
-                    ));
+                    return Err(
+                        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            format!("Failed to parse start as u64 for locus '{}'.", locus)
+                        )
+                    );
                 }
             };
 
             let stop = match parts[2].parse::<u64>() {
                 Ok(val) => val,
                 Err(_) => {
-                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                        format!("Failed to parse stop as u64 for locus '{}'.", locus)
-                    ));
+                    return Err(
+                        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            format!("Failed to parse stop as u64 for locus '{}'.", locus)
+                        )
+                    );
                 }
             };
 
             Ok((chr, start, stop))
         } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Locus format for '{}' is incorrect. It should be 'chr:start[-stop]'.", locus)
-            ))
+            Err(
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("Locus format for '{}' is incorrect. It should be 'chr:start[-stop]'.", locus)
+                )
+            )
         }
     }
 
     fn attach_loci(&mut self, loci: Vec<String>) -> PyResult<()> {
         for locus in loci {
             match self.parse_locus(locus.to_owned()) {
-                Ok(l_fmt) => { self.loci.insert(l_fmt); },
-                Err(e) => return Err(e),
+                Ok(l_fmt) => {
+                    self.loci.insert(l_fmt);
+                }
+                Err(e) => {
+                    return Err(e);
+                }
             }
         }
 
@@ -127,11 +139,13 @@ impl Session {
                     let map = self.staged_tree.get_mut(&locus.0).unwrap();
                     map.entry(locus.1..locus.2).or_insert(path.clone());
                 }
-            },
+            }
             Err(_) => {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("Failed to stage data.")
-                ));
+                return Err(
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        format!("Failed to stage data.")
+                    )
+                );
             }
         }
 
@@ -149,20 +163,22 @@ impl Session {
                     .unwrap()
                     .lazy()
                     .filter(
-                        col("reference_end").gt(lit(range.start)).and(
-                        col("reference_start").gt(lit(range.end)))
+                        col("reference_end")
+                            .gt(lit(range.start))
+                            .and(col("reference_start").gt(lit(range.end)))
                     )
                     .collect()
                     .unwrap();
-                       
 
                 return Ok(PyDataFrame(df));
             }
         }
 
-        Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            format!("Locus '{}' is not staged.", locus)
-        ))
+        Err(
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Locus '{}' is not staged.", locus)
+            )
+        )
     }
 
     fn reset(&mut self) -> PyResult<()> {

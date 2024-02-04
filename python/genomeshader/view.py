@@ -15,9 +15,11 @@ from holoviews import opts
 from holoviews.plotting.links import RangeToolLink
 
 from bokeh.models.formatters import BasicTickFormatter
+
 # from bokeh.models import HoverTool
 from bokeh.resources import INLINE
 import bokeh.io
+
 # from bokeh import *
 
 import genomeshader.genomeshader as gs
@@ -28,30 +30,27 @@ hv.output(backend="bokeh")
 bokeh.io.output_notebook(INLINE)
 
 base_colors = {
-    'A': '#00F100',
-    'C': '#341BFF',
-    'G': '#D37D2B',
-    'T': '#FF0030',
-    'N': '#CCCCCC'
+    "A": "#00F100",
+    "C": "#341BFF",
+    "G": "#D37D2B",
+    "T": "#FF0030",
+    "N": "#CCCCCC",
 }
 
 
 class GenomeBuild(Enum):
-    GRCh38 = 'GRCh38'
-    chm13v2_0 = 'chm13v2.0'
+    GRCh38 = "GRCh38"
+    chm13v2_0 = "chm13v2.0"
 
 
 class GenomeShader:
-    def __init__(self,
-                 session_name: str = None,
-                 gcs_session_dir: str = None,
-                 genome_build: GenomeBuild = GenomeBuild.GRCh38):
+    def __init__(self, session_name: str = None, gcs_session_dir: str = None):
         self._validate_session_name(session_name)
         self.session_name = session_name
 
         if gcs_session_dir is None:
-            if 'GOOGLE_BUCKET' in os.environ:
-                bucket = os.environ['GOOGLE_BUCKET']
+            if "GOOGLE_BUCKET" in os.environ:
+                bucket = os.environ["GOOGLE_BUCKET"]
                 gcs_session_dir = f"{bucket}/GenomeShader/{session_name}"
             else:
                 raise ValueError(
@@ -62,15 +61,13 @@ class GenomeShader:
         self._validate_gcs_session_dir(gcs_session_dir)
         self.gcs_session_dir = gcs_session_dir
 
-        self.genome_build: GenomeBuild = genome_build
-
         self._session = gs._init()
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
-            r'^gs://[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]/'  # bucket
-            r'([^/]+/)*'  # folders (optional)
-            r'[^/]*$'  # file (optional)
+            r"^gs://[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]/"  # bucket
+            r"([^/]+/)*"  # folders (optional)
+            r"[^/]*$"  # file (optional)
         )
 
         if not gcs_pattern.match(gcs_session_dir):
@@ -80,16 +77,14 @@ class GenomeShader:
         session_pattern = re.compile("^[a-zA-Z0-9_]+$")
 
         if not session_pattern.match(session_name):
-            raise ValueError(
-                "session_name contains special characters or whitespace"
-            )
+            raise ValueError("session_name contains special characters or whitespace")
 
     def __str__(self):
         return (
-            f'GenomeShader:\n'
-            f' - session_name: {self.session_name}\n'
-            f' - gcs_session_dir: {self.gcs_session_dir}\n'
-            f' - genome_build: {self.genome_build}\n'
+            f"GenomeShader:\n"
+            f" - session_name: {self.session_name}\n"
+            f" - gcs_session_dir: {self.gcs_session_dir}\n"
+            f" - genome_build: {self.genome_build}\n"
         )
 
     def session_name(self):
@@ -110,19 +105,25 @@ class GenomeShader:
         """
         return self.gcs_session_dir
 
-    def attach_reads(self,
-                     gcs_paths: Union[str, List[str]],
-                     cohort: str = 'all'):
+    def attach_reads(
+        self,
+        gcs_paths: Union[str, List[str]],
+        cohort: str = "all",
+        genome: GenomeBuild = GenomeBuild.GRCh38,
+    ):
         """
         This function attaches reads from the provided GCS paths to the
         current session. The GCS paths can be a single string or a list.
         Each GCS path can be a direct path to a .bam or .cram file, or a
-        directory containing .bam and/or .cram files.
+        directory containing .bam and/or .cram files. The genome build
+        parameter specifies the reference genome build to use.
 
         Args:
             gcs_paths (Union[str, List[str]]): The GCS paths to attach reads.
             cohort (str, optional): An optional cohort label for the dataset.
-            Defaults to 'all'.
+                Defaults to 'all'.
+            genome (GenomeBuild, optional): The reference genome build to use
+                for the reads. Defaults to GenomeBuild.GRCh38.
         """
         if isinstance(gcs_paths, str):
             gcs_paths = [gcs_paths]  # Convert single string to list
@@ -174,12 +175,14 @@ class GenomeShader:
         """
         return self._session.get_locus(locus)
 
-    def show(self,
-             locus_or_dataframe: Union[str, pl.DataFrame],
-             width: int = 980,
-             height: int = 400,
-             vertical: bool = False,
-             expand: bool = False) -> hv.Rectangles:
+    def show(
+        self,
+        locus_or_dataframe: Union[str, pl.DataFrame],
+        width: int = 980,
+        height: int = 400,
+        vertical: bool = False,
+        expand: bool = False,
+    ) -> hv.Rectangles:
         """
         Visualizes genomic data in a HoloViz interactive widget.
 
@@ -202,14 +205,15 @@ class GenomeShader:
         elif isinstance(locus_or_dataframe, pl.DataFrame):
             df = locus_or_dataframe.clone()
         else:
-            raise ValueError("locus_or_dataframe must be a locus string or a"
-                             "Polars DataFrame.")
+            raise ValueError(
+                "locus_or_dataframe must be a locus string or a" "Polars DataFrame."
+            )
 
-        ref_chr = df['reference_contig'].min()
-        ref_start = df['reference_start'].min()
-        ref_end = df['reference_end'].max()
+        ref_chr = df["reference_contig"].min()
+        ref_start = df["reference_start"].min()
+        ref_end = df["reference_end"].max()
 
-        locus = f'{ref_chr}:{ref_start}-{ref_end}'
+        locus = f"{ref_chr}:{ref_start}-{ref_end}"
 
         pieces = re.split("[:-]", re.sub(",", "", locus))
 
@@ -220,30 +224,45 @@ class GenomeShader:
         df = df.sort(["sample_name", "query_name", "reference_start"])
 
         adf = df.filter(df["element_type"] != 0)
-        bdf = (df.filter(df["element_type"] == 0)
-               .group_by("sample_name")
-               .agg([
-                   pl.col("cohort").first().alias("cohort"),
-                   pl.col("bam_path").first().alias("bam_path"),
-                   pl.col("reference_contig").first().alias("reference_contig"),
-                   pl.col("reference_start").min().alias("reference_start"),
-                   pl.col("reference_end").max().alias("reference_end"),
-                   pl.col("is_forward").first().alias("is_forward"),
-                   pl.col("query_name").first().alias("query_name"),
-                   pl.col("haplotype").first().alias("haplotype"),
-                   pl.col("read_group").first().alias("read_group"),
-                   pl.col("element_type").first().alias("element_type"),
-                   pl.col("sequence").first().alias("sequence"),
-                   pl.col("column_width").first().alias("column_width")
-               ])
-               .select(['cohort', 'bam_path', 'reference_contig',
-                        'reference_start', 'reference_end', 'is_forward',
-                        'query_name', 'haplotype', 'read_group', 'sample_name',
-                        'element_type', 'sequence', 'column_width']))
-
-        df = pl.concat([bdf, adf], rechunk=True).sort(
-            ["sample_name", "element_type"]
+        bdf = (
+            df.filter(df["element_type"] == 0)
+            .group_by("sample_name")
+            .agg(
+                [
+                    pl.col("cohort").first().alias("cohort"),
+                    pl.col("bam_path").first().alias("bam_path"),
+                    pl.col("reference_contig").first().alias("reference_contig"),
+                    pl.col("reference_start").min().alias("reference_start"),
+                    pl.col("reference_end").max().alias("reference_end"),
+                    pl.col("is_forward").first().alias("is_forward"),
+                    pl.col("query_name").first().alias("query_name"),
+                    pl.col("haplotype").first().alias("haplotype"),
+                    pl.col("read_group").first().alias("read_group"),
+                    pl.col("element_type").first().alias("element_type"),
+                    pl.col("sequence").first().alias("sequence"),
+                    pl.col("column_width").first().alias("column_width"),
+                ]
             )
+            .select(
+                [
+                    "cohort",
+                    "bam_path",
+                    "reference_contig",
+                    "reference_start",
+                    "reference_end",
+                    "is_forward",
+                    "query_name",
+                    "haplotype",
+                    "read_group",
+                    "sample_name",
+                    "element_type",
+                    "sequence",
+                    "column_width",
+                ]
+            )
+        )
+
+        df = pl.concat([bdf, adf], rechunk=True).sort(["sample_name", "element_type"])
 
         y0s = []
         y0 = 0
@@ -251,11 +270,11 @@ class GenomeShader:
             sample_name = None
             for row in df.iter_rows(named=True):
                 if sample_name is None:
-                    sample_name = row['sample_name']
+                    sample_name = row["sample_name"]
                     y0 = 0
 
-                if sample_name != row['sample_name']:
-                    sample_name = row['sample_name']
+                if sample_name != row["sample_name"]:
+                    sample_name = row["sample_name"]
                     y0 += 1
 
                 y0s.append(y0)
@@ -263,11 +282,11 @@ class GenomeShader:
             query_name = None
             for row in df.iter_rows(named=True):
                 if query_name is None:
-                    query_name = row['query_name']
+                    query_name = row["query_name"]
                     y0 = 0
 
-                if query_name != row['query_name']:
-                    query_name = row['query_name']
+                if query_name != row["query_name"]:
+                    query_name = row["query_name"]
                     y0 += 1
 
                 y0s.append(y0)
@@ -279,31 +298,48 @@ class GenomeShader:
         df = df.with_columns(pl.col("read_num").alias("y0") * -1 - h1 / 2)
         df = df.with_columns(pl.col("read_num").alias("y1") * -1 + h1 / 2)
 
-        df = df.with_columns(pl.when(df['element_type'] == 0).then(pl.lit('#CCCCCC'))
-                .when((df['element_type'] == 1) & (df['sequence'] == 'A')).then(pl.lit('#00F10010'))
-                .when((df['element_type'] == 1) & (df['sequence'] == 'C')).then(pl.lit('#341BFF10'))
-                .when((df['element_type'] == 1) & (df['sequence'] == 'G')).then(pl.lit('#D37D2810'))
-                .when((df['element_type'] == 1) & (df['sequence'] == 'T')).then(pl.lit('#FF003010'))
-                .when(df['element_type'] == 2).then(pl.lit('#7618DC10'))
-                .when(df['element_type'] == 3).then(pl.lit('#FFFFFF10'))
-                .when((df['element_type'] == 4) & (df['sequence'] == 'A')).then(pl.lit('#00F10000'))
-                .when((df['element_type'] == 4) & (df['sequence'] == 'C')).then(pl.lit('#341BFF00'))
-                .when((df['element_type'] == 4) & (df['sequence'] == 'G')).then(pl.lit('#D37D2800'))
-                .when((df['element_type'] == 4) & (df['sequence'] == 'T')).then(pl.lit('#FF003000'))
-                .otherwise(pl.lit('#00000010'))
-                .alias('color')
+        df = df.with_columns(
+            pl.when(df["element_type"] == 0)
+            .then(pl.lit("#CCCCCC"))
+            .when((df["element_type"] == 1) & (df["sequence"] == "A"))
+            .then(pl.lit("#00F10010"))
+            .when((df["element_type"] == 1) & (df["sequence"] == "C"))
+            .then(pl.lit("#341BFF10"))
+            .when((df["element_type"] == 1) & (df["sequence"] == "G"))
+            .then(pl.lit("#D37D2810"))
+            .when((df["element_type"] == 1) & (df["sequence"] == "T"))
+            .then(pl.lit("#FF003010"))
+            .when(df["element_type"] == 2)
+            .then(pl.lit("#7618DC10"))
+            .when(df["element_type"] == 3)
+            .then(pl.lit("#FFFFFF10"))
+            .when((df["element_type"] == 4) & (df["sequence"] == "A"))
+            .then(pl.lit("#00F10000"))
+            .when((df["element_type"] == 4) & (df["sequence"] == "C"))
+            .then(pl.lit("#341BFF00"))
+            .when((df["element_type"] == 4) & (df["sequence"] == "G"))
+            .then(pl.lit("#D37D2800"))
+            .when((df["element_type"] == 4) & (df["sequence"] == "T"))
+            .then(pl.lit("#FF003000"))
+            .otherwise(pl.lit("#00000010"))
+            .alias("color")
         )
 
         # Add a line to show deletions more clearly
         h2 = 0.1
-        df_extra = (df.filter(df['element_type'] == 3)
-                        .with_columns(pl.col("read_num").alias("y0") * -1 - h2 / 2)
-                        .with_columns(pl.col("read_num").alias("y1") * -1 + h2 / 2)
-                        .with_columns(pl.lit('#00000010').alias('color')))
+        df_extra = (
+            df.filter(df["element_type"] == 3)
+            .with_columns(pl.col("read_num").alias("y0") * -1 - h2 / 2)
+            .with_columns(pl.col("read_num").alias("y1") * -1 + h2 / 2)
+            .with_columns(pl.lit("#00000010").alias("color"))
+        )
         df = df.vstack(df_extra)
 
         # Add a column to account for column max width
-        df = df.with_columns(pl.col("reference_start").alias("reference_end_padded") + pl.col("column_width"))
+        df = df.with_columns(
+            pl.col("reference_start").alias("reference_end_padded")
+            + pl.col("column_width")
+        )
 
         # Get sample names
         # samples_df = (df.filter(df['element_type'] == 0)
@@ -317,56 +353,59 @@ class GenomeShader:
         # ]
         # hover = HoverTool(tooltips=tooltips)
 
-        boxes = hv.Rectangles((
-            list(df["reference_start"]),
-            list(df["y0"]),
-            list(df["reference_end_padded"]),
-            list(df["y1"]),
-            list(df["color"]),
-            list(df["sample_name"])
-        ), vdims=["color", "sample_name"]).opts(
+        boxes = hv.Rectangles(
+            (
+                list(df["reference_start"]),
+                list(df["y0"]),
+                list(df["reference_end_padded"]),
+                list(df["y1"]),
+                list(df["color"]),
+                list(df["sample_name"]),
+            ),
+            vdims=["color", "sample_name"],
+        ).opts(
             width=width,
             height=height - 100,
-
-            color='color',
+            color="color",
             line_width=0,
-
             xlabel="",
             xformatter=BasicTickFormatter(use_scientific=False),
-
             ylim=(-28, 1),
             ylabel="",
-            #yticks=list(zip(range(0, -len(samples_df['sample_name']), -1), samples_df['sample_name'])),
-
+            # yticks=list(zip(range(0, -len(samples_df['sample_name']), -1), samples_df['sample_name'])),
             title=f"Read visualization ({chr}:{start:,}-{stop:,})",
             fontscale=1.3,
-
-            tools=['xwheel_zoom', 'ywheel_zoom', 'pan'],
-            active_tools=['xwheel_zoom', 'ywheel_zoom', 'pan'],
-            default_tools=['reset', 'save']
+            tools=["xwheel_zoom", "ywheel_zoom", "pan"],
+            active_tools=["xwheel_zoom", "ywheel_zoom", "pan"],
+            default_tools=["reset", "save"],
         )
 
-        range_box = hv.Rectangles((
-            list(df["reference_start"]),
-            list(df["y0"]),
-            list(df["reference_end"]),
-            list(df["y1"]),
-            list(df["color"])
-        ), vdims="color").opts(
+        range_box = hv.Rectangles(
+            (
+                list(df["reference_start"]),
+                list(df["y0"]),
+                list(df["reference_end"]),
+                list(df["y1"]),
+                list(df["color"]),
+            ),
+            vdims="color",
+        ).opts(
             width=width,
             height=100,
-
-            color='color',
+            color="color",
             line_width=0,
-
             xlabel="",
             xformatter=BasicTickFormatter(use_scientific=False),
-
             yaxis=None,
-            default_tools=[]
+            default_tools=[],
         )
 
-        RangeToolLink(range_box, boxes, axes=['x'], boundsx=(df["reference_start"].min(), df["reference_end"].max()))
+        RangeToolLink(
+            range_box,
+            boxes,
+            axes=["x"],
+            boundsx=(df["reference_start"].min(), df["reference_end"].max()),
+        )
 
         layout = (boxes + range_box).cols(1)
         layout.opts(opts.Layout(shared_axes=False, merge_tools=False))
@@ -380,12 +419,16 @@ class GenomeShader:
         self._session.print()
 
 
-def init(session_name: str,
-         gcs_session_dir: str = None,
-         genome_build: GenomeBuild = GenomeBuild.GRCh38) -> GenomeShader:
-    session = GenomeShader(session_name=session_name,
-                           gcs_session_dir=gcs_session_dir,
-                           genome_build=genome_build)
+def init(
+    session_name: str,
+    gcs_session_dir: str = None,
+    genome_build: GenomeBuild = GenomeBuild.GRCh38,
+) -> GenomeShader:
+    session = GenomeShader(
+        session_name=session_name,
+        gcs_session_dir=gcs_session_dir,
+        genome_build=genome_build,
+    )
 
     return session
 
