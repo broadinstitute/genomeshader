@@ -1,6 +1,3 @@
-use anyhow::Result;
-use gag::Gag;
-
 pub fn local_guess_curl_ca_bundle() {
     // See https://github.com/rust-bio/rust-htslib/issues/404
     if std::env::var("CURL_CA_BUNDLE").is_err() {

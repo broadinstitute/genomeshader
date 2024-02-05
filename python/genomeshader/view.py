@@ -178,8 +178,8 @@ class GenomeShader:
     def show(
         self,
         locus_or_dataframe: Union[str, pl.DataFrame],
-        width: int = 980,
-        height: int = 400,
+        width: int = 1000,
+        height: int = 1000,
         vertical: bool = False,
         expand: bool = False,
     ) -> hv.Rectangles:
@@ -342,11 +342,11 @@ class GenomeShader:
         )
 
         # Get sample names
-        # samples_df = (df.filter(df['element_type'] == 0)
-        #     .group_by("sample_name")
-        #     .first()
-        #     .drop(['reference_contig', 'is_forward', 'query_name', 'read_group', 'element_type', 'sequence', 'color', 'read_num', 'y1'])
-        #     .sort("y0", descending=True))
+        samples_df = (df.filter(df['element_type'] == 0)
+            .group_by("sample_name")
+            .first()
+            .drop(['reference_contig', 'is_forward', 'query_name', 'read_group', 'element_type', 'sequence', 'color', 'read_num', 'y1'])
+            .sort("y0", descending=True))
 
         # tooltips = [
         #     ('Sample Name', '@sample_name')
@@ -370,10 +370,10 @@ class GenomeShader:
             line_width=0,
             xlabel="",
             xformatter=BasicTickFormatter(use_scientific=False),
-            ylim=(-28, 1),
+            ylim=(-49, 1),
             ylabel="",
-            # yticks=list(zip(range(0, -len(samples_df['sample_name']), -1), samples_df['sample_name'])),
-            title=f"Read visualization ({chr}:{start:,}-{stop:,})",
+            yticks=list(zip(range(0, -len(samples_df['sample_name']), -1), samples_df['sample_name'])),
+            title=f"{chr}:{start:,}-{stop:,}",
             fontscale=1.3,
             tools=["xwheel_zoom", "ywheel_zoom", "pan"],
             active_tools=["xwheel_zoom", "ywheel_zoom", "pan"],
@@ -421,13 +421,11 @@ class GenomeShader:
 
 def init(
     session_name: str,
-    gcs_session_dir: str = None,
-    genome_build: GenomeBuild = GenomeBuild.GRCh38,
+    gcs_session_dir: str = None
 ) -> GenomeShader:
     session = GenomeShader(
         session_name=session_name,
-        gcs_session_dir=gcs_session_dir,
-        genome_build=genome_build,
+        gcs_session_dir=gcs_session_dir
     )
 
     return session

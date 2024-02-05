@@ -25,6 +25,7 @@ kdam = { version = "*", features = ["notebook", "rayon"] }
 gag = "*"
 google-cloud-storage = "*"
 glob = "0.3"
+humansize = "*"
 indicatif = { version = "*", features = ["rayon"] }
 iset = "0.2.2"
 lazy_static = "*"

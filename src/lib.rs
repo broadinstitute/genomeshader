@@ -162,10 +162,23 @@ impl Session {
                     .finish()
                     .unwrap()
                     .lazy()
+                    // .filter(
+                    //     col("reference_end").gt(lit(range.start))
+                    //     .and(
+                    //     col("reference_start").gt(lit(range.end))
+                    //     )
+                    // )
                     .filter(
-                        col("reference_end")
+                        col("reference_start")
                             .gt(lit(range.start))
-                            .and(col("reference_start").gt(lit(range.end)))
+                            .and(col("reference_start"))
+                            .lt(lit(range.end))
+                            .or(
+                                col("reference_end")
+                                    .gt(lit(range.start))
+                                    .and(col("reference_end"))
+                                    .lt(lit(range.end))
+                            )
                     )
                     .collect()
                     .unwrap();
@@ -218,7 +231,11 @@ impl Session {
         println!("Staging:");
         for (chr, subtree) in &self.staged_tree {
             for (range, path) in subtree.unsorted_iter() {
-                println!(" - {} {:?} {:?}", chr, range, path);
+                let file_size = match path.metadata() {
+                    Ok(metadata) => { humansize::format_size(metadata.len(), humansize::DECIMAL) }
+                    Err(_) => "0 B".to_string(),
+                };
+                println!(" - {}:{}-{} {:?} ({})", chr, range.start, range.end, path, file_size);
             }
         }
     }
