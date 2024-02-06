@@ -1,7 +1,9 @@
 pub fn local_guess_curl_ca_bundle() {
     // See https://github.com/rust-bio/rust-htslib/issues/404
-    if std::env::var("CURL_CA_BUNDLE").is_err() {
-        std::env::set_var("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt");
+    let ca_file = "/etc/ssl/certs/ca-certificates.crt";
+
+    if std::env::var("CURL_CA_BUNDLE").is_err() && std::path::Path::new(ca_file).exists() {
+        std::env::set_var("CURL_CA_BUNDLE", ca_file);
     }
 }
 

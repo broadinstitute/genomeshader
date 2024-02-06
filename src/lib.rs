@@ -162,12 +162,6 @@ impl Session {
                     .finish()
                     .unwrap()
                     .lazy()
-                    // .filter(
-                    //     col("reference_end").gt(lit(range.start))
-                    //     .and(
-                    //     col("reference_start").gt(lit(range.end))
-                    //     )
-                    // )
                     .filter(
                         col("reference_start")
                             .gt(lit(range.start))
@@ -256,6 +250,7 @@ fn _version() -> PyResult<String> {
 /// import the module.
 #[pymodule]
 fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(_gcs_download_file, m)?)?;
     m.add_function(wrap_pyfunction!(_gcs_list_files_of_type, m)?)?;
     m.add_function(wrap_pyfunction!(_init, m)?)?;
     m.add_function(wrap_pyfunction!(_version, m)?)?;

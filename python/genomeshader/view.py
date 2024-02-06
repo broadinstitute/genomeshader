@@ -7,11 +7,11 @@ import polars as pl
 
 # import datashader as ds
 # import datashader.transfer_functions as tf
+# import holoviews.operation.datashader as hd
 
+import panel as pn
 import holoviews as hv
 from holoviews import opts
-
-# import holoviews.operation.datashader as hd
 from holoviews.plotting.links import RangeToolLink
 
 from bokeh.models.formatters import BasicTickFormatter
@@ -43,15 +43,40 @@ class GenomeBuild(Enum):
     chm13v2_0 = "chm13v2.0"
 
 
+genomes = {
+    "chm13v2.0": {
+        "name": "Human (T2T CHM13-v2.0)",
+        "fasta": "genomes/chm13v2.0/chm13v2.0.ebv.fa",
+        "index": "genomes/chm13v2.0/chm13v2.0.ebv.fa.fai",
+        "cytoband": "genomes/chm13v2.0/CHM13_v2.0.cytoBandMapped.bed.gz",
+        "genes": "genomes/chm13v2.0/chm13_genes.bed.gz",
+        "trf": "genomes/chm13v2.0/trf.bb.bed.gz",
+    },
+    "GRCh38": {
+        "name": "Human (GRCh38/hg38)",
+        "fasta": "genomes/grch38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa",
+        "index": "genomes/grch38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa.fai",
+        "cytoband": "genomes/grch38/cytoBandIdeo.bed.gz",
+        "genes": "genomes/grch38/grch38_genes.bed.gz",
+        "trf": "genomes/grch38/human_GRCh38_no_alt_analysis_set.trf.bed.gz",
+    },
+}
+
+
 class GenomeShader:
-    def __init__(self, session_name: str = None, gcs_session_dir: str = None):
+    def __init__(
+        self,
+        session_name: str,
+        genomes_root: str,
+        gcs_session_dir: str = None,
+    ):
         self._validate_session_name(session_name)
         self.session_name = session_name
 
         if gcs_session_dir is None:
             if "GOOGLE_BUCKET" in os.environ:
                 bucket = os.environ["GOOGLE_BUCKET"]
-                gcs_session_dir = f"{bucket}/GenomeShader/{session_name}"
+                gcs_session_dir = f"{bucket}/genomeshader/{session_name}"
             else:
                 raise ValueError(
                     "gcs_session_dir is None and "
@@ -60,6 +85,7 @@ class GenomeShader:
 
         self._validate_gcs_session_dir(gcs_session_dir)
         self.gcs_session_dir = gcs_session_dir
+        self.genomes_root = genomes_root
 
         self._session = gs._init()
 
@@ -81,7 +107,7 @@ class GenomeShader:
 
     def __str__(self):
         return (
-            f"GenomeShader:\n"
+            f"genomeshader:\n"
             f" - session_name: {self.session_name}\n"
             f" - gcs_session_dir: {self.gcs_session_dir}\n"
             f" - genome_build: {self.genome_build}\n"
@@ -175,6 +201,106 @@ class GenomeShader:
         """
         return self._session.get_locus(locus)
 
+    def ideogram(self, genome_build: GenomeBuild = GenomeBuild.GRCh38) -> pl.DataFrame:
+        # Retrieve cytoband file path from the genome build information
+        cytobands_txt = f'{self.genomes_root}/{genomes[genome_build.value]["cytoband"]}'
+
+        # Read cytoband data into a DataFrame
+        ideo = pl.read_csv(
+            cytobands_txt,
+            has_header=False,
+            separator="\t",
+            new_columns=["chrom", "start", "end", "name", "gieStain"],
+        )
+
+        # Calculate the width of each band and add it as a new column
+        ideo = ideo.with_columns((pl.col("end") - pl.col("start")).alias("width"))
+
+        # Define colors for different chromosome stains
+        color_lookup = {
+            "gneg": "#ffffff",
+            "gpos25": "#c0c0c0",
+            "gpos50": "#808080",
+            "gpos75": "#404040",
+            "gpos100": "#000000",
+            "acen": "#660033",
+            "gvar": "#660099",
+            "stalk": "#6600cc",
+        }
+
+        # Map the gieStain values to their corresponding colors
+        ideo = ideo.with_columns(
+            pl.col("gieStain").alias("color").replace(color_lookup)
+        )
+
+        # Normalize chromosome names and calculate the y-position for plotting
+        ideo = (
+            ideo.filter(
+                ~(
+                    (pl.col("chrom").str.contains("chrUn"))
+                    | (pl.col("chrom").str.contains("_random"))
+                    | (pl.col("chrom").str.contains("_alt"))
+                )
+            )
+            .with_columns(
+                (
+                    pl.col("chrom")
+                    .replace("chrX", "chr23")
+                    .replace("chrY", "chr24")
+                    .replace("chrMT", "chr25")
+                    .replace("chrM", "chr25")
+                    .replace("chrEBV", "chr26")
+                    .str.replace("chr", "")
+                    .cast(pl.Int64)
+                    - 1
+                ).alias("y")
+            )
+            .sort(["chrom", "start", "end"])
+        )
+
+        # Set the height for the chromosome bands in the plot
+        h1 = 0.7
+        ideo = ideo.with_columns(
+            [
+                (pl.col("y") * -1 - h1 / 2).alias("y0"),
+                (pl.col("y") * -1 + h1 / 2).alias("y1"),
+            ]
+        )
+
+        return ideo
+
+    def show_ideogram(
+        self, genome_build: GenomeBuild = GenomeBuild.GRCh38
+    ) -> hv.Rectangles:
+        ideo = self.ideogram(genome_build)
+
+        # Extract chromosome names for y-axis labels
+        chr_names_df = ideo.group_by("chrom").first().sort("y")
+
+        # Create the HoloViews Rectangles object for visualization
+        boxes = hv.Rectangles(
+            (
+                list(ideo["start"]),
+                list(ideo["y0"]),
+                list(ideo["end"]),
+                list(ideo["y1"]),
+                list(ideo["color"]),
+            ),
+            vdims=["color"],
+        ).opts(
+            width=1000,
+            height=1000,
+            color="color",
+            xlabel="",
+            ylabel="",
+            xformatter=BasicTickFormatter(use_scientific=False),
+            yticks=list(
+                zip(range(0, -len(chr_names_df["chrom"]), -1), chr_names_df["chrom"])
+            ),
+        )
+
+        return boxes
+
     def show(
         self,
         locus_or_dataframe: Union[str, pl.DataFrame],
@@ -182,6 +308,7 @@ class GenomeShader:
         height: int = 1000,
         vertical: bool = False,
         expand: bool = False,
+        group_by: str = None,
     ) -> hv.Rectangles:
         """
         Visualizes genomic data in a HoloViz interactive widget.
@@ -217,65 +344,44 @@ class GenomeShader:
 
         pieces = re.split("[:-]", re.sub(",", "", locus))
 
-        chr = pieces[0]
+        chrom = pieces[0]
         start = int(pieces[1])
         stop = int(pieces[2]) if len(pieces) > 2 else start
 
-        df = df.sort(["sample_name", "query_name", "reference_start"])
+        df = df.filter(pl.col("element_type") != 0)
 
-        adf = df.filter(df["element_type"] != 0)
-        bdf = (
-            df.filter(df["element_type"] == 0)
-            .group_by("sample_name")
-            .agg(
-                [
-                    pl.col("cohort").first().alias("cohort"),
-                    pl.col("bam_path").first().alias("bam_path"),
-                    pl.col("reference_contig").first().alias("reference_contig"),
-                    pl.col("reference_start").min().alias("reference_start"),
-                    pl.col("reference_end").max().alias("reference_end"),
-                    pl.col("is_forward").first().alias("is_forward"),
-                    pl.col("query_name").first().alias("query_name"),
-                    pl.col("haplotype").first().alias("haplotype"),
-                    pl.col("read_group").first().alias("read_group"),
-                    pl.col("element_type").first().alias("element_type"),
-                    pl.col("sequence").first().alias("sequence"),
-                    pl.col("column_width").first().alias("column_width"),
-                ]
-            )
-            .select(
-                [
-                    "cohort",
-                    "bam_path",
-                    "reference_contig",
-                    "reference_start",
-                    "reference_end",
-                    "is_forward",
-                    "query_name",
-                    "haplotype",
-                    "read_group",
-                    "sample_name",
-                    "element_type",
-                    "sequence",
-                    "column_width",
-                ]
-            )
-        )
+        if group_by is not None:
+            df = df.sort(pl.col(group_by))
 
-        df = pl.concat([bdf, adf], rechunk=True).sort(["sample_name", "element_type"])
-
+        sample_names = []
+        group_names = []
         y0s = []
         y0 = 0
         if not expand:
             sample_name = None
+            group_name = None
             for row in df.iter_rows(named=True):
                 if sample_name is None:
                     sample_name = row["sample_name"]
+                    group_name = row[group_by] if group_by is not None else ""
+                    sample_names.append(sample_name)
+                    group_names.append(group_name)
                     y0 = 0
 
                 if sample_name != row["sample_name"]:
+                    if group_by and group_name != row[group_by]:
+                        group_name = row[group_by]
+                        sample_names.append("")
+                        group_names.append("")
+                        group_names.append(group_name)
+                        y0 += 1
+                    else:
+                        group_names.append("")
+
                     sample_name = row["sample_name"]
+                    sample_names.append(sample_name)
                     y0 += 1
+
 
                 y0s.append(y0)
         else:
@@ -342,16 +448,68 @@ class GenomeShader:
         )
 
         # Get sample names
-        samples_df = (df.filter(df['element_type'] == 0)
-            .group_by("sample_name")
+        samples_df = (
+            df.group_by("sample_name")
             .first()
-            .drop(['reference_contig', 'is_forward', 'query_name', 'read_group', 'element_type', 'sequence', 'color', 'read_num', 'y1'])
-            .sort("y0", descending=True))
+            .drop(
+                [
+                    "reference_contig",
+                    "is_forward",
+                    "query_name",
+                    "read_group",
+                    "element_type",
+                    "sequence",
+                    "color",
+                    "read_num",
+                    "y1",
+                ]
+            )
+            .sort("y0", descending=True)
+        )
 
         # tooltips = [
         #     ('Sample Name', '@sample_name')
         # ]
         # hover = HoverTool(tooltips=tooltips)
+
+        ideo = self.ideogram(GenomeBuild.GRCh38)
+        ideo = ideo.filter(pl.col("chrom") == chrom)
+        ideo = ideo.select(["start", "y0", "end", "y1", "color"])
+        ideo = ideo.vstack(
+            pl.DataFrame(
+                {
+                    "start": [start],
+                    "y0": [ideo["y0"][0] - 0.15],
+                    "end": [stop],
+                    "y1": [ideo["y1"][0] + 0.15],
+                    "color": ["#cc0000"],
+                }
+            )
+        )
+
+        # Create the HoloViews Rectangles object for visualization without ticks on the axes and disable zooming
+        ideo_boxes = hv.Rectangles(
+            (
+                list(ideo["start"]),
+                list(ideo["y0"]),
+                list(ideo["end"]),
+                list(ideo["y1"]),
+                list(ideo["color"]),
+            ),
+            vdims=["color"],
+        ).opts(
+            width=width,
+            height=35,
+            color="color",
+            line_width=0.1,
+            xlabel="",
+            ylabel="",
+            xaxis=None,
+            yaxis=None,
+            tools=[],
+            active_tools=[],
+            default_tools=[],
+        )
 
         boxes = hv.Rectangles(
             (
@@ -372,12 +530,82 @@ class GenomeShader:
             xformatter=BasicTickFormatter(use_scientific=False),
             ylim=(-49, 1),
             ylabel="",
-            yticks=list(zip(range(0, -len(samples_df['sample_name']), -1), samples_df['sample_name'])),
-            title=f"{chr}:{start:,}-{stop:,}",
+            yticks=list(
+                zip(
+                    range(0, -len(sample_names), -1),
+                    sample_names
+                    # range(0, -len(samples_df["sample_name"]), -1),
+                    # samples_df["sample_name"],
+                )
+            ),
+            title=f"{chrom}:{start:,}-{stop:,}",
             fontscale=1.3,
             tools=["xwheel_zoom", "ywheel_zoom", "pan"],
             active_tools=["xwheel_zoom", "ywheel_zoom", "pan"],
             default_tools=["reset", "save"],
+            toolbar="right",
+        )
+
+        genes_df = pl.read_csv(
+            f'{self.genomes_root}/{genomes[GenomeBuild.GRCh38.value]["genes"]}',
+            separator="\t",
+        )
+        genes_df = genes_df.filter(
+            (pl.col("chrom") == chrom)
+            & (pl.col("txStart") <= stop)
+            & (pl.col("txEnd") >= start)
+        )
+        genes_df = genes_df.with_columns(
+            [
+                pl.col("txStart").alias("reference_start"),
+                pl.col("txEnd").alias("reference_end"),
+                pl.lit(0.4).alias("y0"),
+                pl.lit(0.6).alias("y1"),
+            ]
+        )
+
+        exons_df = (
+            genes_df.with_columns(
+                [
+                    pl.col("exonStarts").str.split(",").alias("reference_start"),
+                    pl.col("exonEnds").str.split(",").alias("reference_end"),
+                ]
+            )
+            .explode(["reference_start", "reference_end"])
+            .filter(pl.col("reference_start") != "")
+            .with_columns(
+                [
+                    pl.col("reference_start").cast(pl.Int64).alias("reference_start"),
+                    pl.col("reference_end").cast(pl.Int64).alias("reference_end"),
+                    pl.lit(0.0).alias("y0"),
+                    pl.lit(1.0).alias("y1"),
+                ]
+            )
+        )
+
+        genes_exons_df = genes_df.vstack(exons_df)
+
+        genes_exons_box = hv.Rectangles(
+            (
+                list(genes_exons_df["reference_start"]),
+                list(genes_exons_df["y0"]),
+                list(genes_exons_df["reference_end"]),
+                list(genes_exons_df["y1"]),
+                ["#0000ff"] * len(list(genes_exons_df["reference_start"])),
+            ),
+            vdims="color",
+        ).opts(
+            width=width,
+            height=30,
+            color="color",
+            line_width=0.1,
+            xlabel="",
+            ylabel="",
+            xaxis=None,
+            yaxis=None,
+            tools=[],
+            active_tools=[],
+            default_tools=[],
         )
 
         range_box = hv.Rectangles(
@@ -397,6 +625,8 @@ class GenomeShader:
             xlabel="",
             xformatter=BasicTickFormatter(use_scientific=False),
             yaxis=None,
+            tools=[],
+            active_tools=[],
             default_tools=[],
         )
 
@@ -407,7 +637,14 @@ class GenomeShader:
             boundsx=(df["reference_start"].min(), df["reference_end"].max()),
         )
 
-        layout = (boxes + range_box).cols(1)
+        RangeToolLink(
+            range_box,
+            genes_exons_box,
+            axes=["x"],
+            boundsx=(df["reference_start"].min(), df["reference_end"].max()),
+        )
+
+        layout = (ideo_boxes + boxes + genes_exons_box + range_box).cols(1)
         layout.opts(opts.Layout(shared_axes=False, merge_tools=False))
 
         return layout
@@ -420,12 +657,12 @@ class GenomeShader:
 
 
 def init(
-    session_name: str,
-    gcs_session_dir: str = None
+    session_name: str, genomes_root: str, gcs_session_dir: str = None
 ) -> GenomeShader:
     session = GenomeShader(
         session_name=session_name,
-        gcs_session_dir=gcs_session_dir
+        genomes_root=genomes_root,
+        gcs_session_dir=gcs_session_dir,
     )
 
     return session

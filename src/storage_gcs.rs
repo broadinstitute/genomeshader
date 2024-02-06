@@ -4,6 +4,8 @@ use pyo3::prelude::*;
 use cloud_storage::{ sync::*, ListRequest, object::ObjectList };
 use chrono::{ DateTime, Utc };
 
+use crate::env::gcs_authorize_data_access;
+
 pub fn gcs_split_path(path: &String) -> (String, String) {
     let re = regex::Regex::new(r"^gs://").unwrap();
     let path = re.replace(&path, "");
@@ -33,6 +35,21 @@ pub fn gcs_get_file_update_time(path: &String) -> Result<DateTime<Utc>> {
     let object = client.object().read(&bucket_name, &prefix)?;
 
     Ok(object.updated)
+}
+
+#[pyfunction]
+pub fn _gcs_download_file(path: String) -> PyResult<String> {
+    let (bucket_name, prefix) = gcs_split_path(&path);
+    let filename = prefix.split('/').last().unwrap_or_default().to_string();
+
+    if !std::path::Path::new(&filename).exists() {
+        let client = Client::new().unwrap();
+        let bytes = client.object().download(&bucket_name, &prefix).unwrap();
+
+        std::fs::write(&filename, &bytes)?;
+    }
+
+    Ok(filename)
 }
 
 #[pyfunction]
