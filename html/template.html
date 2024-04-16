@@ -232,28 +232,82 @@ function openSidebar() {
 </script>
 
 <script type="module">
-import { Application } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
+import { Application, Graphics, isWebGPUSupported } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
 
-// Asynchronous IIFE
-(async () =>
-{
+// Create a PixiJS application.
+const app = new Application();
+
+console.log(await isWebGPUSupported());
+
+// Function to initialize and render the PixiJS application.
+async function renderPixiApp() {
     // Get main HTMLElement.
     var main = document.querySelector('main');
-    // var main = document.querySelector('#viewer');
-
-    // Create a PixiJS application.
-    const app = new Application();
 
     // Intialize the application.
     await app.init({
-        antialias: true,
-        backgroundColor: '#3985ff',
+        antialias: false,
+        backgroundColor: '#ffffff',
         resizeTo: main,
     });
 
     // Then adding the application's canvas to the DOM body.
     main.appendChild(app.canvas);
-})();
+
+    // Call the function to draw the rectangle.
+    await drawIdeogram(main);
+}
+
+// Function to draw the ideogram.
+async function drawIdeogram(main) {
+    const graphics = new Graphics();
+
+    graphics.lineStyle(1, 0x33);
+    graphics.beginFill(0xffffff);
+    graphics.rect(15, 40, 20, main.offsetHeight - 100);
+    graphics.endFill();
+
+    graphics.lineStyle(0, 0x33);
+    graphics.beginFill(0xcccccc);
+    graphics.rect(15, 40, 20, 100);
+    graphics.endFill();
+
+    graphics.lineStyle(0, 0x33);
+    graphics.beginFill(0xeecccc);
+    graphics.rect(15, 140, 20, 100);
+    graphics.endFill();
+
+    graphics.lineStyle(0, 0x33);
+    graphics.beginFill(0xccffcc);
+    graphics.rect(15, 240, 20, main.offsetHeight - 100 - 200);
+    graphics.endFill();
+
+    graphics.lineStyle(2, 0x00);
+    graphics.beginFill(0x000000);
+    graphics.rect(15, 301, 20, 29);
+    graphics.endFill();
+
+    graphics.lineStyle(0, 0x33);
+    graphics.beginFill(0xff0000);
+    graphics.moveTo(15, 300);
+    graphics.lineTo(35, 300);
+    graphics.lineTo(25, 315);
+    graphics.lineTo(15, 300);
+    graphics.endFill();
+
+    graphics.lineStyle(0, 0x33);
+    graphics.beginFill(0xff0000);
+    graphics.moveTo(15, 330);
+    graphics.lineTo(35, 330);
+    graphics.lineTo(25, 315);
+    graphics.lineTo(15, 330);
+    graphics.endFill();
+
+    app.stage.addChild(graphics);
+}
+
+// Call the function initially
+renderPixiApp();
 </script>
 
 </body>
