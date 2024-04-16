@@ -218,6 +218,24 @@ Hello
 </aside>
 
 <script>
+var zoom = 0;
+
+document.addEventListener('wheel', function(e) {
+    if (e.deltaY < 0) {
+        zoom += e.deltaY;
+        console.log('Zooming in ' + zoom);
+        // Insert zoom in functionality here
+    }
+    else if (e.deltaY > 0) {
+        zoom += e.deltaY;
+        console.log('Zooming out ' + zoom);
+        // Insert zoom out functionality here
+    }
+});
+
+</script>
+
+<script>
 function closeSidebar() {
     document.querySelector('.sidebar-icon-close').style.display = 'none';
     document.querySelector('.sidebar-icon-open').style.display = 'block';
@@ -232,21 +250,21 @@ function openSidebar() {
 </script>
 
 <script type="module">
-import { Application, Graphics, isWebGPUSupported } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
+import { Application, Graphics, Text, TextStyle, Color } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
 
 // Create a PixiJS application.
 const app = new Application();
 
-console.log(await isWebGPUSupported());
-
 // Function to initialize and render the PixiJS application.
-async function renderPixiApp() {
+async function renderApp() {
     // Get main HTMLElement.
     var main = document.querySelector('main');
 
     // Intialize the application.
     await app.init({
         antialias: false,
+        resolution: window.devicePixelRatio || 1,
+        autoDensity: true,
         backgroundColor: '#ffffff',
         resizeTo: main,
     });
@@ -254,8 +272,10 @@ async function renderPixiApp() {
     // Then adding the application's canvas to the DOM body.
     main.appendChild(app.canvas);
 
-    // Call the function to draw the rectangle.
+    // Draw the various components of the app.
     await drawIdeogram(main);
+    await drawRuler(main);
+    await drawTranscripts(main);
 }
 
 // Function to draw the ideogram.
@@ -264,50 +284,126 @@ async function drawIdeogram(main) {
 
     graphics.lineStyle(1, 0x33);
     graphics.beginFill(0xffffff);
-    graphics.rect(15, 40, 20, main.offsetHeight - 100);
+    graphics.rect(15, 40, 18, main.offsetHeight - 150);
     graphics.endFill();
 
     graphics.lineStyle(0, 0x33);
     graphics.beginFill(0xcccccc);
-    graphics.rect(15, 40, 20, 100);
+    graphics.rect(15, 40, 18, 100);
     graphics.endFill();
 
     graphics.lineStyle(0, 0x33);
     graphics.beginFill(0xeecccc);
-    graphics.rect(15, 140, 20, 100);
+    graphics.rect(15, 140, 18, 100);
     graphics.endFill();
 
     graphics.lineStyle(0, 0x33);
     graphics.beginFill(0xccffcc);
-    graphics.rect(15, 240, 20, main.offsetHeight - 100 - 200);
+    graphics.rect(15, 240, 18, main.offsetHeight - 350);
     graphics.endFill();
 
     graphics.lineStyle(2, 0x00);
     graphics.beginFill(0x000000);
-    graphics.rect(15, 301, 20, 29);
+    graphics.rect(15, 301, 18, 29);
     graphics.endFill();
 
     graphics.lineStyle(0, 0x33);
     graphics.beginFill(0xff0000);
     graphics.moveTo(15, 300);
-    graphics.lineTo(35, 300);
-    graphics.lineTo(25, 315);
+    graphics.lineTo(33, 300);
+    graphics.lineTo(24, 315);
     graphics.lineTo(15, 300);
     graphics.endFill();
 
     graphics.lineStyle(0, 0x33);
     graphics.beginFill(0xff0000);
     graphics.moveTo(15, 330);
-    graphics.lineTo(35, 330);
-    graphics.lineTo(25, 315);
+    graphics.lineTo(33, 330);
+    graphics.lineTo(24, 315);
     graphics.lineTo(15, 330);
+    graphics.endFill();
+
+    app.stage.addChild(graphics);
+
+    const chrText = new Text({
+        text: 'chrX',
+        style: {
+            fontFamily: 'Helvetica',
+            fontSize: 15,
+            fill: 0x000000,
+            align: 'center',
+        }
+    });
+
+    chrText.x = 17;
+    chrText.y = main.offsetHeight - 70;
+    chrText.rotation = - Math.PI / 2;
+
+    app.stage.addChild(chrText);
+}
+
+async function drawRuler(main) {
+    const graphics = new Graphics();
+
+    graphics.lineStyle(1.0, 0x555555);
+    graphics.moveTo(105, 20);
+    graphics.lineTo(105, main.offsetHeight - 50);
+    graphics.endFill();
+
+    graphics.lineStyle(1.0, 0x555555);
+    graphics.moveTo(102, 20);
+    graphics.lineTo(108, 20);
+    graphics.endFill();
+
+    graphics.lineStyle(1.0, 0x555555);
+    graphics.moveTo(102, main.offsetHeight - 50);
+    graphics.lineTo(108, main.offsetHeight - 50);
+    graphics.endFill();
+
+    app.stage.addChild(graphics);
+
+    const locusText1 = new Text({
+        text: '15,610,000',
+        style: {
+            fontFamily: 'Helvetica',
+            fontSize: 9,
+            fill: 0x000000,
+            align: 'center',
+        },
+        x: 55,
+        y: 15,
+    });
+
+    app.stage.addChild(locusText1);
+
+    const locusText2 = new Text({
+        text: '15,595,000',
+        style: {
+            fontFamily: 'Helvetica',
+            fontSize: 9,
+            fill: 0x000000,
+            align: 'center',
+        },
+        x: 55,
+        y: main.offsetHeight - 50 - 5,
+    });
+
+    app.stage.addChild(locusText2);
+}
+
+async function drawTranscripts(main) {
+    const graphics = new Graphics();
+
+    graphics.lineStyle(1.5, 0x5555ff);
+    graphics.moveTo(130, 30);
+    graphics.lineTo(130, main.offsetHeight - 300);
     graphics.endFill();
 
     app.stage.addChild(graphics);
 }
 
 // Call the function initially
-renderPixiApp();
+renderApp();
 </script>
 
 </body>
