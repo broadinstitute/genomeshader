@@ -223,12 +223,12 @@ var zoom = 0;
 document.addEventListener('wheel', function(e) {
     if (e.deltaY < 0) {
         zoom += e.deltaY;
-        console.log('Zooming in ' + zoom);
+        // console.log('Zooming in ' + zoom);
         // Insert zoom in functionality here
     }
     else if (e.deltaY > 0) {
         zoom += e.deltaY;
-        console.log('Zooming out ' + zoom);
+        // console.log('Zooming out ' + zoom);
         // Insert zoom out functionality here
     }
 });
@@ -247,6 +247,13 @@ function openSidebar() {
     document.querySelector('.sidebar-icon-close').style.display = 'block';
     document.querySelector('aside').style.width = '300px';
 }
+</script>
+
+<script>
+    // Load data
+    var data = JSON.parse("{\"ideogram\": {\"columns\": [{\"name\": \"chrom\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\"]}, {\"name\": \"chromStart\", \"datatype\": \"Int64\", \"bit_settings\": \"\", \"values\": [0, 4200000, 9700000, 17500000, 19000000, 20500000, 25500000, 27800000, 30000000, 30900000, 33400000, 39800000, 42500000, 43300000, 44500000, 49200000, 52600000, 58800000, 59000000, 63400000, 66900000, 67000000, 67200000, 72400000, 74900000, 76300000, 78000000, 81400000, 84700000, 88500000, 93800000, 98000000]}, {\"name\": \"chromEnd\", \"datatype\": \"Int64\", \"bit_settings\": \"\", \"values\": [4200000, 9700000, 17500000, 19000000, 20500000, 25500000, 27800000, 30000000, 30900000, 33400000, 39800000, 42500000, 43300000, 44500000, 49200000, 52600000, 58800000, 59000000, 63400000, 66900000, 67000000, 67200000, 72400000, 74900000, 76300000, 78000000, 81400000, 84700000, 88500000, 93800000, 98000000, 101991189]}, {\"name\": \"name\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"p13\", \"p12\", \"p11.2\", \"p11.1\", \"q11.1\", \"q11.2\", \"q12\", \"q13.1\", \"q13.2\", \"q13.3\", \"q14\", \"q15.1\", \"q15.2\", \"q15.3\", \"q21.1\", \"q21.2\", \"q21.3\", \"q22.1\", \"q22.2\", \"q22.31\", \"q22.32\", \"q22.33\", \"q23\", \"q24.1\", \"q24.2\", \"q24.3\", \"q25.1\", \"q25.2\", \"q25.3\", \"q26.1\", \"q26.2\", \"q26.3\"]}, {\"name\": \"gieStain\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"gvar\", \"stalk\", \"gvar\", \"acen\", \"acen\", \"gneg\", \"gpos50\", \"gneg\", \"gpos50\", \"gneg\", \"gpos75\", \"gneg\", \"gpos25\", \"gneg\", \"gpos75\", \"gneg\", \"gpos75\", \"gneg\", \"gpos25\", \"gneg\", \"gpos25\", \"gneg\", \"gpos25\", \"gneg\", \"gpos25\", \"gneg\", \"gpos50\", \"gneg\", \"gpos50\", \"gneg\", \"gpos50\", \"gneg\"]}, {\"name\": \"color\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"#660099\", \"#6600cc\", \"#660099\", \"#660033\", \"#660033\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#404040\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#404040\", \"#ffffff\", \"#404040\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#808080\", \"#ffffff\"]}]}, \"otherVariable\": \"Some other data\"}");
+    var ideogramData = data.ideogram;
+    var otherVariable = data.otherVariable;
 </script>
 
 <script type="module">
@@ -273,60 +280,73 @@ async function renderApp() {
     main.appendChild(app.canvas);
 
     // Draw the various components of the app.
-    await drawIdeogram(main);
+    await drawIdeogram(main, ideogramData);
     await drawRuler(main);
     await drawTranscripts(main);
 }
 
 // Function to draw the ideogram.
-async function drawIdeogram(main) {
+async function drawIdeogram(main, ideogramData) {
     const graphics = new Graphics();
+
+    console.log(ideogramData);
+    console.log(ideogramData.columns[0]);
+
+    const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
+    const ideoWidth = 18;
+    const ideoHeight = main.offsetHeight - 150;
+    const ideoX = 15;
+    const ideoY = 40;
 
     graphics.lineStyle(1, 0x33);
     graphics.beginFill(0xffffff);
-    graphics.rect(15, 40, 18, main.offsetHeight - 150);
+    graphics.rect(ideoX, ideoY, ideoWidth, ideoHeight);
     graphics.endFill();
 
-    graphics.lineStyle(0, 0x33);
-    graphics.beginFill(0xcccccc);
-    graphics.rect(15, 40, 18, 100);
-    graphics.endFill();
+    let bandY = ideoY;
+    let acenSeen = false;
+    for (let i = ideogramData.columns[0].values.length - 1; i >= 0; i--) {
+        let bandHeight = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i])*ideoHeight/ideoLength;
+        let bandColor = ideogramData.columns[5].values[i];
 
-    graphics.lineStyle(0, 0x33);
-    graphics.beginFill(0xeecccc);
-    graphics.rect(15, 140, 18, 100);
-    graphics.endFill();
+        if (ideogramData.columns[4].values[i] == 'acen') {
+            graphics.lineStyle(2, 0x00);
+            graphics.beginFill(0xffffff);
+            graphics.rect(ideoX, bandY, ideoWidth, bandHeight);
+            graphics.endFill();
 
-    graphics.lineStyle(0, 0x33);
-    graphics.beginFill(0xccffcc);
-    graphics.rect(15, 240, 18, main.offsetHeight - 350);
-    graphics.endFill();
+            graphics.lineStyle(0, 0x33);
+            graphics.beginFill(bandColor);
 
-    graphics.lineStyle(2, 0x00);
-    graphics.beginFill(0x000000);
-    graphics.rect(15, 301, 18, 29);
-    graphics.endFill();
+            if (!acenSeen) {
+                graphics.moveTo(ideoX, bandY);
+                graphics.lineTo(ideoX + ideoWidth - 1, bandY);
+                graphics.lineTo(ideoX + (ideoWidth/2), bandY + bandHeight - 1);
+                graphics.lineTo(ideoX, bandY);
+            } else {
+                graphics.moveTo(ideoX, bandY + bandHeight);
+                graphics.lineTo(ideoX + ideoWidth - 1, bandY + bandHeight - 1);
+                graphics.lineTo(ideoX + (ideoWidth/2), bandY);
+                graphics.lineTo(ideoX, bandY + bandHeight);
+            }
 
-    graphics.lineStyle(0, 0x33);
-    graphics.beginFill(0xff0000);
-    graphics.moveTo(15, 300);
-    graphics.lineTo(33, 300);
-    graphics.lineTo(24, 315);
-    graphics.lineTo(15, 300);
-    graphics.endFill();
+            graphics.endFill();
 
-    graphics.lineStyle(0, 0x33);
-    graphics.beginFill(0xff0000);
-    graphics.moveTo(15, 330);
-    graphics.lineTo(33, 330);
-    graphics.lineTo(24, 315);
-    graphics.lineTo(15, 330);
-    graphics.endFill();
+            acenSeen = true;
+        } else {
+            graphics.lineStyle(0, 0x33);
+            graphics.beginFill(bandColor);
+            graphics.rect(ideoX, bandY, ideoWidth, bandHeight);
+            graphics.endFill();
+        }
+
+        bandY += bandHeight;
+    }
 
     app.stage.addChild(graphics);
 
     const chrText = new Text({
-        text: 'chrX',
+        text: ideogramData.columns[0].values[0],
         style: {
             fontFamily: 'Helvetica',
             fontSize: 15,

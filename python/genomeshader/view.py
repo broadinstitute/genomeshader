@@ -3,89 +3,37 @@ import re
 from enum import Enum
 from typing import Union, List
 
+import requests
 import polars as pl
 
-# import datashader as ds
-# import datashader.transfer_functions as tf
-# import holoviews.operation.datashader as hd
-
-import panel as pn
-import holoviews as hv
-from holoviews import opts
-from holoviews.plotting.links import RangeToolLink
-
-from bokeh.models.formatters import BasicTickFormatter
-
-# from bokeh.models import HoverTool
-from bokeh.resources import INLINE
-import bokeh.io
-
-# from bokeh import *
+from IPython.display import display, HTML
+import json
 
 import genomeshader.genomeshader as gs
-
-hv.extension("bokeh")
-hv.output(backend="bokeh")
-
-bokeh.io.output_notebook(INLINE)
-
-base_colors = {
-    "A": "#00F100",
-    "C": "#341BFF",
-    "G": "#D37D2B",
-    "T": "#FF0030",
-    "N": "#CCCCCC",
-}
-
-
-class GenomeBuild(Enum):
-    GRCh38 = "GRCh38"
-    chm13v2_0 = "chm13v2.0"
-
-
-genomes = {
-    "chm13v2.0": {
-        "name": "Human (T2T CHM13-v2.0)",
-        "fasta": "genomes/chm13v2.0/chm13v2.0.ebv.fa",
-        "index": "genomes/chm13v2.0/chm13v2.0.ebv.fa.fai",
-        "cytoband": "genomes/chm13v2.0/CHM13_v2.0.cytoBandMapped.bed.gz",
-        "genes": "genomes/chm13v2.0/chm13_genes.bed.gz",
-        "trf": "genomes/chm13v2.0/trf.bb.bed.gz",
-    },
-    "GRCh38": {
-        "name": "Human (GRCh38/hg38)",
-        "fasta": "genomes/grch38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa",
-        "index": "genomes/grch38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa.fai",
-        "cytoband": "genomes/grch38/cytoBandIdeo.bed.gz",
-        "genes": "genomes/grch38/grch38_genes.bed.gz",
-        "trf": "genomes/grch38/human_GRCh38_no_alt_analysis_set.trf.bed.gz",
-    },
-}
 
 
 class GenomeShader:
     def __init__(
         self,
-        session_name: str,
-        genomes_root: str,
+        genome_build: str = 'hg38',
         gcs_session_dir: str = None,
     ):
-        self._validate_session_name(session_name)
-        self.session_name = session_name
-
         if gcs_session_dir is None:
             if "GOOGLE_BUCKET" in os.environ:
                 bucket = os.environ["GOOGLE_BUCKET"]
-                gcs_session_dir = f"{bucket}/genomeshader/{session_name}"
+                gcs_session_dir = f"{bucket}/genomeshader"
             else:
                 raise ValueError(
-                    "gcs_session_dir is None and "
-                    "GOOGLE_BUCKET is not set in environment variables"
+                    "Cannot determine where to store visualization data. "
+                    "GOOGLE_BUCKET is not set in environment variables "
+                    "and gcs_session_dir is not specified."
                 )
 
         self._validate_gcs_session_dir(gcs_session_dir)
         self.gcs_session_dir = gcs_session_dir
-        self.genomes_root = genomes_root
+
+        self._validate_genome_build(genome_build)
+        self.genome_build = genome_build
 
         self._session = gs._init()
 
@@ -99,18 +47,20 @@ class GenomeShader:
         if not gcs_pattern.match(gcs_session_dir):
             raise ValueError("Invalid GCS path")
 
-    def _validate_session_name(self, session_name: str):
-        session_pattern = re.compile("^[a-zA-Z0-9_]+$")
-
-        if not session_pattern.match(session_name):
-            raise ValueError("session_name contains special characters or whitespace")
+    def _validate_genome_build(self, genome_build: str):
+        response = requests.get("https://api.genome.ucsc.edu/list/ucscGenomes")
+        if response.status_code == 200:
+            ucsc_genomes = response.json().get('ucscGenomes', {})
+            if genome_build not in ucsc_genomes:
+                raise ValueError(f"The genome build '{genome_build}' is not available from UCSC.")
+        else:
+            raise ConnectionError("Failed to retrieve genome builds from UCSC REST API.")
 
     def __str__(self):
         return (
             f"genomeshader:\n"
-            f" - session_name: {self.session_name}\n"
-            f" - gcs_session_dir: {self.gcs_session_dir}\n"
             f" - genome_build: {self.genome_build}\n"
+            f" - gcs_session_dir: {self.gcs_session_dir}\n"
         )
 
     def session_name(self):
@@ -135,7 +85,6 @@ class GenomeShader:
         self,
         gcs_paths: Union[str, List[str]],
         cohort: str = "all",
-        genome: GenomeBuild = GenomeBuild.GRCh38,
     ):
         """
         This function attaches reads from the provided GCS paths to the
@@ -148,8 +97,6 @@ class GenomeShader:
             gcs_paths (Union[str, List[str]]): The GCS paths to attach reads.
             cohort (str, optional): An optional cohort label for the dataset.
                 Defaults to 'all'.
-            genome (GenomeBuild, optional): The reference genome build to use
-                for the reads. Defaults to GenomeBuild.GRCh38.
         """
         if isinstance(gcs_paths, str):
             gcs_paths = [gcs_paths]  # Convert single string to list
@@ -201,20 +148,20 @@ class GenomeShader:
         """
         return self._session.get_locus(locus)
 
-    def ideogram(self, genome_build: GenomeBuild = GenomeBuild.GRCh38) -> pl.DataFrame:
-        # Retrieve cytoband file path from the genome build information
-        cytobands_txt = f'{self.genomes_root}/{genomes[genome_build.value]["cytoband"]}'
+    def ideogram(self, contig: str) -> pl.DataFrame:
+        # Define the API endpoint with the contig parameter
+        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track=cytoBandIdeo"
 
-        # Read cytoband data into a DataFrame
-        ideo = pl.read_csv(
-            cytobands_txt,
-            has_header=False,
-            separator="\t",
-            new_columns=["chrom", "start", "end", "name", "gieStain"],
-        )
+        # Make a GET request to the API endpoint
+        response = requests.get(api_endpoint)
+        if response.status_code == 200:
+            data = response.json()
 
-        # Calculate the width of each band and add it as a new column
-        ideo = ideo.with_columns((pl.col("end") - pl.col("start")).alias("width"))
+            # Extract the 'contig' sub-key from the 'cytoBandIdeo' key
+            ideo_data = data.get('cytoBandIdeo', {}).get(contig, [])
+            ideo_df = pl.DataFrame(ideo_data)
+        else:
+            raise ConnectionError(f"Failed to retrieve data for contig '{contig}': {response.status_code}")
 
         # Define colors for different chromosome stains
         color_lookup = {
@@ -229,79 +176,13 @@ class GenomeShader:
         }
 
         # Map the gieStain values to their corresponding colors
-        ideo = ideo.with_columns(
+        ideo_df = ideo_df.with_columns(
             pl.col("gieStain").alias("color").replace(color_lookup)
         )
 
-        # Normalize chromosome names and calculate the y-position for plotting
-        ideo = (
-            ideo.filter(
-                ~(
-                    (pl.col("chrom").str.contains("chrUn"))
-                    | (pl.col("chrom").str.contains("_random"))
-                    | (pl.col("chrom").str.contains("_alt"))
-                )
-            )
-            .with_columns(
-                (
-                    pl.col("chrom")
-                    .replace("chrX", "chr23")
-                    .replace("chrY", "chr24")
-                    .replace("chrMT", "chr25")
-                    .replace("chrM", "chr25")
-                    .replace("chrEBV", "chr26")
-                    .str.replace("chr", "")
-                    .cast(pl.Int64)
-                    - 1
-                ).alias("y")
-            )
-            .sort(["chrom", "start", "end"])
-        )
+        return ideo_df
 
-        # Set the height for the chromosome bands in the plot
-        h1 = 0.7
-        ideo = ideo.with_columns(
-            [
-                (pl.col("y") * -1 - h1 / 2).alias("y0"),
-                (pl.col("y") * -1 + h1 / 2).alias("y1"),
-            ]
-        )
-
-        return ideo
-
-    def show_ideogram(
-        self, genome_build: GenomeBuild = GenomeBuild.GRCh38
-    ) -> hv.Rectangles:
-        ideo = self.ideogram(genome_build)
-
-        # Extract chromosome names for y-axis labels
-        chr_names_df = ideo.group_by("chrom").first().sort("y")
-
-        # Create the HoloViews Rectangles object for visualization
-        boxes = hv.Rectangles(
-            (
-                list(ideo["start"]),
-                list(ideo["y0"]),
-                list(ideo["end"]),
-                list(ideo["y1"]),
-                list(ideo["color"]),
-            ),
-            vdims=["color"],
-        ).opts(
-            width=1000,
-            height=1000,
-            color="color",
-            xlabel="",
-            ylabel="",
-            xformatter=BasicTickFormatter(use_scientific=False),
-            yticks=list(
-                zip(range(0, -len(chr_names_df["chrom"]), -1), chr_names_df["chrom"])
-            ),
-        )
-
-        return boxes
-
-    def show(
+    def show_old(
         self,
         locus_or_dataframe: Union[str, pl.DataFrame],
         width: int = 1000,
@@ -309,9 +190,9 @@ class GenomeShader:
         vertical: bool = False,
         expand: bool = False,
         group_by: str = None,
-    ) -> hv.Rectangles:
+    ):
         """
-        Visualizes genomic data in a HoloViz interactive widget.
+        Visualizes genomic data.
 
         Args:
             locus_or_dataframe (str or DataFrame): Genomic locus to visualize.
@@ -322,9 +203,6 @@ class GenomeShader:
             height (int, optional): Visualization height. Defaults to 400.
             expand (bool, optional): If True, expands each sample to show all
             reads. Defaults to False.
-
-        Returns:
-            hv.Rectangles: HoloViews Rectangles object for visualization.
         """
 
         if isinstance(locus_or_dataframe, str):
@@ -472,7 +350,7 @@ class GenomeShader:
         # ]
         # hover = HoverTool(tooltips=tooltips)
 
-        ideo = self.ideogram(GenomeBuild.GRCh38)
+        ideo = self.ideogram("hg38")
         ideo = ideo.filter(pl.col("chrom") == chrom)
         ideo = ideo.select(["start", "y0", "end", "y1", "color"])
         ideo = ideo.vstack(
@@ -487,167 +365,534 @@ class GenomeShader:
             )
         )
 
-        # Create the HoloViews Rectangles object for visualization without ticks on the axes and disable zooming
-        ideo_boxes = hv.Rectangles(
-            (
-                list(ideo["start"]),
-                list(ideo["y0"]),
-                list(ideo["end"]),
-                list(ideo["y1"]),
-                list(ideo["color"]),
-            ),
-            vdims=["color"],
-        ).opts(
-            width=width,
-            height=35,
-            color="color",
-            line_width=0.1,
-            xlabel="",
-            ylabel="",
-            xaxis=None,
-            yaxis=None,
-            tools=[],
-            active_tools=[],
-            default_tools=[],
-        )
+        # genes_df = pl.read_csv(
+        #     f'
+        #     separator="\t",
+        # )
+        # genes_df = genes_df.filter(
+        #     (pl.col("chrom") == chrom)
+        #     & (pl.col("txStart") <= stop)
+        #     & (pl.col("txEnd") >= start)
+        # )
+        # genes_df = genes_df.with_columns(
+        #     [
+        #         pl.col("txStart").alias("reference_start"),
+        #         pl.col("txEnd").alias("reference_end"),
+        #         pl.lit(0.4).alias("y0"),
+        #         pl.lit(0.6).alias("y1"),
+        #     ]
+        # )
 
-        boxes = hv.Rectangles(
-            (
-                list(df["reference_start"]),
-                list(df["y0"]),
-                list(df["reference_end_padded"]),
-                list(df["y1"]),
-                list(df["color"]),
-                list(df["sample_name"]),
-            ),
-            vdims=["color", "sample_name"],
-        ).opts(
-            width=width,
-            height=height - 100,
-            color="color",
-            line_width=0,
-            xlabel="",
-            xformatter=BasicTickFormatter(use_scientific=False),
-            ylim=(-49, 1),
-            ylabel="",
-            yticks=list(
-                zip(
-                    range(0, -len(sample_names), -1),
-                    sample_names
-                    # range(0, -len(samples_df["sample_name"]), -1),
-                    # samples_df["sample_name"],
-                )
-            ),
-            title=f"{chrom}:{start:,}-{stop:,}",
-            fontscale=1.3,
-            tools=["xwheel_zoom", "ywheel_zoom", "pan"],
-            active_tools=["xwheel_zoom", "ywheel_zoom", "pan"],
-            default_tools=["reset", "save"],
-            toolbar="right",
-        )
+        # exons_df = (
+        #     genes_df.with_columns(
+        #         [
+        #             pl.col("exonStarts").str.split(",").alias("reference_start"),
+        #             pl.col("exonEnds").str.split(",").alias("reference_end"),
+        #         ]
+        #     )
+        #     .explode(["reference_start", "reference_end"])
+        #     .filter(pl.col("reference_start") != "")
+        #     .with_columns(
+        #         [
+        #             pl.col("reference_start").cast(pl.Int64).alias("reference_start"),
+        #             pl.col("reference_end").cast(pl.Int64).alias("reference_end"),
+        #             pl.lit(0.0).alias("y0"),
+        #             pl.lit(1.0).alias("y1"),
+        #         ]
+        #     )
+        # )
 
-        genes_df = pl.read_csv(
-            f'{self.genomes_root}/{genomes[GenomeBuild.GRCh38.value]["genes"]}',
-            separator="\t",
-        )
-        genes_df = genes_df.filter(
-            (pl.col("chrom") == chrom)
-            & (pl.col("txStart") <= stop)
-            & (pl.col("txEnd") >= start)
-        )
-        genes_df = genes_df.with_columns(
-            [
-                pl.col("txStart").alias("reference_start"),
-                pl.col("txEnd").alias("reference_end"),
-                pl.lit(0.4).alias("y0"),
-                pl.lit(0.6).alias("y1"),
-            ]
-        )
+        # genes_exons_df = genes_df.vstack(exons_df)
 
-        exons_df = (
-            genes_df.with_columns(
-                [
-                    pl.col("exonStarts").str.split(",").alias("reference_start"),
-                    pl.col("exonEnds").str.split(",").alias("reference_end"),
-                ]
+    def show(
+        self,
+        locus_or_dataframe: Union[str, pl.DataFrame],
+        vertical: bool = False,
+        group_by: str = None,
+    ):
+        """
+        Visualizes genomic data.
+
+        Args:
+            locus_or_dataframe (str or DataFrame): Genomic locus to visualize.
+            Can either be specified as a locus string (e.g. 'chr:start-stop')
+            or a Polars DataFrame (usually from the get_locus() method,
+            optionally modified by the user).
+            width (int, optional): Visualization width. Defaults to 980.
+            height (int, optional): Visualization height. Defaults to 400.
+            expand (bool, optional): If True, expands each sample to show all
+            reads. Defaults to False.
+        """
+
+        if isinstance(locus_or_dataframe, str):
+            df = self.get_locus(locus_or_dataframe)
+        elif isinstance(locus_or_dataframe, pl.DataFrame):
+            df = locus_or_dataframe.clone()
+        else:
+            raise ValueError(
+                "locus_or_dataframe must be a locus string or a" "Polars DataFrame."
             )
-            .explode(["reference_start", "reference_end"])
-            .filter(pl.col("reference_start") != "")
-            .with_columns(
-                [
-                    pl.col("reference_start").cast(pl.Int64).alias("reference_start"),
-                    pl.col("reference_end").cast(pl.Int64).alias("reference_end"),
-                    pl.lit(0.0).alias("y0"),
-                    pl.lit(1.0).alias("y1"),
-                ]
-            )
-        )
 
-        genes_exons_df = genes_df.vstack(exons_df)
+        ref_chr = df["reference_contig"].min()
+        ref_start = df["reference_start"].min()
+        ref_end = df["reference_end"].max()
 
-        genes_exons_box = hv.Rectangles(
-            (
-                list(genes_exons_df["reference_start"]),
-                list(genes_exons_df["y0"]),
-                list(genes_exons_df["reference_end"]),
-                list(genes_exons_df["y1"]),
-                ["#0000ff"] * len(list(genes_exons_df["reference_start"])),
-            ),
-            vdims="color",
-        ).opts(
-            width=width,
-            height=30,
-            color="color",
-            line_width=0.1,
-            xlabel="",
-            ylabel="",
-            xaxis=None,
-            yaxis=None,
-            tools=[],
-            active_tools=[],
-            default_tools=[],
-        )
+        ideo_df = self.ideogram(ref_chr)
+        ideo_json = ideo_df.write_json()
 
-        range_box = hv.Rectangles(
-            (
-                list(df["reference_start"]),
-                list(df["y0"]),
-                list(df["reference_end"]),
-                list(df["y1"]),
-                list(df["color"]),
-            ),
-            vdims="color",
-        ).opts(
-            width=width,
-            height=100,
-            color="color",
-            line_width=0,
-            xlabel="",
-            xformatter=BasicTickFormatter(use_scientific=False),
-            yaxis=None,
-            tools=[],
-            active_tools=[],
-            default_tools=[],
-        )
+        data_to_pass = {
+            "ideogram": json.loads(ideo_json),
+            # Add other variables here as needed
+            "otherVariable": "Some other data",
+            # ...
+        }
 
-        RangeToolLink(
-            range_box,
-            boxes,
-            axes=["x"],
-            boundsx=(df["reference_start"].min(), df["reference_end"].max()),
-        )
+        data_json = json.dumps(data_to_pass)
 
-        RangeToolLink(
-            range_box,
-            genes_exons_box,
-            axes=["x"],
-            boundsx=(df["reference_start"].min(), df["reference_end"].max()),
-        )
+        inner_style = """
+            body {
+                display: grid;
+                grid-template-areas: 
+                    "header header header"
+                    "main main aside"
+                    "footer footer aside";
+                grid-template-rows: auto 1fr auto;
+                grid-template-columns: 1fr auto;
+                height: 100vh;
+                margin: 0;
+                padding: 0;
+            }
+            header {
+                grid-area: header;
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr;
+                height: 24px;
+                padding: 6px 3px;
+                background: #eeeeee;
+            }
+            .header-left {
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+            }
+            .header-center {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .header-right {
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+            }
+            .header-left i, .header-right i {
+                padding-left: 5px;
+                padding-right: 5px;
+            }
+            nav {
+                grid-area: nav;
+            }
+            main {
+                grid-area: main;
+                height: calc(100vh - 24px - 40px);
+            }
+            aside {
+                display: hidden;
+                grid-area: aside;
+                transition: width 0.3s;
+                background-color: #cccccc;
+                border-left: 1px solid #bbbbbb;
+                max-width: 300px;
+                width: 0;
+                overflow: hidden;
+            }
+            .menu-icon {
+                cursor: pointer;
+            }
+            .sidebar-icon-close {
+                display: none;
+                cursor: pointer;
+            }
+            .sidebar-icon-open {
+                cursor: pointer;
+            }
+            .report-bug-icon {
+                cursor: pointer;
+            }
+            .gear-icon {
+                cursor: pointer;
+            }
+            footer {
+                position: fixed;
+                bottom: 10px;
+                left: 10px;
+                right: 210px;
+                height: 20px;
+                padding: 6px 3px;
+                display: flex;
+                align-items: center;
+                justify-content: left;
+                color: #989898;
+                font-family: Helvetica;
+                font-size: 10pt;
+            }
+            .tab-bar {
+                height: 22px;
+                color: #ffffff;
+                font-family: Helvetica;
+                font-size: 9pt;
+                font-weight: bold;
+                background-color: #888888;
+                display: flex;
+                align-items: flex-end;
+            }
+            .tab-name {
+                color: #ffffff;
+                padding: 3px 3px;
+                margin: 2px 2px;
+                font-family: Helvetica;
+                font-size: 9pt;
+                font-weight: bold;
+            }
+            .tab-content-viewer {
+                color: #ffffff;
+                padding: 4px;
+                margin: 0px;
+                color: #a8a8a8;
+                background-color: #ffffff;
+                font-family: Helvetica;
+                font-size: 9pt;
+                font-weight: bold;
+            }
+            .tab-content-info {
+                color: #ffffff;
+                padding: 20px 8px;
+                margin: 0px;
+                color: #585858;
+                font-family: Helvetica;
+                font-size: 9pt;
+            }
+        """
 
-        layout = (ideo_boxes + boxes + genes_exons_box + range_box).cols(1)
-        layout.opts(opts.Layout(shared_axes=False, merge_tools=False))
+        inner_body = """
+            <header>
+                <div class="header-left">
+                    <i class="menu-icon" onclick="alert('Not yet implemented.')">
+                        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
+                            <g transform="translate(0, 0)">
+                                <path d="M4 6H20M4 12H20M4 18H20" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                            </g>
+                        </svg>
+                    </i>
+                </div>
+                <div class="header-center">
+                    <!-- genomeshader -->
+                </div>
+                <div class="header-right">
+                    <i class="sidebar-icon-close" onclick="closeSidebar()">
+                        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
+                            <g transform="translate(0, 0)">
+                                <path fill-rule="evenodd" d="M7.22 14.47L9.69 12 7.22 9.53a.75.75 0 111.06-1.06l3 3a.75.75 0 010 1.06l-3 3a.75.75 0 01-1.06-1.06z"></path>
+                                <path fill-rule="evenodd" d="M3.75 2A1.75 1.75 0 002 3.75v16.5c0 .966.784 1.75 1.75 1.75h16.5A1.75 1.75 0 0022 20.25V3.75A1.75 1.75 0 0020.25 2H3.75zM3.5 3.75a.25.25 0 01.25-.25H15v17H3.75a.25.25 0 01-.25-.25V3.75zm13 16.75v-17h3.75a.25.25 0 01.25.25v16.5a.25.25 0 01-.25.25H16.5z"></path>
+                            </g>
+                        </svg>
+                    </i>
+                    <i class="sidebar-icon-open" onclick="openSidebar()">
+                        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
+                            <g transform="translate(0, 0)">
+                                <path fill-rule="evenodd" d="M11.28 9.53L8.81 12l2.47 2.47a.75.75 0 11-1.06 1.06l-3-3a.75.75 0 010-1.06l3-3a.75.75 0 111.06 1.06z"></path>
+                                <path fill-rule="evenodd" d="M3.75 2A1.75 1.75 0 002 3.75v16.5c0 .966.784 1.75 1.75 1.75h16.5A1.75 1.75 0 0022 20.25V3.75A1.75 1.75 0 0020.25 2H3.75zM3.5 3.75a.25.25 0 01.25-.25H15v17H3.75a.25.25 0 01-.25-.25V3.75zm13 16.75v-17h3.75a.25.25 0 01.25.25v16.5a.25.25 0 01-.25.25H16.5z"></path>
+                            </g>
+                        </svg>
+                    </i>
+                    <a href="https://github.com/broadinstitute/genomeshader/issues" target="_blank">
+                        <i class="report-bug-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
+                                <g transform="translate(0, 0)">
+                                    <path fill-rule="evenodd" d="M3.25 4a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h2.5a.75.75 0 01.75.75v3.19l3.427-3.427A1.75 1.75 0 0111.164 17h9.586a.25.25 0 00.25-.25V4.25a.25.25 0 00-.25-.25H3.25zm-1.75.25c0-.966.784-1.75 1.75-1.75h17.5c.966 0 1.75.784 1.75 1.75v12.5a1.75 1.75 0 01-1.75 1.75h-9.586a.25.25 0 00-.177.073l-3.5 3.5A1.457 1.457 0 015 21.043V18.5H3.25a1.75 1.75 0 01-1.75-1.75V4.25zM12 6a.75.75 0 01.75.75v4a.75.75 0 01-1.5 0v-4A.75.75 0 0112 6zm0 9a1 1 0 100-2 1 1 0 000 2z"></path>
+                                </g>
+                            </svg>
+                        </i>
+                    </a>
+                    <i class="gear-icon" onclick="alert('Not yet implemented.')">
+                        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
+                            <g transform="translate(0, 0)">
+                                <path fill-rule="evenodd" d="M16 12a4 4 0 11-8 0 4 4 0 018 0zm-1.5 0a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z"></path><path fill-rule="evenodd" d="M12 1c-.268 0-.534.01-.797.028-.763.055-1.345.617-1.512 1.304l-.352 1.45c-.02.078-.09.172-.225.22a8.45 8.45 0 00-.728.303c-.13.06-.246.044-.315.002l-1.274-.776c-.604-.368-1.412-.354-1.99.147-.403.348-.78.726-1.129 1.128-.5.579-.515 1.387-.147 1.99l.776 1.275c.042.069.059.185-.002.315-.112.237-.213.48-.302.728-.05.135-.143.206-.221.225l-1.45.352c-.687.167-1.249.749-1.304 1.512a11.149 11.149 0 000 1.594c.055.763.617 1.345 1.304 1.512l1.45.352c.078.02.172.09.22.225.09.248.191.491.303.729.06.129.044.245.002.314l-.776 1.274c-.368.604-.354 1.412.147 1.99.348.403.726.78 1.128 1.129.579.5 1.387.515 1.99.147l1.275-.776c.069-.042.185-.059.315.002.237.112.48.213.728.302.135.05.206.143.225.221l.352 1.45c.167.687.749 1.249 1.512 1.303a11.125 11.125 0 001.594 0c.763-.054 1.345-.616 1.512-1.303l.352-1.45c.02-.078.09-.172.225-.22.248-.09.491-.191.729-.303.129-.06.245-.044.314-.002l1.274.776c.604.368 1.412.354 1.99-.147.403-.348.78-.726 1.129-1.128.5-.579.515-1.387.147-1.99l-.776-1.275c-.042-.069-.059-.185.002-.315.112-.237.213-.48.302-.728.05-.135.143-.206.221-.225l1.45-.352c.687-.167 1.249-.749 1.303-1.512a11.125 11.125 0 000-1.594c-.054-.763-.616-1.345-1.303-1.512l-1.45-.352c-.078-.02-.172-.09-.22-.225a8.469 8.469 0 00-.303-.728c-.06-.13-.044-.246-.002-.315l.776-1.274c.368-.604.354-1.412-.147-1.99-.348-.403-.726-.78-1.128-1.129-.579-.5-1.387-.515-1.99-.147l-1.275.776c-.069.042-.185.059-.315-.002a8.465 8.465 0 00-.728-.302c-.135-.05-.206-.143-.225-.221l-.352-1.45c-.167-.687-.749-1.249-1.512-1.304A11.149 11.149 0 0012 1zm-.69 1.525a9.648 9.648 0 011.38 0c.055.004.135.05.162.16l.351 1.45c.153.628.626 1.08 1.173 1.278.205.074.405.157.6.249a1.832 1.832 0 001.733-.074l1.275-.776c.097-.06.186-.036.228 0 .348.302.674.628.976.976.036.042.06.13 0 .228l-.776 1.274a1.832 1.832 0 00-.074 1.734c.092.195.175.395.248.6.198.547.652 1.02 1.278 1.172l1.45.353c.111.026.157.106.161.161a9.653 9.653 0 010 1.38c-.004.055-.05.135-.16.162l-1.45.351a1.833 1.833 0 00-1.278 1.173 6.926 6.926 0 01-.25.6 1.832 1.832 0 00.075 1.733l.776 1.275c.06.097.036.186 0 .228a9.555 9.555 0 01-.976.976c-.042.036-.13.06-.228 0l-1.275-.776a1.832 1.832 0 00-1.733-.074 6.926 6.926 0 01-.6.248 1.833 1.833 0 00-1.172 1.278l-.353 1.45c-.026.111-.106.157-.161.161a9.653 9.653 0 01-1.38 0c-.055-.004-.135-.05-.162-.16l-.351-1.45a1.833 1.833 0 00-1.173-1.278 6.928 6.928 0 01-.6-.25 1.832 1.832 0 00-1.734.075l-1.274.776c-.097.06-.186.036-.228 0a9.56 9.56 0 01-.976-.976c-.036-.042-.06-.13 0-.228l.776-1.275a1.832 1.832 0 00.074-1.733 6.948 6.948 0 01-.249-.6 1.833 1.833 0 00-1.277-1.172l-1.45-.353c-.111-.026-.157-.106-.161-.161a9.648 9.648 0 010-1.38c.004-.055.05-.135.16-.162l1.45-.351a1.833 1.833 0 001.278-1.173 6.95 6.95 0 01.249-.6 1.832 1.832 0 00-.074-1.734l-.776-1.274c-.06-.097-.036-.186 0-.228.302-.348.628-.674.976-.976.042-.036.13-.06.228 0l1.274.776a1.832 1.832 0 001.734.074 6.95 6.95 0 01.6-.249 1.833 1.833 0 001.172-1.277l.353-1.45c.026-.111.106-.157.161-.161z"></path>
+                            </g>
+                        </svg>
+                    </i>
+                </div>
+            </header>
 
-        return layout
+            <main style="width: 100%;">
+            <div class="tab-bar">
+                <span class="tab-name">
+                    <i class="tab-viewer-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="12" height="12" viewBox="0 -3 24 24">
+                            <g transform="translate(0, 0)">
+                                <path fill="#ffffff" stroke="#ffffff" fill-rule="evenodd" d="M19.25 4.5H4.75a.25.25 0 00-.25.25v14.5c0 .138.112.25.25.25h.19l9.823-9.823a1.75 1.75 0 012.475 0l2.262 2.262V4.75a.25.25 0 00-.25-.25zm.25 9.56l-3.323-3.323a.25.25 0 00-.354 0L7.061 19.5H19.25a.25.25 0 00.25-.25v-5.19zM4.75 3A1.75 1.75 0 003 4.75v14.5c0 .966.784 1.75 1.75 1.75h14.5A1.75 1.75 0 0021 19.25V4.75A1.75 1.75 0 0019.25 3H4.75zM8.5 9.5a1 1 0 100-2 1 1 0 000 2zm0 1.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"></path>
+                            </g>
+                        </svg>
+                    </i>
+                    Viewer
+                </span>
+            </div>
+
+            <footer>Status</footer>
+
+            </main>
+
+            <aside>
+            <div class="tab-bar">
+                <span class="tab-name">
+                    <i class="tab-info-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="12" height="12" viewBox="0 -3 24 24">
+                            <g transform="translate(0, 0)">
+                                <path fill="#ffffff" stroke="#ffffff" fill-rule="evenodd" d="M0 4.75C0 3.784.784 3 1.75 3h20.5c.966 0 1.75.784 1.75 1.75v14.5A1.75 1.75 0 0122.25 21H1.75A1.75 1.75 0 010 19.25V4.75zm1.75-.25a.25.25 0 00-.25.25v14.5c0 .138.112.25.25.25h20.5a.25.25 0 00.25-.25V4.75a.25.25 0 00-.25-.25H1.75z"></path>
+                                <path fill="#ffffff" stroke="#ffffff" fill-rule="evenodd" d="M5 8.75A.75.75 0 015.75 8h11.5a.75.75 0 010 1.5H5.75A.75.75 0 015 8.75zm0 4a.75.75 0 01.75-.75h5.5a.75.75 0 010 1.5h-5.5a.75.75 0 01-.75-.75z"></path>
+                            </g>
+                        </svg>
+                    </i>
+                    Information
+                </span>
+            </div>
+            <div class="tab-content-info">
+            Hello
+            </div>
+            </aside>
+        """
+
+        inner_script = """
+            function closeSidebar() {
+                document.querySelector('.sidebar-icon-close').style.display = 'none';
+                document.querySelector('.sidebar-icon-open').style.display = 'block';
+                document.querySelector('aside').style.width = '0';
+            }
+
+            function openSidebar() {
+                document.querySelector('.sidebar-icon-open').style.display = 'none';
+                document.querySelector('.sidebar-icon-close').style.display = 'block';
+                document.querySelector('aside').style.width = '300px';
+            }
+        """
+
+        inner_data = f"""
+            // Load data
+            var data = JSON.parse({json.dumps(data_json)});
+            var ideogramData = data.ideogram;
+            var otherVariable = data.otherVariable;
+        """
+
+        inner_module = """
+            import { Application, Graphics, Text, TextStyle, Color } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
+
+            // Create a PixiJS application.
+            const app = new Application();
+
+            // Function to initialize and render the PixiJS application.
+            async function renderApp() {
+                // Get main HTMLElement.
+                var main = document.querySelector('main');
+
+                // Intialize the application.
+                await app.init({
+                    antialias: false,
+                    resolution: window.devicePixelRatio || 1,
+                    autoDensity: true,
+                    backgroundColor: '#ffffff',
+                    resizeTo: main,
+                });
+
+                // Then adding the application's canvas to the DOM body.
+                main.appendChild(app.canvas);
+
+                // Draw the various components of the app.
+                await drawIdeogram(main, data.ideogram);
+                await drawRuler(main);
+                await drawTranscripts(main);
+            }
+
+            // Function to draw the ideogram.
+            async function drawIdeogram(main, ideogramData) {
+                const graphics = new Graphics();
+
+                console.log(ideogramData);
+
+                graphics.lineStyle(1, 0x33);
+                graphics.beginFill(0xffffff);
+                graphics.rect(15, 40, 18, main.offsetHeight - 150);
+                graphics.endFill();
+
+                graphics.lineStyle(0, 0x33);
+                graphics.beginFill(0xcccccc);
+                graphics.rect(15, 40, 18, 100);
+                graphics.endFill();
+
+                graphics.lineStyle(0, 0x33);
+                graphics.beginFill(0xeecccc);
+                graphics.rect(15, 140, 18, 100);
+                graphics.endFill();
+
+                graphics.lineStyle(0, 0x33);
+                graphics.beginFill(0xccffcc);
+                graphics.rect(15, 240, 18, main.offsetHeight - 350);
+                graphics.endFill();
+
+                graphics.lineStyle(2, 0x00);
+                graphics.beginFill(0x000000);
+                graphics.rect(15, 301, 18, 29);
+                graphics.endFill();
+
+                graphics.lineStyle(0, 0x33);
+                graphics.beginFill(0xff0000);
+                graphics.moveTo(15, 300);
+                graphics.lineTo(33, 300);
+                graphics.lineTo(24, 315);
+                graphics.lineTo(15, 300);
+                graphics.endFill();
+
+                graphics.lineStyle(0, 0x33);
+                graphics.beginFill(0xff0000);
+                graphics.moveTo(15, 330);
+                graphics.lineTo(33, 330);
+                graphics.lineTo(24, 315);
+                graphics.lineTo(15, 330);
+                graphics.endFill();
+
+                app.stage.addChild(graphics);
+
+                const chrText = new Text({
+                    text: 'chrX',
+                    style: {
+                        fontFamily: 'Helvetica',
+                        fontSize: 15,
+                        fill: 0x000000,
+                        align: 'center',
+                    }
+                });
+
+                chrText.x = 17;
+                chrText.y = main.offsetHeight - 70;
+                chrText.rotation = - Math.PI / 2;
+
+                app.stage.addChild(chrText);
+            }
+
+            async function drawRuler(main) {
+                const graphics = new Graphics();
+
+                graphics.lineStyle(1.0, 0x555555);
+                graphics.moveTo(105, 20);
+                graphics.lineTo(105, main.offsetHeight - 50);
+                graphics.endFill();
+
+                graphics.lineStyle(1.0, 0x555555);
+                graphics.moveTo(102, 20);
+                graphics.lineTo(108, 20);
+                graphics.endFill();
+
+                graphics.lineStyle(1.0, 0x555555);
+                graphics.moveTo(102, main.offsetHeight - 50);
+                graphics.lineTo(108, main.offsetHeight - 50);
+                graphics.endFill();
+
+                app.stage.addChild(graphics);
+
+                const locusText1 = new Text({
+                    text: '15,610,000',
+                    style: {
+                        fontFamily: 'Helvetica',
+                        fontSize: 9,
+                        fill: 0x000000,
+                        align: 'center',
+                    },
+                    x: 55,
+                    y: 15,
+                });
+
+                app.stage.addChild(locusText1);
+
+                const locusText2 = new Text({
+                    text: '15,595,000',
+                    style: {
+                        fontFamily: 'Helvetica',
+                        fontSize: 9,
+                        fill: 0x000000,
+                        align: 'center',
+                    },
+                    x: 55,
+                    y: main.offsetHeight - 50 - 5,
+                });
+
+                app.stage.addChild(locusText2);
+            }
+
+            async function drawTranscripts(main) {
+                const graphics = new Graphics();
+
+                graphics.lineStyle(1.5, 0x5555ff);
+                graphics.moveTo(130, 30);
+                graphics.lineTo(130, main.offsetHeight - 300);
+                graphics.endFill();
+
+                app.stage.addChild(graphics);
+            }
+
+            // Call the function initially
+            renderApp();
+        """
+
+        # Safely encode the JavaScript string for HTML embedding
+        encoded_style = json.dumps(inner_style)
+        encoded_body = json.dumps(inner_body)
+        encoded_script = json.dumps(inner_script)
+        encoded_data = json.dumps(inner_data)
+        encoded_module = json.dumps(inner_module)
+
+        # Use the encoded script in the HTML template
+        html_script = f"""
+            <script>
+            (async function() {{
+                var width = 0.8 * window.screen.width;
+                var height = 0.65 * window.screen.height;
+                var newWindow = window.open("", "newWindow", "width=" + width + ",height=" + height + ",scrollbars=no,menubar=no,toolbar=no,status=no");
+                if (!newWindow) return;
+
+                // Set the title of the new window
+                newWindow.document.title = "genomeshader";
+                newWindow.document.body.innerHTML = {encoded_body};
+                
+                // Append a style tag
+                var style = document.createElement('style');
+                style.innerHTML = {encoded_style};
+                
+                newWindow.document.head.appendChild(style);
+                
+                // Append UI helper script
+                var script = document.createElement('script');
+                script.innerHTML = {encoded_script};
+                
+                newWindow.document.body.appendChild(script);
+
+                // Append dataset script
+                var data = document.createElement('script');
+                data.innerHTML = {encoded_data};
+
+                newWindow.document.body.appendChild(data);
+                                
+                // Append app module
+                var module = document.createElement('script');    
+                module.type = "module";
+                module.defer = true;
+                module.innerHTML = {encoded_module};
+                
+                newWindow.document.body.appendChild(module);
+            }})();
+            </script>
+        """
+
+        # Display the HTML and JavaScript
+        display(HTML(html_script))
 
     def reset(self):
         self._session.reset()
@@ -656,12 +901,8 @@ class GenomeShader:
         self._session.print()
 
 
-def init(
-    session_name: str, genomes_root: str, gcs_session_dir: str = None
-) -> GenomeShader:
+def init(gcs_session_dir: str = None) -> GenomeShader:
     session = GenomeShader(
-        session_name=session_name,
-        genomes_root=genomes_root,
         gcs_session_dir=gcs_session_dir,
     )
 
