@@ -233,9 +233,6 @@ document.addEventListener('wheel', function(e) {
     }
 });
 
-</script>
-
-<script>
 function closeSidebar() {
     document.querySelector('.sidebar-icon-close').style.display = 'none';
     document.querySelector('.sidebar-icon-open').style.display = 'block';
@@ -279,18 +276,31 @@ async function renderApp() {
     // Then adding the application's canvas to the DOM body.
     main.appendChild(app.canvas);
 
-    // Draw the various components of the app.
-    await drawIdeogram(main, ideogramData);
-    await drawRuler(main);
-    await drawTranscripts(main);
+    // Listen for window resize events
+    window.addEventListener('resize', resize);
+
+    resize();
+}
+
+// Resize function window
+function resize() {
+    var main = document.querySelector('main');
+
+	// Resize the renderer
+	app.renderer.resize(main.offsetWidth, main.offsetHeight);
+
+    // Clear the application stage
+    app.stage.removeChildren();
+
+    // Draw all the elements
+    drawIdeogram(main, ideogramData);
+    // await drawRuler(main);
+    // await drawTranscripts(main);
 }
 
 // Function to draw the ideogram.
 async function drawIdeogram(main, ideogramData) {
     const graphics = new Graphics();
-
-    console.log(ideogramData);
-    console.log(ideogramData.columns[0]);
 
     const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
     const ideoWidth = 18;
@@ -298,10 +308,9 @@ async function drawIdeogram(main, ideogramData) {
     const ideoX = 15;
     const ideoY = 40;
 
-    graphics.lineStyle(1, 0x33);
-    graphics.beginFill(0xffffff);
     graphics.rect(ideoX, ideoY, ideoWidth, ideoHeight);
-    graphics.endFill();
+    graphics.stroke({ width: 1, color: 0x333333 });
+    graphics.fill(0xffffff);
 
     let bandY = ideoY;
     let acenSeen = false;
@@ -310,34 +319,30 @@ async function drawIdeogram(main, ideogramData) {
         let bandColor = ideogramData.columns[5].values[i];
 
         if (ideogramData.columns[4].values[i] == 'acen') {
-            graphics.lineStyle(2, 0x00);
-            graphics.beginFill(0xffffff);
             graphics.rect(ideoX, bandY, ideoWidth, bandHeight);
-            graphics.endFill();
-
-            graphics.lineStyle(0, 0x33);
-            graphics.beginFill(bandColor);
+            graphics.stroke({ width: 1, color: 0xffffff });
+            graphics.fill(0xffffff);
 
             if (!acenSeen) {
                 graphics.moveTo(ideoX, bandY);
-                graphics.lineTo(ideoX + ideoWidth - 1, bandY);
-                graphics.lineTo(ideoX + (ideoWidth/2), bandY + bandHeight - 1);
+                graphics.lineTo(ideoX + ideoWidth, bandY);
+                graphics.lineTo(ideoX + (ideoWidth/2), bandY + bandHeight);
                 graphics.lineTo(ideoX, bandY);
             } else {
                 graphics.moveTo(ideoX, bandY + bandHeight);
-                graphics.lineTo(ideoX + ideoWidth - 1, bandY + bandHeight - 1);
+                graphics.lineTo(ideoX + ideoWidth, bandY + bandHeight);
                 graphics.lineTo(ideoX + (ideoWidth/2), bandY);
                 graphics.lineTo(ideoX, bandY + bandHeight);
             }
 
-            graphics.endFill();
+            graphics.stroke({ width: 1, color: 0x333333 });
+            graphics.fill(bandColor);
 
             acenSeen = true;
         } else {
-            graphics.lineStyle(0, 0x33);
-            graphics.beginFill(bandColor);
             graphics.rect(ideoX, bandY, ideoWidth, bandHeight);
-            graphics.endFill();
+            graphics.stroke({ width: 0, color: 0x333333 });
+            graphics.fill(bandColor);
         }
 
         bandY += bandHeight;
@@ -349,7 +354,7 @@ async function drawIdeogram(main, ideogramData) {
         text: ideogramData.columns[0].values[0],
         style: {
             fontFamily: 'Helvetica',
-            fontSize: 15,
+            fontSize: 13,
             fill: 0x000000,
             align: 'center',
         }
@@ -365,17 +370,17 @@ async function drawIdeogram(main, ideogramData) {
 async function drawRuler(main) {
     const graphics = new Graphics();
 
-    graphics.lineStyle(1.0, 0x555555);
+    graphics.setStrokeStyle(1.0, 0x555555);
     graphics.moveTo(105, 20);
     graphics.lineTo(105, main.offsetHeight - 50);
     graphics.endFill();
 
-    graphics.lineStyle(1.0, 0x555555);
+    graphics.setStrokeStyle(1.0, 0x555555);
     graphics.moveTo(102, 20);
     graphics.lineTo(108, 20);
     graphics.endFill();
 
-    graphics.lineStyle(1.0, 0x555555);
+    graphics.setStrokeStyle(1.0, 0x555555);
     graphics.moveTo(102, main.offsetHeight - 50);
     graphics.lineTo(108, main.offsetHeight - 50);
     graphics.endFill();
@@ -414,7 +419,7 @@ async function drawRuler(main) {
 async function drawTranscripts(main) {
     const graphics = new Graphics();
 
-    graphics.lineStyle(1.5, 0x5555ff);
+    graphics.setStrokeStyle(1.5, 0x5555ff);
     graphics.moveTo(130, 30);
     graphics.lineTo(130, main.offsetHeight - 300);
     graphics.endFill();
