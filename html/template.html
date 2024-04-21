@@ -321,16 +321,15 @@ async function drawIdeogram(main, ideogramData) {
         if (ideogramData.columns[4].values[i] == 'acen') {
             graphics.rect(ideoX, bandY, ideoWidth, bandHeight);
             graphics.stroke({ width: 1, color: 0xffffff });
-            graphics.fill(0xffffff);
 
             if (!acenSeen) {
                 graphics.moveTo(ideoX, bandY);
-                graphics.lineTo(ideoX + ideoWidth, bandY);
+                graphics.lineTo(ideoX + ideoWidth - 0.5, bandY);
                 graphics.lineTo(ideoX + (ideoWidth/2), bandY + bandHeight);
                 graphics.lineTo(ideoX, bandY);
             } else {
                 graphics.moveTo(ideoX, bandY + bandHeight);
-                graphics.lineTo(ideoX + ideoWidth, bandY + bandHeight);
+                graphics.lineTo(ideoX + ideoWidth - 0.5, bandY + bandHeight);
                 graphics.lineTo(ideoX + (ideoWidth/2), bandY);
                 graphics.lineTo(ideoX, bandY + bandHeight);
             }
