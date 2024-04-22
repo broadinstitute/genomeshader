@@ -312,11 +312,14 @@ async function drawIdeogram(main, ideogramData) {
     graphics.interactive = true;
     graphics.buttonMode = true;
 
-    const tooltip = new Text('', {
-        fontFamily: 'monospace',
-        fontSize: 9,
-        fill: 0x000000,
-        align: 'center'
+    const tooltip = new Text({
+        text: '',
+        style: {
+            fontFamily: 'monospace',
+            fontSize: 9,
+            fill: 0x000000,
+            align: 'center'
+        }
     });
 
     tooltip.visible = false;
@@ -341,7 +344,8 @@ async function drawIdeogram(main, ideogramData) {
     for (let i = ideogramData.columns[0].values.length - 1; i >= 0; i--) {
         let bandHeight = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i]) * ideoHeight / ideoLength;
         let bandColor = ideogramData.columns[5].values[i];
-        let stain = ideogramData.columns[4].values[i];
+        let bandName = ideogramData.columns[3].values[i];
+        let bandStain = ideogramData.columns[4].values[i];
 
         const band = new Graphics();
 
@@ -349,7 +353,7 @@ async function drawIdeogram(main, ideogramData) {
         band.buttonMode = true;
 
         band.on('mouseover', () => {
-            tooltip.text = stain;
+            tooltip.text = bandName;
             tooltip.visible = true;
         });
 
@@ -357,7 +361,7 @@ async function drawIdeogram(main, ideogramData) {
             tooltip.visible = false;
         });
 
-        if (stain == 'acen') {
+        if (bandStain == 'acen') {
             const blank = new Graphics();
             blank.rect(ideoX, bandY, ideoWidth, bandHeight);
             blank.stroke({ width: 2, color: 0xffffff });
