@@ -343,9 +343,11 @@ async function drawIdeogram(main, ideogramData) {
     let acenSeen = false;
     for (let i = ideogramData.columns[0].values.length - 1; i >= 0; i--) {
         let bandHeight = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i]) * ideoHeight / ideoLength;
-        let bandColor = ideogramData.columns[5].values[i];
+        let bandStart = ideogramData.columns[1].values[i];
+        let bandEnd = ideogramData.columns[2].values[i];
         let bandName = ideogramData.columns[3].values[i];
         let bandStain = ideogramData.columns[4].values[i];
+        let bandColor = ideogramData.columns[5].values[i];
 
         const band = new Graphics();
 
@@ -353,7 +355,7 @@ async function drawIdeogram(main, ideogramData) {
         band.buttonMode = true;
 
         band.on('mouseover', () => {
-            tooltip.text = bandName;
+            tooltip.text = bandStart + "-" + bandEnd;
             tooltip.visible = true;
         });
 
@@ -387,6 +389,54 @@ async function drawIdeogram(main, ideogramData) {
             band.rect(ideoX, bandY, ideoWidth, bandHeight);
             band.stroke({ width: 0, color: 0x333333 });
             band.fill(bandColor);
+
+            function invertColor(hex) {
+                // If the color is in hex format (e.g., #FFFFFF), remove the hash
+                if (hex.indexOf('#') === 0) {
+                    hex = hex.slice(1);
+                }
+
+                // If the color is in shorthand hex format (e.g., #FFF), convert to full format
+                if (hex.length === 3) {
+                    hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+                }
+
+                // Convert the hex color to its RGB components
+                var r = parseInt(hex.slice(0, 2), 16),
+                    g = parseInt(hex.slice(2, 4), 16),
+                    b = parseInt(hex.slice(4, 6), 16);
+
+                // Invert each component by subtracting it from 255
+                r = (255 - r).toString(16);
+                g = (255 - g).toString(16);
+                b = (255 - b).toString(16);
+
+                // Ensure each inverted component has two digits
+                r = r.length === 1 ? '0' + r : r;
+                g = g.length === 1 ? '0' + g : g;
+                b = b.length === 1 ? '0' + b : b;
+
+                // Return the inverted color in hex format
+                return '#' + r + g + b;
+            }
+
+            const bandLabel = new Text({
+                text: bandName,
+                style: {
+                    fontFamily: 'Helvetica',
+                    fontSize: 7,
+                    fill: invertColor(bandColor),
+                    align: 'center'
+                }
+            });
+
+            bandLabel.rotation = -Math.PI / 2;
+            bandLabel.x = ideoX + bandLabel.height / 2;
+            bandLabel.y = bandY + bandHeight / 2 + bandLabel.width / 2;
+
+            if (bandLabel.width <= 0.9*bandHeight) {
+                band.addChild(bandLabel);
+            }
         }
 
         graphics.addChild(band);
@@ -399,7 +449,7 @@ async function drawIdeogram(main, ideogramData) {
         text: ideogramData.columns[0].values[0],
         style: {
             fontFamily: 'Helvetica',
-            fontSize: 13,
+            fontSize: 12,
             fill: 0x000000,
             align: 'center',
         }
