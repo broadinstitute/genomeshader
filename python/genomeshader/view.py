@@ -753,6 +753,32 @@ async function drawIdeogram(main, ideogramData) {
     const ideoX = 15;
     const ideoY = 40;
 
+    graphics.interactive = true;
+    graphics.buttonMode = true;
+
+    const tooltip = new Text({
+        text: '',
+        style: {
+            fontFamily: 'Helvetica',
+            fontSize: 9,
+            fill: 0x777777,
+            align: 'center'
+        }
+    });
+
+    tooltip.visible = false;
+    app.stage.addChild(tooltip);
+
+    graphics.on('mousemove', (event) => {
+        if (tooltip.visible) {
+            tooltip.position.set(event.data.global.x + 10, event.data.global.y + 10);
+        }
+    });
+
+    graphics.on('mouseout', () => {
+        tooltip.visible = false;
+    });
+
     graphics.rect(ideoX, ideoY, ideoWidth, ideoHeight);
     graphics.stroke({ width: 1, color: 0x333333 });
     graphics.fill(0xffffff);
@@ -760,36 +786,104 @@ async function drawIdeogram(main, ideogramData) {
     let bandY = ideoY;
     let acenSeen = false;
     for (let i = ideogramData.columns[0].values.length - 1; i >= 0; i--) {
-        let bandHeight = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i])*ideoHeight/ideoLength;
+        let bandHeight = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i]) * ideoHeight / ideoLength;
+        let bandStart = ideogramData.columns[1].values[i];
+        let bandEnd = ideogramData.columns[2].values[i];
+        let bandName = ideogramData.columns[3].values[i];
+        let bandStain = ideogramData.columns[4].values[i];
         let bandColor = ideogramData.columns[5].values[i];
 
-        if (ideogramData.columns[4].values[i] == 'acen') {
-            graphics.rect(ideoX, bandY, ideoWidth, bandHeight);
-            graphics.stroke({ width: 1, color: 0xffffff });
-            graphics.fill(0xffffff);
+        const band = new Graphics();
+
+        band.interactive = true;
+        band.buttonMode = true;
+
+        band.on('mouseover', () => {
+            tooltip.text = bandStart + "-" + bandEnd;
+            tooltip.visible = true;
+        });
+
+        band.on('mouseout', () => {
+            tooltip.visible = false;
+        });
+
+        if (bandStain == 'acen') {
+            const blank = new Graphics();
+            blank.rect(ideoX, bandY, ideoWidth, bandHeight);
+            blank.stroke({ width: 2, color: 0xffffff });
+            blank.fill("#ffffff");
+            graphics.addChild(blank);
 
             if (!acenSeen) {
-                graphics.moveTo(ideoX, bandY);
-                graphics.lineTo(ideoX + ideoWidth, bandY);
-                graphics.lineTo(ideoX + (ideoWidth/2), bandY + bandHeight);
-                graphics.lineTo(ideoX, bandY);
+                band.moveTo(ideoX, bandY);
+                band.lineTo(ideoX + ideoWidth - 0.5, bandY);
+                band.lineTo(ideoX + (ideoWidth / 2), bandY + bandHeight);
+                band.lineTo(ideoX, bandY);
             } else {
-                graphics.moveTo(ideoX, bandY + bandHeight);
-                graphics.lineTo(ideoX + ideoWidth, bandY + bandHeight);
-                graphics.lineTo(ideoX + (ideoWidth/2), bandY);
-                graphics.lineTo(ideoX, bandY + bandHeight);
+                band.moveTo(ideoX, bandY + bandHeight);
+                band.lineTo(ideoX + ideoWidth - 0.5, bandY + bandHeight);
+                band.lineTo(ideoX + (ideoWidth / 2), bandY);
+                band.lineTo(ideoX, bandY + bandHeight);
             }
 
-            graphics.stroke({ width: 1, color: 0x333333 });
-            graphics.fill(bandColor);
-
+            band.stroke({ width: 1, color: 0x333333 });
+            band.fill(bandColor);
             acenSeen = true;
         } else {
-            graphics.rect(ideoX, bandY, ideoWidth, bandHeight);
-            graphics.stroke({ width: 0, color: 0x333333 });
-            graphics.fill(bandColor);
+            band.rect(ideoX, bandY, ideoWidth, bandHeight);
+            band.stroke({ width: 0, color: 0x333333 });
+            band.fill(bandColor);
+
+            function invertColor(hex) {
+                // If the color is in hex format (e.g., #FFFFFF), remove the hash
+                if (hex.indexOf('#') === 0) {
+                    hex = hex.slice(1);
+                }
+
+                // If the color is in shorthand hex format (e.g., #FFF), convert to full format
+                if (hex.length === 3) {
+                    hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+                }
+
+                // Convert the hex color to its RGB components
+                var r = parseInt(hex.slice(0, 2), 16),
+                    g = parseInt(hex.slice(2, 4), 16),
+                    b = parseInt(hex.slice(4, 6), 16);
+
+                // Invert each component by subtracting it from 255
+                r = (255 - r).toString(16);
+                g = (255 - g).toString(16);
+                b = (255 - b).toString(16);
+
+                // Ensure each inverted component has two digits
+                r = r.length === 1 ? '0' + r : r;
+                g = g.length === 1 ? '0' + g : g;
+                b = b.length === 1 ? '0' + b : b;
+
+                // Return the inverted color in hex format
+                return '#' + r + g + b;
+            }
+
+            const bandLabel = new Text({
+                text: bandName,
+                style: {
+                    fontFamily: 'Helvetica',
+                    fontSize: 7,
+                    fill: invertColor(bandColor),
+                    align: 'center'
+                }
+            });
+
+            bandLabel.rotation = -Math.PI / 2;
+            bandLabel.x = ideoX + bandLabel.height / 2;
+            bandLabel.y = bandY + bandHeight / 2 + bandLabel.width / 2;
+
+            if (bandLabel.width <= 0.9*bandHeight) {
+                band.addChild(bandLabel);
+            }
         }
 
+        graphics.addChild(band);
         bandY += bandHeight;
     }
 
@@ -799,7 +893,7 @@ async function drawIdeogram(main, ideogramData) {
         text: ideogramData.columns[0].values[0],
         style: {
             fontFamily: 'Helvetica',
-            fontSize: 13,
+            fontSize: 12,
             fill: 0x000000,
             align: 'center',
         }
