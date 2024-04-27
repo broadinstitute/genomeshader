@@ -8,6 +8,8 @@ import polars as pl
 
 from IPython.display import display, HTML
 import json
+import gzip
+import base64
 
 import genomeshader.genomeshader as gs
 
@@ -407,47 +409,53 @@ class GenomeShader:
     def show(
         self,
         locus_or_dataframe: Union[str, pl.DataFrame],
-        vertical: bool = False,
+        horizontal: bool = False,
         group_by: str = None,
     ):
         """
-        Visualizes genomic data.
+        Visualizes genomic data by rendering a graphical representation of a genomic locus.
 
-        Args:
-            locus_or_dataframe (str or DataFrame): Genomic locus to visualize.
-            Can either be specified as a locus string (e.g. 'chr:start-stop')
-            or a Polars DataFrame (usually from the get_locus() method,
-            optionally modified by the user).
-            width (int, optional): Visualization width. Defaults to 980.
-            height (int, optional): Visualization height. Defaults to 400.
-            expand (bool, optional): If True, expands each sample to show all
-            reads. Defaults to False.
+        Parameters:
+            locus_or_dataframe (Union[str, pl.DataFrame]): The genomic locus to visualize, which can be specified as either:
+                - A string representing the locus in the format 'chromosome:start-stop' (e.g., 'chr1:1000000-2000000').
+                - A Polars DataFrame containing genomic data, which can be obtained from the `get_locus()` method or created by the user.
+            horizontal (bool, optional): If set to True, the visualization will be rendered horizontally. Defaults to False.
+            group_by (str, optional): The name of the column to group data by in the visualization. Defaults to None.
+
+        Returns:
+            None: This method does not return a value; it renders the visualization directly.
         """
 
         if isinstance(locus_or_dataframe, str):
-            df = self.get_locus(locus_or_dataframe)
+            reads_df = self.get_locus(locus_or_dataframe)
         elif isinstance(locus_or_dataframe, pl.DataFrame):
-            df = locus_or_dataframe.clone()
+            reads_df = locus_or_dataframe.clone()
         else:
             raise ValueError(
-                "locus_or_dataframe must be a locus string or a" "Polars DataFrame."
+                "locus_or_dataframe must be a locus string or a Polars DataFrame."
             )
 
-        ref_chr = df["reference_contig"].min()
-        ref_start = df["reference_start"].min()
-        ref_end = df["reference_end"].max()
+        ref_chr = reads_df["reference_contig"].min()
+        ref_start = reads_df["reference_start"].min()
+        ref_end = reads_df["reference_end"].max()
 
         ideo_df = self.ideogram(ref_chr)
         ideo_json = ideo_df.write_json()
 
         data_to_pass = {
             "ideogram": json.loads(ideo_json),
-            # Add other variables here as needed
-            "otherVariable": "Some other data",
-            # ...
+            "ref_chr": ref_chr,
+            "ref_start": ref_start,
+            "ref_end": ref_end,
         }
 
         data_json = json.dumps(data_to_pass)
+
+        # Compress JSON data using gzip
+        compressed_reads = gzip.compress(reads_df.write_json().encode('utf-8'))
+
+        # Encode compressed data to base64 to embed in HTML safely
+        encoded_reads = base64.b64encode(compressed_reads).decode('utf-8')
 
         inner_style = """
 body {
@@ -692,10 +700,24 @@ function openSidebar() {
         """
 
         inner_data = f"""
+import pako from 'https://cdn.skypack.dev/pako@2.1.0';
+
 // Load data
-var data = JSON.parse({json.dumps(data_json)});
-var ideogramData = data.ideogram;
-var otherVariable = data.otherVariable;
+window.data = JSON.parse({json.dumps(data_json)});
+
+// Function to decode and parse the JSON
+var encodedData = "{encoded_reads}";
+
+// Decompress data
+var compressedData = atob(encodedData);
+var bytes = new Uint8Array(compressedData.length);
+for (var i = 0; i < compressedData.length; i++) {{
+    bytes[i] = compressedData.charCodeAt(i);
+}}
+
+var decompressedData = pako.inflate(bytes, {{ to: 'string' }});
+var jsonData = JSON.parse(decompressedData);
+console.log(jsonData);
         """
 
         inner_module = """
@@ -738,7 +760,7 @@ function resize() {
     app.stage.removeChildren();
 
     // Draw all the elements
-    drawIdeogram(main, ideogramData);
+    drawIdeogram(main, window.data.ideogram);
     // await drawRuler(main);
     // await drawTranscripts(main);
 }
@@ -778,10 +800,6 @@ async function drawIdeogram(main, ideogramData) {
     graphics.on('mouseout', () => {
         tooltip.visible = false;
     });
-
-    graphics.rect(ideoX, ideoY, ideoWidth, ideoHeight);
-    graphics.stroke({ width: 1, color: 0x333333 });
-    graphics.fill(0xffffff);
 
     let bandY = ideoY;
     let acenSeen = false;
@@ -886,6 +904,10 @@ async function drawIdeogram(main, ideogramData) {
         graphics.addChild(band);
         bandY += bandHeight;
     }
+
+    graphics.rect(ideoX, ideoY, ideoWidth, ideoHeight);
+    graphics.stroke({ width: 2, color: 0x333333 });
+    graphics.fill(0xffffff);
 
     app.stage.addChild(graphics);
 
@@ -1002,8 +1024,10 @@ renderApp();
     
     newWindow.document.body.appendChild(script);
 
-    // Append dataset script
-    var data = document.createElement('script');
+    // Append compressed data module
+    var data = document.createElement('script');    
+    data.type = "module";
+    data.defer = true;
     data.innerHTML = {encoded_data};
 
     newWindow.document.body.appendChild(data);
@@ -1018,6 +1042,9 @@ renderApp();
 }})();
 </script>
         """
+
+        with open("/Users/kiran/repositories/genomeshader/test.html", "w") as file:
+            file.write(HTML(html_script).data)
 
         # Display the HTML and JavaScript
         display(HTML(html_script))
