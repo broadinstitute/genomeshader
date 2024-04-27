@@ -293,13 +293,16 @@ function repaint() {
     app.stage.removeChildren();
 
     // Draw all the elements
-    drawIdeogram(main, window.data.ideogram);
+    drawIdeogram(main, window.data.ideogram, window.data.ref_start, window.data.ref_end, window.zoom);
     drawRuler(main, window.data.ref_start, window.data.ref_end, window.zoom);
     // await drawTranscripts(main);
 }
 
 // Function to draw the ideogram.
-async function drawIdeogram(main, ideogramData) {
+async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
+    const locus_start = parseInt(ref_start) + zoom;
+    const locus_end = parseInt(ref_end) - zoom;
+
     const graphics = new Graphics();
 
     const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
@@ -505,7 +508,7 @@ async function drawRuler(main, ref_start, ref_end, zoom) {
 
     // Display range
     const locusTextRange = new Text({
-        text: "(" + (locus_end - locus_start).toLocaleString() + ")",
+        text: "(" + (locus_end - locus_start).toLocaleString() + " bp)",
         style: {
             fontFamily: 'Helvetica',
             fontSize: 9,
