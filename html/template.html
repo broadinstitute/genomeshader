@@ -219,21 +219,6 @@ Hello
 </aside>
 
 <script>
-var zoom = 0;
-
-document.addEventListener('wheel', function(e) {
-    if (e.deltaY < 0) {
-        zoom += e.deltaY;
-        // console.log('Zooming in ' + zoom);
-        // Insert zoom in functionality here
-    }
-    else if (e.deltaY > 0) {
-        zoom += e.deltaY;
-        // console.log('Zooming out ' + zoom);
-        // Insert zoom out functionality here
-    }
-});
-
 function closeSidebar() {
     document.querySelector('.sidebar-icon-close').style.display = 'none';
     document.querySelector('.sidebar-icon-open').style.display = 'block';
@@ -247,19 +232,16 @@ function openSidebar() {
 }
 </script>
 
-<script>
+<script type="module">
     // Load data
-    // var data = JSON.parse("{\"ideogram\": {\"columns\": [{\"name\": \"chrom\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\"]}, {\"name\": \"chromStart\", \"datatype\": \"Int64\", \"bit_settings\": \"\", \"values\": [0, 4200000, 9700000, 17500000, 19000000, 20500000, 25500000, 27800000, 30000000, 30900000, 33400000, 39800000, 42500000, 43300000, 44500000, 49200000, 52600000, 58800000, 59000000, 63400000, 66900000, 67000000, 67200000, 72400000, 74900000, 76300000, 78000000, 81400000, 84700000, 88500000, 93800000, 98000000]}, {\"name\": \"chromEnd\", \"datatype\": \"Int64\", \"bit_settings\": \"\", \"values\": [4200000, 9700000, 17500000, 19000000, 20500000, 25500000, 27800000, 30000000, 30900000, 33400000, 39800000, 42500000, 43300000, 44500000, 49200000, 52600000, 58800000, 59000000, 63400000, 66900000, 67000000, 67200000, 72400000, 74900000, 76300000, 78000000, 81400000, 84700000, 88500000, 93800000, 98000000, 101991189]}, {\"name\": \"name\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"p13\", \"p12\", \"p11.2\", \"p11.1\", \"q11.1\", \"q11.2\", \"q12\", \"q13.1\", \"q13.2\", \"q13.3\", \"q14\", \"q15.1\", \"q15.2\", \"q15.3\", \"q21.1\", \"q21.2\", \"q21.3\", \"q22.1\", \"q22.2\", \"q22.31\", \"q22.32\", \"q22.33\", \"q23\", \"q24.1\", \"q24.2\", \"q24.3\", \"q25.1\", \"q25.2\", \"q25.3\", \"q26.1\", \"q26.2\", \"q26.3\"]}, {\"name\": \"gieStain\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"gvar\", \"stalk\", \"gvar\", \"acen\", \"acen\", \"gneg\", \"gpos50\", \"gneg\", \"gpos50\", \"gneg\", \"gpos75\", \"gneg\", \"gpos25\", \"gneg\", \"gpos75\", \"gneg\", \"gpos75\", \"gneg\", \"gpos25\", \"gneg\", \"gpos25\", \"gneg\", \"gpos25\", \"gneg\", \"gpos25\", \"gneg\", \"gpos50\", \"gneg\", \"gpos50\", \"gneg\", \"gpos50\", \"gneg\"]}, {\"name\": \"color\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"#660099\", \"#6600cc\", \"#660099\", \"#660033\", \"#660033\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#404040\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#404040\", \"#ffffff\", \"#404040\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#808080\", \"#ffffff\"]}]}, \"otherVariable\": \"Some other data\"}");
-    
-    // Load data
-    
-
-    var ideogramData = data.ideogram;
-    var otherVariable = data.otherVariable;
+    window.data = JSON.parse("{\"ideogram\": {\"columns\": [{\"name\": \"chrom\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\", \"chr15\"]}, {\"name\": \"chromStart\", \"datatype\": \"Int64\", \"bit_settings\": \"\", \"values\": [0, 4200000, 9700000, 17500000, 19000000, 20500000, 25500000, 27800000, 30000000, 30900000, 33400000, 39800000, 42500000, 43300000, 44500000, 49200000, 52600000, 58800000, 59000000, 63400000, 66900000, 67000000, 67200000, 72400000, 74900000, 76300000, 78000000, 81400000, 84700000, 88500000, 93800000, 98000000]}, {\"name\": \"chromEnd\", \"datatype\": \"Int64\", \"bit_settings\": \"\", \"values\": [4200000, 9700000, 17500000, 19000000, 20500000, 25500000, 27800000, 30000000, 30900000, 33400000, 39800000, 42500000, 43300000, 44500000, 49200000, 52600000, 58800000, 59000000, 63400000, 66900000, 67000000, 67200000, 72400000, 74900000, 76300000, 78000000, 81400000, 84700000, 88500000, 93800000, 98000000, 101991189]}, {\"name\": \"name\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"p13\", \"p12\", \"p11.2\", \"p11.1\", \"q11.1\", \"q11.2\", \"q12\", \"q13.1\", \"q13.2\", \"q13.3\", \"q14\", \"q15.1\", \"q15.2\", \"q15.3\", \"q21.1\", \"q21.2\", \"q21.3\", \"q22.1\", \"q22.2\", \"q22.31\", \"q22.32\", \"q22.33\", \"q23\", \"q24.1\", \"q24.2\", \"q24.3\", \"q25.1\", \"q25.2\", \"q25.3\", \"q26.1\", \"q26.2\", \"q26.3\"]}, {\"name\": \"gieStain\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"gvar\", \"stalk\", \"gvar\", \"acen\", \"acen\", \"gneg\", \"gpos50\", \"gneg\", \"gpos50\", \"gneg\", \"gpos75\", \"gneg\", \"gpos25\", \"gneg\", \"gpos75\", \"gneg\", \"gpos75\", \"gneg\", \"gpos25\", \"gneg\", \"gpos25\", \"gneg\", \"gpos25\", \"gneg\", \"gpos25\", \"gneg\", \"gpos50\", \"gneg\", \"gpos50\", \"gneg\", \"gpos50\", \"gneg\"]}, {\"name\": \"color\", \"datatype\": \"String\", \"bit_settings\": \"\", \"values\": [\"#660099\", \"#6600cc\", \"#660099\", \"#660033\", \"#660033\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#404040\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#404040\", \"#ffffff\", \"#404040\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#c0c0c0\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#808080\", \"#ffffff\", \"#808080\", \"#ffffff\"]}]}, \"ref_chr\": \"chr15\", \"ref_start\": \"23960193\", \"ref_end\": \"23963918\"}");
 </script>
 
 <script type="module">
 import { Application, Graphics, Text, TextStyle, Color } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
+
+// Some initial settings.
+window.zoom = 0;
 
 // Create a PixiJS application.
 const app = new Application();
@@ -282,13 +264,26 @@ async function renderApp() {
     main.appendChild(app.canvas);
 
     // Listen for window resize events.
-    window.addEventListener('resize', resize);
+    window.addEventListener('resize', repaint);
 
-    resize();
+    repaint();
 }
 
+document.addEventListener('wheel', function(e) {
+    const multiplier = e.shiftKey ? 10.0 : 1.0;
+
+    const locus_start = parseInt(window.data.ref_start) + window.zoom + (multiplier*e.deltaY);
+    const locus_end = parseInt(window.data.ref_end) - window.zoom - (multiplier*e.deltaY);
+
+    if (locus_end - locus_start >= 1) {
+        window.zoom += e.deltaY;
+    }
+
+    repaint();
+});
+
 // Resize function window
-function resize() {
+function repaint() {
     var main = document.querySelector('main');
 
 	// Resize the renderer
@@ -298,8 +293,8 @@ function resize() {
     app.stage.removeChildren();
 
     // Draw all the elements
-    drawIdeogram(main, ideogramData);
-    // await drawRuler(main);
+    drawIdeogram(main, window.data.ideogram);
+    drawRuler(main, window.data.ref_start, window.data.ref_end, window.zoom);
     // await drawTranscripts(main);
 }
 
@@ -466,53 +461,64 @@ async function drawIdeogram(main, ideogramData) {
     app.stage.addChild(chrText);
 }
 
-async function drawRuler(main) {
+async function drawRuler(main, ref_start, ref_end, zoom) {
+    const locus_start = parseInt(ref_start) + zoom;
+    const locus_end = parseInt(ref_end) - zoom;
+
     const graphics = new Graphics();
 
+    // Draw tics at various points
+    const range = locus_end - locus_start;
+    const locus_spacing = Math.floor(range / 11);
+    const tic_spacing = Math.floor(((main.offsetHeight - 55) - 15) / 10);
+    let axis_height = -tic_spacing;
+    for (let i = locus_end, j = 20; i >= locus_start; i -= locus_spacing, j += tic_spacing) {
+        graphics.setStrokeStyle(1.0, 0x555555);
+        graphics.moveTo(102, j);
+        graphics.lineTo(108, j);
+        graphics.endFill();
+
+        const locusText = new Text({
+            text: i.toLocaleString(),
+            style: {
+                fontFamily: 'Helvetica',
+                fontSize: 9,
+                fill: 0x000000,
+                align: 'center',
+            },
+            x: 55,
+            y: j - 5,
+        });
+
+        axis_height += tic_spacing;
+
+        app.stage.addChild(locusText);
+    }
+
+    // Axis line
     graphics.setStrokeStyle(1.0, 0x555555);
     graphics.moveTo(105, 20);
-    graphics.lineTo(105, main.offsetHeight - 50);
-    graphics.endFill();
-
-    graphics.setStrokeStyle(1.0, 0x555555);
-    graphics.moveTo(102, 20);
-    graphics.lineTo(108, 20);
-    graphics.endFill();
-
-    graphics.setStrokeStyle(1.0, 0x555555);
-    graphics.moveTo(102, main.offsetHeight - 50);
-    graphics.lineTo(108, main.offsetHeight - 50);
+    graphics.lineTo(105, axis_height - 52);
     graphics.endFill();
 
     app.stage.addChild(graphics);
 
-    const locusText1 = new Text({
-        text: '15,610,000',
+    // Display range
+    const locusTextRange = new Text({
+        text: "(" + (locus_end - locus_start).toLocaleString() + ")",
         style: {
             fontFamily: 'Helvetica',
             fontSize: 9,
             fill: 0x000000,
             align: 'center',
+
         },
-        x: 55,
-        y: 15,
+        x: 108,
+        y: 15 + ((main.offsetHeight - 55 - 15)/2),
     });
+    locusTextRange.rotation = - Math.PI / 2;
 
-    app.stage.addChild(locusText1);
-
-    const locusText2 = new Text({
-        text: '15,595,000',
-        style: {
-            fontFamily: 'Helvetica',
-            fontSize: 9,
-            fill: 0x000000,
-            align: 'center',
-        },
-        x: 55,
-        y: main.offsetHeight - 50 - 5,
-    });
-
-    app.stage.addChild(locusText2);
+    app.stage.addChild(locusTextRange);
 }
 
 async function drawTranscripts(main) {

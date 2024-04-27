@@ -671,19 +671,10 @@ Hello
         """
 
         inner_script = """
-var zoom = 0;
+window.zoom = 0;
 
 document.addEventListener('wheel', function(e) {
-    if (e.deltaY < 0) {
-        zoom += e.deltaY;
-        // console.log('Zooming in ' + zoom);
-        // Insert zoom in functionality here
-    }
-    else if (e.deltaY > 0) {
-        zoom += e.deltaY;
-        // console.log('Zooming out ' + zoom);
-        // Insert zoom out functionality here
-    }
+    window.zoom += e.deltaY;
 });
 
 function closeSidebar() {
@@ -716,8 +707,7 @@ for (var i = 0; i < compressedData.length; i++) {{
 }}
 
 var decompressedData = pako.inflate(bytes, {{ to: 'string' }});
-var jsonData = JSON.parse(decompressedData);
-console.log(jsonData);
+window.reads = JSON.parse(decompressedData);
         """
 
         inner_module = """
@@ -744,13 +734,13 @@ async function renderApp() {
     main.appendChild(app.canvas);
 
     // Listen for window resize events
-    window.addEventListener('resize', resize);
+    window.addEventListener('resize', repaint);
 
-    resize();
+    repaint();
 }
 
 // Resize function window
-function resize() {
+function repaint() {
     var main = document.querySelector('main');
 
     // Resize the renderer
@@ -761,7 +751,7 @@ function resize() {
 
     // Draw all the elements
     drawIdeogram(main, window.data.ideogram);
-    // await drawRuler(main);
+    drawRuler(main);
     // await drawTranscripts(main);
 }
 
@@ -929,6 +919,8 @@ async function drawIdeogram(main, ideogramData) {
 }
 
 async function drawRuler(main) {
+    console.log(main.zoom);
+
     const graphics = new Graphics();
 
     graphics.lineStyle(1.0, 0x555555);
