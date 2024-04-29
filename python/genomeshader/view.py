@@ -182,7 +182,25 @@ class GenomeShader:
             pl.col("gieStain").alias("color").replace(color_lookup)
         )
 
-        return ideo_df
+        return ideo_df.write_json()
+
+    def genes(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> pl.DataFrame:
+        # Define the API endpoint with the track, contig, start, end parameters
+        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
+
+        # Make a GET request to the API endpoint
+        response = requests.get(api_endpoint)
+        if response.status_code == 200:
+            data = response.json()
+
+            # Extract the 'contig' sub-key from the 'cytoBandIdeo' key
+            gene_data = data.get('ncbiRefSeq', {})
+            gene_df = pl.DataFrame(gene_data)
+        else:
+            raise ConnectionError(f"Failed to retrieve data from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
+
+        return gene_df.write_json()
+
 
     def show_old(
         self,
@@ -439,11 +457,12 @@ class GenomeShader:
         ref_start = reads_df["reference_start"].min()
         ref_end = reads_df["reference_end"].max()
 
-        ideo_df = self.ideogram(ref_chr)
-        ideo_json = ideo_df.write_json()
+        ideo_json = self.ideogram(ref_chr)
+        gene_json = self.genes(ref_chr, ref_start, ref_end)
 
         data_to_pass = {
             "ideogram": json.loads(ideo_json),
+            "genes": json.loads(gene_json),
             "ref_chr": ref_chr,
             "ref_start": ref_start,
             "ref_end": ref_end,
@@ -697,6 +716,7 @@ import pako from 'https://cdn.skypack.dev/pako@2.1.0';
 window.data = JSON.parse({json.dumps(data_json)});
 
 // Function to decode and parse the JSON
+window.encodedData = "{encoded_reads}";
 var encodedData = "{encoded_reads}";
 
 // Decompress data
@@ -712,6 +732,9 @@ window.reads = JSON.parse(decompressedData);
 
         inner_module = """
 import { Application, Graphics, Text, TextStyle, Color } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
+
+// Some initial settings.
+window.zoom = 0;
 
 // Create a PixiJS application.
 const app = new Application();
@@ -733,30 +756,43 @@ async function renderApp() {
     // Then adding the application's canvas to the DOM body.
     main.appendChild(app.canvas);
 
-    // Listen for window resize events
+    // Listen for window resize events.
     window.addEventListener('resize', repaint);
 
     repaint();
 }
 
+document.addEventListener('wheel', function(e) {
+    const multiplier = e.shiftKey ? 10.0 : 1.0;
+
+    const locus_start = parseInt(window.data.ref_start) + window.zoom + (multiplier*e.deltaY);
+    const locus_end = parseInt(window.data.ref_end) - window.zoom - (multiplier*e.deltaY);
+
+    if (locus_end - locus_start >= 1) {
+        window.zoom += e.deltaY;
+    }
+
+    repaint();
+});
+
 // Resize function window
 function repaint() {
     var main = document.querySelector('main');
 
-    // Resize the renderer
-    app.renderer.resize(main.offsetWidth, main.offsetHeight);
+	// Resize the renderer
+	app.renderer.resize(main.offsetWidth, main.offsetHeight);
 
     // Clear the application stage
     app.stage.removeChildren();
 
     // Draw all the elements
-    drawIdeogram(main, window.data.ideogram);
-    drawRuler(main);
-    // await drawTranscripts(main);
+    drawIdeogram(main, window.data.ideogram, window.data.ref_start, window.data.ref_end, window.zoom);
+    drawRuler(main, window.data.ref_start, window.data.ref_end, window.zoom);
+    drawTranscripts(main, window.data.ref_start, window.data.ref_end, window.zoom);
 }
 
 // Function to draw the ideogram.
-async function drawIdeogram(main, ideogramData) {
+async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
     const graphics = new Graphics();
 
     const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
@@ -916,66 +952,85 @@ async function drawIdeogram(main, ideogramData) {
     chrText.rotation = - Math.PI / 2;
 
     app.stage.addChild(chrText);
+
+    const locus_start = parseInt(ref_start) + zoom;
+    const locus_end = parseInt(ref_end) - zoom;
+    const pixels_per_base = ideoHeight / ideoLength;
+    const selection_start = 50 + ((ideoLength - locus_end) * pixels_per_base);
+    const selection_height = (locus_end - locus_start)*pixels_per_base;
+
+    const selection = new Graphics();
+    selection.rect(ideoX - 5, selection_start, ideoWidth + 10, selection_height < 5 ? 5 : selection_height);
+    selection.fill("#aa000033");
+    graphics.addChild(selection);
 }
 
-async function drawRuler(main) {
-    console.log(main.zoom);
+async function drawRuler(main, ref_start, ref_end, zoom) {
+    const locus_start = parseInt(ref_start) + zoom;
+    const locus_end = parseInt(ref_end) - zoom;
 
     const graphics = new Graphics();
 
-    graphics.lineStyle(1.0, 0x555555);
+    // Draw tics at various points
+    const range = locus_end - locus_start;
+    const locus_spacing = Math.floor(range / 11);
+    const tic_spacing = Math.floor(((main.offsetHeight - 55) - 15) / 10);
+    let axis_height = -tic_spacing;
+    for (let i = locus_end, j = 20; i >= locus_start; i -= locus_spacing, j += tic_spacing) {
+        graphics.setStrokeStyle(1.0, 0x555555);
+        graphics.moveTo(102, j);
+        graphics.lineTo(108, j);
+        graphics.endFill();
+
+        const locusText = new Text({
+            text: i.toLocaleString(),
+            style: {
+                fontFamily: 'Helvetica',
+                fontSize: 9,
+                fill: 0x000000,
+                align: 'center',
+            },
+            x: 55,
+            y: j - 5,
+        });
+
+        axis_height += tic_spacing;
+
+        app.stage.addChild(locusText);
+    }
+
+    // Axis line
+    graphics.setStrokeStyle(1.0, 0x555555);
     graphics.moveTo(105, 20);
-    graphics.lineTo(105, main.offsetHeight - 50);
-    graphics.endFill();
-
-    graphics.lineStyle(1.0, 0x555555);
-    graphics.moveTo(102, 20);
-    graphics.lineTo(108, 20);
-    graphics.endFill();
-
-    graphics.lineStyle(1.0, 0x555555);
-    graphics.moveTo(102, main.offsetHeight - 50);
-    graphics.lineTo(108, main.offsetHeight - 50);
+    graphics.lineTo(105, axis_height - 52);
     graphics.endFill();
 
     app.stage.addChild(graphics);
 
-    const locusText1 = new Text({
-        text: '15,610,000',
+    // Display range
+    const locusTextRange = new Text({
+        text: "(" + (locus_end - locus_start).toLocaleString() + " bp)",
         style: {
             fontFamily: 'Helvetica',
             fontSize: 9,
             fill: 0x000000,
             align: 'center',
+
         },
-        x: 55,
-        y: 15,
+        x: 108,
+        y: 15 + ((main.offsetHeight - 55 - 15)/2),
     });
+    locusTextRange.rotation = - Math.PI / 2;
 
-    app.stage.addChild(locusText1);
-
-    const locusText2 = new Text({
-        text: '15,595,000',
-        style: {
-            fontFamily: 'Helvetica',
-            fontSize: 9,
-            fill: 0x000000,
-            align: 'center',
-        },
-        x: 55,
-        y: main.offsetHeight - 50 - 5,
-    });
-
-    app.stage.addChild(locusText2);
+    app.stage.addChild(locusTextRange);
 }
 
-async function drawTranscripts(main) {
+async function drawTranscripts(main, ref_start, ref_end, zoom) {
     const graphics = new Graphics();
 
-    graphics.lineStyle(1.5, 0x5555ff);
     graphics.moveTo(130, 30);
-    graphics.lineTo(130, main.offsetHeight - 300);
-    graphics.endFill();
+    graphics.lineTo(130, main.offsetHeight - 500);
+    graphics.stroke({ width: 1, color: 0x0000ff });
 
     app.stage.addChild(graphics);
 }
