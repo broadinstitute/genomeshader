@@ -300,9 +300,6 @@ function repaint() {
 
 // Function to draw the ideogram.
 async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
-    const locus_start = parseInt(ref_start) + zoom;
-    const locus_end = parseInt(ref_end) - zoom;
-
     const graphics = new Graphics();
 
     const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
@@ -462,6 +459,17 @@ async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
     chrText.rotation = - Math.PI / 2;
 
     app.stage.addChild(chrText);
+
+    const locus_start = parseInt(ref_start) + zoom;
+    const locus_end = parseInt(ref_end) - zoom;
+    const pixels_per_base = ideoHeight / ideoLength;
+    const selection_start = 50 + ((ideoLength - locus_end) * pixels_per_base);
+    const selection_height = (locus_end - locus_start)*pixels_per_base;
+
+    const selection = new Graphics();
+    selection.rect(ideoX - 5, selection_start, ideoWidth + 10, selection_height < 5 ? 5 : selection_height);
+    selection.fill("#aa000033");
+    graphics.addChild(selection);
 }
 
 async function drawRuler(main, ref_start, ref_end, zoom) {
