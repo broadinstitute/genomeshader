@@ -15,6 +15,7 @@
         height: 100vh;
         margin: 0;
         padding: 0;
+        overflow: hidden;
     }
     header {
         grid-area: header;
@@ -316,7 +317,7 @@ function repaint() {
     // Draw all the elements
     drawIdeogram(main, window.data.ideogram);
     drawRuler(main);
-    // drawGenes(main, window.data.genes, window.data.ref_start, window.data.ref_end, window.zoom);
+    drawGenes(main, window.data.genes);
 }
 
 // Function to draw the ideogram.
@@ -584,9 +585,49 @@ async function drawRuler(main) {
 async function drawGenes(main, geneData) {
     const graphics = new Graphics();
 
-    graphics.moveTo(130, 30);
-    graphics.lineTo(130, main.offsetHeight - 500);
-    graphics.stroke({ width: 1, color: 0x0000ff });
+    const basesPerPixel = (window.locus_end - window.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+
+    console.log(geneData);
+
+    for (let geneIdx = 0; geneIdx < geneData.columns[0].values.length; geneIdx++) {
+        let txStart = geneData.columns[4].values[geneIdx];
+        let txEnd = geneData.columns[5].values[geneIdx];
+        let geneName = geneData.columns[12].values[geneIdx];
+
+        let geneBarEnd = (window.locus_end - txEnd) / basesPerPixel
+        let geneBarStart = (window.locus_end - txStart) / basesPerPixel
+
+        graphics.moveTo(130, geneBarEnd);
+        graphics.lineTo(130, geneBarStart);
+        graphics.stroke({ width: 1, color: 0x0000ff });
+
+        const geneNameLabel = new Text({
+            text: geneName,
+            style: {
+                fontFamily: 'Helvetica',
+                fontSize: 9,
+                fill: 0x000000,
+                align: 'right',
+            },
+            x: 130 + 3,
+            y: geneBarEnd + (Math.abs(geneBarEnd - geneBarStart) / 2)
+        });
+        geneNameLabel.rotation = - Math.PI / 2;
+
+        app.stage.addChild(geneNameLabel);
+
+        let exonStarts = geneData.columns[9].values[geneIdx].split(',').filter(Boolean);
+        let exonEnds = geneData.columns[10].values[geneIdx].split(',').filter(Boolean);
+
+        for (let exonIdx = 0; exonIdx < exonStarts.length; exonIdx++) {
+            const exonEndY = (window.locus_end - exonEnds[exonIdx]) / basesPerPixel;
+            const exonStartY = (window.locus_end - exonStarts[exonIdx]) / basesPerPixel;
+
+            graphics.rect(130 - 5, exonEndY, 10, Math.abs(exonEndY - exonStartY));
+            graphics.stroke({ width: 2, color: 0x0000ff });
+            graphics.fill(0xff);
+        }
+    }
 
     app.stage.addChild(graphics);
 }
