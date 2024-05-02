@@ -273,16 +273,16 @@ async function renderApp() {
 }
 
 document.addEventListener('wheel', function(e) {
-    const multiplier = e.ctrlKey && e.shiftKey ? 100.0 : e.shiftKey ? 10.0 : 1.0;
+    const multiplier = e.shiftKey ? 10.0 : 1.0;
 
-    const locus_start = parseInt(window.data.ref_start) + window.zoom + (multiplier*e.deltaY);
-    const locus_end = parseInt(window.data.ref_end) - window.zoom - (multiplier*e.deltaY);
+    const locusStart = parseInt(window.data.ref_start) + window.zoom + (multiplier*e.deltaY);
+    const locusEnd = parseInt(window.data.ref_end) - window.zoom - (multiplier*e.deltaY);
 
-    if (locus_end - locus_start >= 20 && window.data.ref_start <= locus_start && locus_end <= window.data.ref_end) {
+    if (locusEnd - locusStart >= 20 && window.data.ref_start <= locusStart && locusEnd <= window.data.ref_end) {
         window.zoom += e.deltaY;
 
-        window.locus_start = locus_start;
-        window.locus_end = locus_end;
+        window.locus_start = locusStart;
+        window.locus_end = locusEnd;
     }
 
     repaint();
@@ -304,19 +304,11 @@ function repaint() {
     // drawGenes(main, window.data.genes, window.data.ref_start, window.data.ref_end, window.zoom);
 }
 
-function genomicToScreenYCoordinate(container_top, container_height, locus_pos) {
-    const genomic_range = window.data.ref_end - window.data.ref_start;
-    const bases_per_pixel = genomic_range / container_height;
-    const pixels_per_base = container_height / genomic_range;
-
-    return container_top + ((ref_end - locus_pos)/bases_per_pixel);
-}
-
 // Function to draw the ideogram.
-async function drawIdeogram(main, ideogram_data) {
+async function drawIdeogram(main, ideogramData) {
     const graphics = new Graphics();
 
-    const ideoLength = ideogram_data.columns[2].values[ideogram_data.columns[2].values.length - 1];
+    const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
     const ideoWidth = 18;
     const ideoHeight = main.offsetHeight - 150;
     const ideoX = 15;
@@ -351,13 +343,13 @@ async function drawIdeogram(main, ideogram_data) {
 
     let bandY = ideoY;
     let acenSeen = false;
-    for (let i = ideogram_data.columns[0].values.length - 1; i >= 0; i--) {
-        let bandHeight = (ideogram_data.columns[2].values[i] - ideogram_data.columns[1].values[i]) * ideoHeight / ideoLength;
-        let bandStart = ideogram_data.columns[1].values[i];
-        let bandEnd = ideogram_data.columns[2].values[i];
-        let bandName = ideogram_data.columns[3].values[i];
-        let bandStain = ideogram_data.columns[4].values[i];
-        let bandColor = ideogram_data.columns[5].values[i];
+    for (let i = ideogramData.columns[0].values.length - 1; i >= 0; i--) {
+        let bandHeight = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i]) * ideoHeight / ideoLength;
+        let bandStart = ideogramData.columns[1].values[i];
+        let bandEnd = ideogramData.columns[2].values[i];
+        let bandName = ideogramData.columns[3].values[i];
+        let bandStain = ideogramData.columns[4].values[i];
+        let bandColor = ideogramData.columns[5].values[i];
 
         const band = new Graphics();
         band.interactive = true;
@@ -465,7 +457,7 @@ async function drawIdeogram(main, ideogram_data) {
 
     // Draw chromosome name
     const chrText = new Text({
-        text: ideogram_data.columns[0].values[0],
+        text: ideogramData.columns[0].values[0],
         style: {
             fontFamily: 'Helvetica',
             fontSize: 12,
@@ -549,7 +541,7 @@ async function drawRuler(main) {
         let basesPerPixel = (window.locus_end - window.locus_start) / (axisHeight - axisY);
         let ticPositionY = (window.locus_end - currentTic) / basesPerPixel;
 
-        if (ticPositionY >= axisY && ticPositionY <= axisY + axisHeight) {
+        if (ticPositionY >= axisY && ticPositionY <= axisHeight) {
             graphics.setStrokeStyle(1.0, 0x555555);
             graphics.moveTo(102, ticPositionY);
             graphics.lineTo(108, ticPositionY);
@@ -574,7 +566,7 @@ async function drawRuler(main) {
     }
 }
 
-async function drawGenes(main, gene_data, ref_start, ref_end, zoom) {
+async function drawGenes(main, geneData) {
     const graphics = new Graphics();
 
     graphics.moveTo(130, 30);
