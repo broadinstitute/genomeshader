@@ -195,7 +195,7 @@
     </span>
 </div>
 
-<footer>Status</footer>
+<footer></footer>
 
 </main>
 
@@ -286,6 +286,21 @@ document.addEventListener('wheel', function(e) {
     }
 
     repaint();
+});
+
+document.addEventListener('mousemove', function(event) {
+    var main = document.querySelector('main');
+
+    const rect = main.getBoundingClientRect();
+    const mouseY = event.clientY - rect.top;
+
+    const basesPerPixel = (window.locus_end - window.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const locusY = window.locus_end - ((mouseY - 20) * basesPerPixel);
+
+    var footer = document.querySelector('footer');
+    if (footer) {
+        footer.textContent = window.data.ref_chr + ":" + Math.round(locusY).toLocaleString();
+    }
 });
 
 // Resize function window
