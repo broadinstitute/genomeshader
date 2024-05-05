@@ -488,6 +488,7 @@ body {
     height: 100vh;
     margin: 0;
     padding: 0;
+    overflow: hidden;
 }
 header {
     grid-area: header;
@@ -756,6 +757,9 @@ async function renderApp() {
     // Then adding the application's canvas to the DOM body.
     main.appendChild(app.canvas);
 
+    window.locus_start = window.data.ref_start;
+    window.locus_end = window.data.ref_end;
+
     // Listen for window resize events.
     window.addEventListener('resize', repaint);
 
@@ -765,14 +769,32 @@ async function renderApp() {
 document.addEventListener('wheel', function(e) {
     const multiplier = e.shiftKey ? 10.0 : 1.0;
 
-    const locus_start = parseInt(window.data.ref_start) + window.zoom + (multiplier*e.deltaY);
-    const locus_end = parseInt(window.data.ref_end) - window.zoom - (multiplier*e.deltaY);
+    const locusStart = parseInt(window.data.ref_start) + window.zoom + (multiplier*e.deltaY);
+    const locusEnd = parseInt(window.data.ref_end) - window.zoom - (multiplier*e.deltaY);
 
-    if (locus_end - locus_start >= 1) {
+    if (locusEnd - locusStart >= 20 && window.data.ref_start <= locusStart && locusEnd <= window.data.ref_end) {
         window.zoom += e.deltaY;
+
+        window.locus_start = locusStart;
+        window.locus_end = locusEnd;
     }
 
     repaint();
+});
+
+document.addEventListener('mousemove', function(event) {
+    var main = document.querySelector('main');
+
+    const rect = main.getBoundingClientRect();
+    const mouseY = event.clientY - rect.top;
+
+    const basesPerPixel = (window.locus_end - window.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const locusY = window.locus_end - ((mouseY - 20) * basesPerPixel);
+
+    var footer = document.querySelector('footer');
+    if (footer) {
+        footer.textContent = window.data.ref_chr + ":" + Math.round(locusY).toLocaleString();
+    }
 });
 
 // Resize function window
@@ -786,13 +808,13 @@ function repaint() {
     app.stage.removeChildren();
 
     // Draw all the elements
-    drawIdeogram(main, window.data.ideogram, window.data.ref_start, window.data.ref_end, window.zoom);
-    drawRuler(main, window.data.ref_start, window.data.ref_end, window.zoom);
-    drawTranscripts(main, window.data.ref_start, window.data.ref_end, window.zoom);
+    drawIdeogram(main, window.data.ideogram);
+    drawRuler(main);
+    drawGenes(main, window.data.genes);
 }
 
 // Function to draw the ideogram.
-async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
+async function drawIdeogram(main, ideogramData) {
     const graphics = new Graphics();
 
     const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
@@ -801,6 +823,7 @@ async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
     const ideoX = 15;
     const ideoY = 40;
 
+    // Create a tooltip that appears when we hover over ideogram segments.
     graphics.interactive = true;
     graphics.buttonMode = true;
 
@@ -838,7 +861,6 @@ async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
         let bandColor = ideogramData.columns[5].values[i];
 
         const band = new Graphics();
-
         band.interactive = true;
         band.buttonMode = true;
 
@@ -852,6 +874,8 @@ async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
         });
 
         if (bandStain == 'acen') {
+            // Draw centromere triangles
+
             const blank = new Graphics();
             blank.rect(ideoX, bandY, ideoWidth, bandHeight);
             blank.stroke({ width: 2, color: 0xffffff });
@@ -874,6 +898,8 @@ async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
             band.fill(bandColor);
             acenSeen = true;
         } else {
+            // Draw non-centromeric rectangles
+
             band.rect(ideoX, bandY, ideoWidth, bandHeight);
             band.stroke({ width: 0, color: 0x333333 });
             band.fill(bandColor);
@@ -931,12 +957,14 @@ async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
         bandY += bandHeight;
     }
 
+    // Draw outer rectangle of ideogram
     graphics.rect(ideoX, ideoY, ideoWidth, ideoHeight);
     graphics.stroke({ width: 2, color: 0x333333 });
     graphics.fill(0xffffff);
 
     app.stage.addChild(graphics);
 
+    // Draw chromosome name
     const chrText = new Text({
         text: ideogramData.columns[0].values[0],
         style: {
@@ -953,63 +981,33 @@ async function drawIdeogram(main, ideogramData, ref_start, ref_end, zoom) {
 
     app.stage.addChild(chrText);
 
-    const locus_start = parseInt(ref_start) + zoom;
-    const locus_end = parseInt(ref_end) - zoom;
-    const pixels_per_base = ideoHeight / ideoLength;
-    const selection_start = 50 + ((ideoLength - locus_end) * pixels_per_base);
-    const selection_height = (locus_end - locus_start)*pixels_per_base;
+    // Draw selected region
+    const selectionY = (ideoLength - window.locus_end) * ideoHeight / ideoLength;
+    const selectionHeight = (window.locus_end - window.locus_start) * ideoHeight / ideoLength;
 
     const selection = new Graphics();
-    selection.rect(ideoX - 5, selection_start, ideoWidth + 10, selection_height < 5 ? 5 : selection_height);
-    selection.fill("#aa000033");
+    selection.rect(ideoX - 5, ideoY + selectionY, ideoWidth + 10, selectionHeight < 3 ? 3 : selectionHeight);
+    selection.fill("#ff000055");
     graphics.addChild(selection);
 }
 
-async function drawRuler(main, ref_start, ref_end, zoom) {
-    const locus_start = parseInt(ref_start) + zoom;
-    const locus_end = parseInt(ref_end) - zoom;
-
+async function drawRuler(main) {
     const graphics = new Graphics();
 
-    // Draw tics at various points
-    const range = locus_end - locus_start;
-    const locus_spacing = Math.floor(range / 11);
-    const tic_spacing = Math.floor(((main.offsetHeight - 55) - 15) / 10);
-    let axis_height = -tic_spacing;
-    for (let i = locus_end, j = 20; i >= locus_start; i -= locus_spacing, j += tic_spacing) {
-        graphics.setStrokeStyle(1.0, 0x555555);
-        graphics.moveTo(102, j);
-        graphics.lineTo(108, j);
-        graphics.endFill();
+    // Draw axis line
+    let axisY = 20;
+    let axisHeight = main.offsetHeight - axisY - 35;
 
-        const locusText = new Text({
-            text: i.toLocaleString(),
-            style: {
-                fontFamily: 'Helvetica',
-                fontSize: 9,
-                fill: 0x000000,
-                align: 'center',
-            },
-            x: 55,
-            y: j - 5,
-        });
-
-        axis_height += tic_spacing;
-
-        app.stage.addChild(locusText);
-    }
-
-    // Axis line
     graphics.setStrokeStyle(1.0, 0x555555);
-    graphics.moveTo(105, 20);
-    graphics.lineTo(105, axis_height - 52);
+    graphics.moveTo(105, axisY);
+    graphics.lineTo(105, axisHeight);
     graphics.endFill();
 
     app.stage.addChild(graphics);
 
     // Display range
     const locusTextRange = new Text({
-        text: "(" + (locus_end - locus_start).toLocaleString() + " bp)",
+        text: "(" + (window.locus_end - window.locus_start).toLocaleString() + " bp)",
         style: {
             fontFamily: 'Helvetica',
             fontSize: 9,
@@ -1018,19 +1016,123 @@ async function drawRuler(main, ref_start, ref_end, zoom) {
 
         },
         x: 108,
-        y: 15 + ((main.offsetHeight - 55 - 15)/2),
+        y: axisY + (axisHeight/2),
     });
     locusTextRange.rotation = - Math.PI / 2;
 
     app.stage.addChild(locusTextRange);
+
+    // Compute tics at various points
+    const range = window.locus_end - window.locus_start;
+    const maxTics = 20;
+
+    // Start with an increment that is an order of magnitude smaller than the range
+    let ticIncrement = Math.pow(10, Math.floor(Math.log10(range)) - 1);
+
+    // Adjust the increment to end in 0 or 5 and to have a reasonable number of tics
+    while (true) {
+        if (range / ticIncrement <= maxTics) {
+            if (ticIncrement % 10 === 0 || ticIncrement % 10 === 5) {
+                break;
+            } else if ((ticIncrement + 5) % 10 === 0) {
+                ticIncrement += 5; // Adjust to end in 0
+            } else {
+                ticIncrement = Math.ceil(ticIncrement / 10) * 10; // Round up to the next multiple of 10
+            }
+        } else {
+            ticIncrement *= 2; // Double the increment to reduce the number of tics
+        }
+    }
+
+    // Generate the tics
+    let currentTic = window.locus_start - (window.locus_start % ticIncrement) + ticIncrement;
+    while (currentTic < window.locus_end) {
+        let basesPerPixel = (window.locus_end - window.locus_start) / (axisHeight - axisY);
+        let ticPositionY = (window.locus_end - currentTic) / basesPerPixel;
+
+        if (ticPositionY >= axisY && ticPositionY <= axisHeight) {
+            graphics.setStrokeStyle(1.0, 0x555555);
+            graphics.moveTo(102, ticPositionY);
+            graphics.lineTo(108, ticPositionY);
+            graphics.endFill();
+
+            const locusText = new Text({
+                text: currentTic.toLocaleString(),
+                style: {
+                    fontFamily: 'Helvetica',
+                    fontSize: 9,
+                    fill: 0x000000,
+                    align: 'right',
+                },
+                x: 52,
+                y: ticPositionY - 5.5
+            });
+
+            app.stage.addChild(locusText);
+        }
+
+        currentTic += ticIncrement;
+    }
 }
 
-async function drawTranscripts(main, ref_start, ref_end, zoom) {
+async function drawGenes(main, geneData) {
     const graphics = new Graphics();
 
-    graphics.moveTo(130, 30);
-    graphics.lineTo(130, main.offsetHeight - 500);
-    graphics.stroke({ width: 1, color: 0x0000ff });
+    const basesPerPixel = (window.locus_end - window.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+
+    for (let geneIdx = 0; geneIdx < geneData.columns[0].values.length; geneIdx++) {
+        let txStart = geneData.columns[4].values[geneIdx];
+        let txEnd = geneData.columns[5].values[geneIdx];
+        let geneName = geneData.columns[12].values[geneIdx];
+        let geneStrand = geneData.columns[3].values[geneIdx];
+
+        let geneBarEnd = (window.locus_end - txEnd) / basesPerPixel
+        let geneBarStart = (window.locus_end - txStart) / basesPerPixel
+
+        // Draw gene line
+        graphics.moveTo(130, geneBarEnd);
+        graphics.lineTo(130, geneBarStart);
+        graphics.stroke({ width: 1, color: 0x0000ff });
+
+        // Draw strand lines
+        for (let i = geneBarEnd + 20; i <= geneBarStart; i += 20) {
+            graphics.moveTo(130, i);
+            graphics.lineTo(127, geneStrand == '+' ? i+5 : i-5);
+            graphics.stroke({ width: 1, color: 0x0000ff });
+
+            graphics.moveTo(130, i);
+            graphics.lineTo(133, geneStrand == '+' ? i+5 : i-5);
+            graphics.stroke({ width: 1, color: 0x0000ff });
+        }
+
+        // Draw gene name
+        const geneNameLabel = new Text({
+            text: geneName,
+            style: {
+                fontFamily: 'Helvetica',
+                fontSize: 9,
+                fill: 0x000000,
+                align: 'right',
+            },
+            x: 130 + 3,
+            y: geneBarEnd + (Math.abs(geneBarEnd - geneBarStart) / 2)
+        });
+        geneNameLabel.rotation = - Math.PI / 2;
+
+        app.stage.addChild(geneNameLabel);
+
+        let exonStarts = geneData.columns[9].values[geneIdx].split(',').filter(Boolean);
+        let exonEnds = geneData.columns[10].values[geneIdx].split(',').filter(Boolean);
+
+        for (let exonIdx = 0; exonIdx < exonStarts.length; exonIdx++) {
+            const exonEndY = (window.locus_end - exonEnds[exonIdx]) / basesPerPixel;
+            const exonStartY = (window.locus_end - exonStarts[exonIdx]) / basesPerPixel;
+
+            graphics.rect(130 - 5, exonEndY, 10, Math.abs(exonEndY - exonStartY));
+            graphics.stroke({ width: 2, color: 0x0000ff });
+            graphics.fill(0xff);
+        }
+    }
 
     app.stage.addChild(graphics);
 }
@@ -1089,9 +1191,6 @@ renderApp();
 }})();
 </script>
         """
-
-        with open("/Users/kiran/repositories/genomeshader/test.html", "w") as file:
-            file.write(HTML(html_script).data)
 
         # Display the HTML and JavaScript
         display(HTML(html_script))
