@@ -798,6 +798,8 @@ document.addEventListener('mousedown', function(event) {
     let startLocusStart = window.data.locus_start;
     let startLocusEnd = window.data.locus_end;
 
+    document.body.style.cursor = 'grabbing';
+
     function onMouseMove(event) {
         let deltaX = event.clientX - startX;
         let deltaY = event.clientY - startY;
@@ -813,6 +815,8 @@ document.addEventListener('mousedown', function(event) {
     function onMouseUp() {
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
+
+        document.body.style.cursor = 'default';
     }
 
     document.addEventListener('mousemove', onMouseMove);

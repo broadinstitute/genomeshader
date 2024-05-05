@@ -297,6 +297,8 @@ document.addEventListener('mousedown', function(event) {
     let startLocusStart = window.data.locus_start;
     let startLocusEnd = window.data.locus_end;
 
+    document.body.style.cursor = 'grabbing';
+
     function onMouseMove(event) {
         let deltaX = event.clientX - startX;
         let deltaY = event.clientY - startY;
@@ -312,6 +314,8 @@ document.addEventListener('mousedown', function(event) {
     function onMouseUp() {
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
+
+        document.body.style.cursor = 'default';
     }
 
     document.addEventListener('mousemove', onMouseMove);
@@ -732,12 +736,13 @@ async function drawReference(main, refData) {
 
             const refY = (window.data.locus_end - locusPos) / basesPerPixel;
 
-            if (window.data.locus_end - window.data.locus_start < 100) {
+            if (window.data.locus_end - window.data.locus_start <= 100) {
                 const baseLabel = new Text({
                     text: base,
                     style: {
                         fontFamily: 'Helvetica',
-                        fontSize: 9,
+                        fontSize: 10,
+                        fontWeight: 'bold',
                         fill: baseColor,
                         align: 'center',
                     },
