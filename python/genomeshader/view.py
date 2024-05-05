@@ -744,12 +744,13 @@ function decompressEncodedData(encodedData) {{
 // Load data
 window.data = JSON.parse({json.dumps(data_json)});
 
-// Function to decode and parse the JSON
-const encoded_reads = "{encoded_reads}";
-const encoded_ref = "{encoded_ref}";
-
-window.data.reads = JSON.parse(decompressEncodedData(encoded_reads));
+// Function to decode and parse the reference bases
+window.encoded_ref = "{encoded_ref}";
 window.data.ref = JSON.parse(decompressEncodedData(encoded_ref));
+
+// Function to decode and parse the reads
+window.encoded_reads = "{encoded_reads}";
+window.data.reads = JSON.parse(decompressEncodedData(encoded_reads));
         """
 
         inner_module = """
