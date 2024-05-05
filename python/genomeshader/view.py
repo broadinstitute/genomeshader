@@ -582,6 +582,10 @@ footer {
     color: #989898;
     font-family: Helvetica;
     font-size: 10pt;
+    user-select: none; /* Disable text selection */
+    -webkit-user-select: none; /* Safari */
+    -moz-user-select: none; /* Firefox */
+    -ms-user-select: none; /* Internet Explorer/Edge */
 }
 .tab-bar {
     height: 22px;
@@ -874,6 +878,7 @@ function repaint() {
     drawIdeogram(main, window.data.ideogram);
     drawRuler(main);
     drawGenes(main, window.data.genes);
+    drawReference(main, window.data.ref);
 }
 
 // Function to draw the ideogram.
@@ -1196,6 +1201,56 @@ async function drawGenes(main, geneData) {
             graphics.rect(130 - 5, exonEndY, 10, Math.abs(exonEndY - exonStartY));
             graphics.stroke({ width: 2, color: 0x0000ff });
             graphics.fill(0xff);
+        }
+    }
+
+    app.stage.addChild(graphics);
+}
+
+async function drawReference(main, refData) {
+    const graphics = new Graphics();
+
+    const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+
+    const nucleotideColors = {
+        'a': 0x45B29D, // Green
+        'A': 0x45B29D, // Green
+        'c': 0x334D5C, // Blue
+        'C': 0x334D5C, // Blue
+        'g': 0xE27A3F, // Yellow
+        'G': 0xE27A3F, // Yellow
+        't': 0xDF5A49, // Red
+        'T': 0xDF5A49, // Red
+        'n': 0xCCCCCC, // Grey (for unknown nucleotides)
+        'N': 0xCCCCCC  // Grey (for unknown nucleotides)
+    };
+
+    for (let locusPos = window.data.ref_start + 1, i = 0; locusPos <= window.data.ref_end; locusPos++, i++) {
+        if (window.data.locus_end - window.data.locus_start <= 1000 && window.data.locus_start <= locusPos && locusPos <= window.data.locus_end) {
+            const base = refData.columns[0].values[i];
+            const baseColor = nucleotideColors[base];
+
+            const refY = (window.data.locus_end - locusPos) / basesPerPixel;
+
+            if (window.data.locus_end - window.data.locus_start < 100) {
+                const baseLabel = new Text({
+                    text: base,
+                    style: {
+                        fontFamily: 'Helvetica',
+                        fontSize: 9,
+                        fill: baseColor,
+                        align: 'center',
+                    },
+                    x: 155,
+                    y: refY
+                });
+                baseLabel.rotation = - Math.PI / 2;
+
+                app.stage.addChild(baseLabel);
+            } else {
+                graphics.rect(155, refY, 10, 0.1);
+                graphics.stroke({ width: 1, color: baseColor });
+            }
         }
     }
 
