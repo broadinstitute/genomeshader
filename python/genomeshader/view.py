@@ -816,7 +816,7 @@ document.addEventListener('mousedown', function(event) {
 
 document.addEventListener('wheel', function(event) {
     // Determine the zoom factor
-    const zoomFactor = event.deltaY < 0 ? 0.9 : 1.1;
+    const zoomFactor = event.deltaY < 0 ? (event.shiftKey ? 0.99 : 0.9) : (event.shiftKey ? 1.01 : 1.1);
 
     // Calculate the new locus range based on the zoom factor
     const range = window.data.locus_end - window.data.locus_start;
