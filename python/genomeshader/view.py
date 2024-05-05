@@ -201,6 +201,22 @@ class GenomeShader:
 
         return gene_df.write_json()
 
+    def reference(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> pl.DataFrame:
+        # Define the API endpoint with the track, contig, start, end parameters
+        api_endpoint = f"https://api.genome.ucsc.edu/getData/sequence?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
+
+        # Make a GET request to the API endpoint
+        response = requests.get(api_endpoint)
+        if response.status_code == 200:
+            data = response.json()
+
+            # Extract the 'contig' sub-key from the 'cytoBandIdeo' key
+            ref_data = data.get('dna', {})
+            ref_df = pl.DataFrame(ref_data)
+        else:
+            raise ConnectionError(f"Failed to retrieve data from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
+
+        return ref_df.write_json()
 
     def show_old(
         self,
@@ -459,6 +475,7 @@ class GenomeShader:
 
         ideo_json = self.ideogram(ref_chr)
         gene_json = self.genes(ref_chr, ref_start, ref_end)
+        ref_json = self.reference(ref_chr, ref_start, ref_end)
 
         data_to_pass = {
             "ideogram": json.loads(ideo_json),
@@ -472,9 +489,11 @@ class GenomeShader:
 
         # Compress JSON data using gzip
         compressed_reads = gzip.compress(reads_df.write_json().encode('utf-8'))
+        compressed_ref = gzip.compress(ref_json.encode('utf-8'))
 
         # Encode compressed data to base64 to embed in HTML safely
         encoded_reads = base64.b64encode(compressed_reads).decode('utf-8')
+        encoded_ref = base64.b64encode(compressed_ref).decode('utf-8')
 
         inner_style = """
 body {
@@ -666,7 +685,7 @@ footer {
     </span>
 </div>
 
-<footer>Status</footer>
+<footer></footer>
 
 </main>
 
@@ -713,22 +732,24 @@ function openSidebar() {
         inner_data = f"""
 import pako from 'https://cdn.skypack.dev/pako@2.1.0';
 
+function decompressEncodedData(encodedData) {{
+    var compressedData = atob(encodedData);
+    var bytes = new Uint8Array(compressedData.length);
+    for (var i = 0; i < compressedData.length; i++) {{
+        bytes[i] = compressedData.charCodeAt(i);
+    }}
+    return pako.inflate(bytes, {{ to: 'string' }});
+}}
+
 // Load data
 window.data = JSON.parse({json.dumps(data_json)});
 
 // Function to decode and parse the JSON
-window.encodedData = "{encoded_reads}";
-var encodedData = "{encoded_reads}";
+const encoded_reads = "{encoded_reads}";
+const encoded_ref = "{encoded_ref}";
 
-// Decompress data
-var compressedData = atob(encodedData);
-var bytes = new Uint8Array(compressedData.length);
-for (var i = 0; i < compressedData.length; i++) {{
-    bytes[i] = compressedData.charCodeAt(i);
-}}
-
-var decompressedData = pako.inflate(bytes, {{ to: 'string' }});
-window.reads = JSON.parse(decompressedData);
+window.data.reads = JSON.parse(decompressEncodedData(encoded_reads));
+window.data.ref = JSON.parse(decompressEncodedData(encoded_ref));
         """
 
         inner_module = """
