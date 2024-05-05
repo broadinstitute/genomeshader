@@ -1,6 +1,6 @@
 [package]
 name = "genomeshader"
-version = "0.1.68"
+version = "0.1.69"
 authors = ["Kiran V Garimella <kiran@broadinstitute.org>"]
 edition = "2021"
 license = "BSD 3-Clause"
