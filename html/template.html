@@ -587,20 +587,32 @@ async function drawGenes(main, geneData) {
 
     const basesPerPixel = (window.locus_end - window.locus_start) / (main.offsetHeight - 20 - 20 - 35);
 
-    console.log(geneData);
-
     for (let geneIdx = 0; geneIdx < geneData.columns[0].values.length; geneIdx++) {
         let txStart = geneData.columns[4].values[geneIdx];
         let txEnd = geneData.columns[5].values[geneIdx];
         let geneName = geneData.columns[12].values[geneIdx];
+        let geneStrand = geneData.columns[3].values[geneIdx];
 
         let geneBarEnd = (window.locus_end - txEnd) / basesPerPixel
         let geneBarStart = (window.locus_end - txStart) / basesPerPixel
 
+        // Draw gene line
         graphics.moveTo(130, geneBarEnd);
         graphics.lineTo(130, geneBarStart);
         graphics.stroke({ width: 1, color: 0x0000ff });
 
+        // Draw strand lines
+        for (let i = geneBarEnd + 20; i <= geneBarStart; i += 20) {
+            graphics.moveTo(130, i);
+            graphics.lineTo(127, geneStrand == '+' ? i+5 : i-5);
+            graphics.stroke({ width: 1, color: 0x0000ff });
+
+            graphics.moveTo(130, i);
+            graphics.lineTo(133, geneStrand == '+' ? i+5 : i-5);
+            graphics.stroke({ width: 1, color: 0x0000ff });
+        }
+
+        // Draw gene name
         const geneNameLabel = new Text({
             text: geneName,
             style: {
