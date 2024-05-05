@@ -756,7 +756,7 @@ window.data.ref = JSON.parse(decompressEncodedData(encoded_ref));
 import { Application, Graphics, Text, TextStyle, Color } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
 
 // Some initial settings.
-window.zoom = 0;
+window.data.zoom = 0;
 
 // Create a PixiJS application.
 const app = new Application();
@@ -778,8 +778,8 @@ async function renderApp() {
     // Then adding the application's canvas to the DOM body.
     main.appendChild(app.canvas);
 
-    window.locus_start = window.data.ref_start;
-    window.locus_end = window.data.ref_end;
+    window.data.locus_start = window.data.ref_start;
+    window.data.locus_end = window.data.ref_end;
 
     // Listen for window resize events.
     window.addEventListener('resize', repaint);
@@ -787,20 +787,61 @@ async function renderApp() {
     repaint();
 }
 
-document.addEventListener('wheel', function(e) {
-    const multiplier = e.shiftKey ? 200.0 : 20.0;
+document.addEventListener('mousedown', function(event) {
+    let startX = event.clientX;
+    let startY = event.clientY;
+    let startLocusStart = window.data.locus_start;
+    let startLocusEnd = window.data.locus_end;
 
-    const locusStart = parseInt(window.data.ref_start) + window.zoom + (multiplier*e.deltaY);
-    const locusEnd = parseInt(window.data.ref_end) - window.zoom - (multiplier*e.deltaY);
+    function onMouseMove(event) {
+        let deltaX = event.clientX - startX;
+        let deltaY = event.clientY - startY;
 
-    if (locusEnd - locusStart >= 20 && window.data.ref_start <= locusStart && locusEnd <= window.data.ref_end) {
-        window.zoom += e.deltaY;
+        const basesPerPixel = (startLocusEnd - startLocusStart) / document.querySelector('main').offsetHeight;
 
-        window.locus_start = locusStart;
-        window.locus_end = locusEnd;
+        window.data.locus_start = startLocusStart + (deltaY * basesPerPixel);
+        window.data.locus_end = startLocusEnd + (deltaY * basesPerPixel);
+
+        repaint();
     }
 
-    repaint();
+    function onMouseUp() {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+    }
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+});
+
+document.addEventListener('wheel', function(event) {
+    // Determine the zoom factor
+    const zoomFactor = event.deltaY < 0 ? 0.9 : 1.1;
+
+    // Calculate the new locus range based on the zoom factor
+    const range = window.data.locus_end - window.data.locus_start;
+    const newRange = range * zoomFactor;
+    const center = (window.data.locus_start + window.data.locus_end) / 2;
+
+    var locusStart = center - newRange / 2;
+    var locusEnd = center + newRange / 2;
+
+    // Ensure that the new range is within the reference range
+    if (locusStart < window.data.ref_start) {
+        locusStart = window.data.ref_start;
+    }
+    if (locusEnd > window.data.ref_end) {
+        locusEnd = window.data.ref_end;
+    }
+
+    // If range is greater than the minimum range, allow the repaint to happen
+    if (locusEnd - locusStart >= 20) {
+        window.data.locus_start = locusStart;
+        window.data.locus_end = locusEnd;
+
+        // Redraw the screen contents
+        repaint();
+    }
 });
 
 document.addEventListener('mousemove', function(event) {
@@ -809,8 +850,8 @@ document.addEventListener('mousemove', function(event) {
     const rect = main.getBoundingClientRect();
     const mouseY = event.clientY - rect.top;
 
-    const basesPerPixel = (window.locus_end - window.locus_start) / (main.offsetHeight - 20 - 20 - 35);
-    const locusY = window.locus_end - ((mouseY - 20) * basesPerPixel);
+    const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const locusY = window.data.locus_end - ((mouseY - 20) * basesPerPixel);
 
     var footer = document.querySelector('footer');
     if (footer) {
@@ -1003,8 +1044,8 @@ async function drawIdeogram(main, ideogramData) {
     app.stage.addChild(chrText);
 
     // Draw selected region
-    const selectionY = (ideoLength - window.locus_end) * ideoHeight / ideoLength;
-    const selectionHeight = (window.locus_end - window.locus_start) * ideoHeight / ideoLength;
+    const selectionY = (ideoLength - window.data.locus_end) * ideoHeight / ideoLength;
+    const selectionHeight = (window.data.locus_end - window.data.locus_start) * ideoHeight / ideoLength;
 
     const selection = new Graphics();
     selection.rect(ideoX - 5, ideoY + selectionY, ideoWidth + 10, selectionHeight < 3 ? 3 : selectionHeight);
@@ -1028,7 +1069,7 @@ async function drawRuler(main) {
 
     // Display range
     const locusTextRange = new Text({
-        text: "(" + (window.locus_end - window.locus_start).toLocaleString() + " bp)",
+        text: "(" + Math.floor(window.data.locus_end - window.data.locus_start).toLocaleString() + " bp)",
         style: {
             fontFamily: 'Helvetica',
             fontSize: 9,
@@ -1044,7 +1085,7 @@ async function drawRuler(main) {
     app.stage.addChild(locusTextRange);
 
     // Compute tics at various points
-    const range = window.locus_end - window.locus_start;
+    const range = window.data.locus_end - window.data.locus_start;
     const maxTics = 20;
 
     // Start with an increment that is an order of magnitude smaller than the range
@@ -1066,10 +1107,10 @@ async function drawRuler(main) {
     }
 
     // Generate the tics
-    let currentTic = window.locus_start - (window.locus_start % ticIncrement) + ticIncrement;
-    while (currentTic < window.locus_end) {
-        let basesPerPixel = (window.locus_end - window.locus_start) / (axisHeight - axisY);
-        let ticPositionY = (window.locus_end - currentTic) / basesPerPixel;
+    let currentTic = window.data.locus_start - (window.data.locus_start % ticIncrement) + ticIncrement;
+    while (currentTic < window.data.locus_end) {
+        let basesPerPixel = (window.data.locus_end - window.data.locus_start) / (axisHeight - axisY);
+        let ticPositionY = (window.data.locus_end - currentTic) / basesPerPixel;
 
         if (ticPositionY >= axisY && ticPositionY <= axisHeight) {
             graphics.setStrokeStyle(1.0, 0x555555);
@@ -1099,7 +1140,7 @@ async function drawRuler(main) {
 async function drawGenes(main, geneData) {
     const graphics = new Graphics();
 
-    const basesPerPixel = (window.locus_end - window.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
 
     for (let geneIdx = 0; geneIdx < geneData.columns[0].values.length; geneIdx++) {
         let txStart = geneData.columns[4].values[geneIdx];
@@ -1107,8 +1148,8 @@ async function drawGenes(main, geneData) {
         let geneName = geneData.columns[12].values[geneIdx];
         let geneStrand = geneData.columns[3].values[geneIdx];
 
-        let geneBarEnd = (window.locus_end - txEnd) / basesPerPixel
-        let geneBarStart = (window.locus_end - txStart) / basesPerPixel
+        let geneBarEnd = (window.data.locus_end - txEnd) / basesPerPixel
+        let geneBarStart = (window.data.locus_end - txStart) / basesPerPixel
 
         // Draw gene line
         graphics.moveTo(130, geneBarEnd);
@@ -1117,7 +1158,7 @@ async function drawGenes(main, geneData) {
 
         // Draw strand lines
         for (let txPos = txStart + 200; txPos <= txEnd - 200; txPos += 500) {
-            let feathersY = (window.locus_end - txPos) / basesPerPixel;
+            let feathersY = (window.data.locus_end - txPos) / basesPerPixel;
 
             graphics.moveTo(130, feathersY);
             graphics.lineTo(127, geneStrand == '+' ? feathersY+5 : txPos-5);
@@ -1148,8 +1189,8 @@ async function drawGenes(main, geneData) {
         let exonEnds = geneData.columns[10].values[geneIdx].split(',').filter(Boolean);
 
         for (let exonIdx = 0; exonIdx < exonStarts.length; exonIdx++) {
-            const exonEndY = (window.locus_end - exonEnds[exonIdx]) / basesPerPixel;
-            const exonStartY = (window.locus_end - exonStarts[exonIdx]) / basesPerPixel;
+            const exonEndY = (window.data.locus_end - exonEnds[exonIdx]) / basesPerPixel;
+            const exonStartY = (window.data.locus_end - exonStarts[exonIdx]) / basesPerPixel;
 
             graphics.rect(130 - 5, exonEndY, 10, Math.abs(exonEndY - exonStartY));
             graphics.stroke({ width: 2, color: 0x0000ff });

@@ -16,7 +16,6 @@
         margin: 0;
         padding: 0;
         overflow: hidden;
-        scroll-behavior: smooth;
     }
     header {
         grid-area: header;
@@ -283,9 +282,12 @@ document.addEventListener('mousedown', function(event) {
     function onMouseMove(event) {
         let deltaX = event.clientX - startX;
         let deltaY = event.clientY - startY;
+
         const basesPerPixel = (startLocusEnd - startLocusStart) / document.querySelector('main').offsetHeight;
+
         window.data.locus_start = startLocusStart + (deltaY * basesPerPixel);
         window.data.locus_end = startLocusEnd + (deltaY * basesPerPixel);
+
         repaint();
     }
 
@@ -327,7 +329,6 @@ document.addEventListener('wheel', function(event) {
         repaint();
     }
 });
-
 
 document.addEventListener('mousemove', function(event) {
     var main = document.querySelector('main');
