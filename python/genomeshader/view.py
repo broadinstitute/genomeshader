@@ -788,7 +788,7 @@ async function renderApp() {
 }
 
 document.addEventListener('wheel', function(e) {
-    const multiplier = e.shiftKey ? 10.0 : 1.0;
+    const multiplier = e.shiftKey ? 200.0 : 20.0;
 
     const locusStart = parseInt(window.data.ref_start) + window.zoom + (multiplier*e.deltaY);
     const locusEnd = parseInt(window.data.ref_end) - window.zoom - (multiplier*e.deltaY);
@@ -1116,13 +1116,15 @@ async function drawGenes(main, geneData) {
         graphics.stroke({ width: 1, color: 0x0000ff });
 
         // Draw strand lines
-        for (let i = geneBarEnd + 20; i <= geneBarStart; i += 20) {
-            graphics.moveTo(130, i);
-            graphics.lineTo(127, geneStrand == '+' ? i+5 : i-5);
+        for (let txPos = txStart + 200; txPos <= txEnd - 200; txPos += 500) {
+            let feathersY = (window.locus_end - txPos) / basesPerPixel;
+
+            graphics.moveTo(130, feathersY);
+            graphics.lineTo(127, geneStrand == '+' ? feathersY+5 : txPos-5);
             graphics.stroke({ width: 1, color: 0x0000ff });
 
-            graphics.moveTo(130, i);
-            graphics.lineTo(133, geneStrand == '+' ? i+5 : i-5);
+            graphics.moveTo(130, feathersY);
+            graphics.lineTo(133, geneStrand == '+' ? feathersY+5 : txPos-5);
             graphics.stroke({ width: 1, color: 0x0000ff });
         }
 
@@ -1133,7 +1135,7 @@ async function drawGenes(main, geneData) {
                 fontFamily: 'Helvetica',
                 fontSize: 9,
                 fill: 0x000000,
-                align: 'right',
+                align: 'center',
             },
             x: 130 + 3,
             y: geneBarEnd + (Math.abs(geneBarEnd - geneBarStart) / 2)
