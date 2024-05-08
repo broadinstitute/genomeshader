@@ -461,17 +461,17 @@ class GenomeShader:
         """
 
         if isinstance(locus_or_dataframe, str):
-            reads_df = self.get_locus(locus_or_dataframe)
+            samples_df = self.get_locus(locus_or_dataframe)
         elif isinstance(locus_or_dataframe, pl.DataFrame):
-            reads_df = locus_or_dataframe.clone()
+            samples_df = locus_or_dataframe.clone()
         else:
             raise ValueError(
                 "locus_or_dataframe must be a locus string or a Polars DataFrame."
             )
 
-        ref_chr = reads_df["reference_contig"].min()
-        ref_start = reads_df["reference_start"].min()
-        ref_end = reads_df["reference_end"].max()
+        ref_chr = samples_df["reference_contig"].min()
+        ref_start = samples_df["reference_start"].min()
+        ref_end = samples_df["reference_end"].max()
 
         ideo_json = self.ideogram(ref_chr)
         gene_json = self.genes(ref_chr, ref_start, ref_end)
@@ -488,11 +488,11 @@ class GenomeShader:
         data_json = json.dumps(data_to_pass)
 
         # Compress JSON data using gzip
-        compressed_reads = gzip.compress(reads_df.write_json().encode('utf-8'))
+        compressed_samples = gzip.compress(samples_df.write_json().encode('utf-8'))
         compressed_ref = gzip.compress(ref_json.encode('utf-8'))
 
         # Encode compressed data to base64 to embed in HTML safely
-        encoded_reads = base64.b64encode(compressed_reads).decode('utf-8')
+        encoded_samples = base64.b64encode(compressed_samples).decode('utf-8')
         encoded_ref = base64.b64encode(compressed_ref).decode('utf-8')
 
         inner_style = """
@@ -753,8 +753,8 @@ window.encoded_ref = "{encoded_ref}";
 window.data.ref = JSON.parse(decompressEncodedData(encoded_ref));
 
 // Function to decode and parse the reads
-window.encoded_reads = "{encoded_reads}";
-window.data.reads = JSON.parse(decompressEncodedData(encoded_reads));
+window.encoded_samples = "{encoded_samples}";
+window.data.samples = JSON.parse(decompressEncodedData(encoded_samples));
         """
 
         inner_module = """
