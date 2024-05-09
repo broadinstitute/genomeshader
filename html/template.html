@@ -261,7 +261,7 @@ window.data.samples = JSON.parse(decompressEncodedData(encoded_samples));
 
 <script type="module">
 import { Application, Graphics, Text, TextStyle, Color, Container, RenderTexture, Sprite, MSAA_QUALITY, Matrix } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
-  
+
 // Some initial settings.
 window.data.zoom = 0;
 
@@ -359,7 +359,7 @@ document.addEventListener('wheel', function(event) {
     }
 
     // If range is greater than the minimum range, allow the repaint to happen
-    if (locusEnd - locusStart >= 20) {
+    if (locusEnd - locusStart >= 10) {
         window.data.locus_start = locusStart;
         window.data.locus_end = locusEnd;
 
@@ -387,8 +387,8 @@ document.addEventListener('mousemove', function(event) {
 function repaint() {
     var main = document.querySelector('main');
 
-	// Resize the renderer
-	app.renderer.resize(main.offsetWidth, main.offsetHeight);
+    // Resize the renderer
+    app.renderer.resize(main.offsetWidth, main.offsetHeight);
 
     // Clear the application stage
     app.stage.removeChildren();
@@ -730,6 +730,7 @@ async function drawReference(main, refData) {
     const graphics = new Graphics();
 
     const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const halfBaseHeight = 0.5 / basesPerPixel;
 
     const nucleotideColors = window.data.nucleotideColors;
 
@@ -750,15 +751,15 @@ async function drawReference(main, refData) {
                         fill: baseColor,
                         align: 'center',
                     },
-                    x: 155,
+                    x: 154,
                     y: refY
                 });
                 baseLabel.rotation = - Math.PI / 2;
 
                 app.stage.addChild(baseLabel);
             } else {
-                graphics.rect(155, refY, 10, 0.1);
-                graphics.stroke({ width: 1, color: baseColor });
+                graphics.rect(154, refY - halfBaseHeight, 10, 2*halfBaseHeight);
+                graphics.fill({ fill: baseColor });
             }
         }
     }
@@ -799,6 +800,9 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
     sampleTrack.stroke({ width: 1, color: 0xaaaaaa });
     sampleTrack.fill(0xdddddd);
 
+    sampleTrack.interactive = true;
+    sampleTrack.buttonMode = true;
+
     sampleContainer.addChild(sampleTrack);
 
     const elementCache = new Map();
@@ -812,45 +816,56 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
 
         const elementKey = `${referenceStart}-${referenceEnd}-${rowSampleName}-${elementType}-${sequence}`;
 
-        if (!elementCache.has(elementKey) && sampleName == rowSampleName && !(referenceEnd < window.data.locus_start || referenceStart > window.data.locus_end)) {
-            const elementY = (window.data.locus_end - referenceStart) / basesPerPixel;
-            const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - referenceEnd) / basesPerPixel)));
+        if (sampleName == rowSampleName && !(referenceEnd < window.data.locus_start || referenceStart > window.data.locus_end)) {
+            if (!elementCache.has(elementKey)) {
+                const elementY = (window.data.locus_end - referenceStart) / basesPerPixel;
+                const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - referenceEnd) / basesPerPixel)));
 
-            // see alignment.rs for ElementType mapping
-            if (elementType == 1) { // mismatch
-                let color = window.data.nucleotideColors.hasOwnProperty(sequence) ? window.data.nucleotideColors[sequence] : null;
+                // see alignment.rs for ElementType mapping
+                if (elementType == 1) { // mismatch
+                    let color = window.data.nucleotideColors.hasOwnProperty(sequence) ? window.data.nucleotideColors[sequence] : null;
 
-                const mismatch = new Graphics();
-                mismatch.rect(0, elementY - halfBaseHeight, 10, elementHeight);
-                if (color !== null) { mismatch.fill(color); }
+                    let mismatch = new Graphics();
+                    mismatch.rect(0, elementY - halfBaseHeight, 10, elementHeight);
+                    if (color !== null) { mismatch.fill({ color: color, alpha: 0.1 }); }
 
-                sampleContainer.addChild(mismatch);
+                    mismatch.interactive = true;
+                    mismatch.on('mouseover', () => {
+                        console.log(mismatch.fillStyle);
+                    });
 
-                elementCache.set(elementKey, mismatch);
-            } else if (elementType == 2) { // insertion
-                const insertion = new Graphics();
-                insertion.rect(0, elementY - halfBaseHeight, 10, elementHeight);
-                insertion.fill("#800080");
+                    elementCache.set(elementKey, [mismatch]);
+                } else if (elementType == 2) { // insertion
+                    let insertion = new Graphics();
+                    insertion.rect(0, elementY - (1.5*halfBaseHeight), 10, (0.5*halfBaseHeight));
+                    insertion.fill({ fill: "#800080", alpha: 0.1 });
 
-                sampleContainer.addChild(insertion);
+                    elementCache.set(elementKey, [insertion]);
+                } else if (elementType == 3) { // deletion
+                    let deletionBlank = new Graphics();
+                    deletionBlank.rect(0, elementY - halfBaseHeight, 10, elementHeight);
+                    deletionBlank.fill({ fill: "#ffffff", alpha: 0.1 });
 
-                elementCache.set(elementKey, insertion);
-            } else if (elementType == 3) { // deletion
-                const deletionBlank = new Graphics();
-                deletionBlank.rect(0, elementY - halfBaseHeight, 10, elementHeight);
-                deletionBlank.fill("#ffffff");
+                    let deletionBar = new Graphics();
+                    deletionBar.rect(4, elementY - halfBaseHeight, 2, elementHeight);
+                    deletionBar.fill({ fill: "#000000", alpha: 0.1});
 
-                const deletionBar = new Graphics();
-                deletionBar.rect(4, elementY - halfBaseHeight, 2, elementHeight);
-                deletionBar.fill("#000000");
-
-                sampleContainer.addChild(deletionBlank, deletionBar);
-
-                elementCache.set(elementKey, deletionBlank);
-                elementCache.set(elementKey, deletionBar);
+                    elementCache.set(elementKey, [deletionBlank, deletionBar]);
+                }
+            } else {
+                let elements = elementCache.get(elementKey);
+                elements.forEach((element) => {
+                    element.fillStyle.alpha = Math.min(element.fillStyle.alpha + 0.1, 1.0);
+                });
             }
         }
     }
+
+    elementCache.forEach((elements) => {
+        elements.forEach((element) => {
+            sampleContainer.addChild(element);
+        });
+    });
 
     app.stage.addChild(sampleContainer);
 }

@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Union, List
 
 import requests
+import requests_cache
 import polars as pl
 
 from IPython.display import display, HTML
@@ -36,6 +37,8 @@ class GenomeShader:
 
         self._validate_genome_build(genome_build)
         self.genome_build = genome_build
+
+        requests_cache.install_cache('gs_rest_cache')
 
         self._session = gs._init()
 
@@ -217,228 +220,6 @@ class GenomeShader:
             raise ConnectionError(f"Failed to retrieve data from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
 
         return ref_df.write_json()
-
-    def show_old(
-        self,
-        locus_or_dataframe: Union[str, pl.DataFrame],
-        width: int = 1000,
-        height: int = 1000,
-        vertical: bool = False,
-        expand: bool = False,
-        group_by: str = None,
-    ):
-        """
-        Visualizes genomic data.
-
-        Args:
-            locus_or_dataframe (str or DataFrame): Genomic locus to visualize.
-            Can either be specified as a locus string (e.g. 'chr:start-stop')
-            or a Polars DataFrame (usually from the get_locus() method,
-            optionally modified by the user).
-            width (int, optional): Visualization width. Defaults to 980.
-            height (int, optional): Visualization height. Defaults to 400.
-            expand (bool, optional): If True, expands each sample to show all
-            reads. Defaults to False.
-        """
-
-        if isinstance(locus_or_dataframe, str):
-            df = self.get_locus(locus_or_dataframe)
-        elif isinstance(locus_or_dataframe, pl.DataFrame):
-            df = locus_or_dataframe.clone()
-        else:
-            raise ValueError(
-                "locus_or_dataframe must be a locus string or a" "Polars DataFrame."
-            )
-
-        ref_chr = df["reference_contig"].min()
-        ref_start = df["reference_start"].min()
-        ref_end = df["reference_end"].max()
-
-        locus = f"{ref_chr}:{ref_start}-{ref_end}"
-
-        pieces = re.split("[:-]", re.sub(",", "", locus))
-
-        chrom = pieces[0]
-        start = int(pieces[1])
-        stop = int(pieces[2]) if len(pieces) > 2 else start
-
-        df = df.filter(pl.col("element_type") != 0)
-
-        if group_by is not None:
-            df = df.sort(pl.col(group_by))
-
-        sample_names = []
-        group_names = []
-        y0s = []
-        y0 = 0
-        if not expand:
-            sample_name = None
-            group_name = None
-            for row in df.iter_rows(named=True):
-                if sample_name is None:
-                    sample_name = row["sample_name"]
-                    group_name = row[group_by] if group_by is not None else ""
-                    sample_names.append(sample_name)
-                    group_names.append(group_name)
-                    y0 = 0
-
-                if sample_name != row["sample_name"]:
-                    if group_by and group_name != row[group_by]:
-                        group_name = row[group_by]
-                        sample_names.append("")
-                        group_names.append("")
-                        group_names.append(group_name)
-                        y0 += 1
-                    else:
-                        group_names.append("")
-
-                    sample_name = row["sample_name"]
-                    sample_names.append(sample_name)
-                    y0 += 1
-
-
-                y0s.append(y0)
-        else:
-            query_name = None
-            for row in df.iter_rows(named=True):
-                if query_name is None:
-                    query_name = row["query_name"]
-                    y0 = 0
-
-                if query_name != row["query_name"]:
-                    query_name = row["query_name"]
-                    y0 += 1
-
-                y0s.append(y0)
-
-        # Position all of the read and cigar elements, and color-code them
-        df = df.with_columns(pl.Series(name="read_num", values=y0s))
-
-        h1 = 0.9
-        df = df.with_columns(pl.col("read_num").alias("y0") * -1 - h1 / 2)
-        df = df.with_columns(pl.col("read_num").alias("y1") * -1 + h1 / 2)
-
-        df = df.with_columns(
-            pl.when(df["element_type"] == 0)
-            .then(pl.lit("#CCCCCC"))
-            .when((df["element_type"] == 1) & (df["sequence"] == "A"))
-            .then(pl.lit("#00F10010"))
-            .when((df["element_type"] == 1) & (df["sequence"] == "C"))
-            .then(pl.lit("#341BFF10"))
-            .when((df["element_type"] == 1) & (df["sequence"] == "G"))
-            .then(pl.lit("#D37D2810"))
-            .when((df["element_type"] == 1) & (df["sequence"] == "T"))
-            .then(pl.lit("#FF003010"))
-            .when(df["element_type"] == 2)
-            .then(pl.lit("#7618DC10"))
-            .when(df["element_type"] == 3)
-            .then(pl.lit("#FFFFFF10"))
-            .when((df["element_type"] == 4) & (df["sequence"] == "A"))
-            .then(pl.lit("#00F10000"))
-            .when((df["element_type"] == 4) & (df["sequence"] == "C"))
-            .then(pl.lit("#341BFF00"))
-            .when((df["element_type"] == 4) & (df["sequence"] == "G"))
-            .then(pl.lit("#D37D2800"))
-            .when((df["element_type"] == 4) & (df["sequence"] == "T"))
-            .then(pl.lit("#FF003000"))
-            .otherwise(pl.lit("#00000010"))
-            .alias("color")
-        )
-
-        # Add a line to show deletions more clearly
-        h2 = 0.1
-        df_extra = (
-            df.filter(df["element_type"] == 3)
-            .with_columns(pl.col("read_num").alias("y0") * -1 - h2 / 2)
-            .with_columns(pl.col("read_num").alias("y1") * -1 + h2 / 2)
-            .with_columns(pl.lit("#00000010").alias("color"))
-        )
-        df = df.vstack(df_extra)
-
-        # Add a column to account for column max width
-        df = df.with_columns(
-            pl.col("reference_start").alias("reference_end_padded")
-            + pl.col("column_width")
-        )
-
-        # Get sample names
-        samples_df = (
-            df.group_by("sample_name")
-            .first()
-            .drop(
-                [
-                    "reference_contig",
-                    "is_forward",
-                    "query_name",
-                    "read_group",
-                    "element_type",
-                    "sequence",
-                    "color",
-                    "read_num",
-                    "y1",
-                ]
-            )
-            .sort("y0", descending=True)
-        )
-
-        # tooltips = [
-        #     ('Sample Name', '@sample_name')
-        # ]
-        # hover = HoverTool(tooltips=tooltips)
-
-        ideo = self.ideogram("hg38")
-        ideo = ideo.filter(pl.col("chrom") == chrom)
-        ideo = ideo.select(["start", "y0", "end", "y1", "color"])
-        ideo = ideo.vstack(
-            pl.DataFrame(
-                {
-                    "start": [start],
-                    "y0": [ideo["y0"][0] - 0.15],
-                    "end": [stop],
-                    "y1": [ideo["y1"][0] + 0.15],
-                    "color": ["#cc0000"],
-                }
-            )
-        )
-
-        # genes_df = pl.read_csv(
-        #     f'
-        #     separator="\t",
-        # )
-        # genes_df = genes_df.filter(
-        #     (pl.col("chrom") == chrom)
-        #     & (pl.col("txStart") <= stop)
-        #     & (pl.col("txEnd") >= start)
-        # )
-        # genes_df = genes_df.with_columns(
-        #     [
-        #         pl.col("txStart").alias("reference_start"),
-        #         pl.col("txEnd").alias("reference_end"),
-        #         pl.lit(0.4).alias("y0"),
-        #         pl.lit(0.6).alias("y1"),
-        #     ]
-        # )
-
-        # exons_df = (
-        #     genes_df.with_columns(
-        #         [
-        #             pl.col("exonStarts").str.split(",").alias("reference_start"),
-        #             pl.col("exonEnds").str.split(",").alias("reference_end"),
-        #         ]
-        #     )
-        #     .explode(["reference_start", "reference_end"])
-        #     .filter(pl.col("reference_start") != "")
-        #     .with_columns(
-        #         [
-        #             pl.col("reference_start").cast(pl.Int64).alias("reference_start"),
-        #             pl.col("reference_end").cast(pl.Int64).alias("reference_end"),
-        #             pl.lit(0.0).alias("y0"),
-        #             pl.lit(1.0).alias("y1"),
-        #         ]
-        #     )
-        # )
-
-        # genes_exons_df = genes_df.vstack(exons_df)
 
     def show(
         self,
@@ -758,10 +539,23 @@ window.data.samples = JSON.parse(decompressEncodedData(encoded_samples));
         """
 
         inner_module = """
-import { Application, Graphics, Text, TextStyle, Color } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
+import { Application, Graphics, Text, TextStyle, Color, Container, RenderTexture, Sprite, MSAA_QUALITY, Matrix } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
 
 // Some initial settings.
 window.data.zoom = 0;
+
+window.data.nucleotideColors = {
+    'a': 0x45B29D, // Green
+    'A': 0x45B29D, // Green
+    'c': 0x334D5C, // Blue
+    'C': 0x334D5C, // Blue
+    'g': 0xE27A3F, // Yellow
+    'G': 0xE27A3F, // Yellow
+    't': 0xDF5A49, // Red
+    'T': 0xDF5A49, // Red
+    'n': 0xCCCCCC, // Grey (for unknown nucleotides)
+    'N': 0xCCCCCC  // Grey (for unknown nucleotides)
+};
 
 // Create a PixiJS application.
 const app = new Application();
@@ -844,7 +638,7 @@ document.addEventListener('wheel', function(event) {
     }
 
     // If range is greater than the minimum range, allow the repaint to happen
-    if (locusEnd - locusStart >= 20) {
+    if (locusEnd - locusStart >= 10) {
         window.data.locus_start = locusStart;
         window.data.locus_end = locusEnd;
 
@@ -872,8 +666,8 @@ document.addEventListener('mousemove', function(event) {
 function repaint() {
     var main = document.querySelector('main');
 
-	// Resize the renderer
-	app.renderer.resize(main.offsetWidth, main.offsetHeight);
+    // Resize the renderer
+    app.renderer.resize(main.offsetWidth, main.offsetHeight);
 
     // Clear the application stage
     app.stage.removeChildren();
@@ -883,6 +677,7 @@ function repaint() {
     drawRuler(main);
     drawGenes(main, window.data.genes);
     drawReference(main, window.data.ref);
+    drawSamples(main, window.data.samples);
 }
 
 // Function to draw the ideogram.
@@ -1070,10 +865,9 @@ async function drawRuler(main) {
     let axisY = 20;
     let axisHeight = main.offsetHeight - axisY - 35;
 
-    graphics.setStrokeStyle(1.0, 0x555555);
+    graphics.stroke({ width: 1.0, color: 0x555555 });
     graphics.moveTo(105, axisY);
     graphics.lineTo(105, axisHeight);
-    graphics.endFill();
 
     app.stage.addChild(graphics);
 
@@ -1123,10 +917,9 @@ async function drawRuler(main) {
         let ticPositionY = (window.data.locus_end - currentTic) / basesPerPixel;
 
         if (ticPositionY >= axisY && ticPositionY <= axisHeight) {
-            graphics.setStrokeStyle(1.0, 0x555555);
+            graphics.stroke({ width: 1.0, color: 0x555555 });
             graphics.moveTo(102, ticPositionY);
             graphics.lineTo(108, ticPositionY);
-            graphics.endFill();
 
             const locusText = new Text({
                 text: currentTic.toLocaleString(),
@@ -1195,6 +988,7 @@ async function drawGenes(main, geneData) {
 
         app.stage.addChild(geneNameLabel);
 
+        // Draw exons
         let exonStarts = geneData.columns[9].values[geneIdx].split(',').filter(Boolean);
         let exonEnds = geneData.columns[10].values[geneIdx].split(',').filter(Boolean);
 
@@ -1215,19 +1009,9 @@ async function drawReference(main, refData) {
     const graphics = new Graphics();
 
     const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const halfBaseHeight = 0.5 / basesPerPixel;
 
-    const nucleotideColors = {
-        'a': 0x45B29D, // Green
-        'A': 0x45B29D, // Green
-        'c': 0x334D5C, // Blue
-        'C': 0x334D5C, // Blue
-        'g': 0xE27A3F, // Yellow
-        'G': 0xE27A3F, // Yellow
-        't': 0xDF5A49, // Red
-        'T': 0xDF5A49, // Red
-        'n': 0xCCCCCC, // Grey (for unknown nucleotides)
-        'N': 0xCCCCCC  // Grey (for unknown nucleotides)
-    };
+    const nucleotideColors = window.data.nucleotideColors;
 
     for (let locusPos = window.data.ref_start + 1, i = 0; locusPos <= window.data.ref_end; locusPos++, i++) {
         if (window.data.locus_end - window.data.locus_start <= 1000 && window.data.locus_start <= locusPos && locusPos <= window.data.locus_end) {
@@ -1236,29 +1020,133 @@ async function drawReference(main, refData) {
 
             const refY = (window.data.locus_end - locusPos) / basesPerPixel;
 
-            if (window.data.locus_end - window.data.locus_start < 100) {
+            if (window.data.locus_end - window.data.locus_start <= 100) {
                 const baseLabel = new Text({
                     text: base,
                     style: {
                         fontFamily: 'Helvetica',
-                        fontSize: 9,
+                        fontSize: 10,
+                        fontWeight: 'bold',
                         fill: baseColor,
                         align: 'center',
                     },
-                    x: 155,
+                    x: 154,
                     y: refY
                 });
                 baseLabel.rotation = - Math.PI / 2;
 
                 app.stage.addChild(baseLabel);
             } else {
-                graphics.rect(155, refY, 10, 0.1);
-                graphics.stroke({ width: 1, color: baseColor });
+                graphics.rect(154, refY - halfBaseHeight, 10, 2*halfBaseHeight);
+                graphics.fill({ fill: baseColor });
             }
         }
     }
 
     app.stage.addChild(graphics);
+}
+
+async function drawSamples(main, sampleData) {
+    const graphics = new Graphics();
+
+    const sampleDict = {};
+    let index = 0;
+    for (const sampleName of window.data.samples.columns[9].values) {
+        if (!sampleDict.hasOwnProperty(sampleName)) {
+            sampleDict[sampleName] = index++;
+        }
+    }
+
+    for (const [sampleName, sampleIndex] of Object.entries(sampleDict)) {
+        drawSample(main, sampleData, sampleName, sampleIndex);
+    }
+}
+
+async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth=15) {
+    const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const halfBaseHeight = 0.5 / basesPerPixel;
+
+    const sampleContainer = new Container({
+        isRenderGroup: true,
+        cullable: true,
+        cullableChildren: true,
+        x: 185 + (sampleIndex*sampleWidth),
+        y: 0,
+    });
+
+    const sampleTrack = new Graphics();
+    sampleTrack.rect(0, 0, 10, document.querySelector('main').offsetHeight);
+    sampleTrack.stroke({ width: 1, color: 0xaaaaaa });
+    sampleTrack.fill(0xdddddd);
+
+    sampleTrack.interactive = true;
+    sampleTrack.buttonMode = true;
+
+    sampleContainer.addChild(sampleTrack);
+
+    const elementCache = new Map();
+
+    for (let i = 0; i < sampleData.columns[10].values.length; i++) {
+        let referenceStart = sampleData.columns[3].values[i];
+        let referenceEnd = sampleData.columns[4].values[i];
+        let rowSampleName = sampleData.columns[9].values[i];
+        let elementType = sampleData.columns[10].values[i];
+        let sequence = sampleData.columns[11].values[i];
+
+        const elementKey = `${referenceStart}-${referenceEnd}-${rowSampleName}-${elementType}-${sequence}`;
+
+        if (sampleName == rowSampleName && !(referenceEnd < window.data.locus_start || referenceStart > window.data.locus_end)) {
+            if (!elementCache.has(elementKey)) {
+                const elementY = (window.data.locus_end - referenceStart) / basesPerPixel;
+                const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - referenceEnd) / basesPerPixel)));
+
+                // see alignment.rs for ElementType mapping
+                if (elementType == 1) { // mismatch
+                    let color = window.data.nucleotideColors.hasOwnProperty(sequence) ? window.data.nucleotideColors[sequence] : null;
+
+                    let mismatch = new Graphics();
+                    mismatch.rect(0, elementY - halfBaseHeight, 10, elementHeight);
+                    if (color !== null) { mismatch.fill({ color: color, alpha: 0.1 }); }
+
+                    mismatch.interactive = true;
+                    mismatch.on('mouseover', () => {
+                        console.log(mismatch.fillStyle);
+                    });
+
+                    elementCache.set(elementKey, [mismatch]);
+                } else if (elementType == 2) { // insertion
+                    let insertion = new Graphics();
+                    insertion.rect(0, elementY - (1.5*halfBaseHeight), 10, (0.5*halfBaseHeight));
+                    insertion.fill({ fill: "#800080", alpha: 0.1 });
+
+                    elementCache.set(elementKey, [insertion]);
+                } else if (elementType == 3) { // deletion
+                    let deletionBlank = new Graphics();
+                    deletionBlank.rect(0, elementY - halfBaseHeight, 10, elementHeight);
+                    deletionBlank.fill({ fill: "#ffffff", alpha: 0.1 });
+
+                    let deletionBar = new Graphics();
+                    deletionBar.rect(4, elementY - halfBaseHeight, 2, elementHeight);
+                    deletionBar.fill({ fill: "#000000", alpha: 0.1});
+
+                    elementCache.set(elementKey, [deletionBlank, deletionBar]);
+                }
+            } else {
+                let elements = elementCache.get(elementKey);
+                elements.forEach((element) => {
+                    element.fillStyle.alpha = Math.min(element.fillStyle.alpha + 0.1, 1.0);
+                });
+            }
+        }
+    }
+
+    elementCache.forEach((elements) => {
+        elements.forEach((element) => {
+            sampleContainer.addChild(element);
+        });
+    });
+
+    app.stage.addChild(sampleContainer);
 }
 
 // Call the function initially
