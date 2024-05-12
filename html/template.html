@@ -301,8 +301,12 @@ async function renderApp() {
     window.data.locus_start = window.data.ref_start;
     window.data.locus_end = window.data.ref_end;
 
+    // Set up element caches
+    window.data.uiElements = {};
+    window.data.sampleElements = {};
+
     // Listen for window resize events.
-    window.addEventListener('resize', repaint);
+    window.addEventListener('resize', resize);
 
     repaint();
 }
@@ -347,8 +351,8 @@ document.addEventListener('wheel', function(event) {
     const newRange = range * zoomFactor;
     const center = (window.data.locus_start + window.data.locus_end) / 2;
 
-    var locusStart = center - newRange / 2;
-    var locusEnd = center + newRange / 2;
+    var locusStart = Math.round(center - newRange / 2);
+    var locusEnd = Math.round(center + newRange / 2);
 
     // Ensure that the new range is within the reference range
     if (locusStart < window.data.ref_start) {
@@ -384,14 +388,20 @@ document.addEventListener('mousemove', function(event) {
 });
 
 // Resize function window
+function resize() {
+    app.stage.removeChildren();
+
+    window.data.uiElements = {};
+
+    repaint();
+}
+
+// Resize function window
 function repaint() {
     var main = document.querySelector('main');
 
     // Resize the renderer
     app.renderer.resize(main.offsetWidth, main.offsetHeight);
-
-    // Clear the application stage
-    app.stage.removeChildren();
 
     // Draw all the elements
     drawIdeogram(main, window.data.ideogram);
@@ -403,194 +413,202 @@ function repaint() {
 
 // Function to draw the ideogram.
 async function drawIdeogram(main, ideogramData) {
-    const graphics = new Graphics();
+    if (!window.data.uiElements.hasOwnProperty('ideogram')) {
+        const ideogram = new Graphics();
 
-    const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
-    const ideoWidth = 18;
-    const ideoHeight = main.offsetHeight - 150;
-    const ideoX = 15;
-    const ideoY = 40;
+        const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
+        const ideoWidth = 18;
+        const ideoHeight = main.offsetHeight - 150;
+        const ideoX = 15;
+        const ideoY = 40;
 
-    // Create a tooltip that appears when we hover over ideogram segments.
-    graphics.interactive = true;
-    graphics.buttonMode = true;
+        // Create a tooltip that appears when we hover over ideogram segments.
+        ideogram.interactive = true;
+        ideogram.buttonMode = true;
 
-    const tooltip = new Text({
-        text: '',
-        style: {
-            fontFamily: 'Helvetica',
-            fontSize: 9,
-            fill: 0x777777,
-            align: 'center'
-        }
-    });
-
-    tooltip.visible = false;
-    app.stage.addChild(tooltip);
-
-    graphics.on('mousemove', (event) => {
-        if (tooltip.visible) {
-            tooltip.position.set(event.data.global.x + 10, event.data.global.y + 10);
-        }
-    });
-
-    graphics.on('mouseout', () => {
-        tooltip.visible = false;
-    });
-
-    let bandY = ideoY;
-    let acenSeen = false;
-    for (let i = ideogramData.columns[0].values.length - 1; i >= 0; i--) {
-        let bandHeight = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i]) * ideoHeight / ideoLength;
-        let bandStart = ideogramData.columns[1].values[i];
-        let bandEnd = ideogramData.columns[2].values[i];
-        let bandName = ideogramData.columns[3].values[i];
-        let bandStain = ideogramData.columns[4].values[i];
-        let bandColor = ideogramData.columns[5].values[i];
-
-        const band = new Graphics();
-        band.interactive = true;
-        band.buttonMode = true;
-
-        band.on('mouseover', () => {
-            tooltip.text = bandStart + "-" + bandEnd;
-            tooltip.visible = true;
+        const tooltip = new Text({
+            text: '',
+            style: {
+                fontFamily: 'Helvetica',
+                fontSize: 9,
+                fill: 0x777777,
+                align: 'center'
+            }
         });
 
-        band.on('mouseout', () => {
+        tooltip.visible = false;
+        app.stage.addChild(tooltip);
+
+        ideogram.on('mousemove', (event) => {
+            if (tooltip.visible) {
+                tooltip.position.set(event.data.global.x + 10, event.data.global.y + 10);
+            }
+        });
+
+        ideogram.on('mouseout', () => {
             tooltip.visible = false;
         });
 
-        if (bandStain == 'acen') {
-            // Draw centromere triangles
+        let bandY = ideoY;
+        let acenSeen = false;
+        for (let i = ideogramData.columns[0].values.length - 1; i >= 0; i--) {
+            let bandHeight = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i]) * ideoHeight / ideoLength;
+            let bandStart = ideogramData.columns[1].values[i];
+            let bandEnd = ideogramData.columns[2].values[i];
+            let bandName = ideogramData.columns[3].values[i];
+            let bandStain = ideogramData.columns[4].values[i];
+            let bandColor = ideogramData.columns[5].values[i];
 
-            const blank = new Graphics();
-            blank.rect(ideoX, bandY, ideoWidth, bandHeight);
-            blank.stroke({ width: 2, color: 0xffffff });
-            blank.fill("#ffffff");
-            graphics.addChild(blank);
+            const band = new Graphics();
+            band.interactive = true;
+            band.buttonMode = true;
 
-            if (!acenSeen) {
-                band.moveTo(ideoX, bandY);
-                band.lineTo(ideoX + ideoWidth - 0.5, bandY);
-                band.lineTo(ideoX + (ideoWidth / 2), bandY + bandHeight);
-                band.lineTo(ideoX, bandY);
-            } else {
-                band.moveTo(ideoX, bandY + bandHeight);
-                band.lineTo(ideoX + ideoWidth - 0.5, bandY + bandHeight);
-                band.lineTo(ideoX + (ideoWidth / 2), bandY);
-                band.lineTo(ideoX, bandY + bandHeight);
-            }
-
-            band.stroke({ width: 1, color: 0x333333 });
-            band.fill(bandColor);
-            acenSeen = true;
-        } else {
-            // Draw non-centromeric rectangles
-
-            band.rect(ideoX, bandY, ideoWidth, bandHeight);
-            band.stroke({ width: 0, color: 0x333333 });
-            band.fill(bandColor);
-
-            function invertColor(hex) {
-                // If the color is in hex format (e.g., #FFFFFF), remove the hash
-                if (hex.indexOf('#') === 0) {
-                    hex = hex.slice(1);
-                }
-
-                // If the color is in shorthand hex format (e.g., #FFF), convert to full format
-                if (hex.length === 3) {
-                    hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
-                }
-
-                // Convert the hex color to its RGB components
-                var r = parseInt(hex.slice(0, 2), 16),
-                    g = parseInt(hex.slice(2, 4), 16),
-                    b = parseInt(hex.slice(4, 6), 16);
-
-                // Invert each component by subtracting it from 255
-                r = (255 - r).toString(16);
-                g = (255 - g).toString(16);
-                b = (255 - b).toString(16);
-
-                // Ensure each inverted component has two digits
-                r = r.length === 1 ? '0' + r : r;
-                g = g.length === 1 ? '0' + g : g;
-                b = b.length === 1 ? '0' + b : b;
-
-                // Return the inverted color in hex format
-                return '#' + r + g + b;
-            }
-
-            const bandLabel = new Text({
-                text: bandName,
-                style: {
-                    fontFamily: 'Helvetica',
-                    fontSize: 7,
-                    fill: invertColor(bandColor),
-                    align: 'center'
-                }
+            band.on('mouseover', () => {
+                tooltip.text = bandStart + "-" + bandEnd;
+                tooltip.visible = true;
             });
 
-            bandLabel.rotation = -Math.PI / 2;
-            bandLabel.x = ideoX + bandLabel.height / 2;
-            bandLabel.y = bandY + bandHeight / 2 + bandLabel.width / 2;
+            band.on('mouseout', () => {
+                tooltip.visible = false;
+            });
 
-            if (bandLabel.width <= 0.9*bandHeight) {
-                band.addChild(bandLabel);
+            if (bandStain == 'acen') {
+                // Draw centromere triangles
+
+                const blank = new Graphics();
+                blank.rect(ideoX, bandY, ideoWidth, bandHeight);
+                blank.stroke({ width: 2, color: 0xffffff });
+                blank.fill("#ffffff");
+                ideogram.addChild(blank);
+
+                if (!acenSeen) {
+                    band.moveTo(ideoX, bandY);
+                    band.lineTo(ideoX + ideoWidth - 0.5, bandY);
+                    band.lineTo(ideoX + (ideoWidth / 2), bandY + bandHeight);
+                    band.lineTo(ideoX, bandY);
+                } else {
+                    band.moveTo(ideoX, bandY + bandHeight);
+                    band.lineTo(ideoX + ideoWidth - 0.5, bandY + bandHeight);
+                    band.lineTo(ideoX + (ideoWidth / 2), bandY);
+                    band.lineTo(ideoX, bandY + bandHeight);
+                }
+
+                band.stroke({ width: 2, color: bandColor });
+                band.fill(bandColor);
+                acenSeen = true;
+            } else {
+                // Draw non-centromeric rectangles
+
+                band.rect(ideoX, bandY, ideoWidth, bandHeight);
+                band.stroke({ width: 0, color: 0x333333 });
+                band.fill(bandColor);
+
+                function invertColor(hex) {
+                    // If the color is in hex format (e.g., #FFFFFF), remove the hash
+                    if (hex.indexOf('#') === 0) {
+                        hex = hex.slice(1);
+                    }
+
+                    // If the color is in shorthand hex format (e.g., #FFF), convert to full format
+                    if (hex.length === 3) {
+                        hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+                    }
+
+                    // Convert the hex color to its RGB components
+                    var r = parseInt(hex.slice(0, 2), 16),
+                        g = parseInt(hex.slice(2, 4), 16),
+                        b = parseInt(hex.slice(4, 6), 16);
+
+                    // Invert each component by subtracting it from 255
+                    r = (255 - r).toString(16);
+                    g = (255 - g).toString(16);
+                    b = (255 - b).toString(16);
+
+                    // Ensure each inverted component has two digits
+                    r = r.length === 1 ? '0' + r : r;
+                    g = g.length === 1 ? '0' + g : g;
+                    b = b.length === 1 ? '0' + b : b;
+
+                    // Return the inverted color in hex format
+                    return '#' + r + g + b;
+                }
+
+                const bandLabel = new Text({
+                    text: bandName,
+                    style: {
+                        fontFamily: 'Helvetica',
+                        fontSize: 7,
+                        fill: invertColor(bandColor),
+                        align: 'center'
+                    }
+                });
+
+                bandLabel.rotation = -Math.PI / 2;
+                bandLabel.x = ideoX + bandLabel.height / 2;
+                bandLabel.y = bandY + bandHeight / 2 + bandLabel.width / 2;
+
+                if (bandLabel.width <= 0.9*bandHeight) {
+                    band.addChild(bandLabel);
+                }
             }
+
+            ideogram.addChild(band);
+            bandY += bandHeight;
         }
 
-        graphics.addChild(band);
-        bandY += bandHeight;
+        // Draw outer rectangle of ideogram
+        ideogram.rect(ideoX, ideoY, ideoWidth, ideoHeight);
+        ideogram.stroke({ width: 2, color: 0x333333 });
+        ideogram.fill(0xffffff);
+
+        app.stage.addChild(ideogram);
+
+        // Draw chromosome name
+        const chrText = new Text({
+            text: ideogramData.columns[0].values[0],
+            style: {
+                fontFamily: 'Helvetica',
+                fontSize: 12,
+                fill: 0x000000,
+                align: 'center',
+            }
+        });
+
+        chrText.x = 17;
+        chrText.y = main.offsetHeight - 70;
+        chrText.rotation = - Math.PI / 2;
+
+        app.stage.addChild(chrText);
+
+        // Draw selected region
+        const selectionY = (ideoLength - window.data.locus_end) * ideoHeight / ideoLength;
+        const selectionHeight = (window.data.locus_end - window.data.locus_start) * ideoHeight / ideoLength;
+
+        const selection = new Graphics();
+        selection.rect(ideoX - 5, ideoY + selectionY, ideoWidth + 10, selectionHeight < 3 ? 3 : selectionHeight);
+        selection.fill("#ff000055");
+        ideogram.addChild(selection);
+
+        window.data.uiElements['ideogram'] = ideogram;
     }
-
-    // Draw outer rectangle of ideogram
-    graphics.rect(ideoX, ideoY, ideoWidth, ideoHeight);
-    graphics.stroke({ width: 2, color: 0x333333 });
-    graphics.fill(0xffffff);
-
-    app.stage.addChild(graphics);
-
-    // Draw chromosome name
-    const chrText = new Text({
-        text: ideogramData.columns[0].values[0],
-        style: {
-            fontFamily: 'Helvetica',
-            fontSize: 12,
-            fill: 0x000000,
-            align: 'center',
-        }
-    });
-
-    chrText.x = 17;
-    chrText.y = main.offsetHeight - 70;
-    chrText.rotation = - Math.PI / 2;
-
-    app.stage.addChild(chrText);
-
-    // Draw selected region
-    const selectionY = (ideoLength - window.data.locus_end) * ideoHeight / ideoLength;
-    const selectionHeight = (window.data.locus_end - window.data.locus_start) * ideoHeight / ideoLength;
-
-    const selection = new Graphics();
-    selection.rect(ideoX - 5, ideoY + selectionY, ideoWidth + 10, selectionHeight < 3 ? 3 : selectionHeight);
-    selection.fill("#ff000055");
-    graphics.addChild(selection);
 }
 
 async function drawRuler(main) {
-    const graphics = new Graphics();
+    if (window.data.uiElements.hasOwnProperty('ruler')) {
+        window.data.uiElements['ruler'].destroy();
+    }
+
+    const ruler = new Graphics();
 
     // Draw axis line
     let axisY = 20;
     let axisHeight = main.offsetHeight - axisY - 35;
 
-    graphics.stroke({ width: 1.0, color: 0x555555 });
-    graphics.moveTo(105, axisY);
-    graphics.lineTo(105, axisHeight);
+    ruler.stroke({ width: 1.0, color: 0x555555 });
+    ruler.moveTo(105, axisY);
+    ruler.lineTo(105, axisHeight);
 
-    app.stage.addChild(graphics);
+    app.stage.addChild(ruler);
 
     // Display range
     const locusTextRange = new Text({
@@ -607,7 +625,7 @@ async function drawRuler(main) {
     });
     locusTextRange.rotation = - Math.PI / 2;
 
-    app.stage.addChild(locusTextRange);
+    ruler.addChild(locusTextRange);
 
     // Compute tics at various points
     const range = window.data.locus_end - window.data.locus_start;
@@ -638,9 +656,9 @@ async function drawRuler(main) {
         let ticPositionY = (window.data.locus_end - currentTic) / basesPerPixel;
 
         if (ticPositionY >= axisY && ticPositionY <= axisHeight) {
-            graphics.stroke({ width: 1.0, color: 0x555555 });
-            graphics.moveTo(102, ticPositionY);
-            graphics.lineTo(108, ticPositionY);
+            ruler.stroke({ width: 1.0, color: 0x555555 });
+            ruler.moveTo(102, ticPositionY);
+            ruler.lineTo(108, ticPositionY);
 
             const locusText = new Text({
                 text: currentTic.toLocaleString(),
@@ -654,15 +672,21 @@ async function drawRuler(main) {
                 y: ticPositionY - 5.5
             });
 
-            app.stage.addChild(locusText);
+            ruler.addChild(locusText);
         }
 
         currentTic += ticIncrement;
     }
+
+    window.data.uiElements['ruler'] = ruler;
 }
 
 async function drawGenes(main, geneData) {
-    const graphics = new Graphics();
+    if (window.data.uiElements.hasOwnProperty('genes')) {
+        window.data.uiElements['genes'].destroy();
+    }
+
+    const genes = new Graphics();
 
     const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
 
@@ -676,21 +700,21 @@ async function drawGenes(main, geneData) {
         let geneBarStart = (window.data.locus_end - txStart) / basesPerPixel
 
         // Draw gene line
-        graphics.moveTo(130, geneBarEnd);
-        graphics.lineTo(130, geneBarStart);
-        graphics.stroke({ width: 1, color: 0x0000ff });
+        genes.moveTo(130, geneBarEnd);
+        genes.lineTo(130, geneBarStart);
+        genes.stroke({ width: 1, color: 0x0000ff });
 
         // Draw strand lines
         for (let txPos = txStart + 200; txPos <= txEnd - 200; txPos += 500) {
             let feathersY = (window.data.locus_end - txPos) / basesPerPixel;
 
-            graphics.moveTo(130, feathersY);
-            graphics.lineTo(127, geneStrand == '+' ? feathersY+5 : txPos-5);
-            graphics.stroke({ width: 1, color: 0x0000ff });
+            genes.moveTo(130, feathersY);
+            genes.lineTo(127, geneStrand == '+' ? feathersY+5 : txPos-5);
+            genes.stroke({ width: 1, color: 0x0000ff });
 
-            graphics.moveTo(130, feathersY);
-            graphics.lineTo(133, geneStrand == '+' ? feathersY+5 : txPos-5);
-            graphics.stroke({ width: 1, color: 0x0000ff });
+            genes.moveTo(130, feathersY);
+            genes.lineTo(133, geneStrand == '+' ? feathersY+5 : txPos-5);
+            genes.stroke({ width: 1, color: 0x0000ff });
         }
 
         // Draw gene name
@@ -707,7 +731,7 @@ async function drawGenes(main, geneData) {
         });
         geneNameLabel.rotation = - Math.PI / 2;
 
-        app.stage.addChild(geneNameLabel);
+        genes.addChild(geneNameLabel);
 
         // Draw exons
         let exonStarts = geneData.columns[9].values[geneIdx].split(',').filter(Boolean);
@@ -717,17 +741,23 @@ async function drawGenes(main, geneData) {
             const exonEndY = (window.data.locus_end - exonEnds[exonIdx]) / basesPerPixel;
             const exonStartY = (window.data.locus_end - exonStarts[exonIdx]) / basesPerPixel;
 
-            graphics.rect(130 - 5, exonEndY, 10, Math.abs(exonEndY - exonStartY));
-            graphics.stroke({ width: 2, color: 0x0000ff });
-            graphics.fill(0xff);
+            genes.rect(130 - 5, exonEndY, 10, Math.abs(exonEndY - exonStartY));
+            genes.stroke({ width: 2, color: 0x0000ff });
+            genes.fill(0xff);
         }
     }
 
-    app.stage.addChild(graphics);
+    app.stage.addChild(genes);
+
+    window.data.uiElements['genes'] = genes;
 }
 
 async function drawReference(main, refData) {
-    const graphics = new Graphics();
+    if (window.data.uiElements.hasOwnProperty('reference')) {
+        window.data.uiElements['reference'].destroy();
+    }
+
+    const reference = new Graphics();
 
     const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
     const halfBaseHeight = 0.5 / basesPerPixel;
@@ -735,7 +765,7 @@ async function drawReference(main, refData) {
     const nucleotideColors = window.data.nucleotideColors;
 
     for (let locusPos = window.data.ref_start + 1, i = 0; locusPos <= window.data.ref_end; locusPos++, i++) {
-        if (window.data.locus_end - window.data.locus_start <= 1000 && window.data.locus_start <= locusPos && locusPos <= window.data.locus_end) {
+        if (window.data.locus_end - window.data.locus_start <= 1500 && window.data.locus_start <= locusPos && locusPos <= window.data.locus_end) {
             const base = refData.columns[0].values[i];
             const baseColor = nucleotideColors[base];
 
@@ -756,15 +786,20 @@ async function drawReference(main, refData) {
                 });
                 baseLabel.rotation = - Math.PI / 2;
 
-                app.stage.addChild(baseLabel);
+                reference.addChild(baseLabel);
             } else {
-                graphics.rect(154, refY - halfBaseHeight, 10, 2*halfBaseHeight);
-                graphics.fill({ fill: baseColor });
+                let refBase = new Graphics();
+                refBase.rect(154, refY - halfBaseHeight, 10, 2*halfBaseHeight);
+                refBase.fill({ fill: baseColor });
+
+                reference.addChild(refBase);
             }
         }
     }
 
-    app.stage.addChild(graphics);
+    app.stage.addChild(reference);
+
+    window.data.uiElements['reference'] = reference;
 }
 
 async function drawSamples(main, sampleData) {
@@ -783,91 +818,119 @@ async function drawSamples(main, sampleData) {
     }
 }
 
-async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth=15) {
+async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth=20) {
     const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
     const halfBaseHeight = 0.5 / basesPerPixel;
 
-    const sampleContainer = new Container({
-        isRenderGroup: true,
-        cullable: true,
-        cullableChildren: true,
-        x: 185 + (sampleIndex*sampleWidth),
-        y: 0,
-    });
+    let sampleTrack;
+    if (!window.data.uiElements.hasOwnProperty['sampleContainer-' + sampleName]) {
+        const sampleContainer = new Container({
+            isRenderGroup: true,
+            cullable: true,
+            cullableChildren: true,
+            x: 185 + (sampleIndex*sampleWidth),
+            y: 0,
+        });
 
-    const sampleTrack = new Graphics();
-    sampleTrack.rect(0, 0, 10, document.querySelector('main').offsetHeight);
-    sampleTrack.stroke({ width: 1, color: 0xaaaaaa });
-    sampleTrack.fill(0xdddddd);
+        sampleTrack = new Graphics();
+        sampleTrack.rect(0, 0, sampleWidth - 5, document.querySelector('main').offsetHeight);
+        sampleTrack.stroke({ width: 1, color: 0xaaaaaa });
+        sampleTrack.fill(0xdddddd);
 
-    sampleTrack.interactive = true;
-    sampleTrack.buttonMode = true;
+        sampleTrack.interactive = true;
+        sampleTrack.buttonMode = true;
 
-    sampleContainer.addChild(sampleTrack);
+        sampleContainer.addChild(sampleTrack);
+        app.stage.addChild(sampleContainer);
 
-    const elementCache = new Map();
+        window.data.uiElements['sampleContainer-' + sampleName] = sampleContainer;
+        window.data.uiElements['sampleTrack-' + sampleName] = sampleTrack;
+    } else {
+        sampleTrack = window.data.uiElements['sampleTrack-' + sampleName];
+    }
 
-    for (let i = 0; i < sampleData.columns[10].values.length; i++) {
-        let referenceStart = sampleData.columns[3].values[i];
-        let referenceEnd = sampleData.columns[4].values[i];
-        let rowSampleName = sampleData.columns[9].values[i];
-        let elementType = sampleData.columns[10].values[i];
-        let sequence = sampleData.columns[11].values[i];
+    if (!window.data.sampleElements.hasOwnProperty(sampleName)) {
+        window.data.sampleElements[sampleName] = new Map();
+    }
 
-        const elementKey = `${referenceStart}-${referenceEnd}-${rowSampleName}-${elementType}-${sequence}`;
+    let elementCache = window.data.sampleElements[sampleName];
 
-        if (sampleName == rowSampleName && !(referenceEnd < window.data.locus_start || referenceStart > window.data.locus_end)) {
-            if (!elementCache.has(elementKey)) {
-                const elementY = (window.data.locus_end - referenceStart) / basesPerPixel;
-                const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - referenceEnd) / basesPerPixel)));
+    if (elementCache.size == 0) {
+        for (let i = 0; i < sampleData.columns[10].values.length; i++) {
+            let referenceStart = sampleData.columns[3].values[i];
+            let referenceEnd = sampleData.columns[4].values[i];
+            let rowSampleName = sampleData.columns[9].values[i];
+            let elementType = sampleData.columns[10].values[i];
+            let sequence = sampleData.columns[11].values[i];
 
-                // see alignment.rs for ElementType mapping
-                if (elementType == 1) { // mismatch
-                    let color = window.data.nucleotideColors.hasOwnProperty(sequence) ? window.data.nucleotideColors[sequence] : null;
+            const elementKey = `${referenceStart}-${referenceEnd}-${rowSampleName}-${elementType}-${sequence}`;
 
-                    let mismatch = new Graphics();
-                    mismatch.rect(0, elementY - halfBaseHeight, 10, elementHeight);
-                    if (color !== null) { mismatch.fill({ color: color, alpha: 0.1 }); }
+            if (sampleName == rowSampleName && !(referenceEnd < window.data.locus_start || referenceStart > window.data.locus_end)) {
+                if (!elementCache.has(elementKey)) {
+                    const elementY = (window.data.locus_end - referenceStart) / basesPerPixel;
+                    const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - referenceEnd) / basesPerPixel)));
 
-                    mismatch.interactive = true;
-                    mismatch.on('mouseover', () => {
-                        console.log(mismatch.fillStyle);
+                    let cigarElement = new Graphics();
+                    cigarElement.referenceStart = referenceStart;
+                    cigarElement.referenceEnd = referenceEnd;
+                    cigarElement.cullable = true;
+
+                    // see alignment.rs for ElementType mapping
+                    if (elementType == 1) { // mismatch
+                        let color = window.data.nucleotideColors.hasOwnProperty(sequence) ? window.data.nucleotideColors[sequence] : null;
+
+                        cigarElement.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        if (color !== null) { cigarElement.fill({ color: color, alpha: 0.1 }); }
+
+                        cigarElement.interactive = true;
+                        cigarElement.on('mouseover', () => {
+                            console.log(cigarElement.fillStyle);
+                            console.log(cigarElement.referenceStart);
+                        });
+
+                        elementCache.set(elementKey, [cigarElement]);
+                    } else if (elementType == 2) { // insertion
+                        cigarElement.rect(0, elementY - (1.5*halfBaseHeight), sampleWidth - 5, (0.5*halfBaseHeight));
+                        cigarElement.fill({ fill: "#800080", alpha: 0.1 });
+
+                        elementCache.set(elementKey, [cigarElement]);
+                    } else if (elementType == 3) { // deletion
+                        cigarElement.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        cigarElement.fill({ fill: "#ffffff", alpha: 0.1 });
+
+                        let deletionBar = new Graphics();
+                        deletionBar.rect(4, elementY - halfBaseHeight, 2, elementHeight);
+                        deletionBar.fill({ fill: "#000000", alpha: 0.1});
+                        deletionBar.referenceStart = referenceStart;
+                        deletionBar.referenceEnd = referenceEnd;
+                        deletionBar.cullable = true;
+
+                        elementCache.set(elementKey, [cigarElement, deletionBar]);
+                    }
+                } else {
+                    let elements = elementCache.get(elementKey);
+                    elements.forEach((element) => {
+                        element.fillStyle.alpha = Math.min(element.fillStyle.alpha + 0.1, 1.0);
                     });
-
-                    elementCache.set(elementKey, [mismatch]);
-                } else if (elementType == 2) { // insertion
-                    let insertion = new Graphics();
-                    insertion.rect(0, elementY - (1.5*halfBaseHeight), 10, (0.5*halfBaseHeight));
-                    insertion.fill({ fill: "#800080", alpha: 0.1 });
-
-                    elementCache.set(elementKey, [insertion]);
-                } else if (elementType == 3) { // deletion
-                    let deletionBlank = new Graphics();
-                    deletionBlank.rect(0, elementY - halfBaseHeight, 10, elementHeight);
-                    deletionBlank.fill({ fill: "#ffffff", alpha: 0.1 });
-
-                    let deletionBar = new Graphics();
-                    deletionBar.rect(4, elementY - halfBaseHeight, 2, elementHeight);
-                    deletionBar.fill({ fill: "#000000", alpha: 0.1});
-
-                    elementCache.set(elementKey, [deletionBlank, deletionBar]);
                 }
-            } else {
-                let elements = elementCache.get(elementKey);
-                elements.forEach((element) => {
-                    element.fillStyle.alpha = Math.min(element.fillStyle.alpha + 0.1, 1.0);
-                });
             }
         }
     }
 
+    let reported = false;
     elementCache.forEach((elements) => {
         elements.forEach((element) => {
-            sampleContainer.addChild(element);
+            // The element overlaps with the visible interval
+            const elementY = (window.data.locus_end - element.referenceStart) / basesPerPixel;
+            const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - element.referenceEnd) / basesPerPixel)));
+
+            // element.visible = true;
+            element.y = elementY;
+            element.height = elementHeight;
+
+            sampleTrack.addChild(element);
         });
     });
-
-    app.stage.addChild(sampleContainer);
 }
 
 // Call the function initially
