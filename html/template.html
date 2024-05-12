@@ -223,7 +223,7 @@ Hello
 </div>
 </aside>
 
-<script>
+<script id="sidebar">
 function closeSidebar() {
     document.querySelector('.sidebar-icon-close').style.display = 'none';
     document.querySelector('.sidebar-icon-open').style.display = 'block';
@@ -237,7 +237,7 @@ function openSidebar() {
 }
 </script>
 
-<script type="module">
+<script type="module" id="data">
 import pako from 'https://cdn.skypack.dev/pako@2.1.0';
 
 function decompressEncodedData(encodedData) {
@@ -259,7 +259,7 @@ let encoded_samples = "H4sIACEtOGYC/+zOQW7aQACG0bt4Hdc2diGw7KLrSllGkTU2hiAZg/CQK
 window.data.samples = JSON.parse(decompressEncodedData(encoded_samples));
 </script>
 
-<script type="module">
+<script type="module" id="app">
 import { Application, Graphics, Text, TextStyle, Color, Container, RenderTexture, Sprite, MSAA_QUALITY, Matrix } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
 
 // Some initial settings.

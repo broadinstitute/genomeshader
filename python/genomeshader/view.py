@@ -221,12 +221,10 @@ class GenomeShader:
 
         return ref_df.write_json()
 
-    def show(
+    def render(
         self,
         locus_or_dataframe: Union[str, pl.DataFrame],
-        horizontal: bool = False,
-        group_by: str = None,
-    ):
+    ) -> str:
         """
         Visualizes genomic data by rendering a graphical representation of a genomic locus.
 
@@ -238,7 +236,7 @@ class GenomeShader:
             group_by (str, optional): The name of the column to group data by in the visualization. Defaults to None.
 
         Returns:
-            None: This method does not return a value; it renders the visualization directly.
+            str: an html object that can be displayed (via IPython display) or saved to disk.
         """
 
         if isinstance(locus_or_dataframe, str):
@@ -1267,8 +1265,49 @@ renderApp();
 </script>
         """
 
+        return html_script
+    
+    def show(
+        self,
+        locus_or_dataframe: Union[str, pl.DataFrame],
+    ):
+        html_script = self.render(locus_or_dataframe)
+
         # Display the HTML and JavaScript
         display(HTML(html_script))
+
+    def save(
+        self,
+        locus_or_dataframe: Union[str, pl.DataFrame],
+        filename: str
+    ):
+        html_script = self.render(locus_or_dataframe)
+
+        with open(filename, 'w') as file:
+            file.write(html_script)
+
+        print(f'Saved to "{filename}" ({self._pretty_filesize(filename)}).')
+
+    def _pretty_filesize(self, filename: str) -> str:
+        # Get the file size in bytes
+        file_size = os.path.getsize(filename)
+        
+        # Define the unit thresholds and corresponding labels
+        thresholds = [(1024 ** 3, 'Gb'), (1024 ** 2, 'Mb'), (1024, 'kb')]
+        
+        # Find the appropriate unit and value
+        for threshold, unit in thresholds:
+            if file_size >= threshold:
+                value = file_size / threshold
+                break
+        else:
+            unit = 'bytes'
+            value = file_size
+        
+        # Format the file size with the unit and return
+        pretty_size = f"{value:.2f} {unit}"
+
+        return pretty_size
 
     def reset(self):
         self._session.reset()
