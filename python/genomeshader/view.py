@@ -588,6 +588,8 @@ async function renderApp() {
     repaint();
 }
 
+console.log(app);
+
 document.addEventListener('mousedown', function(event) {
     let startX = event.clientX;
     let startY = event.clientY;
@@ -617,6 +619,38 @@ document.addEventListener('mousedown', function(event) {
 
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
+});
+
+document.addEventListener('keydown', function(event) {
+    // Handle the '+' or '-' key press event
+    if (event.key === '+' || event.key === '-') {
+        const zoomFactor = event.key === '+' ? 0.9 : 1.1;
+
+        // Calculate the new locus range based on the zoom factor
+        const range = window.data.locus_end - window.data.locus_start;
+        const newRange = range * zoomFactor;
+        const center = (window.data.locus_start + window.data.locus_end) / 2;
+
+        var locusStart = Math.round(center - newRange / 2);
+        var locusEnd = Math.round(center + newRange / 2);
+
+        // Ensure that the new range is within the reference range
+        if (locusStart < window.data.ref_start) {
+            locusStart = window.data.ref_start;
+        }
+        if (locusEnd > window.data.ref_end) {
+            locusEnd = window.data.ref_end;
+        }
+
+        // If range is greater than the minimum range, allow the repaint to happen
+        if (locusEnd - locusStart >= 10) {
+            window.data.locus_start = locusStart;
+            window.data.locus_end = locusEnd;
+
+            // Redraw the screen contents
+            repaint();
+        }
+    }
 });
 
 document.addEventListener('wheel', function(event) {
@@ -679,6 +713,9 @@ function repaint() {
 
     // Resize the renderer
     app.renderer.resize(main.offsetWidth, main.offsetHeight);
+    app.stage.isRenderGroup = true;
+    app.stage.cullable = true;
+    app.stage.cullableChildren = true;
 
     // Draw all the elements
     drawIdeogram(main, window.data.ideogram);
@@ -889,7 +926,9 @@ async function drawRuler(main) {
 
     // Display range
     const locusTextRange = new Text({
-        text: "(" + Math.floor(window.data.locus_end - window.data.locus_start).toLocaleString() + " bp)",
+        // text: "(" + Math.floor(window.data.locus_end - window.data.locus_start).toLocaleString() + " bp)",
+        text: window.data.locus_start.toLocaleString() + " - " + window.data.locus_end.toLocaleString() + 
+              " (" + (window.data.locus_end - window.data.locus_start).toLocaleString() + " bp)",
         style: {
             fontFamily: 'Helvetica',
             fontSize: 9,
@@ -1095,44 +1134,52 @@ async function drawSamples(main, sampleData) {
     }
 }
 
+function findComponent(parent, label) {
+    let results = [];
+    parent.getChildrenByLabel(label, false, results);
+
+    return results.length == 0 ? null : results[0];
+}
+
 async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth=20) {
     const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
     const halfBaseHeight = 0.5 / basesPerPixel;
 
-    let sampleTrack;
-    if (!window.data.uiElements.hasOwnProperty['sampleContainer-' + sampleName]) {
-        const sampleContainer = new Container({
+    let sampleContainer = findComponent(app.stage, 'sampleContainer-' + sampleName);
+    if (sampleContainer == null) {
+        sampleContainer = new Container({
+            label: 'sampleContainer-' + sampleName,
             isRenderGroup: true,
             cullable: true,
             cullableChildren: true,
-            x: 185 + (sampleIndex*sampleWidth),
+            // x: 185 + (sampleIndex*sampleWidth),
+            x: 0,
             y: 0,
         });
 
+        app.stage.addChild(sampleContainer);
+    }
+
+    let sampleTrack = findComponent(sampleContainer, 'sampleTrack-' + sampleName);
+    if (sampleTrack == null) {
         sampleTrack = new Graphics();
-        sampleTrack.rect(0, 0, sampleWidth - 5, document.querySelector('main').offsetHeight);
+        sampleTrack.label = 'sampleTrack-' + sampleName;
+        sampleTrack.isRenderGroup = true;
+        sampleTrack.cullable = true;
+        sampleTrack.cullableChildren = true;
+
+        // sampleTrack.rect(0, 0, sampleWidth - 5, document.querySelector('main').offsetHeight);
+        sampleTrack.rect(185 + (sampleIndex*sampleWidth), 0, sampleWidth - 5, document.querySelector('main').offsetHeight);
         sampleTrack.stroke({ width: 1, color: 0xaaaaaa });
         sampleTrack.fill(0xdddddd);
 
         sampleTrack.interactive = true;
         sampleTrack.buttonMode = true;
 
-        sampleContainer.addChild(sampleTrack);
-        app.stage.addChild(sampleContainer);
+        // sampleContainer.addChild(sampleTrack);
+        app.stage.addChild(sampleTrack);
 
-        window.data.uiElements['sampleContainer-' + sampleName] = sampleContainer;
-        window.data.uiElements['sampleTrack-' + sampleName] = sampleTrack;
-    } else {
-        sampleTrack = window.data.uiElements['sampleTrack-' + sampleName];
-    }
-
-    if (!window.data.sampleElements.hasOwnProperty(sampleName)) {
-        window.data.sampleElements[sampleName] = new Map();
-    }
-
-    let elementCache = window.data.sampleElements[sampleName];
-
-    if (elementCache.size == 0) {
+        const elementCache = new Map();
         for (let i = 0; i < sampleData.columns[10].values.length; i++) {
             let referenceStart = sampleData.columns[3].values[i];
             let referenceEnd = sampleData.columns[4].values[i];
@@ -1144,45 +1191,59 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
 
             if (sampleName == rowSampleName && !(referenceEnd < window.data.locus_start || referenceStart > window.data.locus_end)) {
                 if (!elementCache.has(elementKey)) {
+                    const elementX = 185 + (sampleIndex*sampleWidth);
                     const elementY = (window.data.locus_end - referenceStart) / basesPerPixel;
                     const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - referenceEnd) / basesPerPixel)));
 
-                    let cigarElement = new Graphics();
-                    cigarElement.referenceStart = referenceStart;
-                    cigarElement.referenceEnd = referenceEnd;
-                    cigarElement.cullable = true;
+                    let cigarElement1 = new Graphics();
+                    cigarElement1.referenceStart = referenceStart;
+                    cigarElement1.referenceEnd = referenceEnd;
+                    cigarElement1.cullable = true;
+                    cigarElement1.label = "cigar-" + elementKey;
 
                     // see alignment.rs for ElementType mapping
                     if (elementType == 1) { // mismatch
                         let color = window.data.nucleotideColors.hasOwnProperty(sequence) ? window.data.nucleotideColors[sequence] : null;
 
-                        cigarElement.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
-                        if (color !== null) { cigarElement.fill({ color: color, alpha: 0.1 }); }
+                        // cigarElement1.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        cigarElement1.rect(elementX, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        if (color !== null) { cigarElement1.fill({ color: color, alpha: 0.1 }); }
 
-                        cigarElement.interactive = true;
-                        cigarElement.on('mouseover', () => {
-                            console.log(cigarElement.fillStyle);
-                            console.log(cigarElement.referenceStart);
+                        elementCache.set(elementKey, [cigarElement1]);
+                    } else if (elementType == 2) { // insertion
+                        cigarElement1.shift = 1.5*halfBaseHeight;
+
+                        // cigarElement1.rect(0, elementY - (1.5*halfBaseHeight), sampleWidth - 5, (0.5*halfBaseHeight));
+                        // cigarElement1.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        cigarElement1.rect(elementX, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        cigarElement1.fill({ fill: "#800080", alpha: 0.1 });
+
+                        elementCache.set(elementKey, [cigarElement1]);
+                    } else if (elementType == 3) { // deletion
+                        // cigarElement1.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        cigarElement1.rect(elementX, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        cigarElement1.fill({ fill: "#ffffff", alpha: 0.1 });
+
+                        let cigarElement2 = new Graphics();
+                        // cigarElement2.rect(4, elementY - halfBaseHeight, 2, elementHeight);
+                        cigarElement2.rect(elementX + 4, elementY - halfBaseHeight, 2, elementHeight);
+                        cigarElement2.fill({ fill: "#000000", alpha: 0.1});
+                        cigarElement2.referenceStart = referenceStart;
+                        cigarElement2.referenceEnd = referenceEnd;
+                        cigarElement2.cullable = true;
+                        cigarElement2.label = "cigar-" + elementKey + "-bar";
+
+                        cigarElement2.interactive = true;
+                        cigarElement2.on('mouseover', () => {
+                            console.log(cigarElement2.fillStyle);
+                            console.log(cigarElement2.referenceStart);
+                            console.log(elementY - halfBaseHeight);
+                            console.log(cigarElement2.position);
+                            console.log(cigarElement2.bounds);
+                            console.log(cigarElement2);
                         });
 
-                        elementCache.set(elementKey, [cigarElement]);
-                    } else if (elementType == 2) { // insertion
-                        cigarElement.rect(0, elementY - (1.5*halfBaseHeight), sampleWidth - 5, (0.5*halfBaseHeight));
-                        cigarElement.fill({ fill: "#800080", alpha: 0.1 });
-
-                        elementCache.set(elementKey, [cigarElement]);
-                    } else if (elementType == 3) { // deletion
-                        cigarElement.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
-                        cigarElement.fill({ fill: "#ffffff", alpha: 0.1 });
-
-                        let deletionBar = new Graphics();
-                        deletionBar.rect(4, elementY - halfBaseHeight, 2, elementHeight);
-                        deletionBar.fill({ fill: "#000000", alpha: 0.1});
-                        deletionBar.referenceStart = referenceStart;
-                        deletionBar.referenceEnd = referenceEnd;
-                        deletionBar.cullable = true;
-
-                        elementCache.set(elementKey, [cigarElement, deletionBar]);
+                        elementCache.set(elementKey, [cigarElement1, cigarElement2]);
                     }
                 } else {
                     let elements = elementCache.get(elementKey);
@@ -1192,22 +1253,38 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
                 }
             }
         }
-    }
 
-    let reported = false;
-    elementCache.forEach((elements) => {
-        elements.forEach((element) => {
-            // The element overlaps with the visible interval
-            const elementY = (window.data.locus_end - element.referenceStart) / basesPerPixel;
-            const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - element.referenceEnd) / basesPerPixel)));
-
-            // element.visible = true;
-            element.y = elementY;
-            element.height = elementHeight;
-
-            sampleTrack.addChild(element);
+        elementCache.forEach((elements) => {
+            elements.forEach((element) => {
+                // sampleContainer.addChild(element);
+                sampleTrack.addChild(element);
+                // app.stage.addChild(element);
+            })
         });
-    });
+    } else {
+        console.log(window.data.locus_start.toLocaleString(), window.data.locus_end.toLocaleString());
+
+        let cigarElements = [];
+        sampleTrack.getChildrenByLabel(/cigar-*/, false, cigarElements);
+        // sampleContainer.getChildrenByLabel(/cigar-*/, false, cigarElements);
+        cigarElements.forEach((element) => {
+            if (element.referenceEnd < window.data.locus_start || window.data.locus_end < element.referenceStart) {
+                element.visible = false;
+            } else {
+                const elementY = (window.data.locus_end - element.referenceStart) / basesPerPixel;
+                const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - element.referenceEnd) / basesPerPixel)));
+
+                element.visible = true;
+                if (element.fillStyle.alpha <= 0.15 && window.data.locus_end - window.data.locus_start > 1500) {
+                    element.visible = false;
+                }
+
+                element.y = elementY - halfBaseHeight;
+                // element._context.bounds.minY = elementY - halfBaseHeight;
+                element.height = elementHeight;
+            }
+        });
+    }
 }
 
 // Call the function initially
