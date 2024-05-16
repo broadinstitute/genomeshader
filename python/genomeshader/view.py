@@ -537,7 +537,7 @@ window.data.samples = JSON.parse(decompressEncodedData(encoded_samples));
         """
 
         inner_module = """
-import { Application, Graphics, Text, TextStyle, Color, Container, RenderTexture, Sprite, MSAA_QUALITY, Matrix } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
+import { Application, Graphics, Text, TextStyle, Color, Container, RenderTexture, Point, Sprite, MSAA_QUALITY, Matrix } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
 
 // Some initial settings.
 window.data.zoom = 0;
@@ -583,12 +583,10 @@ async function renderApp() {
     window.data.sampleElements = {};
 
     // Listen for window resize events.
-    window.addEventListener('resize', resize);
+    window.addEventListener('resize', debounce(resize));
 
     repaint();
 }
-
-console.log(app);
 
 document.addEventListener('mousedown', function(event) {
     let startX = event.clientX;
@@ -623,8 +621,8 @@ document.addEventListener('mousedown', function(event) {
 
 document.addEventListener('keydown', function(event) {
     // Handle the '+' or '-' key press event
-    if (event.key === '+' || event.key === '-') {
-        const zoomFactor = event.key === '+' ? 0.9 : 1.1;
+    if (event.key === '+' || event.key === '=' || event.key === '-') {
+        const zoomFactor = (event.key === '+' || event.key === '=') ? 0.9 : 1.1;
 
         // Calculate the new locus range based on the zoom factor
         const range = window.data.locus_end - window.data.locus_start;
@@ -698,13 +696,27 @@ document.addEventListener('mousemove', function(event) {
     }
 });
 
-// Resize function window
-function resize() {
-    app.stage.removeChildren();
+// Helper function to prevent an in-progress event handler from firing again while the first is in progress.
+function debounce(func) {
+    var timer;
+    return function(event){
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(func,100,event);
+    };
+}
 
+// Resize function window with check to prevent concurrent executions
+function resize() {
+    if (window.isResizing) return;
+
+    window.isResizing = true;
+
+    app.stage.removeChildren();
     window.data.uiElements = {};
 
     repaint();
+
+    window.isResizing = false;
 }
 
 // Resize function window
@@ -1134,9 +1146,9 @@ async function drawSamples(main, sampleData) {
     }
 }
 
-function findComponent(parent, label) {
+function findComponent(parent, label, recurse=false) {
     let results = [];
-    parent.getChildrenByLabel(label, false, results);
+    parent.getChildrenByLabel(label, recurse, results);
 
     return results.length == 0 ? null : results[0];
 }
@@ -1152,8 +1164,7 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
             isRenderGroup: true,
             cullable: true,
             cullableChildren: true,
-            // x: 185 + (sampleIndex*sampleWidth),
-            x: 0,
+            x: 185 + (sampleIndex*sampleWidth),
             y: 0,
         });
 
@@ -1168,16 +1179,14 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
         sampleTrack.cullable = true;
         sampleTrack.cullableChildren = true;
 
-        // sampleTrack.rect(0, 0, sampleWidth - 5, document.querySelector('main').offsetHeight);
-        sampleTrack.rect(185 + (sampleIndex*sampleWidth), 0, sampleWidth - 5, document.querySelector('main').offsetHeight);
+        sampleTrack.rect(0, 0, sampleWidth - 5, document.querySelector('main').offsetHeight);
         sampleTrack.stroke({ width: 1, color: 0xaaaaaa });
         sampleTrack.fill(0xdddddd);
 
         sampleTrack.interactive = true;
         sampleTrack.buttonMode = true;
 
-        // sampleContainer.addChild(sampleTrack);
-        app.stage.addChild(sampleTrack);
+        sampleContainer.addChild(sampleTrack);
 
         const elementCache = new Map();
         for (let i = 0; i < sampleData.columns[10].values.length; i++) {
@@ -1191,7 +1200,7 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
 
             if (sampleName == rowSampleName && !(referenceEnd < window.data.locus_start || referenceStart > window.data.locus_end)) {
                 if (!elementCache.has(elementKey)) {
-                    const elementX = 185 + (sampleIndex*sampleWidth);
+                    const elementX = 0;
                     const elementY = (window.data.locus_end - referenceStart) / basesPerPixel;
                     const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - referenceEnd) / basesPerPixel)));
 
@@ -1200,48 +1209,37 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
                     cigarElement1.referenceEnd = referenceEnd;
                     cigarElement1.cullable = true;
                     cigarElement1.label = "cigar-" + elementKey;
+                    cigarElement1.shift = false;
 
                     // see alignment.rs for ElementType mapping
                     if (elementType == 1) { // mismatch
                         let color = window.data.nucleotideColors.hasOwnProperty(sequence) ? window.data.nucleotideColors[sequence] : null;
 
-                        // cigarElement1.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
-                        cigarElement1.rect(elementX, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        cigarElement1.rect(0, 0, sampleWidth - 5, elementHeight);
                         if (color !== null) { cigarElement1.fill({ color: color, alpha: 0.1 }); }
 
                         elementCache.set(elementKey, [cigarElement1]);
                     } else if (elementType == 2) { // insertion
-                        cigarElement1.shift = 1.5*halfBaseHeight;
+                        // cigarElement1.shift = 1.5*halfBaseHeight;
+                        cigarElement1.shift = true;
 
-                        // cigarElement1.rect(0, elementY - (1.5*halfBaseHeight), sampleWidth - 5, (0.5*halfBaseHeight));
-                        // cigarElement1.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
-                        cigarElement1.rect(elementX, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        cigarElement1.rect(0, 0, sampleWidth - 5, elementHeight);
                         cigarElement1.fill({ fill: "#800080", alpha: 0.1 });
 
                         elementCache.set(elementKey, [cigarElement1]);
                     } else if (elementType == 3) { // deletion
-                        // cigarElement1.rect(0, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
-                        cigarElement1.rect(elementX, elementY - halfBaseHeight, sampleWidth - 5, elementHeight);
+                        cigarElement1.rect(0, 0, sampleWidth - 5, elementHeight);
                         cigarElement1.fill({ fill: "#ffffff", alpha: 0.1 });
 
                         let cigarElement2 = new Graphics();
-                        // cigarElement2.rect(4, elementY - halfBaseHeight, 2, elementHeight);
-                        cigarElement2.rect(elementX + 4, elementY - halfBaseHeight, 2, elementHeight);
+                        cigarElement2.rect(6, 0, 2, elementHeight);
                         cigarElement2.fill({ fill: "#000000", alpha: 0.1});
+
+                        cigarElement2.shift = false;
                         cigarElement2.referenceStart = referenceStart;
                         cigarElement2.referenceEnd = referenceEnd;
                         cigarElement2.cullable = true;
                         cigarElement2.label = "cigar-" + elementKey + "-bar";
-
-                        cigarElement2.interactive = true;
-                        cigarElement2.on('mouseover', () => {
-                            console.log(cigarElement2.fillStyle);
-                            console.log(cigarElement2.referenceStart);
-                            console.log(elementY - halfBaseHeight);
-                            console.log(cigarElement2.position);
-                            console.log(cigarElement2.bounds);
-                            console.log(cigarElement2);
-                        });
 
                         elementCache.set(elementKey, [cigarElement1, cigarElement2]);
                     }
@@ -1256,35 +1254,35 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
 
         elementCache.forEach((elements) => {
             elements.forEach((element) => {
-                // sampleContainer.addChild(element);
                 sampleTrack.addChild(element);
-                // app.stage.addChild(element);
             })
         });
-    } else {
-        console.log(window.data.locus_start.toLocaleString(), window.data.locus_end.toLocaleString());
-
-        let cigarElements = [];
-        sampleTrack.getChildrenByLabel(/cigar-*/, false, cigarElements);
-        // sampleContainer.getChildrenByLabel(/cigar-*/, false, cigarElements);
-        cigarElements.forEach((element) => {
-            if (element.referenceEnd < window.data.locus_start || window.data.locus_end < element.referenceStart) {
-                element.visible = false;
-            } else {
-                const elementY = (window.data.locus_end - element.referenceStart) / basesPerPixel;
-                const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - element.referenceEnd) / basesPerPixel)));
-
-                element.visible = true;
-                if (element.fillStyle.alpha <= 0.15 && window.data.locus_end - window.data.locus_start > 1500) {
-                    element.visible = false;
-                }
-
-                element.y = elementY - halfBaseHeight;
-                // element._context.bounds.minY = elementY - halfBaseHeight;
-                element.height = elementHeight;
-            }
-        });
     }
+
+    let cigarElements = [];
+    sampleTrack.getChildrenByLabel(/cigar-*/, false, cigarElements);
+    cigarElements.forEach((element) => {
+        if (element.referenceEnd < window.data.locus_start || window.data.locus_end < element.referenceStart) {
+            element.visible = false;
+        } else {
+            let visibleRange = window.data.locus_end - element.referenceStart;
+            let minVisibility = 0.0;
+            if (visibleRange <= 100) {
+                minVisibility = 0.0;
+            } else if (visibleRange <= 1000) {
+                minVisibility = 0.15;
+            } else {
+                minVisibility = 0.30;
+            }
+
+            const elementY = (window.data.locus_end - element.referenceStart) / (basesPerPixel);
+            const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - element.referenceEnd) / basesPerPixel)));
+
+            element.y = elementY - halfBaseHeight;
+            element.height = elementHeight;
+            element.visible = element.fillStyle.alpha >= minVisibility;
+        }
+    });
 }
 
 // Call the function initially

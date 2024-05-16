@@ -306,12 +306,10 @@ async function renderApp() {
     window.data.sampleElements = {};
 
     // Listen for window resize events.
-    window.addEventListener('resize', resize);
+    window.addEventListener('resize', debounce(resize));
 
     repaint();
 }
-
-console.log(app);
 
 document.addEventListener('mousedown', function(event) {
     let startX = event.clientX;
@@ -421,13 +419,27 @@ document.addEventListener('mousemove', function(event) {
     }
 });
 
-// Resize function window
-function resize() {
-    app.stage.removeChildren();
+// Helper function to prevent an in-progress event handler from firing again while the first is in progress.
+function debounce(func) {
+    var timer;
+    return function(event){
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(func,100,event);
+    };
+}
 
+// Resize function window with check to prevent concurrent executions
+function resize() {
+    if (window.isResizing) return;
+
+    window.isResizing = true;
+
+    app.stage.removeChildren();
     window.data.uiElements = {};
 
     repaint();
+
+    window.isResizing = false;
 }
 
 // Resize function window
@@ -976,12 +988,22 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
         if (element.referenceEnd < window.data.locus_start || window.data.locus_end < element.referenceStart) {
             element.visible = false;
         } else {
+            let visibleRange = window.data.locus_end - element.referenceStart;
+            let minVisibility = 0.0;
+            if (visibleRange <= 100) {
+                minVisibility = 0.0;
+            } else if (visibleRange <= 1000) {
+                minVisibility = 0.15;
+            } else {
+                minVisibility = 0.30;
+            }
+
             const elementY = (window.data.locus_end - element.referenceStart) / (basesPerPixel);
             const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - element.referenceEnd) / basesPerPixel)));
 
             element.y = elementY - halfBaseHeight;
             element.height = elementHeight;
-            element.visible = element.fillStyle.alpha > 0.15 || window.data.locus_end - window.data.locus_start <= 1500;
+            element.visible = element.fillStyle.alpha >= minVisibility;
         }
     });
 }
