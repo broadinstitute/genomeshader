@@ -2423,6 +2423,10 @@ document.addEventListener('mousemove', function(event) {
     }
 });
 
+document.addEventListener('mousedown', function(event) {
+    console.log("Hello!", event);
+});
+
 // Helper function to prevent an in-progress event handler from firing again while the first is in progress.
 function debounce(func) {
     var timer;
@@ -2507,17 +2511,17 @@ async function drawIdeogram(main, ideogramData) {
             let bandColor = ideogramData.columns[5].values[i];
 
             const band = new PIXI.Graphics();
-            band.interactive = true;
-            band.buttonMode = true;
+            // band.interactive = true;
+            // band.buttonMode = true;
 
-            band.on('mouseover', () => {
-                tooltip.text = bandStart + "-" + bandEnd;
-                tooltip.visible = true;
-            });
+            // band.on('mouseover', () => {
+            //     tooltip.text = bandStart + "-" + bandEnd;
+            //     tooltip.visible = true;
+            // });
 
-            band.on('mouseout', () => {
-                tooltip.visible = false;
-            });
+            // band.on('mouseout', () => {
+            //     tooltip.visible = false;
+            // });
 
             if (bandStain == 'acen') {
                 // Draw centromere triangles
@@ -2580,7 +2584,7 @@ async function drawIdeogram(main, ideogramData) {
                     return '#' + r + g + b;
                 }
 
-                const bandLabel = new Text({
+                const bandLabel = new PIXI.Text({
                     text: bandName,
                     style: {
                         fontFamily: 'Helvetica',
@@ -2659,7 +2663,6 @@ async function drawRuler(main) {
 
     // Display range
     const locusTextRange = new PIXI.Text({
-        // text: "(" + Math.floor(window.data.locus_end - window.data.locus_start).toLocaleString() + " bp)",
         text: window.data.locus_start.toLocaleString() + " - " + window.data.locus_end.toLocaleString() + 
               " (" + (window.data.locus_end - window.data.locus_start).toLocaleString() + " bp)",
         style: {
@@ -2902,12 +2905,23 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
 
         sampleTrack.rect(0, 0, sampleWidth - 5, document.querySelector('main').offsetHeight);
         sampleTrack.stroke({ width: 1, color: 0xaaaaaa });
-        sampleTrack.fill(0xdddddd);
+        // sampleTrack.fill(sampleIndex % 2 == 0 ? 0xfeeefe : 0xeffeee);
+        // sampleTrack.fillStyle.alpha = 0.1;
 
         sampleTrack.interactive = true;
         sampleTrack.buttonMode = true;
 
         sampleContainer.addChild(sampleTrack);
+
+        let coverageTrack = new PIXI.Graphics();
+        coverageTrack.label = 'coverageTrack-' + sampleName;
+        coverageTrack.cullable = true;
+        coverageTrack.rect(0, 0, sampleWidth - 5, 100);
+        // coverageTrack.fill(0x0000ff);
+        coverageTrack.referenceStart = window.data.locus_start;
+        coverageTrack.referenceEnd = window.data.locus_end;
+
+        sampleTrack.addChild(coverageTrack);
 
         const elementCache = new Map();
         for (let i = 0; i < sampleData.columns[10].values.length; i++) {
@@ -2918,6 +2932,9 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
             let sequence = sampleData.columns[11].values[i];
 
             const elementKey = `${referenceStart}-${referenceEnd}-${rowSampleName}-${elementType}-${sequence}`;
+
+            // coverageTrack.referenceStart = Math.min(referenceStart, coverageTrack.referenceStart);
+            // coverageTrack.referenceEnd = Math.max(referenceEnd, coverageTrack.referenceEnd);
 
             if (sampleName == rowSampleName && !(referenceEnd < window.data.locus_start || referenceStart > window.data.locus_end)) {
                 if (!elementCache.has(elementKey)) {
@@ -2980,6 +2997,19 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
         });
     }
 
+    let trackElements = [];
+    sampleTrack.getChildrenByLabel(/coverageTrack-*/, false, trackElements);
+    trackElements.forEach((element) => {
+        const elementY = (window.data.locus_end - element.referenceEnd) / (basesPerPixel);
+        const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - element.referenceStart) / basesPerPixel)));
+
+        element.y = elementY;
+        element.height = elementHeight;
+        element.fill(sampleIndex % 2 == 0 ? 0xfeeefe : 0xeffeee);
+
+        console.log(element, elementY, elementHeight, element.referenceStart, element.referenceEnd);
+    });
+
     let cigarElements = [];
     sampleTrack.getChildrenByLabel(/cigar-*/, false, cigarElements);
     cigarElements.forEach((element) => {
@@ -3006,7 +3036,7 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
     });
 }
 
-// Call the function initially
+// Perform the initial rendering.
 renderApp();
 </script>
 
