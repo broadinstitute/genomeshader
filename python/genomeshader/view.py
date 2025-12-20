@@ -345,6 +345,9 @@ aside {
 .report-bug-icon {
     cursor: pointer;
 }
+.orientation-toggle-icon {
+    cursor: pointer;
+}
 .gear-icon {
     cursor: pointer;
 }
@@ -444,6 +447,14 @@ footer {
                 </svg>
             </i>
         </a>
+        <i class="orientation-toggle-icon" onclick="toggleOrientation()" title="Toggle orientation (horizontal/vertical)">
+            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
+                <g transform="translate(0, 0)">
+                    <path fill-rule="evenodd" d="M12 2.25a.75.75 0 01.75.75v16.19l2.47-2.47a.75.75 0 111.06 1.06l-3.75 3.75a.75.75 0 01-1.06 0l-3.75-3.75a.75.75 0 111.06-1.06l2.47 2.47V3a.75.75 0 01.75-.75z"></path>
+                    <path fill-rule="evenodd" d="M2.25 12a.75.75 0 01.75-.75h16.19l-2.47-2.47a.75.75 0 011.06-1.06l3.75 3.75a.75.75 0 010 1.06l-3.75 3.75a.75.75 0 11-1.06-1.06l2.47-2.47H3a.75.75 0 01-.75-.75z"></path>
+                </g>
+            </svg>
+        </i>
         <i class="gear-icon" onclick="alert('Not yet implemented.')">
             <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
                 <g transform="translate(0, 0)">
@@ -510,6 +521,34 @@ function openSidebar() {
     document.querySelector('.sidebar-icon-close').style.display = 'block';
     document.querySelector('aside').style.width = '300px';
 }
+
+// Toggle orientation between horizontal and vertical
+function toggleOrientation() {
+    if (!window.data) {
+        console.error('window.data is not available');
+        return;
+    }
+    window.data.orientation = window.data.orientation === 'horizontal' ? 'vertical' : 'horizontal';
+    // Clear UI elements to force redraw
+    if (window.data.uiElements) {
+        window.data.uiElements = {};
+    }
+    // Call repaint if it's available (it's defined in the module script)
+    if (typeof window.repaint === 'function') {
+        window.repaint();
+    } else if (typeof repaint === 'function') {
+        repaint();
+    } else {
+        // If repaint isn't available yet, try again after a short delay
+        setTimeout(() => {
+            if (typeof window.repaint === 'function') {
+                window.repaint();
+            } else if (typeof repaint === 'function') {
+                repaint();
+            }
+        }, 100);
+    }
+}
         """
 
         inner_data = f"""
@@ -525,7 +564,14 @@ function decompressEncodedData(encodedData) {{
 }}
 
 // Load data
-window.data = JSON.parse({json.dumps(data_json)});
+// Initialize window.data if it doesn't exist
+if (!window.data) {{
+    window.data = {{}};
+}}
+
+// Parse and set the main data
+const parsedData = JSON.parse({json.dumps(data_json)});
+Object.assign(window.data, parsedData);
 
 // Function to decode and parse the reference bases
 window.encoded_ref = "{encoded_ref}";
@@ -534,15 +580,883 @@ window.data.ref = JSON.parse(decompressEncodedData(encoded_ref));
 // Function to decode and parse the reads
 window.encoded_samples = "{encoded_samples}";
 window.data.samples = JSON.parse(decompressEncodedData(encoded_samples));
+
+// Signal that data is ready
+window.data._ready = true;
         """
 
         inner_module = """
-import { Application, Graphics, Text, TextStyle, Color, Container, RenderTexture, Point, Sprite, MSAA_QUALITY, Matrix } from 'https://cdn.skypack.dev/pixi.js@8.1.0';
+// WebGPU Core - Device initialization and canvas setup
+class WebGPUCore {
+    constructor() {
+        this.device = null;
+        this.context = null;
+        this.canvas = null;
+        this.format = null;
+        this.projectionMatrix = null;
+        this.projectionBuffer = null;
+    }
+
+    async init(canvas) {
+        if (!navigator.gpu) {
+            throw new Error('WebGPU is not supported in this browser');
+        }
+
+        this.canvas = canvas;
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+            throw new Error('Failed to get WebGPU adapter');
+        }
+
+        this.device = await adapter.requestDevice();
+        this.format = navigator.gpu.getPreferredCanvasFormat();
+        
+        this.context = canvas.getContext('webgpu');
+        if (!this.context) {
+            throw new Error('Failed to get WebGPU context');
+        }
+
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const width = canvas.clientWidth * devicePixelRatio;
+        const height = canvas.clientHeight * devicePixelRatio;
+
+        this.context.configure({
+            device: this.device,
+            format: this.format,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+            alphaMode: 'premultiplied',
+        });
+
+        // Create projection matrix buffer (orthographic 2D projection)
+        this.projectionMatrix = new Float32Array([
+            2.0 / width, 0, 0, 0,
+            0, -2.0 / height, 0, 0,
+            0, 0, 1, 0,
+            -1, 1, 0, 1
+        ]);
+
+        this.projectionBuffer = this.device.createBuffer({
+            size: 16 * 4, // 16 floats * 4 bytes
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+
+        this.device.queue.writeBuffer(this.projectionBuffer, 0, this.projectionMatrix);
+
+        // Handle resize
+        window.addEventListener('resize', () => this.handleResize());
+    }
+
+    handleResize() {
+        if (!this.canvas || !this.context) return;
+
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const width = this.canvas.clientWidth * devicePixelRatio;
+        const height = this.canvas.clientHeight * devicePixelRatio;
+
+        // Update canvas size
+        this.canvas.width = width;
+        this.canvas.height = height;
+
+        // Update projection matrix
+        this.projectionMatrix[0] = 2.0 / width;
+        this.projectionMatrix[5] = -2.0 / height;
+        this.projectionMatrix[12] = -1;
+        this.projectionMatrix[13] = 1;
+
+        this.device.queue.writeBuffer(this.projectionBuffer, 0, this.projectionMatrix);
+    }
+
+    getCurrentTexture() {
+        return this.context.getCurrentTexture();
+    }
+
+    createCommandEncoder() {
+        return this.device.createCommandEncoder();
+    }
+
+    submit(commands) {
+        this.device.queue.submit(commands);
+    }
+}
+
+// Instanced Renderer - GPU instanced rendering for polygons
+class InstancedRenderer {
+    constructor(webgpuCore) {
+        this.core = webgpuCore;
+        this.device = webgpuCore.device;
+        
+        // Rectangle rendering
+        this.rectPipeline = null;
+        this.rectInstances = [];
+        this.rectBuffer = null;
+        this.rectVertexBuffer = null;
+        
+        // Triangle rendering
+        this.trianglePipeline = null;
+        this.triangleInstances = [];
+        this.triangleBuffer = null;
+        this.triangleVertexBuffer = null;
+        
+        // Line rendering
+        this.linePipeline = null;
+        this.lineInstances = [];
+        this.lineBuffer = null;
+        
+        this.init();
+    }
+
+    init() {
+        this.createRectPipeline();
+        this.createTrianglePipeline();
+        this.createLinePipeline();
+        this.createGeometryBuffers();
+    }
+
+    // Convert hex color to normalized RGBA
+    hexToRgba(hex, alpha = 1.0) {
+        if (typeof hex === 'string') {
+            if (hex.startsWith('#')) {
+                hex = hex.slice(1);
+            }
+            const r = parseInt(hex.slice(0, 2), 16) / 255;
+            const g = parseInt(hex.slice(2, 4), 16) / 255;
+            const b = parseInt(hex.slice(4, 6), 16) / 255;
+            return [r, g, b, alpha];
+        } else {
+            // Assume it's a number (0xRRGGBB)
+            const r = ((hex >> 16) & 0xFF) / 255;
+            const g = ((hex >> 8) & 0xFF) / 255;
+            const b = (hex & 0xFF) / 255;
+            return [r, g, b, alpha];
+        }
+    }
+
+    createRectPipeline() {
+        const vertexShader = `
+            struct Uniforms {
+                projection: mat4x4<f32>,
+            }
+            @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(2) @interpolate(flat) color: vec4<f32>,
+            }
+
+            @vertex
+            fn vs_main(
+                @builtin(vertex_index) vertexIndex: u32,
+                @builtin(instance_index) instanceIndex: u32,
+                @location(0) position: vec2<f32>,
+                @location(1) size: vec2<f32>,
+                @location(2) color: vec4<f32>
+            ) -> VertexOutput {
+                // Quad vertices: (-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)
+                var quadPos = vec2<f32>(0.0);
+                if (vertexIndex == 0u) {
+                    quadPos = vec2<f32>(-0.5, -0.5);
+                } else if (vertexIndex == 1u) {
+                    quadPos = vec2<f32>(0.5, -0.5);
+                } else if (vertexIndex == 2u) {
+                    quadPos = vec2<f32>(-0.5, 0.5);
+                } else {
+                    quadPos = vec2<f32>(0.5, 0.5);
+                }
+                
+                var worldPos = position + quadPos * size;
+                var output: VertexOutput;
+                output.position = uniforms.projection * vec4<f32>(worldPos, 0.0, 1.0);
+                output.color = color;
+                return output;
+            }
+        `;
+
+        const fragmentShader = `
+            @fragment
+            fn fs_main(
+                @location(2) @interpolate(flat) color: vec4<f32>
+            ) -> @location(0) vec4<f32> {
+                return color;
+            }
+        `;
+
+        const vertexModule = this.device.createShaderModule({ code: vertexShader });
+        const fragmentModule = this.device.createShaderModule({ code: fragmentShader });
+
+        this.rectPipeline = this.device.createRenderPipeline({
+            layout: 'auto',
+            vertex: {
+                module: vertexModule,
+                entryPoint: 'vs_main',
+                buffers: [
+                    {
+                        arrayStride: 8 * 4, // position(8) + size(8) + color(16) = 32 bytes
+                        stepMode: 'instance',
+                        attributes: [
+                            { shaderLocation: 0, offset: 0, format: 'float32x2' }, // position
+                            { shaderLocation: 1, offset: 8, format: 'float32x2' }, // size
+                            { shaderLocation: 2, offset: 16, format: 'float32x4' }, // color
+                        ],
+                    },
+                ],
+            },
+            fragment: {
+                module: fragmentModule,
+                entryPoint: 'fs_main',
+                targets: [{ format: this.core.format }],
+            },
+            primitive: {
+                topology: 'triangle-strip',
+            },
+        });
+    }
+
+    createTrianglePipeline() {
+        const vertexShader = `
+            struct Uniforms {
+                projection: mat4x4<f32>,
+            }
+            @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(3) @interpolate(flat) color: vec4<f32>,
+            }
+
+            @vertex
+            fn vs_main(
+                @builtin(vertex_index) vertexIndex: u32,
+                @builtin(instance_index) instanceIndex: u32,
+                @location(0) v0: vec2<f32>,
+                @location(1) v1: vec2<f32>,
+                @location(2) v2: vec2<f32>,
+                @location(3) color: vec4<f32>
+            ) -> VertexOutput {
+                var pos: vec2<f32>;
+                if (vertexIndex == 0u) {
+                    pos = v0;
+                } else if (vertexIndex == 1u) {
+                    pos = v1;
+                } else {
+                    pos = v2;
+                }
+                var output: VertexOutput;
+                output.position = uniforms.projection * vec4<f32>(pos, 0.0, 1.0);
+                output.color = color;
+                return output;
+            }
+        `;
+
+        const fragmentShader = `
+            @fragment
+            fn fs_main(
+                @location(3) @interpolate(flat) color: vec4<f32>
+            ) -> @location(0) vec4<f32> {
+                return color;
+            }
+        `;
+
+        const vertexModule = this.device.createShaderModule({ code: vertexShader });
+        const fragmentModule = this.device.createShaderModule({ code: fragmentShader });
+
+        this.trianglePipeline = this.device.createRenderPipeline({
+            layout: 'auto',
+            vertex: {
+                module: vertexModule,
+                entryPoint: 'vs_main',
+                buffers: [
+                    {
+                        arrayStride: 10 * 4, // v0(8) + v1(8) + v2(8) + color(16) = 40 bytes
+                        stepMode: 'instance',
+                        attributes: [
+                            { shaderLocation: 0, offset: 0, format: 'float32x2' }, // v0
+                            { shaderLocation: 1, offset: 8, format: 'float32x2' }, // v1
+                            { shaderLocation: 2, offset: 16, format: 'float32x2' }, // v2
+                            { shaderLocation: 3, offset: 24, format: 'float32x4' }, // color
+                        ],
+                    },
+                ],
+            },
+            fragment: {
+                module: fragmentModule,
+                entryPoint: 'fs_main',
+                targets: [{ format: this.core.format }],
+            },
+            primitive: {
+                topology: 'triangle-list',
+            },
+        });
+    }
+
+    createLinePipeline() {
+        const vertexShader = `
+            struct Uniforms {
+                projection: mat4x4<f32>,
+            }
+            @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(2) @interpolate(flat) color: vec4<f32>,
+            }
+
+            @vertex
+            fn vs_main(
+                @builtin(vertex_index) vertexIndex: u32,
+                @builtin(instance_index) instanceIndex: u32,
+                @location(0) start: vec2<f32>,
+                @location(1) end: vec2<f32>,
+                @location(2) color: vec4<f32>
+            ) -> VertexOutput {
+                var pos: vec2<f32>;
+                if (vertexIndex == 0u) {
+                    pos = start;
+                } else {
+                    pos = end;
+                }
+                var output: VertexOutput;
+                output.position = uniforms.projection * vec4<f32>(pos, 0.0, 1.0);
+                output.color = color;
+                return output;
+            }
+        `;
+
+        const fragmentShader = `
+            @fragment
+            fn fs_main(
+                @location(2) @interpolate(flat) color: vec4<f32>
+            ) -> @location(0) vec4<f32> {
+                return color;
+            }
+        `;
+
+        const vertexModule = this.device.createShaderModule({ code: vertexShader });
+        const fragmentModule = this.device.createShaderModule({ code: fragmentShader });
+
+        this.linePipeline = this.device.createRenderPipeline({
+            layout: 'auto',
+            vertex: {
+                module: vertexModule,
+                entryPoint: 'vs_main',
+                buffers: [
+                    {
+                        arrayStride: 8 * 4, // start(8) + end(8) + color(16) = 32 bytes
+                        stepMode: 'instance',
+                        attributes: [
+                            { shaderLocation: 0, offset: 0, format: 'float32x2' }, // start
+                            { shaderLocation: 1, offset: 8, format: 'float32x2' }, // end
+                            { shaderLocation: 2, offset: 16, format: 'float32x4' }, // color
+                        ],
+                    },
+                ],
+            },
+            fragment: {
+                module: fragmentModule,
+                entryPoint: 'fs_main',
+                targets: [{ format: this.core.format }],
+            },
+            primitive: {
+                topology: 'line-list',
+            },
+        });
+    }
+
+    createGeometryBuffers() {
+        // Rectangle uses triangle-strip, no vertex buffer needed (generated in shader)
+        // Triangle uses triangle-list, no vertex buffer needed (generated in shader)
+        // Line uses line-list, no vertex buffer needed (generated in shader)
+    }
+
+    // Add rectangle instance
+    addRect(x, y, width, height, color, alpha = 1.0) {
+        const rgba = this.hexToRgba(color, alpha);
+        this.rectInstances.push({
+            position: [x + width / 2, y + height / 2], // center position
+            size: [width, height],
+            color: rgba,
+        });
+    }
+
+    // Add triangle instance
+    addTriangle(x0, y0, x1, y1, x2, y2, color, alpha = 1.0) {
+        const rgba = this.hexToRgba(color, alpha);
+        this.triangleInstances.push({
+            v0: [x0, y0],
+            v1: [x1, y1],
+            v2: [x2, y2],
+            color: rgba,
+        });
+    }
+
+    // Add line instance
+    addLine(x0, y0, x1, y1, color, alpha = 1.0) {
+        const rgba = this.hexToRgba(color, alpha);
+        this.lineInstances.push({
+            start: [x0, y0],
+            end: [x1, y1],
+            color: rgba,
+        });
+    }
+
+    // Clear all instances
+    clear() {
+        this.rectInstances = [];
+        this.triangleInstances = [];
+        this.lineInstances = [];
+    }
+
+    // Render all instances
+    render(encoder, renderPass) {
+        // Create uniform bind group (same layout for all pipelines)
+        const uniformBindGroupLayout = this.rectPipeline.getBindGroupLayout(0);
+        const uniformBindGroup = this.device.createBindGroup({
+            layout: uniformBindGroupLayout,
+            entries: [
+                {
+                    binding: 0,
+                    resource: {
+                        buffer: this.core.projectionBuffer,
+                    },
+                },
+            ],
+        });
+
+        // Render rectangles
+        if (this.rectInstances.length > 0) {
+            const instanceData = new Float32Array(this.rectInstances.length * 8);
+            for (let i = 0; i < this.rectInstances.length; i++) {
+                const inst = this.rectInstances[i];
+                const offset = i * 8;
+                instanceData[offset + 0] = inst.position[0];
+                instanceData[offset + 1] = inst.position[1];
+                instanceData[offset + 2] = inst.size[0];
+                instanceData[offset + 3] = inst.size[1];
+                instanceData[offset + 4] = inst.color[0];
+                instanceData[offset + 5] = inst.color[1];
+                instanceData[offset + 6] = inst.color[2];
+                instanceData[offset + 7] = inst.color[3];
+            }
+
+            if (!this.rectBuffer || this.rectBuffer.size < instanceData.byteLength) {
+                if (this.rectBuffer) this.rectBuffer.destroy();
+                this.rectBuffer = this.device.createBuffer({
+                    size: instanceData.byteLength,
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                });
+            }
+
+            this.device.queue.writeBuffer(this.rectBuffer, 0, instanceData);
+
+            renderPass.setPipeline(this.rectPipeline);
+            renderPass.setBindGroup(0, uniformBindGroup);
+            renderPass.setVertexBuffer(0, this.rectBuffer);
+            renderPass.draw(4, this.rectInstances.length); // 4 vertices per quad
+        }
+
+        // Render triangles
+        if (this.triangleInstances.length > 0) {
+            // v0(2) + v1(2) + v2(2) + color(4) = 10 floats per instance
+            const instanceData = new Float32Array(this.triangleInstances.length * 10);
+            for (let i = 0; i < this.triangleInstances.length; i++) {
+                const inst = this.triangleInstances[i];
+                const offset = i * 10;
+                instanceData[offset + 0] = inst.v0[0];
+                instanceData[offset + 1] = inst.v0[1];
+                instanceData[offset + 2] = inst.v1[0];
+                instanceData[offset + 3] = inst.v1[1];
+                instanceData[offset + 4] = inst.v2[0];
+                instanceData[offset + 5] = inst.v2[1];
+                instanceData[offset + 6] = inst.color[0];
+                instanceData[offset + 7] = inst.color[1];
+                instanceData[offset + 8] = inst.color[2];
+                instanceData[offset + 9] = inst.color[3];
+            }
+
+            if (!this.triangleBuffer || this.triangleBuffer.size < instanceData.byteLength) {
+                if (this.triangleBuffer) this.triangleBuffer.destroy();
+                this.triangleBuffer = this.device.createBuffer({
+                    size: instanceData.byteLength,
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                });
+            }
+
+            this.device.queue.writeBuffer(this.triangleBuffer, 0, instanceData);
+
+            const triangleUniformBindGroup = this.device.createBindGroup({
+                layout: this.trianglePipeline.getBindGroupLayout(0),
+                entries: [
+                    {
+                        binding: 0,
+                        resource: {
+                            buffer: this.core.projectionBuffer,
+                        },
+                    },
+                ],
+            });
+            
+            renderPass.setPipeline(this.trianglePipeline);
+            renderPass.setBindGroup(0, triangleUniformBindGroup);
+            renderPass.setVertexBuffer(0, this.triangleBuffer);
+            renderPass.draw(3, this.triangleInstances.length); // 3 vertices per triangle
+        }
+
+        // Render lines
+        if (this.lineInstances.length > 0) {
+            const instanceData = new Float32Array(this.lineInstances.length * 8);
+            for (let i = 0; i < this.lineInstances.length; i++) {
+                const inst = this.lineInstances[i];
+                const offset = i * 8;
+                instanceData[offset + 0] = inst.start[0];
+                instanceData[offset + 1] = inst.start[1];
+                instanceData[offset + 2] = inst.end[0];
+                instanceData[offset + 3] = inst.end[1];
+                instanceData[offset + 4] = inst.color[0];
+                instanceData[offset + 5] = inst.color[1];
+                instanceData[offset + 6] = inst.color[2];
+                instanceData[offset + 7] = inst.color[3];
+            }
+
+            if (!this.lineBuffer || this.lineBuffer.size < instanceData.byteLength) {
+                if (this.lineBuffer) this.lineBuffer.destroy();
+                this.lineBuffer = this.device.createBuffer({
+                    size: instanceData.byteLength,
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                });
+            }
+
+            this.device.queue.writeBuffer(this.lineBuffer, 0, instanceData);
+
+            const lineUniformBindGroup = this.device.createBindGroup({
+                layout: this.linePipeline.getBindGroupLayout(0),
+                entries: [
+                    {
+                        binding: 0,
+                        resource: {
+                            buffer: this.core.projectionBuffer,
+                        },
+                    },
+                ],
+            });
+            
+            renderPass.setPipeline(this.linePipeline);
+            renderPass.setBindGroup(0, lineUniformBindGroup);
+            renderPass.setVertexBuffer(0, this.lineBuffer);
+            renderPass.draw(2, this.lineInstances.length); // 2 vertices per line
+        }
+    }
+}
+
+// Text Renderer - Canvas 2D text to WebGPU texture rendering
+class TextRenderer {
+    constructor(webgpuCore) {
+        this.core = webgpuCore;
+        this.device = webgpuCore.device;
+        this.textCache = new Map(); // Cache rendered text textures
+        this.canvas = document.createElement('canvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.textInstances = [];
+        this.textPipeline = null;
+        this.textBuffer = null;
+        this.textVertexBuffer = null;
+        this.sampler = null;
+        
+        this.init();
+    }
+
+    init() {
+        this.createTextPipeline();
+        this.createSampler();
+    }
+
+    createSampler() {
+        this.sampler = this.device.createSampler({
+            magFilter: 'linear',
+            minFilter: 'linear',
+        });
+    }
+
+    createTextPipeline() {
+        const vertexShader = `
+            struct Uniforms {
+                projection: mat4x4<f32>,
+            }
+            @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+            @group(1) @binding(0) var texture: texture_2d<f32>;
+            @group(1) @binding(1) var texSampler: sampler;
+
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(0) uv: vec2<f32>,
+            }
+
+            @vertex
+            fn vs_main(
+                @builtin(vertex_index) vertexIndex: u32,
+                @builtin(instance_index) instanceIndex: u32,
+                @location(0) position: vec2<f32>,
+                @location(1) size: vec2<f32>,
+                @location(2) texCoord: vec2<f32>,
+                @location(3) texSize: vec2<f32>
+            ) -> VertexOutput {
+                // Quad vertices: (-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)
+                var quadPos = vec2<f32>(0.0);
+                var quadUV = vec2<f32>(0.0);
+                if (vertexIndex == 0u) {
+                    quadPos = vec2<f32>(-0.5, -0.5);
+                    quadUV = vec2<f32>(0.0, 1.0);
+                } else if (vertexIndex == 1u) {
+                    quadPos = vec2<f32>(0.5, -0.5);
+                    quadUV = vec2<f32>(1.0, 1.0);
+                } else if (vertexIndex == 2u) {
+                    quadPos = vec2<f32>(-0.5, 0.5);
+                    quadUV = vec2<f32>(0.0, 0.0);
+                } else {
+                    quadPos = vec2<f32>(0.5, 0.5);
+                    quadUV = vec2<f32>(1.0, 0.0);
+                }
+                
+                var worldPos = position + quadPos * size;
+                var uv = texCoord + quadUV * texSize;
+                
+                var output: VertexOutput;
+                output.position = uniforms.projection * vec4<f32>(worldPos, 0.0, 1.0);
+                output.uv = uv;
+                return output;
+            }
+        `;
+
+        const fragmentShader = `
+            @group(1) @binding(0) var texture: texture_2d<f32>;
+            @group(1) @binding(1) var texSampler: sampler;
+
+            @fragment
+            fn fs_main(
+                @location(0) uv: vec2<f32>
+            ) -> @location(0) vec4<f32> {
+                return textureSample(texture, texSampler, uv);
+            }
+        `;
+
+        const vertexModule = this.device.createShaderModule({ code: vertexShader });
+        const fragmentModule = this.device.createShaderModule({ code: fragmentShader });
+
+        this.textPipeline = this.device.createRenderPipeline({
+            layout: 'auto',
+            vertex: {
+                module: vertexModule,
+                entryPoint: 'vs_main',
+                buffers: [
+                    {
+                        arrayStride: 8 * 4, // position(8) + size(8) + texCoord(8) + texSize(8) = 32 bytes
+                        stepMode: 'instance',
+                        attributes: [
+                            { shaderLocation: 0, offset: 0, format: 'float32x2' }, // position
+                            { shaderLocation: 1, offset: 8, format: 'float32x2' }, // size
+                            { shaderLocation: 2, offset: 16, format: 'float32x2' }, // texCoord
+                            { shaderLocation: 3, offset: 24, format: 'float32x2' }, // texSize
+                        ],
+                    },
+                ],
+            },
+            fragment: {
+                module: fragmentModule,
+                entryPoint: 'fs_main',
+                targets: [{ format: this.core.format }],
+            },
+            primitive: {
+                topology: 'triangle-strip',
+            },
+        });
+    }
+
+    // Render text to texture and cache it
+    async renderTextToTexture(text, style = {}) {
+        const cacheKey = `${text}_${JSON.stringify(style)}`;
+        
+        if (this.textCache.has(cacheKey)) {
+            return this.textCache.get(cacheKey);
+        }
+
+        const fontFamily = style.fontFamily || 'Helvetica';
+        const fontSize = style.fontSize || 12;
+        const fontWeight = style.fontWeight || 'normal';
+        const fill = style.fill || '#000000';
+        const align = style.align || 'left';
+
+        // Set up canvas
+        this.ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+        this.ctx.textAlign = align;
+        this.ctx.textBaseline = 'top';
+        
+        // Measure text
+        const metrics = this.ctx.measureText(text);
+        const textWidth = Math.ceil(metrics.width);
+        const textHeight = Math.ceil(fontSize * 1.2); // Add some padding
+        
+        this.canvas.width = textWidth;
+        this.canvas.height = textHeight;
+        
+        // Clear and redraw
+        this.ctx.clearRect(0, 0, textWidth, textHeight);
+        this.ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+        this.ctx.textAlign = align;
+        this.ctx.textBaseline = 'top';
+        this.ctx.fillStyle = fill;
+        this.ctx.fillText(text, 0, 0);
+
+        // Create texture from canvas
+        const imageBitmap = await createImageBitmap(this.canvas);
+        const texture = this.device.createTexture({
+            size: [textWidth, textHeight],
+            format: 'rgba8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+
+        this.device.queue.copyExternalImageToTexture(
+            { source: imageBitmap },
+            { texture: texture },
+            [textWidth, textHeight]
+        );
+
+        const textureData = {
+            texture,
+            width: textWidth,
+            height: textHeight,
+        };
+
+        this.textCache.set(cacheKey, textureData);
+        return textureData;
+    }
+
+    // Add text instance
+    async addText(x, y, text, style = {}) {
+        const textureData = await this.renderTextToTexture(text, style);
+        
+        this.textInstances.push({
+            position: [x + textureData.width / 2, y + textureData.height / 2],
+            size: [textureData.width, textureData.height],
+            texCoord: [0, 0],
+            texSize: [1, 1],
+            textureData,
+        });
+    }
+
+    // Add rotated text (rotation in radians)
+    async addTextRotated(x, y, text, style = {}, rotation = 0) {
+        const textureData = await this.renderTextToTexture(text, style);
+        
+        // Calculate rotated bounding box
+        const cos = Math.cos(rotation);
+        const sin = Math.sin(rotation);
+        const w = textureData.width;
+        const h = textureData.height;
+        
+        // For simplicity, we'll use the bounding box of the rotated text
+        const bounds = {
+            width: Math.abs(w * cos) + Math.abs(h * sin),
+            height: Math.abs(w * sin) + Math.abs(h * cos),
+        };
+        
+        this.textInstances.push({
+            position: [x + bounds.width / 2, y + bounds.height / 2],
+            size: [bounds.width, bounds.height],
+            texCoord: [0, 0],
+            texSize: [1, 1],
+            textureData,
+            rotation,
+        });
+    }
+
+    clear() {
+        this.textInstances = [];
+    }
+
+    // Render all text instances
+    render(encoder, renderPass) {
+        if (this.textInstances.length === 0) return;
+
+        const uniformBindGroup = this.device.createBindGroup({
+            layout: this.textPipeline.getBindGroupLayout(0),
+            entries: [
+                {
+                    binding: 0,
+                    resource: {
+                        buffer: this.core.projectionBuffer,
+                    },
+                },
+            ],
+        });
+
+        // Group instances by texture to minimize texture switches
+        const instancesByTexture = new Map();
+        for (let i = 0; i < this.textInstances.length; i++) {
+            const inst = this.textInstances[i];
+            const texKey = inst.textureData.texture;
+            if (!instancesByTexture.has(texKey)) {
+                instancesByTexture.set(texKey, []);
+            }
+            instancesByTexture.get(texKey).push({ instance: inst, index: i });
+        }
+
+        // Render each texture group
+        for (const [texture, instances] of instancesByTexture) {
+            const instanceData = new Float32Array(instances.length * 8);
+            for (let i = 0; i < instances.length; i++) {
+                const inst = instances[i].instance;
+                const offset = i * 8;
+                instanceData[offset + 0] = inst.position[0];
+                instanceData[offset + 1] = inst.position[1];
+                instanceData[offset + 2] = inst.size[0];
+                instanceData[offset + 3] = inst.size[1];
+                instanceData[offset + 4] = inst.texCoord[0];
+                instanceData[offset + 5] = inst.texCoord[1];
+                instanceData[offset + 6] = inst.texSize[0];
+                instanceData[offset + 7] = inst.texSize[1];
+            }
+
+            if (!this.textBuffer || this.textBuffer.size < instanceData.byteLength) {
+                if (this.textBuffer) this.textBuffer.destroy();
+                this.textBuffer = this.device.createBuffer({
+                    size: instanceData.byteLength,
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                });
+            }
+
+            this.device.queue.writeBuffer(this.textBuffer, 0, instanceData);
+
+            const textureBindGroup = this.device.createBindGroup({
+                layout: this.textPipeline.getBindGroupLayout(1),
+                entries: [
+                    {
+                        binding: 0,
+                        resource: texture.createView(),
+                    },
+                    {
+                        binding: 1,
+                        resource: this.sampler,
+                    },
+                ],
+            });
+
+            renderPass.setPipeline(this.textPipeline);
+            renderPass.setBindGroup(0, uniformBindGroup);
+            renderPass.setBindGroup(1, textureBindGroup);
+            renderPass.setVertexBuffer(0, this.textBuffer);
+            renderPass.draw(4, instances.length); // 4 vertices per quad
+        }
+    }
+}
 
 // Some initial settings.
-window.data.zoom = 0;
+// Initialize window.data if it doesn't exist
+if (!window.data) {
+    window.data = {};
+}
 
-window.data.nucleotideColors = {
+window.data.zoom = window.data.zoom || 0;
+
+window.data.nucleotideColors = window.data.nucleotideColors || {
     'a': 0x45B29D, // Green
     'A': 0x45B29D, // Green
     'c': 0x334D5C, // Blue
@@ -555,25 +1469,83 @@ window.data.nucleotideColors = {
     'N': 0xCCCCCC  // Grey (for unknown nucleotides)
 };
 
-// Create a PixiJS application.
-const app = new Application();
+// WebGPU rendering system
+let webgpuCore = null;
+let renderer = null;
+let textRenderer = null;
+let canvas = null;
 
-// Function to initialize and render the PixiJS application.
+// Orientation state: 'horizontal' (default, bottom-to-top) or 'vertical' (left-to-right)
+window.data.orientation = window.data.orientation || 'horizontal';
+
+// Toggle orientation between horizontal and vertical
+function toggleOrientation() {
+    window.data.orientation = window.data.orientation === 'horizontal' ? 'vertical' : 'horizontal';
+    repaint();
+}
+
+// Helper functions to convert coordinates based on orientation
+function getBasesPerPixel(main) {
+    if (window.data.orientation === 'horizontal') {
+        return (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    } else {
+        return (window.data.locus_end - window.data.locus_start) / (main.offsetWidth - 200);
+    }
+}
+
+function getGenomicPosition(genomicPos, basesPerPixel) {
+    if (window.data.orientation === 'horizontal') {
+        return (window.data.locus_end - genomicPos) / basesPerPixel;
+    } else {
+        return (genomicPos - window.data.locus_start) / basesPerPixel;
+    }
+}
+
+function swapCoords(x, y) {
+    if (window.data.orientation === 'horizontal') {
+        return { x: x, y: y };
+    } else {
+        return { x: y, y: x };
+    }
+}
+
+function swapDimensions(width, height) {
+    if (window.data.orientation === 'horizontal') {
+        return { width: width, height: height };
+    } else {
+        return { width: height, height: width };
+    }
+}
+
+// Function to initialize and render the WebGPU application.
 async function renderApp() {
+    try {
+        // Wait for window.data to be available
+        if (!window.data) {
+            console.error('window.data is not available');
+            return;
+        }
+
     // Get main HTMLElement.
     var main = document.querySelector('main');
+        if (!main) {
+            console.error('main element not found');
+            return;
+        }
 
-    // Intialize the application.
-    await app.init({
-        antialias: false,
-        resolution: window.devicePixelRatio || 1,
-        autoDensity: true,
-        backgroundColor: '#ffffff',
-        resizeTo: main,
-    });
+        // Create canvas
+        canvas = document.createElement('canvas');
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
+        canvas.style.display = 'block';
+        main.appendChild(canvas);
 
-    // Then adding the application's canvas to the DOM body.
-    main.appendChild(app.canvas);
+        // Initialize WebGPU
+        webgpuCore = new WebGPUCore();
+        await webgpuCore.init(canvas);
+        
+        renderer = new InstancedRenderer(webgpuCore);
+        textRenderer = new TextRenderer(webgpuCore);
 
     window.data.locus_start = window.data.ref_start;
     window.data.locus_end = window.data.ref_end;
@@ -585,39 +1557,14 @@ async function renderApp() {
     // Listen for window resize events.
     window.addEventListener('resize', debounce(resize));
 
-    repaint();
+        await repaint();
+    } catch (error) {
+        console.error('Error in renderApp:', error);
+        alert('Failed to initialize visualization: ' + error.message);
+    }
 }
 
-document.addEventListener('mousedown', function(event) {
-    let startX = event.clientX;
-    let startY = event.clientY;
-    let startLocusStart = window.data.locus_start;
-    let startLocusEnd = window.data.locus_end;
-
-    document.body.style.cursor = 'grabbing';
-
-    function onMouseMove(event) {
-        let deltaX = event.clientX - startX;
-        let deltaY = event.clientY - startY;
-
-        const basesPerPixel = (startLocusEnd - startLocusStart) / document.querySelector('main').offsetHeight;
-
-        window.data.locus_start = startLocusStart + (deltaY * basesPerPixel);
-        window.data.locus_end = startLocusEnd + (deltaY * basesPerPixel);
-
-        repaint();
-    }
-
-    function onMouseUp() {
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-
-        document.body.style.cursor = 'default';
-    }
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-});
+// Mouse interactions removed as requested
 
 document.addEventListener('keydown', function(event) {
     // Handle the '+' or '-' key press event
@@ -681,20 +1628,7 @@ document.addEventListener('wheel', function(event) {
     }
 });
 
-document.addEventListener('mousemove', function(event) {
-    var main = document.querySelector('main');
-
-    const rect = main.getBoundingClientRect();
-    const mouseY = event.clientY - rect.top;
-
-    const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
-    const locusY = window.data.locus_end - ((mouseY - 20) * basesPerPixel);
-
-    var footer = document.querySelector('footer');
-    if (footer) {
-        footer.textContent = window.data.ref_chr + ":" + Math.round(locusY).toLocaleString();
-    }
-});
+// Mouse interactions removed as requested
 
 // Helper function to prevent an in-progress event handler from firing again while the first is in progress.
 function debounce(func) {
@@ -707,127 +1641,57 @@ function debounce(func) {
 
 // Resize function window with check to prevent concurrent executions
 function resize() {
-    if (window.isResizing) return;
-
-    window.isResizing = true;
-
-    app.stage.removeChildren();
     window.data.uiElements = {};
-
     repaint();
-
-    window.isResizing = false;
 }
 
 // Resize function window
-function repaint() {
+// Make repaint available globally so toggleOrientation can call it
+window.repaint = async function repaint() {
+    if (!webgpuCore || !renderer || !textRenderer) return;
+    
     var main = document.querySelector('main');
 
-    // Resize the renderer
-    app.renderer.resize(main.offsetWidth, main.offsetHeight);
-    app.stage.isRenderGroup = true;
-    app.stage.cullable = true;
-    app.stage.cullableChildren = true;
+    // Handle resize
+    webgpuCore.handleResize();
+    
+    // Clear renderer
+    renderer.clear();
+    textRenderer.clear();
 
     // Draw all the elements
-    drawIdeogram(main, window.data.ideogram);
-    drawRuler(main);
-    drawGenes(main, window.data.genes);
-    drawReference(main, window.data.ref);
-    drawSamples(main, window.data.samples);
+    await drawIdeogram(main, window.data.ideogram);
+    await drawRuler(main);
+    await drawGenes(main, window.data.genes);
+    await drawReference(main, window.data.ref);
+    await drawSamples(main, window.data.samples);
+    
+    // Render everything
+    const encoder = webgpuCore.createCommandEncoder();
+    const texture = webgpuCore.getCurrentTexture();
+    const renderPass = encoder.beginRenderPass({
+        colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+        }],
+    });
+    
+    renderer.render(encoder, renderPass);
+    textRenderer.render(encoder, renderPass);
+    
+    renderPass.end();
+    webgpuCore.submit([encoder.finish()]);
 }
 
 // Function to draw the ideogram.
 async function drawIdeogram(main, ideogramData) {
-    if (!window.data.uiElements.hasOwnProperty('ideogram')) {
-        const ideogram = new Graphics();
-
         const ideoLength = ideogramData.columns[2].values[ideogramData.columns[2].values.length - 1];
         const ideoWidth = 18;
-        const ideoHeight = main.offsetHeight - 150;
+    const ideoSize = window.data.orientation === 'horizontal' ? (main.offsetHeight - 150) : (main.offsetWidth - 200);
         const ideoX = 15;
         const ideoY = 40;
-
-        // Create a tooltip that appears when we hover over ideogram segments.
-        ideogram.interactive = true;
-        ideogram.buttonMode = true;
-
-        const tooltip = new Text({
-            text: '',
-            style: {
-                fontFamily: 'Helvetica',
-                fontSize: 9,
-                fill: 0x777777,
-                align: 'center'
-            }
-        });
-
-        tooltip.visible = false;
-        app.stage.addChild(tooltip);
-
-        ideogram.on('mousemove', (event) => {
-            if (tooltip.visible) {
-                tooltip.position.set(event.data.global.x + 10, event.data.global.y + 10);
-            }
-        });
-
-        ideogram.on('mouseout', () => {
-            tooltip.visible = false;
-        });
-
-        let bandY = ideoY;
-        let acenSeen = false;
-        for (let i = ideogramData.columns[0].values.length - 1; i >= 0; i--) {
-            let bandHeight = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i]) * ideoHeight / ideoLength;
-            let bandStart = ideogramData.columns[1].values[i];
-            let bandEnd = ideogramData.columns[2].values[i];
-            let bandName = ideogramData.columns[3].values[i];
-            let bandStain = ideogramData.columns[4].values[i];
-            let bandColor = ideogramData.columns[5].values[i];
-
-            const band = new Graphics();
-            band.interactive = true;
-            band.buttonMode = true;
-
-            band.on('mouseover', () => {
-                tooltip.text = bandStart + "-" + bandEnd;
-                tooltip.visible = true;
-            });
-
-            band.on('mouseout', () => {
-                tooltip.visible = false;
-            });
-
-            if (bandStain == 'acen') {
-                // Draw centromere triangles
-
-                const blank = new Graphics();
-                blank.rect(ideoX, bandY, ideoWidth, bandHeight);
-                blank.stroke({ width: 2, color: 0xffffff });
-                blank.fill("#ffffff");
-                ideogram.addChild(blank);
-
-                if (!acenSeen) {
-                    band.moveTo(ideoX, bandY);
-                    band.lineTo(ideoX + ideoWidth - 0.5, bandY);
-                    band.lineTo(ideoX + (ideoWidth / 2), bandY + bandHeight);
-                    band.lineTo(ideoX, bandY);
-                } else {
-                    band.moveTo(ideoX, bandY + bandHeight);
-                    band.lineTo(ideoX + ideoWidth - 0.5, bandY + bandHeight);
-                    band.lineTo(ideoX + (ideoWidth / 2), bandY);
-                    band.lineTo(ideoX, bandY + bandHeight);
-                }
-
-                band.stroke({ width: 2, color: bandColor });
-                band.fill(bandColor);
-                acenSeen = true;
-            } else {
-                // Draw non-centromeric rectangles
-
-                band.rect(ideoX, bandY, ideoWidth, bandHeight);
-                band.stroke({ width: 0, color: 0x333333 });
-                band.fill(bandColor);
 
                 function invertColor(hex) {
                     // If the color is in hex format (e.g., #FFFFFF), remove the hash
@@ -859,101 +1723,151 @@ async function drawIdeogram(main, ideogramData) {
                     return '#' + r + g + b;
                 }
 
-                const bandLabel = new Text({
-                    text: bandName,
-                    style: {
+    let bandPos = ideoY;
+    let acenSeen = false;
+    for (let i = ideogramData.columns[0].values.length - 1; i >= 0; i--) {
+        let bandSize = (ideogramData.columns[2].values[i] - ideogramData.columns[1].values[i]) * ideoSize / ideoLength;
+        let bandStart = ideogramData.columns[1].values[i];
+        let bandEnd = ideogramData.columns[2].values[i];
+        let bandName = ideogramData.columns[3].values[i];
+        let bandStain = ideogramData.columns[4].values[i];
+        let bandColor = ideogramData.columns[5].values[i];
+
+        if (bandStain == 'acen') {
+            // Draw centromere triangles
+            const rectCoords = swapCoords(ideoX, bandPos);
+            const rectDims = swapDimensions(ideoWidth, bandSize);
+            renderer.addRect(rectCoords.x, rectCoords.y, rectDims.width, rectDims.height, "#ffffff");
+
+            if (!acenSeen) {
+                if (window.data.orientation === 'horizontal') {
+                    renderer.addTriangle(
+                        ideoX, bandPos,
+                        ideoX + ideoWidth - 0.5, bandPos,
+                        ideoX + (ideoWidth / 2), bandPos + bandSize,
+                        bandColor
+                    );
+                } else {
+                    renderer.addTriangle(
+                        bandPos, ideoX,
+                        bandPos, ideoX + ideoWidth - 0.5,
+                        bandPos + bandSize, ideoX + (ideoWidth / 2),
+                        bandColor
+                    );
+                }
+            } else {
+                if (window.data.orientation === 'horizontal') {
+                    renderer.addTriangle(
+                        ideoX, bandPos + bandSize,
+                        ideoX + ideoWidth - 0.5, bandPos + bandSize,
+                        ideoX + (ideoWidth / 2), bandPos,
+                        bandColor
+                    );
+                } else {
+                    renderer.addTriangle(
+                        bandPos + bandSize, ideoX,
+                        bandPos + bandSize, ideoX + ideoWidth - 0.5,
+                        bandPos, ideoX + (ideoWidth / 2),
+                        bandColor
+                    );
+                }
+            }
+            acenSeen = true;
+        } else {
+            // Draw non-centromeric rectangles
+            const rectCoords = swapCoords(ideoX, bandPos);
+            const rectDims = swapDimensions(ideoWidth, bandSize);
+            renderer.addRect(rectCoords.x, rectCoords.y, rectDims.width, rectDims.height, bandColor);
+
+            // Draw band label if it fits
+            const labelText = bandName;
+            const labelWidth = labelText.length * 7; // Approximate width
+            if (labelWidth <= 0.9*bandSize) {
+                const textCoords = swapCoords(ideoX + ideoWidth / 2, bandPos + bandSize / 2);
+                const rotation = window.data.orientation === 'horizontal' ? -Math.PI / 2 : 0;
+                await textRenderer.addTextRotated(
+                    textCoords.x,
+                    textCoords.y,
+                    labelText,
+                    {
                         fontFamily: 'Helvetica',
                         fontSize: 7,
                         fill: invertColor(bandColor),
                         align: 'center'
-                    }
-                });
-
-                bandLabel.rotation = -Math.PI / 2;
-                bandLabel.x = ideoX + bandLabel.height / 2;
-                bandLabel.y = bandY + bandHeight / 2 + bandLabel.width / 2;
-
-                if (bandLabel.width <= 0.9*bandHeight) {
-                    band.addChild(bandLabel);
-                }
+                    },
+                    rotation
+                );
             }
+        }
 
-            ideogram.addChild(band);
-            bandY += bandHeight;
+        bandPos += bandSize;
         }
 
         // Draw outer rectangle of ideogram
-        ideogram.rect(ideoX, ideoY, ideoWidth, ideoHeight);
-        ideogram.stroke({ width: 2, color: 0x333333 });
-        ideogram.fill(0xffffff);
-
-        app.stage.addChild(ideogram);
+    const outerRectCoords = swapCoords(ideoX, ideoY);
+    const outerRectDims = swapDimensions(ideoWidth, ideoSize);
+    renderer.addRect(outerRectCoords.x, outerRectCoords.y, outerRectDims.width, outerRectDims.height, 0xffffff);
 
         // Draw chromosome name
-        const chrText = new Text({
-            text: ideogramData.columns[0].values[0],
-            style: {
+    const nameCoords = swapCoords(17, window.data.orientation === 'horizontal' ? (main.offsetHeight - 70) : (main.offsetWidth - 70));
+    const nameRotation = window.data.orientation === 'horizontal' ? -Math.PI / 2 : 0;
+    await textRenderer.addTextRotated(nameCoords.x, nameCoords.y, ideogramData.columns[0].values[0], {
                 fontFamily: 'Helvetica',
                 fontSize: 12,
-                fill: 0x000000,
+        fill: '#000000',
                 align: 'center',
-            }
-        });
-
-        chrText.x = 17;
-        chrText.y = main.offsetHeight - 70;
-        chrText.rotation = - Math.PI / 2;
-
-        app.stage.addChild(chrText);
+    }, nameRotation);
 
         // Draw selected region
-        const selectionY = (ideoLength - window.data.locus_end) * ideoHeight / ideoLength;
-        const selectionHeight = (window.data.locus_end - window.data.locus_start) * ideoHeight / ideoLength;
-
-        const selection = new Graphics();
-        selection.rect(ideoX - 5, ideoY + selectionY, ideoWidth + 10, selectionHeight < 3 ? 3 : selectionHeight);
-        selection.fill("#ff000055");
-        ideogram.addChild(selection);
-
-        window.data.uiElements['ideogram'] = ideogram;
-    }
+    const selectionPos = (ideoLength - window.data.locus_end) * ideoSize / ideoLength;
+    const selectionSize = (window.data.locus_end - window.data.locus_start) * ideoSize / ideoLength;
+    const selCoords = swapCoords(ideoX - 5, ideoY + selectionPos);
+    const selDims = swapDimensions(ideoWidth + 10, selectionSize < 3 ? 3 : selectionSize);
+    renderer.addRect(selCoords.x, selCoords.y, selDims.width, selDims.height, "#ff000055");
 }
 
 async function drawRuler(main) {
-    if (window.data.uiElements.hasOwnProperty('ruler')) {
-        window.data.uiElements['ruler'].destroy();
-    }
-
-    const ruler = new Graphics();
+    const basesPerPixel = getBasesPerPixel(main);
 
     // Draw axis line
-    let axisY = 20;
-    let axisHeight = main.offsetHeight - axisY - 35;
-
-    ruler.stroke({ width: 1.0, color: 0x555555 });
-    ruler.moveTo(105, axisY);
-    ruler.lineTo(105, axisHeight);
-
-    app.stage.addChild(ruler);
+    let axisStart, axisEnd, axisPos;
+    if (window.data.orientation === 'horizontal') {
+        // Horizontal orientation: vertical line (constant X, varying Y)
+        // In horizontal mode, we want: x=105 (constant), y varies from 20 to axisEnd
+        axisStart = 20;
+        axisEnd = main.offsetHeight - 35;
+        axisPos = 105; // X position for vertical line
+        const lineCoords1 = swapCoords(axisPos, axisStart);
+        const lineCoords2 = swapCoords(axisPos, axisEnd);
+        renderer.addLine(lineCoords1.x, lineCoords1.y, lineCoords2.x, lineCoords2.y, 0x555555);
+    } else {
+        // Vertical orientation: horizontal line (varying X, constant Y)
+        // In vertical mode, swapCoords swaps x and y, so we pass (Y, X) to get (X, Y) after swap
+        axisStart = 20;
+        axisEnd = main.offsetWidth - 200;
+        axisPos = 40; // Y position for horizontal line
+        // Pass (Y, X) so after swap we get (X, Y)
+        const lineCoords1 = swapCoords(axisPos, axisStart);
+        const lineCoords2 = swapCoords(axisPos, axisEnd);
+        renderer.addLine(lineCoords1.x, lineCoords1.y, lineCoords2.x, lineCoords2.y, 0x555555);
+    }
 
     // Display range
-    const locusTextRange = new Text({
-        // text: "(" + Math.floor(window.data.locus_end - window.data.locus_start).toLocaleString() + " bp)",
-        text: window.data.locus_start.toLocaleString() + " - " + window.data.locus_end.toLocaleString() + 
-              " (" + (window.data.locus_end - window.data.locus_start).toLocaleString() + " bp)",
-        style: {
+    const rangeText = window.data.locus_start.toLocaleString() + " - " + window.data.locus_end.toLocaleString() + 
+          " (" + (window.data.locus_end - window.data.locus_start).toLocaleString() + " bp)";
+    let textCoords;
+    if (window.data.orientation === 'horizontal') {
+        textCoords = swapCoords(108, axisStart + (axisEnd - axisStart)/2);
+    } else {
+        textCoords = swapCoords(axisStart + (axisEnd - axisStart)/2, axisPos - 15);
+    }
+    const rotation = window.data.orientation === 'horizontal' ? -Math.PI / 2 : 0;
+    await textRenderer.addTextRotated(textCoords.x, textCoords.y, rangeText, {
             fontFamily: 'Helvetica',
             fontSize: 9,
-            fill: 0x000000,
+        fill: '#000000',
             align: 'center',
-
-        },
-        x: 108,
-        y: axisY + (axisHeight/2),
-    });
-    locusTextRange.rotation = - Math.PI / 2;
-
-    ruler.addChild(locusTextRange);
+    }, rotation);
 
     // Compute tics at various points
     const range = window.data.locus_end - window.data.locus_start;
@@ -980,43 +1894,42 @@ async function drawRuler(main) {
     // Generate the tics
     let currentTic = window.data.locus_start - (window.data.locus_start % ticIncrement) + ticIncrement;
     while (currentTic < window.data.locus_end) {
-        let basesPerPixel = (window.data.locus_end - window.data.locus_start) / (axisHeight - axisY);
-        let ticPositionY = (window.data.locus_end - currentTic) / basesPerPixel;
+        let ticGenomicPos = getGenomicPosition(currentTic, basesPerPixel);
 
-        if (ticPositionY >= axisY && ticPositionY <= axisHeight) {
-            ruler.stroke({ width: 1.0, color: 0x555555 });
-            ruler.moveTo(102, ticPositionY);
-            ruler.lineTo(108, ticPositionY);
+        if ((window.data.orientation === 'horizontal' && ticGenomicPos >= axisStart && ticGenomicPos <= axisEnd) ||
+            (window.data.orientation === 'vertical' && ticGenomicPos >= axisStart && ticGenomicPos <= axisEnd)) {
+            let ticLineCoords1, ticLineCoords2, textPos;
+            if (window.data.orientation === 'horizontal') {
+                // Horizontal orientation: horizontal tic marks (perpendicular to vertical axis line)
+                // Constant X range (102-108), varying Y (ticGenomicPos)
+                ticLineCoords1 = swapCoords(102, ticGenomicPos);
+                ticLineCoords2 = swapCoords(108, ticGenomicPos);
+                textPos = swapCoords(52, ticGenomicPos - 5.5);
+            } else {
+                // Vertical orientation: vertical tic marks (perpendicular to horizontal axis line)
+                // Varying X (ticGenomicPos), constant Y range around axisPos
+                // swapCoords swaps x and y, so pass (Y, X) to get (X, Y) after swap
+                ticLineCoords1 = swapCoords(axisPos - 3, ticGenomicPos);
+                ticLineCoords2 = swapCoords(axisPos + 3, ticGenomicPos);
+                textPos = swapCoords(axisPos - 15, ticGenomicPos);
+            }
+            renderer.addLine(ticLineCoords1.x, ticLineCoords1.y, ticLineCoords2.x, ticLineCoords2.y, 0x555555);
 
-            const locusText = new Text({
-                text: currentTic.toLocaleString(),
-                style: {
+            await textRenderer.addText(textPos.x, textPos.y, currentTic.toLocaleString(), {
                     fontFamily: 'Helvetica',
                     fontSize: 9,
-                    fill: 0x000000,
+                fill: '#000000',
                     align: 'right',
-                },
-                x: 52,
-                y: ticPositionY - 5.5
             });
-
-            ruler.addChild(locusText);
         }
 
         currentTic += ticIncrement;
     }
-
-    window.data.uiElements['ruler'] = ruler;
 }
 
 async function drawGenes(main, geneData) {
-    if (window.data.uiElements.hasOwnProperty('genes')) {
-        window.data.uiElements['genes'].destroy();
-    }
-
-    const genes = new Graphics();
-
-    const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const basesPerPixel = getBasesPerPixel(main);
+    const geneX = 130;
 
     for (let geneIdx = 0; geneIdx < geneData.columns[0].values.length; geneIdx++) {
         let txStart = geneData.columns[4].values[geneIdx];
@@ -1024,70 +1937,57 @@ async function drawGenes(main, geneData) {
         let geneName = geneData.columns[12].values[geneIdx];
         let geneStrand = geneData.columns[3].values[geneIdx];
 
-        let geneBarEnd = (window.data.locus_end - txEnd) / basesPerPixel
-        let geneBarStart = (window.data.locus_end - txStart) / basesPerPixel
+        let geneBarStart = getGenomicPosition(txStart, basesPerPixel);
+        let geneBarEnd = getGenomicPosition(txEnd, basesPerPixel);
 
         // Draw gene line
-        genes.moveTo(130, geneBarEnd);
-        genes.lineTo(130, geneBarStart);
-        genes.stroke({ width: 1, color: 0x0000ff });
+        const lineCoords1 = swapCoords(geneX, geneBarStart);
+        const lineCoords2 = swapCoords(geneX, geneBarEnd);
+        renderer.addLine(lineCoords1.x, lineCoords1.y, lineCoords2.x, lineCoords2.y, 0x0000ff);
 
         // Draw strand lines
         for (let txPos = txStart + 200; txPos <= txEnd - 200; txPos += 500) {
-            let feathersY = (window.data.locus_end - txPos) / basesPerPixel;
-
-            genes.moveTo(130, feathersY);
-            genes.lineTo(127, geneStrand == '+' ? feathersY+5 : txPos-5);
-            genes.stroke({ width: 1, color: 0x0000ff });
-
-            genes.moveTo(130, feathersY);
-            genes.lineTo(133, geneStrand == '+' ? feathersY+5 : txPos-5);
-            genes.stroke({ width: 1, color: 0x0000ff });
+            let featherPos = getGenomicPosition(txPos, basesPerPixel);
+            let featherOffset = geneStrand == '+' ? 5 : -5;
+            let featherEndPos = featherPos + featherOffset;
+            
+            if (window.data.orientation === 'horizontal') {
+                renderer.addLine(geneX, featherPos, geneX - 3, featherEndPos, 0x0000ff);
+                renderer.addLine(geneX, featherPos, geneX + 3, featherEndPos, 0x0000ff);
+            } else {
+                renderer.addLine(featherPos, geneX, featherEndPos, geneX - 3, 0x0000ff);
+                renderer.addLine(featherPos, geneX, featherEndPos, geneX + 3, 0x0000ff);
+            }
         }
 
         // Draw gene name
-        const geneNameLabel = new Text({
-            text: geneName,
-            style: {
+        const nameCoords = swapCoords(geneX + 3, geneBarStart + (Math.abs(geneBarEnd - geneBarStart) / 2));
+        const rotation = window.data.orientation === 'horizontal' ? -Math.PI / 2 : 0;
+        await textRenderer.addTextRotated(nameCoords.x, nameCoords.y, geneName, {
                 fontFamily: 'Helvetica',
                 fontSize: 9,
-                fill: 0x000000,
+            fill: '#000000',
                 align: 'center',
-            },
-            x: 130 + 3,
-            y: geneBarEnd + (Math.abs(geneBarEnd - geneBarStart) / 2)
-        });
-        geneNameLabel.rotation = - Math.PI / 2;
-
-        genes.addChild(geneNameLabel);
+        }, rotation);
 
         // Draw exons
         let exonStarts = geneData.columns[9].values[geneIdx].split(',').filter(Boolean);
         let exonEnds = geneData.columns[10].values[geneIdx].split(',').filter(Boolean);
 
         for (let exonIdx = 0; exonIdx < exonStarts.length; exonIdx++) {
-            const exonEndY = (window.data.locus_end - exonEnds[exonIdx]) / basesPerPixel;
-            const exonStartY = (window.data.locus_end - exonStarts[exonIdx]) / basesPerPixel;
-
-            genes.rect(130 - 5, exonEndY, 10, Math.abs(exonEndY - exonStartY));
-            genes.stroke({ width: 2, color: 0x0000ff });
-            genes.fill(0xff);
+            const exonStartPos = getGenomicPosition(exonStarts[exonIdx], basesPerPixel);
+            const exonEndPos = getGenomicPosition(exonEnds[exonIdx], basesPerPixel);
+            const exonSize = Math.abs(exonEndPos - exonStartPos);
+            
+            const exonCoords = swapCoords(geneX - 5, exonStartPos);
+            const exonDims = swapDimensions(10, exonSize);
+            renderer.addRect(exonCoords.x, exonCoords.y, exonDims.width, exonDims.height, 0x0000ff);
         }
     }
-
-    app.stage.addChild(genes);
-
-    window.data.uiElements['genes'] = genes;
 }
 
 async function drawReference(main, refData) {
-    if (window.data.uiElements.hasOwnProperty('reference')) {
-        window.data.uiElements['reference'].destroy();
-    }
-
-    const reference = new Graphics();
-
-    const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const basesPerPixel = getBasesPerPixel(main);
     const halfBaseHeight = 0.5 / basesPerPixel;
 
     const nucleotideColors = window.data.nucleotideColors;
@@ -1097,42 +1997,28 @@ async function drawReference(main, refData) {
             const base = refData.columns[0].values[i];
             const baseColor = nucleotideColors[base];
 
-            const refY = (window.data.locus_end - locusPos) / basesPerPixel;
+            const genomicPos = getGenomicPosition(locusPos, basesPerPixel);
+            const coords = swapCoords(154, genomicPos);
+            const dims = swapDimensions(10, 2*halfBaseHeight);
+            const textCoords = swapCoords(154, genomicPos);
 
             if (window.data.locus_end - window.data.locus_start <= 100) {
-                const baseLabel = new Text({
-                    text: base,
-                    style: {
+                const rotation = window.data.orientation === 'horizontal' ? -Math.PI / 2 : 0;
+                await textRenderer.addTextRotated(textCoords.x, textCoords.y, base, {
                         fontFamily: 'Helvetica',
                         fontSize: 10,
                         fontWeight: 'bold',
-                        fill: baseColor,
+                    fill: '#' + baseColor.toString(16).padStart(6, '0'),
                         align: 'center',
-                    },
-                    x: 154,
-                    y: refY
-                });
-                baseLabel.rotation = - Math.PI / 2;
-
-                reference.addChild(baseLabel);
+                }, rotation);
             } else {
-                let refBase = new Graphics();
-                refBase.rect(154, refY - halfBaseHeight, 10, 2*halfBaseHeight);
-                refBase.fill({ fill: baseColor });
-
-                reference.addChild(refBase);
+                renderer.addRect(coords.x, coords.y - dims.height/2, dims.width, dims.height, baseColor);
             }
         }
     }
-
-    app.stage.addChild(reference);
-
-    window.data.uiElements['reference'] = reference;
 }
 
 async function drawSamples(main, sampleData) {
-    const graphics = new Graphics();
-
     const sampleDict = {};
     let index = 0;
     for (const sampleName of window.data.samples.columns[9].values) {
@@ -1142,53 +2028,36 @@ async function drawSamples(main, sampleData) {
     }
 
     for (const [sampleName, sampleIndex] of Object.entries(sampleDict)) {
-        drawSample(main, sampleData, sampleName, sampleIndex);
+        await drawSample(main, sampleData, sampleName, sampleIndex);
     }
-}
-
-function findComponent(parent, label, recurse=false) {
-    let results = [];
-    parent.getChildrenByLabel(label, recurse, results);
-
-    return results.length == 0 ? null : results[0];
 }
 
 async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth=20) {
-    const basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+    const basesPerPixel = getBasesPerPixel(main);
     const halfBaseHeight = 0.5 / basesPerPixel;
 
-    let sampleContainer = findComponent(app.stage, 'sampleContainer-' + sampleName);
-    if (sampleContainer == null) {
-        sampleContainer = new Container({
-            label: 'sampleContainer-' + sampleName,
-            isRenderGroup: true,
-            cullable: true,
-            cullableChildren: true,
-            x: 185 + (sampleIndex*sampleWidth),
-            y: 0,
-        });
-
-        app.stage.addChild(sampleContainer);
+    // Calculate track position based on orientation
+    let trackPos, trackSize, trackDim1, trackDim2;
+    if (window.data.orientation === 'horizontal') {
+        trackPos = 185 + (sampleIndex * sampleWidth);
+        trackSize = sampleWidth - 5;
+        trackDim1 = trackPos;
+        trackDim2 = 0;
+    } else {
+        trackPos = 185 + (sampleIndex * sampleWidth);
+        trackSize = sampleWidth - 5;
+        trackDim1 = 0;
+        trackDim2 = trackPos;
     }
-
-    let sampleTrack = findComponent(sampleContainer, 'sampleTrack-' + sampleName);
-    if (sampleTrack == null) {
-        sampleTrack = new Graphics();
-        sampleTrack.label = 'sampleTrack-' + sampleName;
-        sampleTrack.isRenderGroup = true;
-        sampleTrack.cullable = true;
-        sampleTrack.cullableChildren = true;
-
-        sampleTrack.rect(0, 0, sampleWidth - 5, document.querySelector('main').offsetHeight);
-        sampleTrack.stroke({ width: 1, color: 0xaaaaaa });
-        sampleTrack.fill(0xdddddd);
-
-        sampleTrack.interactive = true;
-        sampleTrack.buttonMode = true;
-
-        sampleContainer.addChild(sampleTrack);
+    
+    // Draw sample track border
+    const borderCoords = swapCoords(trackDim1, trackDim2);
+    const borderDims = swapDimensions(trackSize, window.data.orientation === 'horizontal' ? main.offsetHeight : main.offsetWidth);
+    renderer.addRect(borderCoords.x, borderCoords.y, borderDims.width, borderDims.height, 0xaaaaaa, 0.0); // No fill, just border
 
         const elementCache = new Map();
+    const elementAlpha = new Map();
+    
         for (let i = 0; i < sampleData.columns[10].values.length; i++) {
             let referenceStart = sampleData.columns[3].values[i];
             let referenceEnd = sampleData.columns[4].values[i];
@@ -1200,72 +2069,61 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
 
             if (sampleName == rowSampleName && !(referenceEnd < window.data.locus_start || referenceStart > window.data.locus_end)) {
                 if (!elementCache.has(elementKey)) {
-                    const elementX = 0;
-                    const elementY = (window.data.locus_end - referenceStart) / basesPerPixel;
-                    const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - referenceEnd) / basesPerPixel)));
-
-                    let cigarElement1 = new Graphics();
-                    cigarElement1.referenceStart = referenceStart;
-                    cigarElement1.referenceEnd = referenceEnd;
-                    cigarElement1.cullable = true;
-                    cigarElement1.label = "cigar-" + elementKey;
-                    cigarElement1.shift = false;
+                const elementGenomicPos = getGenomicPosition(referenceStart, basesPerPixel);
+                const elementEndGenomicPos = getGenomicPosition(referenceEnd, basesPerPixel);
+                const elementSize = Math.ceil(Math.abs(elementEndGenomicPos - elementGenomicPos));
 
                     // see alignment.rs for ElementType mapping
                     if (elementType == 1) { // mismatch
                         let color = window.data.nucleotideColors.hasOwnProperty(sequence) ? window.data.nucleotideColors[sequence] : null;
-
-                        cigarElement1.rect(0, 0, sampleWidth - 5, elementHeight);
-                        if (color !== null) { cigarElement1.fill({ color: color, alpha: 0.1 }); }
-
-                        elementCache.set(elementKey, [cigarElement1]);
+                    if (color !== null) {
+                        elementCache.set(elementKey, {
+                            type: 'rect',
+                            trackPos: trackPos,
+                            genomicPos: elementGenomicPos,
+                            size: trackSize,
+                            length: elementSize,
+                            color: color,
+                            referenceStart: referenceStart,
+                            referenceEnd: referenceEnd
+                        });
+                        elementAlpha.set(elementKey, 0.1);
+                    }
                     } else if (elementType == 2) { // insertion
-                        // cigarElement1.shift = 1.5*halfBaseHeight;
-                        cigarElement1.shift = true;
-
-                        cigarElement1.rect(0, 0, sampleWidth - 5, elementHeight);
-                        cigarElement1.fill({ fill: "#800080", alpha: 0.1 });
-
-                        elementCache.set(elementKey, [cigarElement1]);
+                    elementCache.set(elementKey, {
+                        type: 'rect',
+                        trackPos: trackPos,
+                        genomicPos: elementGenomicPos,
+                        size: trackSize,
+                        length: elementSize,
+                        color: "#800080",
+                        referenceStart: referenceStart,
+                        referenceEnd: referenceEnd
+                    });
+                    elementAlpha.set(elementKey, 0.1);
                     } else if (elementType == 3) { // deletion
-                        cigarElement1.rect(0, 0, sampleWidth - 5, elementHeight);
-                        cigarElement1.fill({ fill: "#ffffff", alpha: 0.1 });
-
-                        let cigarElement2 = new Graphics();
-                        cigarElement2.rect(6, 0, 2, elementHeight);
-                        cigarElement2.fill({ fill: "#000000", alpha: 0.1});
-
-                        cigarElement2.shift = false;
-                        cigarElement2.referenceStart = referenceStart;
-                        cigarElement2.referenceEnd = referenceEnd;
-                        cigarElement2.cullable = true;
-                        cigarElement2.label = "cigar-" + elementKey + "-bar";
-
-                        elementCache.set(elementKey, [cigarElement1, cigarElement2]);
+                    elementCache.set(elementKey, {
+                        type: 'deletion',
+                        trackPos: trackPos,
+                        genomicPos: elementGenomicPos,
+                        size: trackSize,
+                        length: elementSize,
+                        color: "#ffffff",
+                        referenceStart: referenceStart,
+                        referenceEnd: referenceEnd
+                    });
+                    elementAlpha.set(elementKey, 0.1);
                     }
                 } else {
-                    let elements = elementCache.get(elementKey);
-                    elements.forEach((element) => {
-                        element.fillStyle.alpha = Math.min(element.fillStyle.alpha + 0.1, 1.0);
-                    });
-                }
+                elementAlpha.set(elementKey, Math.min((elementAlpha.get(elementKey) || 0.1) + 0.1, 1.0));
             }
         }
-
-        elementCache.forEach((elements) => {
-            elements.forEach((element) => {
-                sampleTrack.addChild(element);
-            })
-        });
     }
 
-    let cigarElements = [];
-    sampleTrack.getChildrenByLabel(/cigar-*/, false, cigarElements);
-    cigarElements.forEach((element) => {
-        if (element.referenceEnd < window.data.locus_start || window.data.locus_end < element.referenceStart) {
-            element.visible = false;
-        } else {
-            let visibleRange = window.data.locus_end - element.referenceStart;
+    // Render cached elements
+    for (const [elementKey, element] of elementCache.entries()) {
+        const alpha = elementAlpha.get(elementKey) || 0.1;
+        const visibleRange = window.data.locus_end - element.referenceStart;
             let minVisibility = 0.0;
             if (visibleRange <= 100) {
                 minVisibility = 0.0;
@@ -1275,18 +2133,55 @@ async function drawSample(main, sampleData, sampleName, sampleIndex, sampleWidth
                 minVisibility = 0.30;
             }
 
-            const elementY = (window.data.locus_end - element.referenceStart) / (basesPerPixel);
-            const elementHeight = Math.ceil(Math.abs(elementY - ((window.data.locus_end - element.referenceEnd) / basesPerPixel)));
+        if (alpha >= minVisibility && !(element.referenceEnd < window.data.locus_start || window.data.locus_end < element.referenceStart)) {
+            const elementGenomicPos = getGenomicPosition(element.referenceStart, basesPerPixel);
+            const elementEndGenomicPos = getGenomicPosition(element.referenceEnd, basesPerPixel);
+            const elementSize = Math.ceil(Math.abs(elementEndGenomicPos - elementGenomicPos));
+            
+            const coords = swapCoords(element.trackPos, elementGenomicPos);
+            const dims = swapDimensions(element.size, elementSize);
+            const halfSize = dims.height / 2;
 
-            element.y = elementY - halfBaseHeight;
-            element.height = elementHeight;
-            element.visible = element.fillStyle.alpha >= minVisibility;
+            if (element.type === 'deletion') {
+                renderer.addRect(coords.x, coords.y - halfSize, dims.width, dims.height, element.color, alpha);
+                const deletionLineCoords = swapCoords(element.trackPos + 6, elementGenomicPos);
+                const deletionLineDims = swapDimensions(2, elementSize);
+                renderer.addRect(deletionLineCoords.x, deletionLineCoords.y - halfSize, deletionLineDims.width, deletionLineDims.height, "#000000", alpha);
+            } else {
+                renderer.addRect(coords.x, coords.y - halfSize, dims.width, dims.height, element.color, alpha);
+            }
         }
-    });
+    }
 }
 
-// Call the function initially
-renderApp();
+// Perform the initial rendering when DOM and data are ready.
+// Wait for the data module to set up window.data
+function initApp() {
+    // Check if window.data exists and is ready
+    if (!window.data || !window.data._ready || !window.data.ref_start || !window.data.ref_end) {
+        // Retry after a short delay (data module should set this up)
+        setTimeout(initApp, 50);
+        return;
+    }
+    
+    // Ensure DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            renderApp().catch(err => {
+                console.error('Error initializing WebGPU:', err);
+                alert('Failed to initialize WebGPU: ' + err.message);
+            });
+        });
+    } else {
+        renderApp().catch(err => {
+            console.error('Error initializing WebGPU:', err);
+            alert('Failed to initialize WebGPU: ' + err.message);
+        });
+    }
+}
+
+// Start initialization after a small delay to ensure data module has run
+setTimeout(initApp, 100);
         """
 
         # Safely encode the JavaScript string for HTML embedding

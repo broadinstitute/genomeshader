@@ -4,6 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "genomeshader"
+version = "0.1.76"
 dependencies = [
     "polars",
     "holoviews",
