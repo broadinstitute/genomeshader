@@ -278,49 +278,29 @@ class GenomeShader:
 body {
     display: grid;
     grid-template-areas: 
-        "header header header"
         "main main aside"
         "footer footer aside";
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: 1fr auto;
     grid-template-columns: 1fr auto;
     height: 100vh;
     margin: 0;
     padding: 0;
     overflow: hidden;
 }
-header {
-    grid-area: header;
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    height: 24px;
-    padding: 6px 3px;
-    background: #eeeeee;
-}
-.header-left {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-}
-.header-center {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.header-right {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-}
-.header-left i, .header-right i {
-    padding-left: 5px;
-    padding-right: 5px;
-}
 nav {
     grid-area: nav;
 }
 main {
     grid-area: main;
-    height: calc(100vh - 24px - 40px);
+    height: calc(100vh - 40px);
+    cursor: default;
+}
+main.panning {
+    cursor: grabbing;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
 }
 aside {
     display: hidden;
@@ -332,9 +312,6 @@ aside {
     width: 0;
     overflow: hidden;
 }
-.menu-icon {
-    cursor: pointer;
-}
 .sidebar-icon-close {
     display: none;
     cursor: pointer;
@@ -342,25 +319,15 @@ aside {
 .sidebar-icon-open {
     cursor: pointer;
 }
-.report-bug-icon {
-    cursor: pointer;
-}
-.orientation-toggle-icon {
-    cursor: pointer;
-}
-.gear-icon {
-    cursor: pointer;
-}
 footer {
     position: fixed;
     bottom: 10px;
-    left: 10px;
-    right: 210px;
+    right: 10px;
     height: 20px;
-    padding: 6px 3px;
+    padding: 6px 12px;
     display: flex;
     align-items: center;
-    justify-content: left;
+    justify-content: flex-end;
     color: #989898;
     font-family: Helvetica;
     font-size: 10pt;
@@ -368,6 +335,16 @@ footer {
     -webkit-user-select: none; /* Safari */
     -moz-user-select: none; /* Firefox */
     -ms-user-select: none; /* Internet Explorer/Edge */
+    opacity: 0;
+    transition: opacity 0.3s ease-in-out;
+    pointer-events: none;
+    background-color: rgba(255, 255, 255, 0.9);
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+footer.visible {
+    opacity: 1;
+    pointer-events: auto;
 }
 .status-bar {
     display: flex;
@@ -425,105 +402,111 @@ footer {
     font-family: Helvetica;
     font-size: 9pt;
 }
+/* Context menu styles */
+.context-menu {
+    display: none;
+    position: fixed;
+    background-color: #ffffff;
+    border: 1px solid #cccccc;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    min-width: 180px;
+    padding: 4px 0;
+    font-family: Helvetica;
+    font-size: 11pt;
+}
+.context-menu-item {
+    padding: 8px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #333333;
+}
+.context-menu-item:hover {
+    background-color: #f0f0f0;
+}
+.context-menu-item.disabled {
+    color: #999999;
+    cursor: not-allowed;
+}
+.context-menu-item.disabled:hover {
+    background-color: transparent;
+}
+.context-menu-separator {
+    height: 1px;
+    background-color: #e0e0e0;
+    margin: 4px 0;
+}
+.context-menu-item.has-submenu {
+    position: relative;
+}
+.context-menu-item.has-submenu::after {
+    content: '▶';
+    margin-left: auto;
+    font-size: 8pt;
+    color: #999999;
+}
+.context-submenu {
+    display: none;
+    position: absolute;
+    left: 100%;
+    top: 0;
+    margin-left: 4px;
+    background-color: #ffffff;
+    border: 1px solid #cccccc;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    min-width: 120px;
+    padding: 4px 0;
+    z-index: 1001;
+}
+.context-menu-item.has-submenu:hover .context-submenu {
+    display: block;
+}
+/* Resize indicator styles */
+.resize-indicator {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background-color: rgba(0, 0, 0, 0.7);
+    color: #ffffff;
+    padding: 12px 20px;
+    border-radius: 6px;
+    font-family: 'Courier New', monospace;
+    font-size: 14pt;
+    font-weight: bold;
+    z-index: 2000;
+    opacity: 0;
+    transition: opacity 0.3s ease-in-out;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+.resize-indicator.visible {
+    opacity: 1;
+}
         """
 
         inner_body = """
-<header>
-    <div class="header-left">
-        <i class="menu-icon" onclick="alert('Not yet implemented.')">
-            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
-                <g transform="translate(0, 0)">
-                    <path d="M4 6H20M4 12H20M4 18H20" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-                </g>
-            </svg>
-        </i>
-    </div>
-    <div class="header-center">
-        <!-- genomeshader -->
-    </div>
-    <div class="header-right">
-        <i class="sidebar-icon-close" onclick="closeSidebar()">
-            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
-                <g transform="translate(0, 0)">
-                    <path fill-rule="evenodd" d="M7.22 14.47L9.69 12 7.22 9.53a.75.75 0 111.06-1.06l3 3a.75.75 0 010 1.06l-3 3a.75.75 0 01-1.06-1.06z"></path>
-                    <path fill-rule="evenodd" d="M3.75 2A1.75 1.75 0 002 3.75v16.5c0 .966.784 1.75 1.75 1.75h16.5A1.75 1.75 0 0022 20.25V3.75A1.75 1.75 0 0020.25 2H3.75zM3.5 3.75a.25.25 0 01.25-.25H15v17H3.75a.25.25 0 01-.25-.25V3.75zm13 16.75v-17h3.75a.25.25 0 01.25.25v16.5a.25.25 0 01-.25.25H16.5z"></path>
-                </g>
-            </svg>
-        </i>
-        <i class="sidebar-icon-open" onclick="openSidebar()">
-            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
-                <g transform="translate(0, 0)">
-                    <path fill-rule="evenodd" d="M11.28 9.53L8.81 12l2.47 2.47a.75.75 0 11-1.06 1.06l-3-3a.75.75 0 010-1.06l3-3a.75.75 0 111.06 1.06z"></path>
-                    <path fill-rule="evenodd" d="M3.75 2A1.75 1.75 0 002 3.75v16.5c0 .966.784 1.75 1.75 1.75h16.5A1.75 1.75 0 0022 20.25V3.75A1.75 1.75 0 0020.25 2H3.75zM3.5 3.75a.25.25 0 01.25-.25H15v17H3.75a.25.25 0 01-.25-.25V3.75zm13 16.75v-17h3.75a.25.25 0 01.25.25v16.5a.25.25 0 01-.25.25H16.5z"></path>
-                </g>
-            </svg>
-        </i>
-        <a href="https://github.com/broadinstitute/genomeshader/issues" target="_blank">
-            <i class="report-bug-icon">
-                <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 -2 24 24">
-                    <g transform="translate(0, 0)">
-                        <path fill-rule="evenodd" d="M3.25 4a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h2.5a.75.75 0 01.75.75v3.19l3.427-3.427A1.75 1.75 0 0111.164 17h9.586a.25.25 0 00.25-.25V4.25a.25.25 0 00-.25-.25H3.25zm-1.75.25c0-.966.784-1.75 1.75-1.75h17.5c.966 0 1.75.784 1.75 1.75v12.5a1.75 1.75 0 01-1.75 1.75h-9.586a.25.25 0 00-.177.073l-3.5 3.5A1.457 1.457 0 015 21.043V18.5H3.25a1.75 1.75 0 01-1.75-1.75V4.25zM12 6a.75.75 0 01.75.75v4a.75.75 0 01-1.5 0v-4A.75.75 0 0112 6zm0 9a1 1 0 100-2 1 1 0 000 2z"></path>
-                    </g>
-                </svg>
-            </i>
-        </a>
-        <i class="orientation-toggle-icon" onclick="toggleOrientation()" title="Toggle orientation (horizontal/vertical)">
-            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
-                <g transform="translate(0, 0)">
-                    <path fill-rule="evenodd" d="M12 2.25a.75.75 0 01.75.75v16.19l2.47-2.47a.75.75 0 111.06 1.06l-3.75 3.75a.75.75 0 01-1.06 0l-3.75-3.75a.75.75 0 111.06-1.06l2.47 2.47V3a.75.75 0 01.75-.75z"></path>
-                    <path fill-rule="evenodd" d="M2.25 12a.75.75 0 01.75-.75h16.19l-2.47-2.47a.75.75 0 011.06-1.06l3.75 3.75a.75.75 0 010 1.06l-3.75 3.75a.75.75 0 11-1.06-1.06l2.47-2.47H3a.75.75 0 01-.75-.75z"></path>
-                </g>
-            </svg>
-        </i>
-        <i class="gear-icon" onclick="alert('Not yet implemented.')">
-            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="18" height="18" viewBox="0 0 24 24">
-                <g transform="translate(0, 0)">
-                    <path fill-rule="evenodd" d="M16 12a4 4 0 11-8 0 4 4 0 018 0zm-1.5 0a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z"></path><path fill-rule="evenodd" d="M12 1c-.268 0-.534.01-.797.028-.763.055-1.345.617-1.512 1.304l-.352 1.45c-.02.078-.09.172-.225.22a8.45 8.45 0 00-.728.303c-.13.06-.246.044-.315.002l-1.274-.776c-.604-.368-1.412-.354-1.99.147-.403.348-.78.726-1.129 1.128-.5.579-.515 1.387-.147 1.99l.776 1.275c.042.069.059.185-.002.315-.112.237-.213.48-.302.728-.05.135-.143.206-.221.225l-1.45.352c-.687.167-1.249.749-1.304 1.512a11.149 11.149 0 000 1.594c.055.763.617 1.345 1.304 1.512l1.45.352c.078.02.172.09.22.225.09.248.191.491.303.729.06.129.044.245.002.314l-.776 1.274c-.368.604-.354 1.412.147 1.99.348.403.726.78 1.128 1.129.579.5 1.387.515 1.99.147l1.275-.776c.069-.042.185-.059.315.002.237.112.48.213.728.302.135.05.206.143.225.221l.352 1.45c.167.687.749 1.249 1.512 1.303a11.125 11.125 0 001.594 0c.763-.054 1.345-.616 1.512-1.303l.352-1.45c.02-.078.09-.172.225-.22.248-.09.491-.191.729-.303.129-.06.245-.044.314-.002l1.274.776c.604.368 1.412.354 1.99-.147.403-.348.78-.726 1.129-1.128.5-.579.515-1.387.147-1.99l-.776-1.275c-.042-.069-.059-.185.002-.315.112-.237.213-.48.302-.728.05-.135.143-.206.221-.225l1.45-.352c.687-.167 1.249-.749 1.303-1.512a11.125 11.125 0 000-1.594c-.054-.763-.616-1.345-1.303-1.512l-1.45-.352c-.078-.02-.172-.09-.22-.225a8.469 8.469 0 00-.303-.728c-.06-.13-.044-.246-.002-.315l.776-1.274c.368-.604.354-1.412-.147-1.99-.348-.403-.726-.78-1.128-1.129-.579-.5-1.387-.515-1.99-.147l-1.275.776c-.069.042-.185.059-.315-.002a8.465 8.465 0 00-.728-.302c-.135-.05-.206-.143-.225-.221l-.352-1.45c-.167-.687-.749-1.249-1.512-1.304A11.149 11.149 0 0012 1zm-.69 1.525a9.648 9.648 0 011.38 0c.055.004.135.05.162.16l.351 1.45c.153.628.626 1.08 1.173 1.278.205.074.405.157.6.249a1.832 1.832 0 001.733-.074l1.275-.776c.097-.06.186-.036.228 0 .348.302.674.628.976.976.036.042.06.13 0 .228l-.776 1.274a1.832 1.832 0 00-.074 1.734c.092.195.175.395.248.6.198.547.652 1.02 1.278 1.172l1.45.353c.111.026.157.106.161.161a9.653 9.653 0 010 1.38c-.004.055-.05.135-.16.162l-1.45.351a1.833 1.833 0 00-1.278 1.173 6.926 6.926 0 01-.25.6 1.832 1.832 0 00.075 1.733l.776 1.275c.06.097.036.186 0 .228a9.555 9.555 0 01-.976.976c-.042.036-.13.06-.228 0l-1.275-.776a1.832 1.832 0 00-1.733-.074 6.926 6.926 0 01-.6.248 1.833 1.833 0 00-1.172 1.278l-.353 1.45c-.026.111-.106.157-.161.161a9.653 9.653 0 01-1.38 0c-.055-.004-.135-.05-.162-.16l-.351-1.45a1.833 1.833 0 00-1.173-1.278 6.928 6.928 0 01-.6-.25 1.832 1.832 0 00-1.734.075l-1.274.776c-.097.06-.186.036-.228 0a9.56 9.56 0 01-.976-.976c-.036-.042-.06-.13 0-.228l.776-1.275a1.832 1.832 0 00.074-1.733 6.948 6.948 0 01-.249-.6 1.833 1.833 0 00-1.277-1.172l-1.45-.353c-.111-.026-.157-.106-.161-.161a9.648 9.648 0 010-1.38c.004-.055.05-.135.16-.162l1.45-.351a1.833 1.833 0 001.278-1.173 6.95 6.95 0 01.249-.6 1.832 1.832 0 00-.074-1.734l-.776-1.274c-.06-.097-.036-.186 0-.228.302-.348.628-.674.976-.976.042-.036.13-.06.228 0l1.274.776a1.832 1.832 0 001.734.074 6.95 6.95 0 01.6-.249 1.833 1.833 0 001.172-1.277l.353-1.45c.026-.111.106-.157.161-.161z"></path>
-                </g>
-            </svg>
-        </i>
-    </div>
-</header>
-
 <main style="width: 100%;">
-<div class="tab-bar">
-    <span class="tab-name">
-        <i class="tab-viewer-icon">
-            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="12" height="12" viewBox="0 -3 24 24">
-                <g transform="translate(0, 0)">
-                    <path fill="#ffffff" stroke="#ffffff" fill-rule="evenodd" d="M19.25 4.5H4.75a.25.25 0 00-.25.25v14.5c0 .138.112.25.25.25h.19l9.823-9.823a1.75 1.75 0 012.475 0l2.262 2.262V4.75a.25.25 0 00-.25-.25zm.25 9.56l-3.323-3.323a.25.25 0 00-.354 0L7.061 19.5H19.25a.25.25 0 00.25-.25v-5.19zM4.75 3A1.75 1.75 0 003 4.75v14.5c0 .966.784 1.75 1.75 1.75h14.5A1.75 1.75 0 0021 19.25V4.75A1.75 1.75 0 0019.25 3H4.75zM8.5 9.5a1 1 0 100-2 1 1 0 000 2zm0 1.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"></path>
-                </g>
-            </svg>
-        </i>
-        Viewer
-    </span>
-</div>
-
 <footer>
     <div class="status-bar" id="statusBar">
+        <div class="status-item">
+            <span class="status-label">Position:</span>
+            <span class="status-value" id="genomicPosition">--</span>
+        </div>
         <div class="status-item">
             <span class="status-label">Render:</span>
             <span class="status-value" id="renderTime">--</span>
         </div>
         <div class="status-item">
-            <span class="status-label">Polygons:</span>
-            <span class="status-value" id="polygonCount">--</span>
-        </div>
-        <div class="status-item">
-            <span class="status-label">Text:</span>
-            <span class="status-value" id="textCount">--</span>
-        </div>
-        <div class="status-item">
-            <span class="status-label">Rects:</span>
-            <span class="status-value" id="rectCount">--</span>
-        </div>
-        <div class="status-item">
-            <span class="status-label">Triangles:</span>
-            <span class="status-value" id="triangleCount">--</span>
-        </div>
-        <div class="status-item">
-            <span class="status-label">Lines:</span>
-            <span class="status-value" id="lineCount">--</span>
+            <span class="status-label">Shapes:</span>
+            <span class="status-value" id="shapeCount">--</span>
         </div>
     </div>
 </footer>
@@ -548,13 +531,239 @@ footer {
 Hello
 </div>
 </aside>
+
+<!-- Context Menu -->
+<div id="contextMenu" class="context-menu">
+    <div class="context-menu-item" onclick="toggleOrientation(); hideContextMenu();">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2v20M2 12h20" stroke-linecap="round"/>
+        </svg>
+        <span>Toggle Orientation</span>
+    </div>
+    <div class="context-menu-item" onclick="toggleSidebar(); hideContextMenu();">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3h18v18H3z" stroke-linecap="round"/>
+            <path d="M9 9l6 6M15 9l-6 6" stroke-linecap="round"/>
+        </svg>
+        <span>Toggle Sidebar</span>
+    </div>
+    <div class="context-menu-separator"></div>
+    <a href="https://github.com/broadinstitute/genomeshader/issues" target="_blank" class="context-menu-item" onclick="hideContextMenu();">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3h18v18H3z" stroke-linecap="round"/>
+            <path d="M12 8v4M12 16h.01" stroke-linecap="round"/>
+        </svg>
+        <span>Report Bug</span>
+    </a>
+    <div class="context-menu-item disabled" onclick="hideContextMenu();">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24l4.24-4.24"/>
+        </svg>
+        <span>Settings</span>
+    </div>
+</div>
+
+<!-- Resize Indicator -->
+<div id="resizeIndicator" class="resize-indicator">
+    <span id="resizeDimensions">-- × --</span>
+</div>
         """
 
         inner_script = """
 window.zoom = 0;
+let statusBarHideTimeout = null;
 
+// Status bar management
+function showStatusBar() {
+    const footer = document.querySelector('footer');
+    if (footer) {
+        footer.classList.add('visible');
+        // Clear any existing timeout
+        if (statusBarHideTimeout) {
+            clearTimeout(statusBarHideTimeout);
+        }
+        // Auto-hide after 5 seconds
+        statusBarHideTimeout = setTimeout(() => {
+            hideStatusBar();
+        }, 5000);
+    }
+}
+
+function hideStatusBar() {
+    const footer = document.querySelector('footer');
+    if (footer) {
+        footer.classList.remove('visible');
+    }
+    if (statusBarHideTimeout) {
+        clearTimeout(statusBarHideTimeout);
+        statusBarHideTimeout = null;
+    }
+}
+
+// Make functions available globally for module script
+window.showStatusBar = showStatusBar;
+window.hideStatusBar = hideStatusBar;
+
+// Helper function to get genomic position from mouse event
+function getGenomicPositionFromEvent(event) {
+    const main = document.querySelector('main');
+    if (!main || !window.data || !window.data.locus_start || !window.data.locus_end) {
+        return null;
+    }
+    
+    // Get mouse position relative to the main element
+    const mainRect = main.getBoundingClientRect();
+    const mainX = event.clientX - mainRect.left;
+    const mainY = event.clientY - mainRect.top;
+    
+    // Get the bases per pixel conversion factor (same as used in rendering)
+    let basesPerPixel;
+    let drawingStart, drawingEnd, pixelPos;
+    let genomicPos;
+    
+    if (window.data.orientation === 'horizontal') {
+        // For horizontal orientation, Y coordinate maps to genomic position (inverted)
+        // The drawing area starts at pixel 20 and ends at main.offsetHeight - 35
+        basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetHeight - 20 - 20 - 35);
+        drawingStart = 20;
+        drawingEnd = main.offsetHeight - 35;
+        pixelPos = mainY - drawingStart;
+        
+        // Reverse the transformation: genomicPos = locus_end - (pixelPos * basesPerPixel)
+        // Note: Y increases downward, but genomic position increases upward, so we invert
+        genomicPos = window.data.locus_end - (pixelPos * basesPerPixel);
+    } else {
+        // For vertical orientation, X coordinate maps to genomic position
+        // The drawing area starts at pixel 20 and ends at main.offsetWidth - 200
+        basesPerPixel = (window.data.locus_end - window.data.locus_start) / (main.offsetWidth - 200);
+        drawingStart = 20;
+        drawingEnd = main.offsetWidth - 200;
+        pixelPos = mainX - drawingStart;
+        
+        // Reverse the transformation: genomicPos = locus_start + (pixelPos * basesPerPixel)
+        genomicPos = window.data.locus_start + (pixelPos * basesPerPixel);
+    }
+    
+    if (basesPerPixel <= 0) {
+        return null;
+    }
+    
+    // Check if mouse is within the drawing area
+    if (pixelPos < 0 || pixelPos > (drawingEnd - drawingStart)) {
+        return null;
+    }
+    
+    // Clamp genomic position to valid range
+    genomicPos = Math.max(window.data.locus_start, Math.min(window.data.locus_end, genomicPos));
+    
+    return genomicPos;
+}
+
+// Function to update genomic position from mouse coordinates
+function updateGenomicPosition(event) {
+    const genomicPos = getGenomicPositionFromEvent(event);
+    
+    if (genomicPos === null) {
+        const positionEl = document.getElementById('genomicPosition');
+        if (positionEl) {
+            positionEl.textContent = '--';
+        }
+        return;
+    }
+    
+    // Format the position with chromosome
+    const chr = window.data.ref_chr || window.data.chr || window.data.chromosome || window.data.chrom || '';
+    const position = chr ? chr + ':' + Math.floor(genomicPos).toLocaleString() : Math.floor(genomicPos).toLocaleString();
+    
+    const positionEl = document.getElementById('genomicPosition');
+    if (positionEl) {
+        positionEl.textContent = position;
+    }
+    
+    showStatusBar();
+}
+
+// Zoom handler
 document.addEventListener('wheel', function(e) {
     window.zoom += e.deltaY;
+    showStatusBar();
+});
+
+// Mouse move handler for genomic position
+document.addEventListener('mousemove', function(e) {
+    // Only track if mouse is over the main element
+    const main = document.querySelector('main');
+    if (!main) {
+        return;
+    }
+    
+    const rect = main.getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+    
+    // Check if mouse is within main element bounds
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        updateGenomicPosition(e);
+    }
+});
+
+// Resize indicator management
+let resizeIndicatorHideTimeout = null;
+
+function showResizeIndicator() {
+    const canvas = document.querySelector('canvas');
+    const indicator = document.getElementById('resizeIndicator');
+    const dimensionsEl = document.getElementById('resizeDimensions');
+    
+    if (!canvas || !indicator || !dimensionsEl) {
+        return;
+    }
+    
+    // Get canvas dimensions
+    const width = canvas.width;
+    const height = canvas.height;
+    
+    // Update dimensions text
+    dimensionsEl.textContent = width + ' × ' + height;
+    
+    // Show the indicator
+    indicator.classList.add('visible');
+    
+    // Clear any existing timeout
+    if (resizeIndicatorHideTimeout) {
+        clearTimeout(resizeIndicatorHideTimeout);
+    }
+    
+    // Auto-hide after 2 seconds
+    resizeIndicatorHideTimeout = setTimeout(() => {
+        hideResizeIndicator();
+    }, 2000);
+}
+
+function hideResizeIndicator() {
+    const indicator = document.getElementById('resizeIndicator');
+    if (indicator) {
+        indicator.classList.remove('visible');
+    }
+    if (resizeIndicatorHideTimeout) {
+        clearTimeout(resizeIndicatorHideTimeout);
+        resizeIndicatorHideTimeout = null;
+    }
+}
+
+// Window resize handler with debouncing
+let resizeTimeout = null;
+window.addEventListener('resize', function() {
+    // Clear existing timeout
+    if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
+    }
+    
+    // Debounce the resize handler to avoid too many updates
+    resizeTimeout = setTimeout(() => {
+        showResizeIndicator();
+    }, 100);
 });
 
 function closeSidebar() {
@@ -567,6 +776,15 @@ function openSidebar() {
     document.querySelector('.sidebar-icon-open').style.display = 'none';
     document.querySelector('.sidebar-icon-close').style.display = 'block';
     document.querySelector('aside').style.width = '300px';
+}
+
+function toggleSidebar() {
+    const aside = document.querySelector('aside');
+    if (aside.style.width === '0px' || aside.style.width === '') {
+        openSidebar();
+    } else {
+        closeSidebar();
+    }
 }
 
 // Toggle orientation between horizontal and vertical
@@ -596,6 +814,55 @@ function toggleOrientation() {
         }, 100);
     }
 }
+
+// Context menu functions
+function showContextMenu(event) {
+    event.preventDefault();
+    const contextMenu = document.getElementById('contextMenu');
+    contextMenu.style.display = 'block';
+    
+    // Position the menu at the cursor location
+    contextMenu.style.left = event.pageX + 'px';
+    contextMenu.style.top = event.pageY + 'px';
+    
+    // Adjust if menu goes off screen
+    const rect = contextMenu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+        contextMenu.style.left = (event.pageX - rect.width) + 'px';
+    }
+    if (rect.bottom > window.innerHeight) {
+        contextMenu.style.top = (event.pageY - rect.height) + 'px';
+    }
+}
+
+function hideContextMenu() {
+    const contextMenu = document.getElementById('contextMenu');
+    contextMenu.style.display = 'none';
+}
+
+// Add right-click event listener to main canvas area
+document.addEventListener('contextmenu', function(e) {
+    // Only show context menu if clicking on main area (not on footer, aside, etc.)
+    const target = e.target;
+    if (target.closest('main') && !target.closest('footer') && !target.closest('aside')) {
+        showContextMenu(e);
+    }
+});
+
+// Hide context menu when clicking elsewhere
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('#contextMenu')) {
+        hideContextMenu();
+    }
+});
+
+// Hide context menu on escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        hideContextMenu();
+    }
+});
+
         """
 
         inner_data = f"""
@@ -1636,6 +1903,9 @@ async function renderApp() {
         webgpuCore = new WebGPUCore();
         await webgpuCore.init(canvas);
         
+        // Make webgpuCore globally accessible for export function
+        window.webgpuCore = webgpuCore;
+        
         renderer = new InstancedRenderer(webgpuCore);
         textRenderer = new TextRenderer(webgpuCore);
 
@@ -1658,8 +1928,289 @@ async function renderApp() {
 
 // Mouse interactions removed as requested
 
+document.addEventListener('wheel', function(event) {
+    // Prevent default scrolling
+    event.preventDefault();
+    
+    // Determine the zoom factor
+    const zoomFactor = event.deltaY < 0 ? (event.shiftKey ? 0.99 : 0.9) : (event.shiftKey ? 1.01 : 1.1);
+
+    // Get the genomic position under the mouse cursor
+    const mouseGenomicPos = getGenomicPositionFromEvent(event);
+    
+    // Calculate the new locus range based on the zoom factor
+    const range = window.data.locus_end - window.data.locus_start;
+    const newRange = range * zoomFactor;
+
+    let locusStart, locusEnd;
+    const main = document.querySelector('main');
+    
+    if (mouseGenomicPos !== null && main) {
+        // Zoom centered on mouse cursor - keep the point under cursor fixed on screen
+        // Get mouse position relative to the main element
+        const mainRect = main.getBoundingClientRect();
+        const mainX = event.clientX - mainRect.left;
+        const mainY = event.clientY - mainRect.top;
+        
+        if (window.data.orientation === 'horizontal') {
+            // For horizontal orientation, Y coordinate maps to genomic position
+            const drawingStart = 20;
+            const drawingHeight = main.offsetHeight - 20 - 20 - 35;
+            const pixelY = mainY - drawingStart;
+            
+            // Calculate new bases per pixel
+            const newBasesPerPixel = newRange / drawingHeight;
+            
+            // Keep the genomic position at the mouse Y position fixed
+            // P = locus_end - (pixelY * basesPerPixel_old)
+            // P = locus_end_new - (pixelY * basesPerPixel_new)
+            // So: locus_end_new = P + (pixelY * basesPerPixel_new)
+            locusEnd = Math.round(mouseGenomicPos + (pixelY * newBasesPerPixel));
+            locusStart = Math.round(locusEnd - newRange);
+        } else {
+            // For vertical orientation, X coordinate maps to genomic position
+            const drawingStart = 20;
+            const drawingWidth = main.offsetWidth - 200;
+            const pixelX = mainX - drawingStart;
+            
+            // Calculate new bases per pixel
+            const newBasesPerPixel = newRange / drawingWidth;
+            
+            // Keep the genomic position at the mouse X position fixed
+            // P = locus_start + (pixelX * basesPerPixel_old)
+            // P = locus_start_new + (pixelX * basesPerPixel_new)
+            // So: locus_start_new = P - (pixelX * basesPerPixel_new)
+            locusStart = Math.round(mouseGenomicPos - (pixelX * newBasesPerPixel));
+            locusEnd = Math.round(locusStart + newRange);
+        }
+    } else {
+        // Fallback: zoom centered on middle of current range
+        const center = (window.data.locus_start + window.data.locus_end) / 2;
+        locusStart = Math.round(center - newRange / 2);
+        locusEnd = Math.round(center + newRange / 2);
+    }
+
+    // Ensure that the new range is within the reference range
+    if (locusStart < window.data.ref_start) {
+        locusStart = window.data.ref_start;
+        // Adjust end to maintain range if we hit the start boundary
+        locusEnd = Math.min(window.data.ref_end, locusStart + newRange);
+    }
+    if (locusEnd > window.data.ref_end) {
+        locusEnd = window.data.ref_end;
+        // Adjust start to maintain range if we hit the end boundary
+        locusStart = Math.max(window.data.ref_start, locusEnd - newRange);
+    }
+
+    // If range is greater than the minimum range, allow the repaint to happen
+    if (locusEnd - locusStart >= 10) {
+        window.data.locus_start = locusStart;
+        window.data.locus_end = locusEnd;
+
+        // Redraw the screen contents
+        repaint();
+    }
+});
+
+// Panning state
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+let panStartLocusStart = 0;
+let panStartLocusEnd = 0;
+
+// Mouse drag panning
+document.addEventListener('mousedown', function(event) {
+    // Only start panning if clicking on main area (not on footer, aside, context menu, etc.)
+    const target = event.target;
+    const main = document.querySelector('main');
+    if (target.closest('main') && !target.closest('footer') && !target.closest('aside') && !target.closest('#contextMenu')) {
+        // Check if it's a left mouse button (button 0)
+        if (event.button === 0) {
+            isPanning = true;
+            panStartX = event.clientX;
+            panStartY = event.clientY;
+            panStartLocusStart = window.data.locus_start;
+            panStartLocusEnd = window.data.locus_end;
+            if (main) {
+                main.classList.add('panning');
+            }
+            event.preventDefault();
+        }
+    }
+});
+
+document.addEventListener('mousemove', function(event) {
+    if (isPanning) {
+        const main = document.querySelector('main');
+        if (!main || !window.data) {
+            return;
+        }
+        
+        const deltaX = event.clientX - panStartX;
+        const deltaY = event.clientY - panStartY;
+        
+        // Calculate bases per pixel
+        let basesPerPixel;
+        let panDelta;
+        
+        if (window.data.orientation === 'horizontal') {
+            // For horizontal orientation, Y coordinate maps to genomic position
+            const drawingHeight = main.offsetHeight - 20 - 20 - 35;
+            basesPerPixel = (panStartLocusEnd - panStartLocusStart) / drawingHeight;
+            panDelta = -deltaY * basesPerPixel; // Negative because Y increases downward
+        } else {
+            // For vertical orientation, X coordinate maps to genomic position
+            const drawingWidth = main.offsetWidth - 200;
+            basesPerPixel = (panStartLocusEnd - panStartLocusStart) / drawingWidth;
+            panDelta = deltaX * basesPerPixel;
+        }
+        
+        // Calculate new locus range
+        const range = panStartLocusEnd - panStartLocusStart;
+        let newLocusStart = panStartLocusStart - panDelta;
+        let newLocusEnd = panStartLocusEnd - panDelta;
+        
+        // Clamp to reference range
+        if (newLocusStart < window.data.ref_start) {
+            newLocusStart = window.data.ref_start;
+            newLocusEnd = newLocusStart + range;
+        }
+        if (newLocusEnd > window.data.ref_end) {
+            newLocusEnd = window.data.ref_end;
+            newLocusStart = newLocusEnd - range;
+        }
+        
+        // Update locus range
+        window.data.locus_start = Math.round(newLocusStart);
+        window.data.locus_end = Math.round(newLocusEnd);
+        
+        // Redraw
+        repaint();
+    }
+});
+
+document.addEventListener('mouseup', function(event) {
+    if (isPanning && event.button === 0) {
+        isPanning = false;
+        const main = document.querySelector('main');
+        if (main) {
+            main.classList.remove('panning');
+        }
+    }
+});
+
+// Also handle mouse leave to stop panning if mouse leaves window
+document.addEventListener('mouseleave', function() {
+    if (isPanning) {
+        isPanning = false;
+        const main = document.querySelector('main');
+        if (main) {
+            main.classList.remove('panning');
+        }
+    }
+});
+
+// Arrow key panning state
+let arrowKeyPanInterval = null;
+let arrowKeyPanDirection = null;
+
+function performArrowKeyPan() {
+    const main = document.querySelector('main');
+    if (!main || !window.data || !arrowKeyPanDirection) {
+        return;
+    }
+    
+    // Calculate pan distance (2% of current range for smoother scrolling)
+    const range = window.data.locus_end - window.data.locus_start;
+    const panDistance = range * 0.02;
+    
+    let panDelta = 0;
+    
+    if (window.data.orientation === 'horizontal') {
+        // For horizontal orientation, up/down arrows pan
+        if (arrowKeyPanDirection === 'up') {
+            panDelta = -panDistance; // Arrow up = move view up = decrease genomic position
+        } else if (arrowKeyPanDirection === 'down') {
+            panDelta = panDistance; // Arrow down = move view down = increase genomic position
+        }
+    } else {
+        // For vertical orientation, left/right arrows pan
+        if (arrowKeyPanDirection === 'left') {
+            panDelta = panDistance; // Arrow left = move view left = show earlier positions = increase locus
+        } else if (arrowKeyPanDirection === 'right') {
+            panDelta = -panDistance; // Arrow right = move view right = show later positions = decrease locus
+        }
+    }
+    
+    if (panDelta !== 0) {
+        let newLocusStart = window.data.locus_start - panDelta;
+        let newLocusEnd = window.data.locus_end - panDelta;
+        
+        // Clamp to reference range
+        if (newLocusStart < window.data.ref_start) {
+            newLocusStart = window.data.ref_start;
+            newLocusEnd = newLocusStart + range;
+        }
+        if (newLocusEnd > window.data.ref_end) {
+            newLocusEnd = window.data.ref_end;
+            newLocusStart = newLocusEnd - range;
+        }
+        
+        // Update locus range
+        window.data.locus_start = Math.round(newLocusStart);
+        window.data.locus_end = Math.round(newLocusEnd);
+        
+        // Redraw
+        repaint();
+    }
+}
+
+function stopArrowKeyPan() {
+    if (arrowKeyPanInterval) {
+        clearInterval(arrowKeyPanInterval);
+        arrowKeyPanInterval = null;
+    }
+    arrowKeyPanDirection = null;
+}
+
+// Arrow key panning
 document.addEventListener('keydown', function(event) {
-    // Handle the '+' or '-' key press event
+    // Handle arrow keys for panning
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+        // Prevent default scrolling
+        event.preventDefault();
+        
+        // If already panning in this direction, don't restart
+        let newDirection = null;
+        if (window.data.orientation === 'horizontal') {
+            if (event.key === 'ArrowUp') {
+                newDirection = 'up';
+            } else if (event.key === 'ArrowDown') {
+                newDirection = 'down';
+            }
+        } else {
+            if (event.key === 'ArrowLeft') {
+                newDirection = 'left';
+            } else if (event.key === 'ArrowRight') {
+                newDirection = 'right';
+            }
+        }
+        
+        if (newDirection && newDirection !== arrowKeyPanDirection) {
+            stopArrowKeyPan();
+            arrowKeyPanDirection = newDirection;
+            
+            // Perform initial pan immediately
+            performArrowKeyPan();
+            
+            // Then continue panning at regular intervals for smooth continuous scrolling
+            arrowKeyPanInterval = setInterval(performArrowKeyPan, 16); // ~60fps
+        }
+        return;
+    }
+    
+    // Handle the '+' or '-' key press event for zooming
     if (event.key === '+' || event.key === '=' || event.key === '-') {
         const zoomFactor = (event.key === '+' || event.key === '=') ? 0.9 : 1.1;
 
@@ -1687,40 +2238,22 @@ document.addEventListener('keydown', function(event) {
             // Redraw the screen contents
             repaint();
         }
+        
+        event.preventDefault();
     }
 });
 
-document.addEventListener('wheel', function(event) {
-    // Determine the zoom factor
-    const zoomFactor = event.deltaY < 0 ? (event.shiftKey ? 0.99 : 0.9) : (event.shiftKey ? 1.01 : 1.1);
-
-    // Calculate the new locus range based on the zoom factor
-    const range = window.data.locus_end - window.data.locus_start;
-    const newRange = range * zoomFactor;
-    const center = (window.data.locus_start + window.data.locus_end) / 2;
-
-    var locusStart = Math.round(center - newRange / 2);
-    var locusEnd = Math.round(center + newRange / 2);
-
-    // Ensure that the new range is within the reference range
-    if (locusStart < window.data.ref_start) {
-        locusStart = window.data.ref_start;
-    }
-    if (locusEnd > window.data.ref_end) {
-        locusEnd = window.data.ref_end;
-    }
-
-    // If range is greater than the minimum range, allow the repaint to happen
-    if (locusEnd - locusStart >= 10) {
-        window.data.locus_start = locusStart;
-        window.data.locus_end = locusEnd;
-
-        // Redraw the screen contents
-        repaint();
+// Stop arrow key panning when key is released
+document.addEventListener('keyup', function(event) {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+        stopArrowKeyPan();
     }
 });
 
-// Mouse interactions removed as requested
+// Also stop panning if window loses focus
+window.addEventListener('blur', function() {
+    stopArrowKeyPan();
+});
 
 // Helper function to prevent an in-progress event handler from firing again while the first is in progress.
 function debounce(func) {
@@ -1794,29 +2327,21 @@ window.repaint = async function repaint() {
 // Function to update the status bar with GPU stats
 function updateStatusBar(renderTime, polygonStats, textStats) {
     const renderTimeEl = document.getElementById('renderTime');
-    const polygonCountEl = document.getElementById('polygonCount');
-    const textCountEl = document.getElementById('textCount');
-    const rectCountEl = document.getElementById('rectCount');
-    const triangleCountEl = document.getElementById('triangleCount');
-    const lineCountEl = document.getElementById('lineCount');
+    const shapeCountEl = document.getElementById('shapeCount');
     
     if (renderTimeEl) {
         renderTimeEl.textContent = renderTime.toFixed(2) + ' ms';
     }
-    if (polygonCountEl) {
-        polygonCountEl.textContent = polygonStats.totalPolygons.toLocaleString();
+    
+    // Calculate total shapes (rectangles + triangles + lines)
+    const totalShapes = polygonStats.rectangles + polygonStats.triangles + polygonStats.lines;
+    if (shapeCountEl) {
+        shapeCountEl.textContent = totalShapes.toLocaleString();
     }
-    if (textCountEl) {
-        textCountEl.textContent = textStats.textInstances.toLocaleString();
-    }
-    if (rectCountEl) {
-        rectCountEl.textContent = polygonStats.rectangles.toLocaleString();
-    }
-    if (triangleCountEl) {
-        triangleCountEl.textContent = polygonStats.triangles.toLocaleString();
-    }
-    if (lineCountEl) {
-        lineCountEl.textContent = polygonStats.lines.toLocaleString();
+    
+    // Show status bar when updated
+    if (typeof window.showStatusBar === 'function') {
+        window.showStatusBar();
     }
 }
 
