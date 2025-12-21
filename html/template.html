@@ -99,6 +99,26 @@
         -moz-user-select: none; /* Firefox */
         -ms-user-select: none; /* Internet Explorer/Edge */
     }
+    .status-bar {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        font-family: 'Courier New', monospace;
+        font-size: 9pt;
+    }
+    .status-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+    }
+    .status-label {
+        color: #666666;
+        font-weight: normal;
+    }
+    .status-value {
+        color: #333333;
+        font-weight: bold;
+    }
     .tab-bar {
         height: 22px;
         color: #ffffff;
@@ -211,7 +231,34 @@
     </span>
 </div>
 
-<footer></footer>
+<footer>
+    <div class="status-bar" id="statusBar">
+        <div class="status-item">
+            <span class="status-label">Render:</span>
+            <span class="status-value" id="renderTime">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Polygons:</span>
+            <span class="status-value" id="polygonCount">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Text:</span>
+            <span class="status-value" id="textCount">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Rects:</span>
+            <span class="status-value" id="rectCount">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Triangles:</span>
+            <span class="status-value" id="triangleCount">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Lines:</span>
+            <span class="status-value" id="lineCount">--</span>
+        </div>
+    </div>
+</footer>
 
 </main>
 

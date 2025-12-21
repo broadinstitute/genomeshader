@@ -369,6 +369,26 @@ footer {
     -moz-user-select: none; /* Firefox */
     -ms-user-select: none; /* Internet Explorer/Edge */
 }
+.status-bar {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    font-family: 'Courier New', monospace;
+    font-size: 9pt;
+}
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+.status-label {
+    color: #666666;
+    font-weight: normal;
+}
+.status-value {
+    color: #333333;
+    font-weight: bold;
+}
 .tab-bar {
     height: 22px;
     color: #ffffff;
@@ -479,7 +499,34 @@ footer {
     </span>
 </div>
 
-<footer></footer>
+<footer>
+    <div class="status-bar" id="statusBar">
+        <div class="status-item">
+            <span class="status-label">Render:</span>
+            <span class="status-value" id="renderTime">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Polygons:</span>
+            <span class="status-value" id="polygonCount">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Text:</span>
+            <span class="status-value" id="textCount">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Rects:</span>
+            <span class="status-value" id="rectCount">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Triangles:</span>
+            <span class="status-value" id="triangleCount">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Lines:</span>
+            <span class="status-value" id="lineCount">--</span>
+        </div>
+    </div>
+</footer>
 
 </main>
 
@@ -1144,6 +1191,16 @@ class InstancedRenderer {
             renderPass.draw(2, this.lineInstances.length); // 2 vertices per line
         }
     }
+
+    // Get rendering statistics
+    getStats() {
+        return {
+            rectangles: this.rectInstances.length,
+            triangles: this.triangleInstances.length,
+            lines: this.lineInstances.length,
+            totalPolygons: this.rectInstances.length + this.triangleInstances.length + this.lineInstances.length,
+        };
+    }
 }
 
 // Text Renderer - Canvas 2D text to WebGPU texture rendering
@@ -1271,8 +1328,8 @@ class TextRenderer {
     }
 
     // Render text to texture and cache it
-    async renderTextToTexture(text, style = {}) {
-        const cacheKey = `${text}_${JSON.stringify(style)}`;
+    async renderTextToTexture(text, style = {}, rotation = 0, flipVertical = false) {
+        const cacheKey = `${text}_${JSON.stringify(style)}_${rotation}_${flipVertical}`;
         
         if (this.textCache.has(cacheKey)) {
             return this.textCache.get(cacheKey);
@@ -1284,31 +1341,69 @@ class TextRenderer {
         const fill = style.fill || '#000000';
         const align = style.align || 'left';
 
-        // Set up canvas
+        // Set up canvas for measurement
         this.ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
-        this.ctx.textAlign = align;
-        this.ctx.textBaseline = 'top';
+        this.ctx.textAlign = 'left'; // Use left for measurement
+        this.ctx.textBaseline = 'alphabetic';
         
-        // Measure text
+        // Measure text with better accuracy
         const metrics = this.ctx.measureText(text);
         const textWidth = Math.ceil(metrics.width);
-        const textHeight = Math.ceil(fontSize * 1.2); // Add some padding
+        // Use actual bounding box if available, otherwise estimate
+        const textHeight = metrics.actualBoundingBoxAscent && metrics.actualBoundingBoxDescent
+            ? Math.ceil(metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent)
+            : Math.ceil(fontSize * 1.5); // More padding for safety
         
-        this.canvas.width = textWidth;
-        this.canvas.height = textHeight;
+        // Add extra padding to prevent clipping
+        const padding = 4;
+        const paddedWidth = textWidth + padding * 2;
+        const paddedHeight = textHeight + padding * 2;
         
-        // Clear and redraw
-        this.ctx.clearRect(0, 0, textWidth, textHeight);
+        // If rotated, calculate bounding box with padding
+        let canvasWidth, canvasHeight;
+        if (Math.abs(rotation) > 0.001) {
+            const cos = Math.abs(Math.cos(rotation));
+            const sin = Math.abs(Math.sin(rotation));
+            canvasWidth = Math.ceil(paddedWidth * cos + paddedHeight * sin) + padding;
+            canvasHeight = Math.ceil(paddedWidth * sin + paddedHeight * cos) + padding;
+        } else {
+            canvasWidth = paddedWidth;
+            canvasHeight = paddedHeight;
+        }
+        
+        this.canvas.width = canvasWidth;
+        this.canvas.height = canvasHeight;
+        
+        // Clear and set up context
+        this.ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+        this.ctx.save();
+        
+        // Move to center of canvas
+        this.ctx.translate(canvasWidth / 2, canvasHeight / 2);
+        
+        // Apply rotation around center
+        if (Math.abs(rotation) > 0.001) {
+            this.ctx.rotate(rotation);
+        }
+        
+        // Apply vertical flip if requested (for horizontal orientation)
+        if (flipVertical) {
+            this.ctx.scale(1, -1);
+        }
+        
+        // Draw text centered at origin (which is now canvas center)
         this.ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
-        this.ctx.textAlign = align;
-        this.ctx.textBaseline = 'top';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
         this.ctx.fillStyle = fill;
         this.ctx.fillText(text, 0, 0);
+        
+        this.ctx.restore();
 
         // Create texture from canvas
         const imageBitmap = await createImageBitmap(this.canvas);
         const texture = this.device.createTexture({
-            size: [textWidth, textHeight],
+            size: [canvasWidth, canvasHeight],
             format: 'rgba8unorm',
             usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
         });
@@ -1316,13 +1411,13 @@ class TextRenderer {
         this.device.queue.copyExternalImageToTexture(
             { source: imageBitmap },
             { texture: texture },
-            [textWidth, textHeight]
+            [canvasWidth, canvasHeight]
         );
 
         const textureData = {
             texture,
-            width: textWidth,
-            height: textHeight,
+            width: canvasWidth,
+            height: canvasHeight,
         };
 
         this.textCache.set(cacheKey, textureData);
@@ -1331,7 +1426,7 @@ class TextRenderer {
 
     // Add text instance
     async addText(x, y, text, style = {}) {
-        const textureData = await this.renderTextToTexture(text, style);
+        const textureData = await this.renderTextToTexture(text, style, 0, false);
         
         this.textInstances.push({
             position: [x + textureData.width / 2, y + textureData.height / 2],
@@ -1343,28 +1438,18 @@ class TextRenderer {
     }
 
     // Add rotated text (rotation in radians)
-    async addTextRotated(x, y, text, style = {}, rotation = 0) {
-        const textureData = await this.renderTextToTexture(text, style);
+    async addTextRotated(x, y, text, style = {}, rotation = 0, flipVertical = false) {
+        // Render text with rotation applied to the texture itself
+        const textureData = await this.renderTextToTexture(text, style, rotation, flipVertical);
         
-        // Calculate rotated bounding box
-        const cos = Math.cos(rotation);
-        const sin = Math.sin(rotation);
-        const w = textureData.width;
-        const h = textureData.height;
-        
-        // For simplicity, we'll use the bounding box of the rotated text
-        const bounds = {
-            width: Math.abs(w * cos) + Math.abs(h * sin),
-            height: Math.abs(w * sin) + Math.abs(h * cos),
-        };
-        
+        // Center the position (text is centered in texture, so position should be centered too)
         this.textInstances.push({
-            position: [x + bounds.width / 2, y + bounds.height / 2],
-            size: [bounds.width, bounds.height],
+            position: [x, y],
+            size: [textureData.width, textureData.height],
             texCoord: [0, 0],
             texSize: [1, 1],
             textureData,
-            rotation,
+            rotation: 0, // Rotation already applied to texture
         });
     }
 
@@ -1445,6 +1530,13 @@ class TextRenderer {
             renderPass.setVertexBuffer(0, this.textBuffer);
             renderPass.draw(4, instances.length); // 4 vertices per quad
         }
+    }
+
+    // Get rendering statistics
+    getStats() {
+        return {
+            textInstances: this.textInstances.length,
+        };
     }
 }
 
@@ -1650,6 +1742,9 @@ function resize() {
 window.repaint = async function repaint() {
     if (!webgpuCore || !renderer || !textRenderer) return;
     
+    // Start timing
+    const renderStartTime = performance.now();
+    
     var main = document.querySelector('main');
 
     // Handle resize
@@ -1683,6 +1778,46 @@ window.repaint = async function repaint() {
     
     renderPass.end();
     webgpuCore.submit([encoder.finish()]);
+    
+    // End timing and update status bar
+    const renderEndTime = performance.now();
+    const renderTime = renderEndTime - renderStartTime;
+    
+    // Get stats from renderers
+    const polygonStats = renderer.getStats();
+    const textStats = textRenderer.getStats();
+    
+    // Update status bar
+    updateStatusBar(renderTime, polygonStats, textStats);
+}
+
+// Function to update the status bar with GPU stats
+function updateStatusBar(renderTime, polygonStats, textStats) {
+    const renderTimeEl = document.getElementById('renderTime');
+    const polygonCountEl = document.getElementById('polygonCount');
+    const textCountEl = document.getElementById('textCount');
+    const rectCountEl = document.getElementById('rectCount');
+    const triangleCountEl = document.getElementById('triangleCount');
+    const lineCountEl = document.getElementById('lineCount');
+    
+    if (renderTimeEl) {
+        renderTimeEl.textContent = renderTime.toFixed(2) + ' ms';
+    }
+    if (polygonCountEl) {
+        polygonCountEl.textContent = polygonStats.totalPolygons.toLocaleString();
+    }
+    if (textCountEl) {
+        textCountEl.textContent = textStats.textInstances.toLocaleString();
+    }
+    if (rectCountEl) {
+        rectCountEl.textContent = polygonStats.rectangles.toLocaleString();
+    }
+    if (triangleCountEl) {
+        triangleCountEl.textContent = polygonStats.triangles.toLocaleString();
+    }
+    if (lineCountEl) {
+        lineCountEl.textContent = polygonStats.lines.toLocaleString();
+    }
 }
 
 // Function to draw the ideogram.
@@ -1991,29 +2126,73 @@ async function drawReference(main, refData) {
     const halfBaseHeight = 0.5 / basesPerPixel;
 
     const nucleotideColors = window.data.nucleotideColors;
+    const visibleRange = window.data.locus_end - window.data.locus_start;
 
-    for (let locusPos = window.data.ref_start + 1, i = 0; locusPos <= window.data.ref_end; locusPos++, i++) {
-        if (window.data.locus_end - window.data.locus_start <= 1500 && window.data.locus_start <= locusPos && locusPos <= window.data.locus_end) {
-            const base = refData.columns[0].values[i];
-            const baseColor = nucleotideColors[base];
+    // Only process bases if the visible range is small enough
+    if (visibleRange > 1500) {
+        return; // Too zoomed out, skip reference rendering
+    }
 
-            const genomicPos = getGenomicPosition(locusPos, basesPerPixel);
-            const coords = swapCoords(154, genomicPos);
-            const dims = swapDimensions(10, 2*halfBaseHeight);
-            const textCoords = swapCoords(154, genomicPos);
+    // Calculate the starting index in the reference data
+    // The reference data starts at ref_start, so we need to offset by the visible start
+    const refDataStart = window.data.ref_start;
+    
+    for (let locusPos = window.data.locus_start; locusPos <= window.data.locus_end; locusPos++) {
+        // Only process positions within the reference data range
+        if (locusPos < refDataStart || locusPos > window.data.ref_end) {
+            continue;
+        }
+        
+        // Calculate index into reference data (0-indexed from ref_start)
+        const i = locusPos - refDataStart;
+        
+        // Check bounds
+        if (i < 0 || i >= refData.columns[0].values.length) {
+            continue;
+        }
+        
+        const base = refData.columns[0].values[i];
+        if (!base) continue; // Skip if no base data
+        
+        const baseColor = nucleotideColors[base];
+        if (!baseColor) continue; // Skip if no color mapping
 
-            if (window.data.locus_end - window.data.locus_start <= 100) {
-                const rotation = window.data.orientation === 'horizontal' ? -Math.PI / 2 : 0;
+        const genomicPos = getGenomicPosition(locusPos, basesPerPixel);
+        const coords = swapCoords(154, genomicPos);
+        const dims = swapDimensions(10, 2*halfBaseHeight);
+        const textCoords = swapCoords(154, genomicPos);
+
+        // Show text when zoomed in enough (threshold increased to 200 for better visibility)
+        if (visibleRange <= 200) {
+            // Calculate font size based on available space per base
+            // Use most of the vertical space available for each base, but cap at reasonable min/max
+            const baseHeight = 2 * halfBaseHeight;
+            const fontSize = Math.max(10, Math.min(20, baseHeight * 0.9)); // Scale with base height, between 10-20px
+            
+            // For horizontal orientation, text should be vertical (rotated 90 degrees clockwise, then flipped)
+            // For vertical orientation, text should be horizontal (no rotation)
+            if (window.data.orientation === 'horizontal') {
+                // Use addTextRotated for vertical text - rotate and flip vertically to mirror
+                const rotation = -Math.PI / 2;
                 await textRenderer.addTextRotated(textCoords.x, textCoords.y, base, {
                         fontFamily: 'Helvetica',
-                        fontSize: 10,
+                        fontSize: fontSize,
                         fontWeight: 'bold',
                     fill: '#' + baseColor.toString(16).padStart(6, '0'),
                         align: 'center',
-                }, rotation);
+                }, rotation, true); // flipVertical = true for horizontal orientation
             } else {
-                renderer.addRect(coords.x, coords.y - dims.height/2, dims.width, dims.height, baseColor);
+                // Use addText for horizontal text (no rotation needed)
+                await textRenderer.addText(textCoords.x, textCoords.y, base, {
+                        fontFamily: 'Helvetica',
+                        fontSize: fontSize,
+                        fontWeight: 'bold',
+                    fill: '#' + baseColor.toString(16).padStart(6, '0'),
+                        align: 'center',
+                });
             }
+        } else {
+            renderer.addRect(coords.x, coords.y - dims.height/2, dims.width, dims.height, baseColor);
         }
     }
 }

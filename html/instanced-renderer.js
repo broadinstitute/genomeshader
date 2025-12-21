@@ -441,5 +441,15 @@ export class InstancedRenderer {
             renderPass.draw(2, this.lineInstances.length); // 2 vertices per line
         }
     }
+
+    // Get rendering statistics
+    getStats() {
+        return {
+            rectangles: this.rectInstances.length,
+            triangles: this.triangleInstances.length,
+            lines: this.lineInstances.length,
+            totalPolygons: this.rectInstances.length + this.triangleInstances.length + this.lineInstances.length,
+        };
+    }
 }
 

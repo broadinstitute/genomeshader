@@ -300,5 +300,12 @@ export class TextRenderer {
             renderPass.draw(4, instances.length); // 4 vertices per quad
         }
     }
+
+    // Get rendering statistics
+    getStats() {
+        return {
+            textInstances: this.textInstances.length,
+        };
+    }
 }
 
