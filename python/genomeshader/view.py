@@ -129,6 +129,39 @@ class GenomeShader:
         else:
             self._session.attach_loci(loci)
 
+    def attach_variants(
+        self,
+        variant_files: Union[str, List[str]],
+    ):
+        """
+        Attaches variant files (BCF/VCF) to the current session.
+        The variant files can be a single string or a list of strings.
+        Each path can be a direct path to a .bcf, .vcf, or .vcf.gz file,
+        or a directory containing variant files.
+
+        Args:
+            variant_files (Union[str, List[str]]): The paths to variant files.
+                Can be local file paths or GCS paths (gs://...).
+                Supported formats: .bcf, .vcf, .vcf.gz
+        """
+        import genomeshader.genomeshader as gs
+        
+        if isinstance(variant_files, str):
+            variant_files = [variant_files]  # Convert single string to list
+
+        for variant_path in variant_files:
+            if variant_path.endswith(".bcf") or variant_path.endswith(".vcf") or variant_path.endswith(".vcf.gz"):
+                self._session.attach_variants([variant_path])
+            else:
+                # If it's a directory, list all variant files
+                bcfs = gs._gcs_list_files_of_type(variant_path, ".bcf")
+                vcfs = gs._gcs_list_files_of_type(variant_path, ".vcf")
+                vcf_gzs = gs._gcs_list_files_of_type(variant_path, ".vcf.gz")
+
+                self._session.attach_variants(bcfs)
+                self._session.attach_variants(vcfs)
+                self._session.attach_variants(vcf_gzs)
+
     def stage(self, use_cache: bool = True):
         """
         This function stages the current session. Staging fetches the specified
@@ -152,6 +185,399 @@ class GenomeShader:
             pl.DataFrame: The data for the specified locus.
         """
         return self._session.get_locus(locus)
+
+    def get_sankey_data(
+        self,
+        variants_df: pl.DataFrame,
+        sample_groups: dict = None,
+    ) -> dict:
+        """
+        Process variant DataFrame and compute adjacencies for Sankey diagram.
+
+        Parameters:
+            variants_df (pl.DataFrame): Polars DataFrame with variant data (from extract_variants)
+            sample_groups (dict, optional): Dictionary mapping sample names to group IDs.
+                If None, all samples are in one group.
+
+        Returns:
+            dict: Dictionary containing:
+                - 'variants': List of variant nodes with position, alleles, genomic position
+                - 'edges': List of edges with source variant, target variant, sample list, group assignments
+                - 'samples': Sample metadata with grouping information
+                - 'reference_range': Dictionary with 'start' and 'end' positions
+        """
+        variants_df = variants_df.clone()
+
+        # Get unique variants (position + allele combination)
+        unique_variants = variants_df.unique(subset=["position", "ref_allele", "alt_allele"]).sort("position")
+        
+        # Create variant nodes
+        variants = []
+        variant_id_to_index = {}
+        for idx, row in enumerate(unique_variants.iter_rows(named=True)):
+            variant_id = row["variant_id"]
+            variant_id_to_index[variant_id] = idx
+            variants.append({
+                "id": variant_id,
+                "index": idx,
+                "position": row["position"],
+                "chromosome": row["chromosome"],
+                "ref_allele": row["ref_allele"],
+                "alt_allele": row["alt_allele"],
+                "variant_label": f"{row['chromosome']}:{row['position']}",
+            })
+
+        # Get reference range
+        ref_start = variants_df["position"].min()
+        ref_end = variants_df["position"].max()
+
+        # Process adjacencies - find samples that share adjacent variants
+        edges = []
+        sample_to_group = sample_groups if sample_groups else {}
+        
+        # Get all unique samples
+        all_samples = variants_df["sample_name"].unique().to_list()
+        
+        # Assign default group if not provided
+        if not sample_groups:
+            sample_to_group = {sample: 0 for sample in all_samples}
+
+        # For each pair of adjacent variants (in genomic order)
+        for i in range(len(variants) - 1):
+            var1 = variants[i]
+            var2 = variants[i + 1]
+            
+            # Find samples that have both variants
+            var1_samples = set(
+                variants_df.filter(
+                    (pl.col("variant_id") == var1["id"])
+                )["sample_name"].to_list()
+            )
+            var2_samples = set(
+                variants_df.filter(
+                    (pl.col("variant_id") == var2["id"])
+                )["sample_name"].to_list()
+            )
+            
+            # Samples that share both variants
+            shared_samples = list(var1_samples & var2_samples)
+            
+            if shared_samples:
+                # Group samples by their group assignment
+                sample_groups_for_edge = {}
+                for sample in shared_samples:
+                    group_id = sample_to_group.get(sample, 0)
+                    if group_id not in sample_groups_for_edge:
+                        sample_groups_for_edge[group_id] = []
+                    sample_groups_for_edge[group_id].append(sample)
+                
+                edges.append({
+                    "source": var1["index"],
+                    "target": var2["index"],
+                    "source_variant_id": var1["id"],
+                    "target_variant_id": var2["id"],
+                    "samples": shared_samples,
+                    "sample_count": len(shared_samples),
+                    "sample_groups": sample_groups_for_edge,
+                })
+
+        return {
+            "variants": variants,
+            "edges": edges,
+            "samples": {
+                "all_samples": all_samples,
+                "sample_to_group": sample_to_group,
+            },
+            "reference_range": {
+                "start": ref_start,
+                "end": ref_end,
+            },
+        }
+
+    def get_sankey_data_from_bcf(
+        self,
+        bcf_file: str,
+        locus: str,
+        sample_groups: dict = None,
+    ) -> dict:
+        """
+        Extract variant data from BCF file for a specific locus and compute adjacencies.
+
+        Parameters:
+            bcf_file (str): Path to BCF file
+            locus (str): Locus string in format 'chr:start-stop'
+            sample_groups (dict, optional): Dictionary mapping sample names to group IDs.
+
+        Returns:
+            dict: Same as get_sankey_data()
+        """
+        import genomeshader.genomeshader as gs
+        
+        # Parse locus
+        locus_parts = locus.replace(",", "").split(":")
+        if len(locus_parts) != 2:
+            raise ValueError(f"Invalid locus format: {locus}. Expected 'chr:start-stop'")
+        
+        chr = locus_parts[0]
+        range_parts = locus_parts[1].split("-")
+        if len(range_parts) != 2:
+            raise ValueError(f"Invalid locus format: {locus}. Expected 'chr:start-stop'")
+        
+        start = int(range_parts[0])
+        stop = int(range_parts[1])
+        
+        # Extract variants using Rust code
+        variants_df = gs._extract_variants(bcf_file, chr, start, stop)
+        
+        # Process the data
+        return self.get_sankey_data(variants_df, sample_groups=sample_groups)
+
+    def get_tubemap_data_from_bcf(
+        self,
+        bcf_file: str,
+        locus: str,
+        sample_groups: dict = None,
+    ) -> dict:
+        """
+        Extract variant data from BCF file for Tube Map visualization.
+        
+        This method processes variants to create a Sankey diagram structure where:
+        - Each variant position gets a column
+        - Each column has nodes for: no-call ("./."), reference ("0/0"), and alternate alleles
+        - Sample groups flow through these nodes showing haplotype patterns
+        
+        Parameters:
+            bcf_file (str): Path to BCF file
+            locus (str): Locus string in format 'chr:start-stop'
+            sample_groups (dict, optional): Dictionary mapping sample names to group names.
+                If None, all samples are in one group called "all".
+        
+        Returns:
+            dict: Dictionary containing:
+                - 'variants': List of variant positions with genomic coordinates
+                - 'columns': List of Sankey columns, one per variant
+                - 'sample_groups': List of sample groups with their samples
+                - 'flows': List of flows between columns showing sample counts
+                - 'reference_range': Dictionary with 'start' and 'end' positions
+        """
+        import genomeshader.genomeshader as gs
+        
+        # Parse locus
+        locus_parts = locus.replace(",", "").split(":")
+        if len(locus_parts) != 2:
+            raise ValueError(f"Invalid locus format: {locus}. Expected 'chr:start-stop'")
+        
+        chr = locus_parts[0]
+        range_parts = locus_parts[1].split("-")
+        if len(range_parts) != 2:
+            raise ValueError(f"Invalid locus format: {locus}. Expected 'chr:start-stop'")
+        
+        start = int(range_parts[0])
+        stop = int(range_parts[1])
+        
+        # Extract variants using Rust code (now captures all samples and all genotypes)
+        variants_df = gs._extract_variants(bcf_file, chr, start, stop)
+        
+        # Get all unique samples
+        all_samples = variants_df["sample_name"].unique().to_list()
+        
+        # Set up sample groups
+        if sample_groups is None:
+            sample_groups = {sample: "all" for sample in all_samples}
+        
+        # Get unique positions (one column per position)
+        unique_positions = variants_df["position"].unique().sort().to_list()
+        
+        # Create variant list with genomic coordinates (one per position)
+        variants = []
+        for idx, pos in enumerate(unique_positions):
+            # Get first row for this position to get chromosome and ref allele
+            pos_df = variants_df.filter(pl.col("position") == pos)
+            first_row = pos_df.head(1).iter_rows(named=True).__next__()
+            variants.append({
+                "index": idx,
+                "position": pos,
+                "chromosome": first_row["chromosome"],
+                "ref_allele": first_row["ref_allele"],
+            })
+        
+        # Get reference range
+        ref_start = variants_df["position"].min()
+        ref_end = variants_df["position"].max()
+        
+        # Create sample groups structure
+        group_to_samples = {}
+        for sample, group_name in sample_groups.items():
+            if group_name not in group_to_samples:
+                group_to_samples[group_name] = []
+            group_to_samples[group_name].append(sample)
+        
+        sample_groups_list = [
+            {"name": group_name, "samples": samples, "index": idx}
+            for idx, (group_name, samples) in enumerate(sorted(group_to_samples.items()))
+        ]
+        
+        # For each variant position, create nodes and compute flow
+        columns = []
+        flows = []
+        
+        # First pass: create all columns with nodes
+        for var_idx, variant in enumerate(variants):
+            # Get all samples for this variant position (all alt alleles at this position)
+            var_df = variants_df.filter(pl.col("position") == variant["position"])
+            
+            # Create nodes for this variant column
+            nodes = []
+            node_index_map = {}  # (node_type, group_index) -> node_index
+            
+            # Node types: "nocall", "ref", "alt"
+            # For each node type and each sample group, count samples
+            node_types = ["nocall", "ref", "alt"]
+            
+            for node_type in node_types:
+                for group_idx, group in enumerate(sample_groups_list):
+                    # Filter samples for this group and node type
+                    group_var_df = var_df.filter(pl.col("sample_name").is_in(group["samples"]))
+                    
+                    if node_type == "nocall":
+                        group_samples_df = group_var_df.filter(pl.col("genotype") == "./.")
+                    elif node_type == "ref":
+                        group_samples_df = group_var_df.filter(pl.col("genotype").is_in(["0/0", "0|0"]))
+                    else:  # alt
+                        group_samples_df = group_var_df.filter(
+                            ~pl.col("genotype").is_in(["./.", "0/0", "0|0"])
+                        )
+                    
+                    group_samples = group_samples_df["sample_name"].to_list()
+                    
+                    if len(group_samples) > 0:
+                        node_idx = len(nodes)
+                        nodes.append({
+                            "index": node_idx,
+                            "type": node_type,
+                            "group_index": group_idx,
+                            "group_name": group["name"],
+                            "sample_count": len(group_samples),
+                            "samples": group_samples,
+                        })
+                        node_index_map[(node_type, group_idx)] = node_idx
+            
+            columns.append({
+                "variant_index": var_idx,
+                "position": variant["position"],
+                "nodes": nodes,
+                "node_index_map": node_index_map,  # Keep for flow computation, remove before JSON
+            })
+        
+        # Second pass: compute flows between columns (optimized)
+        # Create a lookup: sample -> group_index
+        sample_to_group_idx = {}
+        for group in sample_groups_list:
+            for sample in group["samples"]:
+                sample_to_group_idx[sample] = group["index"]
+        
+        # Pre-compute node types for all samples at all positions
+        # Add node_type column to variants_df using when/then/otherwise
+        variants_df = variants_df.with_columns([
+            pl.when(pl.col("genotype") == "./.")
+            .then(pl.lit("nocall"))
+            .when(pl.col("genotype").is_in(["0/0", "0|0"]))
+            .then(pl.lit("ref"))
+            .otherwise(pl.lit("alt"))
+            .alias("node_type")
+        ])
+        
+        # Compute flows more efficiently using groupby
+        for var_idx in range(1, len(variants)):
+            prev_var = variants[var_idx - 1]
+            curr_var = variants[var_idx]
+            
+            prev_column = columns[var_idx - 1]
+            curr_column = columns[var_idx]
+            
+            # Get samples with genotypes at both positions
+            prev_pos_df = variants_df.filter(pl.col("position") == prev_var["position"])
+            curr_pos_df = variants_df.filter(pl.col("position") == curr_var["position"])
+            
+            # Get first genotype per sample (in case of multiple alt alleles)
+            # Group by sample and take first row
+            prev_sample_gt = prev_pos_df.group_by("sample_name").first().select(["sample_name", "node_type"])
+            curr_sample_gt = curr_pos_df.group_by("sample_name").first().select(["sample_name", "node_type"])
+            
+            # Join to find samples present at both positions
+            joined = prev_sample_gt.join(
+                curr_sample_gt,
+                on="sample_name",
+                how="inner",
+                suffix="_curr"
+            )
+            
+            # Group by node type transitions and sample groups
+            for row in joined.iter_rows(named=True):
+                sample = row["sample_name"]
+                prev_node_type = row["node_type"]
+                curr_node_type = row["node_type_curr"]
+                
+                # Get sample's group
+                group_idx = sample_to_group_idx.get(sample, 0)
+                
+                # Find source and target nodes
+                prev_node_key = (prev_node_type, group_idx)
+                curr_node_key = (curr_node_type, group_idx)
+                
+                if prev_node_key in prev_column["node_index_map"] and curr_node_key in curr_column["node_index_map"]:
+                    source_node = prev_column["node_index_map"][prev_node_key]
+                    target_node = curr_column["node_index_map"][curr_node_key]
+                    
+                    # Add or update flow
+                    existing_flow = next((f for f in flows if 
+                        f["source_column"] == var_idx - 1 and
+                        f["source_node"] == source_node and
+                        f["target_column"] == var_idx and
+                        f["target_node"] == target_node
+                    ), None)
+                    
+                    if existing_flow:
+                        existing_flow["sample_count"] += 1
+                        if sample not in existing_flow["samples"]:
+                            existing_flow["samples"].append(sample)
+                    else:
+                        sample_group_name = sample_groups.get(sample, "all")
+                        flows.append({
+                            "source_column": var_idx - 1,
+                            "source_node": source_node,
+                            "target_column": var_idx,
+                            "target_node": target_node,
+                            "sample_count": 1,
+                            "samples": [sample],
+                            "group_index": group_idx,
+                            "group_name": sample_group_name,
+                        })
+        
+        # Remove node_index_map from columns before returning (not JSON serializable)
+        for column in columns:
+            if "node_index_map" in column:
+                del column["node_index_map"]
+        
+        return {
+            "variants": variants,
+            "columns": columns,
+            "sample_groups": sample_groups_list,
+            "flows": flows,
+            "reference_range": {
+                "start": ref_start,
+                "end": ref_end,
+            },
+        }
+    
+    def _genotype_to_node_type(self, genotype: str) -> str:
+        """Convert genotype string to node type."""
+        if genotype == "./." or genotype == ".":
+            return "nocall"
+        elif genotype in ["0/0", "0|0"]:
+            return "ref"
+        else:
+            return "alt"
 
     def ideogram(self, contig: str) -> pl.DataFrame:
         # Define the API endpoint with the contig parameter
@@ -2941,6 +3367,1551 @@ setTimeout(initApp, 100);
 
         return html_script
     
+    def render_sankey(
+        self,
+        bcf_file: str = None,
+        locus: str = None,
+        variants_df: pl.DataFrame = None,
+        sample_groups: dict = None,
+        positioning_mode: str = 'variants_only',
+    ) -> str:
+        """
+        Generate HTML/JavaScript for Sankey diagram visualization.
+
+        Parameters:
+            bcf_file (str, optional): Path to BCF file
+            locus (str, optional): Locus string in format 'chr:start-stop'
+            variants_df (pl.DataFrame, optional): Pre-extracted variant DataFrame
+            sample_groups (dict, optional): Dictionary mapping sample names to group IDs
+            positioning_mode (str): 'full' or 'variants_only' (default: 'variants_only')
+
+        Returns:
+            str: HTML script that can be displayed or saved
+        """
+        # Get Sankey data
+        if variants_df is not None:
+            sankey_data = self.get_sankey_data(variants_df, sample_groups=sample_groups)
+        elif bcf_file and locus:
+            sankey_data = self.get_sankey_data_from_bcf(bcf_file, locus, sample_groups=sample_groups)
+        else:
+            raise ValueError("Must provide either variants_df or both bcf_file and locus")
+
+        # Read JavaScript files
+        script_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'html')
+        webgpu_core_path = os.path.join(script_dir, 'webgpu-core.js')
+        sankey_renderer_path = os.path.join(script_dir, 'sankey-renderer.js')
+        text_renderer_path = os.path.join(script_dir, 'text-renderer.js')
+
+        with open(webgpu_core_path, 'r') as f:
+            webgpu_core_js = f.read()
+        with open(sankey_renderer_path, 'r') as f:
+            sankey_renderer_js = f.read()
+        with open(text_renderer_path, 'r') as f:
+            text_renderer_js = f.read()
+
+        # Compress Sankey data
+        sankey_data_json = json.dumps(sankey_data)
+        compressed_data = gzip.compress(sankey_data_json.encode('utf-8'))
+        encoded_data = base64.b64encode(compressed_data).decode('utf-8')
+
+        # Generate HTML
+        inner_style = """
+body {
+    display: grid;
+    grid-template-areas: 
+        "main main aside"
+        "footer footer aside";
+    grid-template-rows: 1fr auto;
+    grid-template-columns: 1fr auto;
+    height: 100vh;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+main {
+    grid-area: main;
+    height: calc(100vh - 40px);
+    cursor: default;
+}
+main.panning {
+    cursor: grabbing;
+    user-select: none;
+}
+aside {
+    grid-area: aside;
+    transition: width 0.3s;
+    background-color: #cccccc;
+    border-left: 1px solid #bbbbbb;
+    max-width: 300px;
+    width: 0;
+    overflow: hidden;
+}
+footer {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    height: 20px;
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    color: #989898;
+    font-family: Helvetica;
+    font-size: 10pt;
+    opacity: 0;
+    transition: opacity 0.3s ease-in-out;
+    pointer-events: none;
+    background-color: rgba(255, 255, 255, 0.9);
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+footer.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+.status-bar {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    font-family: 'Courier New', monospace;
+    font-size: 9pt;
+}
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+.status-label {
+    color: #666666;
+    font-weight: normal;
+}
+.status-value {
+    color: #333333;
+    font-weight: bold;
+}
+.context-menu {
+    display: none;
+    position: fixed;
+    background-color: #ffffff;
+    border: 1px solid #cccccc;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    min-width: 180px;
+    padding: 4px 0;
+    font-family: Helvetica;
+    font-size: 11pt;
+}
+.context-menu-item {
+    padding: 8px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #333333;
+}
+.context-menu-item:hover {
+    background-color: #f0f0f0;
+}
+.context-menu-separator {
+    height: 1px;
+    background-color: #e0e0e0;
+    margin: 4px 0;
+}
+        """
+
+        inner_body = """
+<main style="width: 100%;">
+<footer>
+    <div class="status-bar" id="statusBar">
+        <div class="status-item">
+            <span class="status-label">Variant:</span>
+            <span class="status-value" id="variantInfo">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Render:</span>
+            <span class="status-value" id="renderTime">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Nodes:</span>
+            <span class="status-value" id="nodeCount">--</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Edges:</span>
+            <span class="status-value" id="edgeCount">--</span>
+        </div>
+    </div>
+</footer>
+</main>
+
+<aside>
+<div class="tab-bar">
+    <span class="tab-name">Controls</span>
+</div>
+<div class="tab-content-info">
+    <div style="margin-bottom: 10px;">
+        <label>Positioning Mode:</label>
+        <select id="positioningMode" onchange="togglePositioningMode()">
+            <option value="variants_only">Variants Only</option>
+            <option value="full">Full (with reference bases)</option>
+        </select>
+    </div>
+    <div style="margin-bottom: 10px;">
+        <button onclick="startForceSimulation()">Start Force Simulation</button>
+    </div>
+</div>
+</aside>
+
+<div id="contextMenu" class="context-menu">
+    <div class="context-menu-item" onclick="togglePositioningMode(); hideContextMenu();">
+        <span>Toggle Positioning Mode</span>
+    </div>
+    <div class="context-menu-item" onclick="startForceSimulation(); hideContextMenu();">
+        <span>Start Force Simulation</span>
+    </div>
+</div>
+        """
+
+        inner_script = """
+let statusBarHideTimeout = null;
+
+function showStatusBar() {
+    const footer = document.querySelector('footer');
+    if (footer) {
+        footer.classList.add('visible');
+        if (statusBarHideTimeout) {
+            clearTimeout(statusBarHideTimeout);
+        }
+        statusBarHideTimeout = setTimeout(() => {
+            hideStatusBar();
+        }, 5000);
+    }
+}
+
+function hideStatusBar() {
+    const footer = document.querySelector('footer');
+    if (footer) {
+        footer.classList.remove('visible');
+    }
+    if (statusBarHideTimeout) {
+        clearTimeout(statusBarHideTimeout);
+        statusBarHideTimeout = null;
+    }
+}
+
+window.showStatusBar = showStatusBar;
+window.hideStatusBar = hideStatusBar;
+
+function togglePositioningMode() {
+    const select = document.getElementById('positioningMode');
+    const mode = select ? select.value : 'variants_only';
+    if (window.sankeyRenderer) {
+        window.sankeyRenderer.setPositioningMode(mode);
+        repaint();
+    }
+}
+
+function startForceSimulation() {
+    if (window.sankeyRenderer) {
+        window.sankeyRenderer.startForceSimulation();
+        // Continue rendering to animate
+        const animate = () => {
+            if (window.sankeyRenderer.forceSimulation.running) {
+                repaint();
+                requestAnimationFrame(animate);
+            }
+        };
+        animate();
+    }
+}
+
+function showContextMenu(event) {
+    event.preventDefault();
+    const contextMenu = document.getElementById('contextMenu');
+    contextMenu.style.display = 'block';
+    contextMenu.style.left = event.pageX + 'px';
+    contextMenu.style.top = event.pageY + 'px';
+    
+    const rect = contextMenu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+        contextMenu.style.left = (event.pageX - rect.width) + 'px';
+    }
+    if (rect.bottom > window.innerHeight) {
+        contextMenu.style.top = (event.pageY - rect.height) + 'px';
+    }
+}
+
+function hideContextMenu() {
+    const contextMenu = document.getElementById('contextMenu');
+    contextMenu.style.display = 'none';
+}
+
+document.addEventListener('contextmenu', function(e) {
+    const target = e.target;
+    if (target.closest('main') && !target.closest('footer') && !target.closest('aside')) {
+        showContextMenu(e);
+    }
+});
+
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('#contextMenu')) {
+        hideContextMenu();
+    }
+});
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        hideContextMenu();
+    }
+});
+        """
+
+        # Process JavaScript files to remove ES module syntax
+        webgpu_core_processed = webgpu_core_js.replace('export class WebGPUCore', 'class WebGPUCore')
+        sankey_renderer_processed = sankey_renderer_js.replace('import { WebGPUCore } from \'./webgpu-core.js\';', '').replace('export class SankeyRenderer', 'class SankeyRenderer')
+        text_renderer_processed = text_renderer_js.replace('import { WebGPUCore } from \'./webgpu-core.js\';', '').replace('export class TextRenderer', 'class TextRenderer')
+        
+        # Create the main application module using string concatenation to avoid f-string brace issues
+        inner_module = """
+// Import modules (we'll inline them since we can't use ES modules in this context)
+""" + webgpu_core_processed + """
+
+""" + sankey_renderer_processed + """
+
+""" + text_renderer_processed + """
+
+// Initialize window.data
+if (!window.data) {
+    window.data = {};
+}
+
+// Decompress and load Sankey data
+import pako from 'https://cdn.skypack.dev/pako@2.1.0';
+
+function decompressEncodedData(encodedData) {
+    const binaryString = atob(encodedData);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    const decompressed = pako.inflate(bytes, { to: 'string' });
+    return JSON.parse(decompressed);
+}
+
+const encodedData = '""" + encoded_data + """';
+window.data.sankey = decompressEncodedData(encodedData);
+window.data._ready = true;
+
+// WebGPU rendering system
+let webgpuCore = null;
+let sankeyRenderer = null;
+let textRenderer = null;
+let canvas = null;
+
+// Function to initialize and render the Sankey application
+async function renderApp() {
+    try {
+        if (!window.data || !window.data.sankey) {
+            console.error('Sankey data is not available');
+            return;
+        }
+
+        const main = document.querySelector('main');
+        if (!main) {
+            console.error('main element not found');
+            return;
+        }
+
+        // Create canvas
+        canvas = document.createElement('canvas');
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
+        canvas.style.display = 'block';
+        main.appendChild(canvas);
+
+        // Initialize WebGPU
+        webgpuCore = new WebGPUCore();
+        await webgpuCore.init(canvas);
+        
+        // Initialize Sankey renderer
+        sankeyRenderer = new SankeyRenderer(webgpuCore);
+        window.sankeyRenderer = sankeyRenderer;
+        
+        // Initialize Text renderer
+        textRenderer = new TextRenderer(webgpuCore);
+        window.textRenderer = textRenderer;
+        
+        // Set data
+        sankeyRenderer.setData(
+            window.data.sankey.variants,
+            window.data.sankey.edges,
+            window.data.sankey.samples,
+            window.data.sankey.reference_range
+        );
+        
+        // Set positioning mode
+        sankeyRenderer.setPositioningMode('""" + positioning_mode + """');
+        
+        // Set initial mode in UI
+        const select = document.getElementById('positioningMode');
+        if (select) {
+            select.value = '""" + positioning_mode + """';
+        }
+
+        // Center the view on the diagram
+        if (sankeyRenderer.nodePositions.length > 0) {
+            const firstNode = sankeyRenderer.nodePositions[0];
+            const lastNode = sankeyRenderer.nodePositions[sankeyRenderer.nodePositions.length - 1];
+            const centerX = (firstNode.x + lastNode.x) / 2;
+            const centerY = (firstNode.y + lastNode.y) / 2;
+            
+            const canvas = webgpuCore.canvas;
+            const canvasCenterX = canvas.clientWidth / 2;
+            const canvasCenterY = canvas.clientHeight / 2;
+            
+            // Set initial pan to center the diagram
+            sankeyRenderer.setPan(canvasCenterX - centerX, canvasCenterY - centerY);
+        }
+
+        // Listen for window resize
+        window.addEventListener('resize', debounce(resize));
+
+        await repaint();
+    } catch (error) {
+        console.error('Error in renderApp:', error);
+        alert('Failed to initialize visualization: ' + error.message);
+    }
+}
+
+function debounce(func) {
+    var timer;
+    return function(event){
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(func, 100, event);
+    };
+}
+
+function resize() {
+    repaint();
+}
+
+window.repaint = async function repaint() {
+    if (!webgpuCore || !sankeyRenderer || !textRenderer) return;
+    
+    const renderStartTime = performance.now();
+    
+    const main = document.querySelector('main');
+    if (!main) return;
+
+    // Handle resize
+    webgpuCore.handleResize();
+    
+    // Update node positions in case canvas size changed
+    sankeyRenderer.updateNodePositions();
+    
+    // Clear text renderer
+    textRenderer.clear();
+    
+    // Add text labels for nodes (only if zoomed in enough and visible on screen)
+    if (window.data && window.data.sankey && window.data.sankey.variants && sankeyRenderer.zoom > 0.3) {
+        const canvas = webgpuCore.canvas;
+        const canvasWidth = canvas.clientWidth;
+        const canvasHeight = canvas.clientHeight;
+        
+        // Use a fixed font size to reduce texture creation
+        const fontSize = 12;
+        const labelOffset = 30;
+        
+        for (let i = 0; i < sankeyRenderer.nodePositions.length; i++) {
+            const pos = sankeyRenderer.nodePositions[i];
+            if (!pos) continue;
+            
+            const variant = window.data.sankey.variants[i];
+            if (!variant || !variant.chromosome || !variant.position) continue;
+            
+            // Apply pan and zoom transform
+            const transformedX = (pos.x * sankeyRenderer.zoom) + sankeyRenderer.panX;
+            const transformedY = (pos.y * sankeyRenderer.zoom) + sankeyRenderer.panY;
+            
+            // Only render labels that are visible on screen (with some margin)
+            const margin = 100;
+            if (transformedX < -margin || transformedX > canvasWidth + margin ||
+                transformedY < -margin || transformedY > canvasHeight + margin) {
+                continue; // Skip off-screen labels
+            }
+            
+            // Position label below the node
+            const nodeHeight = 25;
+            const labelY = transformedY + (nodeHeight / 2) + 5;
+            
+            // Create simple label: just chromosome and position
+            const labelText = String(variant.chromosome) + ':' + String(variant.position);
+            
+            // Only render if text is not empty
+            if (!labelText || labelText === ':') {
+                continue;
+            }
+            
+            try {
+                // Render text to get its dimensions first
+                const textureData = await textRenderer.renderTextToTexture(labelText, {
+                    fontFamily: 'Helvetica',
+                    fontSize: fontSize,
+                    fontWeight: 'normal',
+                    fill: '#000000',
+                    align: 'center',
+                });
+                
+                // Position text centered horizontally at transformedX, with top at labelY
+                textRenderer.textInstances.push({
+                    position: [transformedX, labelY + textureData.height / 2],
+                    size: [textureData.width, textureData.height],
+                    texCoord: [0, 0],
+                    texSize: [1, 1],
+                    textureData: textureData,
+                });
+            } catch (error) {
+                // If texture creation fails, skip this label
+                console.warn('Failed to create text texture for label:', labelText, error);
+                continue;
+            }
+        }
+    }
+    
+    // Render ruler labels first (async)
+    const rulerLabels = [];
+    if (window.data && window.data.sankey && window.data.sankey.reference_range) {
+        const range = window.data.sankey.reference_range.end - window.data.sankey.reference_range.start;
+        if (range > 0) {
+            const canvas = webgpuCore.canvas;
+            const canvasWidth = canvas.clientWidth;
+            const visibleStartX = -sankeyRenderer.panX / sankeyRenderer.zoom;
+            const visibleEndX = (canvasWidth - sankeyRenderer.panX) / sankeyRenderer.zoom;
+            const pixelsPerBase = (canvasWidth / sankeyRenderer.zoom) / range;
+            const visibleStartPos = window.data.sankey.reference_range.start + (visibleStartX / pixelsPerBase);
+            const visibleEndPos = window.data.sankey.reference_range.start + (visibleEndX / pixelsPerBase);
+            
+            // Calculate tick intervals
+            const visibleRange = visibleEndPos - visibleStartPos;
+            let tickInterval = 1;
+            if (visibleRange > 1000000) {
+                tickInterval = 100000;
+            } else if (visibleRange > 100000) {
+                tickInterval = 10000;
+            } else if (visibleRange > 10000) {
+                tickInterval = 1000;
+            } else if (visibleRange > 1000) {
+                tickInterval = 100;
+            } else if (visibleRange > 100) {
+                tickInterval = 10;
+            }
+            
+            const firstTick = Math.ceil(visibleStartPos / tickInterval) * tickInterval;
+            const rulerY = sankeyRenderer.rulerHeight - 10;
+            
+            for (let pos = firstTick; pos <= visibleEndPos; pos += tickInterval) {
+                const x = ((pos - window.data.sankey.reference_range.start) * pixelsPerBase * sankeyRenderer.zoom) + sankeyRenderer.panX;
+                if (x < 0 || x > canvasWidth) continue;
+                if ((pos / tickInterval) % 5 === 0) {
+                    rulerLabels.push({ x: x, y: rulerY - 23, text: pos.toLocaleString() });
+                }
+            }
+        }
+    }
+    
+    // Render ruler labels
+    for (const label of rulerLabels) {
+        try {
+            const textureData = await textRenderer.renderTextToTexture(label.text, {
+                fontFamily: 'Helvetica',
+                fontSize: 10,
+                fontWeight: 'normal',
+                fill: '#000000',
+                align: 'center',
+            });
+            textRenderer.textInstances.push({
+                position: [label.x, label.y + textureData.height / 2],
+                size: [textureData.width, textureData.height],
+                texCoord: [0, 0],
+                texSize: [1, 1],
+                textureData: textureData,
+            });
+        } catch (error) {
+            console.warn('Failed to create ruler label:', error);
+        }
+    }
+    
+    // Render in order: ruler, edges (ribbons), nodes, labels
+    const encoder = webgpuCore.createCommandEncoder();
+    const texture = webgpuCore.getCurrentTexture();
+    const renderPass = encoder.beginRenderPass({
+        colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+        }],
+    });
+    
+    // 1. Render ruler (axis and ticks)
+    sankeyRenderer.renderRuler(encoder, renderPass, textRenderer);
+    
+    // 2. Render edges (ribbons) - behind nodes
+    sankeyRenderer.render(encoder, renderPass);
+    
+    // 3. Render nodes (rectangles) - on top of edges
+    sankeyRenderer.renderNodes(encoder, renderPass);
+    
+    // 4. Render text labels (ruler labels and node labels)
+    textRenderer.render(encoder, renderPass);
+    
+    renderPass.end();
+    webgpuCore.submit([encoder.finish()]);
+    
+    // Update status bar
+    const renderEndTime = performance.now();
+    const renderTime = renderEndTime - renderStartTime;
+    const stats = sankeyRenderer.getStats();
+    
+    const renderTimeEl = document.getElementById('renderTime');
+    const nodeCountEl = document.getElementById('nodeCount');
+    const edgeCountEl = document.getElementById('edgeCount');
+    
+    if (renderTimeEl) {
+        renderTimeEl.textContent = renderTime.toFixed(2) + ' ms';
+    }
+    if (nodeCountEl) {
+        nodeCountEl.textContent = stats.nodes.toLocaleString();
+    }
+    if (edgeCountEl) {
+        edgeCountEl.textContent = stats.edges.toLocaleString();
+    }
+    
+    showStatusBar();
+}
+
+// Interaction state
+let selectedVariantIndex = null;
+let highlightedEdges = new Set();
+
+// Mouse hover to show variant info
+document.addEventListener('mousemove', function(e) {
+    if (!sankeyRenderer || !window.data || !window.data.sankey) return;
+    
+    const main = document.querySelector('main');
+    if (!main) return;
+    
+    const rect = main.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    // Transform mouse coordinates back to original space (account for pan/zoom)
+    const x = (mouseX - sankeyRenderer.panX) / sankeyRenderer.zoom;
+    const y = (mouseY - sankeyRenderer.panY) / sankeyRenderer.zoom;
+    
+    // Check if mouse is over a node
+    let hoveredVariant = null;
+    let hoveredIndex = -1;
+    for (let i = 0; i < sankeyRenderer.nodePositions.length; i++) {
+        const pos = sankeyRenderer.nodePositions[i];
+        if (!pos) continue;
+        
+        const nodeWidth = 40;
+        const nodeHeight = 40;
+        if (x >= pos.x - nodeWidth/2 && x <= pos.x + nodeWidth/2 &&
+            y >= pos.y - nodeHeight/2 && y <= pos.y + nodeHeight/2) {
+            hoveredVariant = window.data.sankey.variants[i];
+            hoveredIndex = i;
+            break;
+        }
+    }
+    
+    const variantInfoEl = document.getElementById('variantInfo');
+    if (variantInfoEl) {
+        if (hoveredVariant) {
+            variantInfoEl.textContent = hoveredVariant.chromosome + ':' + hoveredVariant.position;
+        } else {
+            variantInfoEl.textContent = '--';
+        }
+    }
+    
+    if (hoveredVariant) {
+        showStatusBar();
+    }
+});
+
+// Click to highlight connected variants and edges
+document.addEventListener('click', function(e) {
+    if (!sankeyRenderer || !window.data || !window.data.sankey) return;
+    
+    const main = document.querySelector('main');
+    if (!main) return;
+    
+    const rect = main.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    // Transform mouse coordinates back to original space (account for pan/zoom)
+    const x = (mouseX - sankeyRenderer.panX) / sankeyRenderer.zoom;
+    const y = (mouseY - sankeyRenderer.panY) / sankeyRenderer.zoom;
+    
+    // Check if clicked on a node
+    let clickedIndex = -1;
+    for (let i = 0; i < sankeyRenderer.nodePositions.length; i++) {
+        const pos = sankeyRenderer.nodePositions[i];
+        if (!pos) continue;
+        
+        const nodeWidth = 40;
+        const nodeHeight = 40;
+        if (x >= pos.x - nodeWidth/2 && x <= pos.x + nodeWidth/2 &&
+            y >= pos.y - nodeHeight/2 && y <= pos.y + nodeHeight/2) {
+            clickedIndex = i;
+            break;
+        }
+    }
+    
+    if (clickedIndex >= 0) {
+        selectedVariantIndex = clickedIndex;
+        window.selectedVariantIndex = selectedVariantIndex;
+        highlightedEdges.clear();
+        window.highlightedEdges = highlightedEdges;
+        
+        // Find all edges connected to this variant
+        for (let i = 0; i < window.data.sankey.edges.length; i++) {
+            const edge = window.data.sankey.edges[i];
+            if (edge.source === clickedIndex || edge.target === clickedIndex) {
+                highlightedEdges.add(i);
+            }
+        }
+        window.highlightedEdges = highlightedEdges;
+        
+        repaint();
+    } else {
+        // Clicked outside, clear selection
+        selectedVariantIndex = null;
+        window.selectedVariantIndex = null;
+        highlightedEdges.clear();
+        window.highlightedEdges = new Set();
+        repaint();
+    }
+});
+
+// Zoom and pan
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+
+document.addEventListener('mousedown', function(e) {
+    if (e.button === 0 && e.target.closest('main') && !e.target.closest('footer') && !e.target.closest('aside')) {
+        isPanning = true;
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        const main = document.querySelector('main');
+        if (main) {
+            main.classList.add('panning');
+        }
+        e.preventDefault();
+    }
+});
+
+document.addEventListener('mousemove', function(e) {
+    if (isPanning && sankeyRenderer) {
+        // Pan using renderer's pan method
+        const deltaX = (e.clientX - panStartX) * 0.5;
+        const deltaY = (e.clientY - panStartY) * 0.5;
+        
+        sankeyRenderer.pan(deltaX, deltaY);
+        
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        repaint();
+    }
+});
+
+document.addEventListener('mouseup', function(e) {
+    if (isPanning && e.button === 0) {
+        isPanning = false;
+        const main = document.querySelector('main');
+        if (main) {
+            main.classList.remove('panning');
+        }
+    }
+});
+
+// Zoom with wheel (non-passive to allow preventDefault)
+document.addEventListener('wheel', function(e) {
+    if (!sankeyRenderer) return;
+    
+    e.preventDefault();
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+    
+    // Zoom around mouse position
+    const main = document.querySelector('main');
+    if (!main) return;
+    const rect = main.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    sankeyRenderer.zoomAt(x, y, zoomFactor);
+    
+    repaint();
+}, { passive: false });
+
+// Initialize app
+function initApp() {
+    if (!window.data || !window.data._ready) {
+        setTimeout(initApp, 50);
+        return;
+    }
+    
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            renderApp().catch(err => {
+                console.error('Error initializing WebGPU:', err);
+                alert('Failed to initialize WebGPU: ' + err.message);
+            });
+        });
+    } else {
+        renderApp().catch(err => {
+            console.error('Error initializing WebGPU:', err);
+            alert('Failed to initialize WebGPU: ' + err.message);
+        });
+    }
+}
+
+setTimeout(initApp, 100);
+
+// Context menu handlers
+function togglePositioningMode() {
+    if (!sankeyRenderer) return;
+    const newMode = sankeyRenderer.positioningMode === 'full' ? 'variants_only' : 'full';
+    sankeyRenderer.setPositioningMode(newMode);
+    
+    // Update UI
+    const select = document.getElementById('positioningMode');
+    if (select) {
+        select.value = newMode;
+    }
+    
+    repaint();
+}
+
+function startForceSimulation() {
+    if (!sankeyRenderer) return;
+    sankeyRenderer.startForceSimulation();
+    repaint();
+}
+        """
+
+        # Encode strings for HTML embedding
+        encoded_style = json.dumps(inner_style)
+        encoded_body = json.dumps(inner_body)
+        encoded_script = json.dumps(inner_script)
+        encoded_module = json.dumps(inner_module)
+
+        # Generate HTML script
+        html_script = f"""
+<script>
+(async function() {{
+    var width = 0.8 * window.screen.width;
+    var height = 0.65 * window.screen.height;
+    var newWindow = window.open("", "newWindow", "width=" + width + ",height=" + height + ",scrollbars=no,menubar=no,toolbar=no,status=no");
+    if (!newWindow) return;
+
+    newWindow.document.title = "genomeshader - Sankey Diagram";
+    newWindow.document.body.innerHTML = {encoded_body};
+    
+    var style = document.createElement('style');
+    style.innerHTML = {encoded_style};
+    newWindow.document.head.appendChild(style);
+    
+    var script = document.createElement('script');
+    script.innerHTML = {encoded_script};
+    newWindow.document.body.appendChild(script);
+
+    var data = document.createElement('script');    
+    data.type = "module";
+    data.defer = true;
+    data.innerHTML = {encoded_module};
+    newWindow.document.body.appendChild(data);
+}})();
+</script>
+        """
+
+        return html_script
+
+    def render_tubemap(
+        self,
+        bcf_file: str = None,
+        locus: str = None,
+        variants_df: pl.DataFrame = None,
+        sample_groups: dict = None,
+    ) -> str:
+        """
+        Generate HTML/JavaScript for Tube Map visualization.
+        
+        Parameters:
+            bcf_file (str, optional): Path to BCF file
+            locus (str, optional): Locus string in format 'chr:start-stop'
+            variants_df (pl.DataFrame, optional): Pre-extracted variant DataFrame
+            sample_groups (dict, optional): Dictionary mapping sample names to group names
+        
+        Returns:
+            str: HTML script that can be displayed or saved
+        """
+        # Get Tube Map data
+        if variants_df is not None:
+            # For now, require bcf_file and locus for tubemap
+            raise ValueError("tubemap visualization requires bcf_file and locus (not variants_df)")
+        elif bcf_file and locus:
+            tubemap_data = self.get_tubemap_data_from_bcf(bcf_file, locus, sample_groups=sample_groups)
+        else:
+            raise ValueError("Must provide both bcf_file and locus")
+        
+        # Get ideogram and gene data
+        chr = locus.split(":")[0].replace(",", "")
+        start = int(locus.split(":")[1].split("-")[0].replace(",", ""))
+        end = int(locus.split(":")[1].split("-")[1].replace(",", ""))
+        
+        ideogram_data = self.ideogram(chr)
+        gene_data = self.genes(chr, start, end)
+        
+        # Read JavaScript files
+        script_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'html')
+        webgpu_core_path = os.path.join(script_dir, 'webgpu-core.js')
+        text_renderer_path = os.path.join(script_dir, 'text-renderer.js')
+        tubemap_renderer_path = os.path.join(script_dir, 'tubemap-renderer.js')
+        
+        with open(webgpu_core_path, 'r') as f:
+            webgpu_core_js = f.read()
+        with open(text_renderer_path, 'r') as f:
+            text_renderer_js = f.read()
+        with open(tubemap_renderer_path, 'r') as f:
+            tubemap_renderer_js = f.read()
+        
+        # Process JavaScript files to remove export/import statements
+        webgpu_core_processed = webgpu_core_js.replace('export class WebGPUCore', 'class WebGPUCore')
+        tubemap_renderer_processed = tubemap_renderer_js.replace('import { WebGPUCore } from \'./webgpu-core.js\';', '').replace('export class TubemapRenderer', 'class TubemapRenderer')
+        text_renderer_processed = text_renderer_js.replace('import { WebGPUCore } from \'./webgpu-core.js\';', '').replace('export class TextRenderer', 'class TextRenderer')
+        
+        # Compress data
+        tubemap_data_json = json.dumps(tubemap_data)
+        compressed_data = gzip.compress(tubemap_data_json.encode('utf-8'))
+        encoded_data = base64.b64encode(compressed_data).decode('utf-8')
+        
+        ideogram_data_compressed = gzip.compress(ideogram_data.encode('utf-8'))
+        ideogram_data_encoded = base64.b64encode(ideogram_data_compressed).decode('utf-8')
+        
+        gene_data_compressed = gzip.compress(gene_data.encode('utf-8'))
+        gene_data_encoded = base64.b64encode(gene_data_compressed).decode('utf-8')
+        
+        # Generate HTML with new layout
+        inner_style = """
+body {
+    display: grid;
+    grid-template-areas: 
+        "ideogram ideogram"
+        "genes genes"
+        "ruler ruler"
+        "sankey-left sankey-main";
+    grid-template-rows: 80px 120px 60px 1fr;
+    grid-template-columns: 200px 1fr;
+    height: 100vh;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: Helvetica, Arial, sans-serif;
+}
+#ideogram-section {
+    grid-area: ideogram;
+    background-color: #f5f5f5;
+    border-bottom: 1px solid #ddd;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+#genes-section {
+    grid-area: genes;
+    background-color: #ffffff;
+    border-bottom: 1px solid #ddd;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+#ruler-section {
+    grid-area: ruler;
+    background-color: #ffffff;
+    border-bottom: 1px solid #ddd;
+    overflow-x: auto;
+    overflow-y: hidden;
+    position: relative;
+}
+#sankey-left {
+    grid-area: sankey-left;
+    background-color: #f0f0f0;
+    border-right: 1px solid #ddd;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+#sankey-main {
+    grid-area: sankey-main;
+    background-color: #ffffff;
+    overflow: auto;
+    position: relative;
+}
+.sample-group-item {
+    padding: 8px 12px;
+    border-bottom: 1px solid #e0e0e0;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+.sample-group-item:hover {
+    background-color: #e8e8e8;
+}
+.sample-group-name {
+    font-weight: bold;
+    color: #333;
+    font-size: 12pt;
+}
+.sample-group-count {
+    font-size: 0.9em;
+    color: #666;
+    margin-top: 4px;
+}
+.context-menu-item {
+    transition: background-color 0.15s ease;
+}
+.context-menu-item:hover {
+    background-color: #f0f0f0;
+}
+        """
+        
+        inner_body = f"""
+<div id="ideogram-section"></div>
+<div id="genes-section"></div>
+<div id="ruler-section">
+    <canvas id="ruler-canvas" style="width: 100%; height: 100%;"></canvas>
+</div>
+<div id="sankey-left">
+    <div style="padding: 10px; font-weight: bold; border-bottom: 1px solid #ccc;">Sample Groups</div>
+    <div id="sample-groups-list"></div>
+</div>
+<div id="sankey-main">
+    <canvas id="sankey-canvas" style="width: 100%; height: 100%;"></canvas>
+</div>
+<footer id="statusBar" style="display: none; position: fixed; bottom: 10px; right: 10px; background: rgba(255,255,255,0.9); padding: 8px 12px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    <div style="font-size: 10pt; color: #666;">
+        <span id="variantInfo">--</span> | 
+        <span id="renderTime">--</span>
+    </div>
+</footer>
+<div id="contextMenu" class="context-menu" style="display: none; position: fixed; background: white; border: 1px solid #ccc; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 1000; min-width: 180px; padding: 4px 0;">
+    <div class="context-menu-item" onclick="changeSampleGrouping('all'); hideContextMenu();" style="padding: 8px 16px; cursor: pointer;">All Samples</div>
+    <div class="context-menu-item" onclick="changeSampleGrouping('custom'); hideContextMenu();" style="padding: 8px 16px; cursor: pointer;">Custom Grouping...</div>
+</div>
+        """
+        
+        # Create inner_script (UI helper functions)
+        inner_script = """
+let statusBarHideTimeout = null;
+
+function showStatusBar() {
+    const statusBar = document.getElementById('statusBar');
+    if (statusBar) {
+        statusBar.style.display = 'block';
+    }
+    if (statusBarHideTimeout) {
+        clearTimeout(statusBarHideTimeout);
+    }
+    statusBarHideTimeout = setTimeout(() => {
+        const statusBar = document.getElementById('statusBar');
+        if (statusBar) {
+            statusBar.style.display = 'none';
+        }
+    }, 3000);
+}
+        """
+        
+        # Create inner_data (data loading module)
+        # Use JSON.stringify to safely embed the base64 strings
+        inner_data_template = """
+import pako from 'https://cdn.skypack.dev/pako@2.1.0';
+
+function decompressEncodedData(encodedData) {
+    const binaryString = atob(encodedData);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    const decompressed = pako.inflate(bytes, { to: 'string' });
+    return JSON.parse(decompressed);
+}
+
+// Initialize window.data
+if (!window.data) {
+    window.data = {};
+}
+
+const encodedTubemapData = ENCODED_TUBEMAP_DATA_PLACEHOLDER;
+const encodedIdeogramData = ENCODED_IDEOGRAM_DATA_PLACEHOLDER;
+const encodedGeneData = ENCODED_GENE_DATA_PLACEHOLDER;
+
+window.data.tubemap = decompressEncodedData(encodedTubemapData);
+window.data.ideogram = decompressEncodedData(encodedIdeogramData);
+window.data.genes = decompressEncodedData(encodedGeneData);
+window.data._ready = true;
+        """
+        
+        # Replace placeholders with JSON-stringified values (which will be properly escaped)
+        inner_data = inner_data_template.replace(
+            'ENCODED_TUBEMAP_DATA_PLACEHOLDER', json.dumps(encoded_data)
+        ).replace(
+            'ENCODED_IDEOGRAM_DATA_PLACEHOLDER', json.dumps(ideogram_data_encoded)
+        ).replace(
+            'ENCODED_GENE_DATA_PLACEHOLDER', json.dumps(gene_data_encoded)
+        )
+        
+        # Create inner_module (main application code)
+        inner_module = """
+// Import modules (we'll inline them since we can't use ES modules in this context)
+""" + webgpu_core_processed + """
+
+""" + tubemap_renderer_processed + """
+
+""" + text_renderer_processed + """
+
+// WebGPU rendering system
+let webgpuCore = null;
+let tubemapRenderer = null;
+let textRenderer = null;
+let sankeyCanvas = null;
+let rulerCanvas = null;
+
+// Function to initialize and render the Tube Map application
+async function renderApp() {{
+    try {{
+        if (!window.data || !window.data.tubemap) {{
+            console.error('Tube Map data is not available');
+            return;
+        }}
+
+        // Initialize WebGPU for Sankey canvas
+        sankeyCanvas = document.getElementById('sankey-canvas');
+        if (!sankeyCanvas) {{
+            console.error('Sankey canvas not found');
+            return;
+        }}
+
+        webgpuCore = new WebGPUCore();
+        await webgpuCore.init(sankeyCanvas);
+        
+        // Initialize Tube Map renderer
+        tubemapRenderer = new TubemapRenderer(webgpuCore);
+        window.tubemapRenderer = tubemapRenderer;
+        
+        // Initialize Text renderer
+        textRenderer = new TextRenderer(webgpuCore);
+        window.textRenderer = textRenderer;
+        
+        // Set data
+        tubemapRenderer.setData(
+            window.data.tubemap,
+            window.data.ideogram,
+            window.data.genes
+        );
+        
+        // Populate sample groups list
+        const sampleGroupsList = document.getElementById('sample-groups-list');
+        if (sampleGroupsList && window.data.tubemap.sample_groups) {{
+            sampleGroupsList.innerHTML = '';
+            for (const group of window.data.tubemap.sample_groups) {{
+                const item = document.createElement('div');
+                item.className = 'sample-group-item';
+                item.innerHTML = `
+                    <div class="sample-group-name">${{group.name}}</div>
+                    <div class="sample-group-count">${{group.samples.length}} samples</div>
+                `;
+                sampleGroupsList.appendChild(item);
+            }}
+        }}
+
+        // Listen for window resize
+        window.addEventListener('resize', debounce(resize));
+
+        await repaint();
+    }} catch (error) {{
+        console.error('Error in renderApp:', error);
+        alert('Failed to initialize visualization: ' + error.message);
+    }}
+}}
+
+function debounce(func) {{
+    var timer;
+    return function(event){{
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(func, 100, event);
+    }};
+}}
+
+function resize() {{
+    repaint();
+}}
+
+window.repaint = async function repaint() {{
+    if (!webgpuCore || !tubemapRenderer || !textRenderer) return;
+    
+    const renderStartTime = performance.now();
+    
+    // Handle resize
+    webgpuCore.handleResize();
+    
+    // Update layout in case canvas size changed
+    tubemapRenderer.updateLayout();
+    
+    // Update visible columns - only update Sankey if columns changed
+    const sankeyNeedsUpdate = tubemapRenderer.updateVisibleColumns();
+    
+    // Always update connectors (they update in real-time)
+    // But only update Sankey if columns entered/exited viewport
+    if (!sankeyNeedsUpdate && !tubemapRenderer.visibleColumns.size) {{
+        // Initialize visible columns on first render
+        tubemapRenderer.updateVisibleColumns();
+    }}
+    
+    // Clear text renderer
+    textRenderer.clear();
+    
+    // Render in order: ideogram, genes, ruler, connectors, Sankey
+    const encoder = webgpuCore.createCommandEncoder();
+    const texture = webgpuCore.getCurrentTexture();
+    const renderPass = encoder.beginRenderPass({{
+        colorAttachments: [{{
+            view: texture.createView(),
+            clearValue: {{ r: 1.0, g: 1.0, b: 1.0, a: 1.0 }},
+            loadOp: 'clear',
+            storeOp: 'store',
+        }}],
+    }});
+    
+    // Render all components
+    tubemapRenderer.render(encoder, renderPass, textRenderer);
+    
+    // Render text labels
+    textRenderer.render(encoder, renderPass);
+    
+    renderPass.end();
+    webgpuCore.submit([encoder.finish()]);
+    
+    // Update status bar
+    const renderEndTime = performance.now();
+    const renderTime = renderEndTime - renderStartTime;
+    
+    const renderTimeEl = document.getElementById('renderTime');
+    if (renderTimeEl) {{
+        renderTimeEl.textContent = renderTime.toFixed(2) + ' ms';
+    }}
+    
+    const statusBar = document.getElementById('statusBar');
+    if (statusBar) {{
+        statusBar.style.display = 'block';
+    }}
+}}
+
+// Pan and zoom with debouncing for performance
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+let repaintTimer = null;
+
+function debouncedRepaint() {{
+    if (repaintTimer) {{
+        clearTimeout(repaintTimer);
+    }}
+    repaintTimer = setTimeout(() => {{
+        repaint();
+        repaintTimer = null;
+    }}, 16); // ~60fps
+}}
+
+document.addEventListener('mousedown', function(e) {{
+    if (e.button === 0 && e.target.closest('#sankey-main')) {{
+        isPanning = true;
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        e.preventDefault();
+    }}
+}});
+
+document.addEventListener('mousemove', function(e) {{
+    if (isPanning && tubemapRenderer) {{
+        const deltaX = (e.clientX - panStartX) * 0.5;
+        const deltaY = (e.clientY - panStartY) * 0.5;
+        
+        tubemapRenderer.pan(deltaX, deltaY);
+        
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        
+        // Update connectors immediately, but debounce full repaint
+        // For smooth panning, we can do a quick connector-only update
+        debouncedRepaint();
+    }}
+}});
+
+document.addEventListener('mouseup', function(e) {{
+    if (isPanning && e.button === 0) {{
+        isPanning = false;
+        // Final repaint after pan ends
+        if (repaintTimer) {{
+            clearTimeout(repaintTimer);
+        }}
+        repaint();
+    }}
+}});
+
+// Zoom with wheel (debounced)
+let zoomTimer = null;
+document.addEventListener('wheel', function(e) {{
+    if (!tubemapRenderer) return;
+    
+    e.preventDefault();
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+    
+    const sankeyMain = document.getElementById('sankey-main');
+    if (!sankeyMain) return;
+    const rect = sankeyMain.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    tubemapRenderer.zoomAt(x, y, zoomFactor);
+    
+    // Debounce zoom repaints
+    if (zoomTimer) {{
+        clearTimeout(zoomTimer);
+    }}
+    zoomTimer = setTimeout(() => {{
+        repaint();
+        zoomTimer = null;
+    }}, 50);
+}}, {{ passive: false }});
+
+// Initialize app
+function initApp() {{
+    if (!window.data || !window.data._ready) {{
+        setTimeout(initApp, 50);
+        return;
+    }}
+    
+    if (document.readyState === 'loading') {{
+        document.addEventListener('DOMContentLoaded', () => {{
+            renderApp().catch(err => {{
+                console.error('Error initializing WebGPU:', err);
+                alert('Failed to initialize WebGPU: ' + err.message);
+            }});
+        }});
+    }} else {{
+        renderApp().catch(err => {{
+            console.error('Error initializing WebGPU:', err);
+            alert('Failed to initialize WebGPU: ' + err.message);
+        }});
+    }}
+}}
+
+setTimeout(initApp, 100);
+
+// Context menu for sample grouping
+function showContextMenu(e) {{
+    e.preventDefault();
+    const contextMenu = document.getElementById('contextMenu');
+    if (contextMenu) {{
+        contextMenu.style.display = 'block';
+        contextMenu.style.left = e.pageX + 'px';
+        contextMenu.style.top = e.pageY + 'px';
+    }}
+}}
+
+function hideContextMenu() {{
+    const contextMenu = document.getElementById('contextMenu');
+    if (contextMenu) {{
+        contextMenu.style.display = 'none';
+    }}
+}}
+
+function changeSampleGrouping(mode) {{
+    // TODO: Implement sample grouping change
+    // For now, just log
+    console.log('Change sample grouping to:', mode);
+    // Would need to recompute tubemap data with new grouping
+    // and re-render
+}}
+
+// Hide context menu on click outside
+document.addEventListener('click', function(e) {{
+    const contextMenu = document.getElementById('contextMenu');
+    if (contextMenu && !contextMenu.contains(e.target)) {{
+        hideContextMenu();
+    }}
+}});
+
+// Right-click to show context menu
+document.addEventListener('contextmenu', function(e) {{
+    if (e.target.closest('#sankey-left') || e.target.closest('#sankey-main')) {{
+        showContextMenu(e);
+    }}
+}});
+
+// Hover interactions
+document.addEventListener('mousemove', function(e) {{
+    if (!tubemapRenderer || !window.data || !window.data.tubemap) return;
+    
+    const sankeyMain = document.getElementById('sankey-main');
+    if (!sankeyMain) return;
+    
+    const rect = sankeyMain.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    // Transform mouse coordinates
+    const x = (mouseX - tubemapRenderer.panX) / tubemapRenderer.zoom;
+    const y = (mouseY - tubemapRenderer.panY) / tubemapRenderer.zoom;
+    
+    // Check if mouse is over a node
+    let hoveredNode = null;
+    for (const nodePos of tubemapRenderer.nodePositions) {{
+        if (x >= nodePos.x - nodePos.width/2 && x <= nodePos.x + nodePos.width/2 &&
+            y >= nodePos.y - nodePos.height/2 && y <= nodePos.y + nodePos.height/2) {{
+            const column = tubemapRenderer.columns[nodePos.columnIndex];
+            const node = column.nodes[nodePos.nodeIndex];
+            hoveredNode = {{
+                node: node,
+                variant: tubemapRenderer.variants[nodePos.columnIndex],
+            }};
+            break;
+        }}
+    }}
+    
+    const variantInfoEl = document.getElementById('variantInfo');
+    if (variantInfoEl) {{
+        if (hoveredNode) {{
+            variantInfoEl.textContent = `${{hoveredNode.variant.chromosome}}:${{hoveredNode.variant.position}} - ${{hoveredNode.node.type}} (${{hoveredNode.node.sample_count}} samples)`;
+        }} else {{
+            variantInfoEl.textContent = '--';
+        }}
+    }}
+}});
+        """
+        
+        # Safely encode the JavaScript strings for HTML embedding
+        encoded_style = json.dumps(inner_style)
+        encoded_body = json.dumps(inner_body)
+        encoded_script = json.dumps(inner_script)
+        encoded_data = json.dumps(inner_data)
+        encoded_module = json.dumps(inner_module)
+        
+        # Use the encoded script in the HTML template (opens popup window)
+        html_script = f"""
+<script>
+(async function() {{
+    var width = 0.8 * window.screen.width;
+    var height = 0.65 * window.screen.height;
+    var newWindow = window.open("", "newWindow", "width=" + width + ",height=" + height + ",scrollbars=no,menubar=no,toolbar=no,status=no");
+    if (!newWindow) return;
+
+    // Set the title of the new window
+    newWindow.document.title = "genomeshader - Tube Map";
+    newWindow.document.body.innerHTML = {encoded_body};
+    
+    // Append a style tag
+    var style = document.createElement('style');
+    style.innerHTML = {encoded_style};
+    
+    newWindow.document.head.appendChild(style);
+    
+    // Append UI helper script
+    var script = document.createElement('script');
+    script.innerHTML = {encoded_script};
+    
+    newWindow.document.body.appendChild(script);
+
+    // Append compressed data module
+    var data = document.createElement('script');    
+    data.type = "module";
+    data.defer = true;
+    data.innerHTML = {encoded_data};
+
+    newWindow.document.body.appendChild(data);
+                    
+    // Append app module
+    var module = document.createElement('script');    
+    module.type = "module";
+    module.defer = true;
+    module.innerHTML = {encoded_module};
+    
+    newWindow.document.body.appendChild(module);
+}})();
+</script>
+        """
+        
+        return html_script
+
+    def show_tubemap(
+        self,
+        bcf_file: str = None,
+        locus: str = None,
+        sample_groups: dict = None,
+    ):
+        """
+        Display a Tube Map visualization showing haplotype flow through variant calls.
+        
+        Parameters:
+            bcf_file (str, optional): Path to BCF file
+            locus (str, optional): Locus string in format 'chr:start-stop'
+            sample_groups (dict, optional): Dictionary mapping sample names to group names
+        
+        Examples:
+            >>> gs = GenomeShader()
+            >>> gs.show_tubemap(bcf_file='chr6.31803187_32050925.bcf', locus='chr6:31803187-32050925')
+        """
+        html_script = self.render_tubemap(
+            bcf_file=bcf_file,
+            locus=locus,
+            sample_groups=sample_groups,
+        )
+        
+        # Display the HTML and JavaScript
+        display(HTML(html_script))
+
+    def show_sankey(
+        self,
+        bcf_file: str = None,
+        locus: str = None,
+        variants_df: pl.DataFrame = None,
+        sample_groups: dict = None,
+        positioning_mode: str = 'variants_only',
+    ):
+        """
+        Display a Sankey diagram showing variant calls and sample sharing.
+
+        Parameters:
+            bcf_file (str, optional): Path to BCF file
+            locus (str, optional): Locus string in format 'chr:start-stop'
+            variants_df (pl.DataFrame, optional): Pre-extracted variant DataFrame
+            sample_groups (dict, optional): Dictionary mapping sample names to group IDs
+            positioning_mode (str): 'full' or 'variants_only' (default: 'variants_only')
+
+        Examples:
+            >>> gs = GenomeShader()
+            >>> gs.show_sankey(bcf_file='chr6.31803187_32050925.bcf', locus='chr6:31803187-32050925')
+        """
+        html_script = self.render_sankey(
+            bcf_file=bcf_file,
+            locus=locus,
+            variants_df=variants_df,
+            sample_groups=sample_groups,
+            positioning_mode=positioning_mode,
+        )
+
+        # Display the HTML and JavaScript
+        display(HTML(html_script))
+
     def show(
         self,
         locus_or_dataframe: Union[str, pl.DataFrame],

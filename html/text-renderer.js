@@ -58,16 +58,16 @@ export class TextRenderer {
                 var quadUV = vec2<f32>(0.0);
                 if (vertexIndex == 0u) {
                     quadPos = vec2<f32>(-0.5, -0.5);
-                    quadUV = vec2<f32>(0.0, 1.0);
+                    quadUV = vec2<f32>(0.0, 0.0);
                 } else if (vertexIndex == 1u) {
                     quadPos = vec2<f32>(0.5, -0.5);
-                    quadUV = vec2<f32>(1.0, 1.0);
+                    quadUV = vec2<f32>(1.0, 0.0);
                 } else if (vertexIndex == 2u) {
                     quadPos = vec2<f32>(-0.5, 0.5);
-                    quadUV = vec2<f32>(0.0, 0.0);
+                    quadUV = vec2<f32>(0.0, 1.0);
                 } else {
                     quadPos = vec2<f32>(0.5, 0.5);
-                    quadUV = vec2<f32>(1.0, 0.0);
+                    quadUV = vec2<f32>(1.0, 1.0);
                 }
                 
                 var worldPos = position + quadPos * size;
@@ -145,10 +145,24 @@ export class TextRenderer {
         
         // Measure text
         const metrics = this.ctx.measureText(text);
-        const textWidth = Math.ceil(metrics.width);
+        let textWidth = Math.ceil(metrics.width);
         const textHeight = Math.ceil(fontSize * 1.2); // Add some padding
         
-        this.canvas.width = textWidth;
+        // Limit texture width to prevent exceeding GPU limits (max 8192, use 4096 for safety)
+        const maxTextureWidth = 4096;
+        if (textWidth > maxTextureWidth) {
+            // Truncate text if it's too wide
+            let truncatedText = text;
+            while (textWidth > maxTextureWidth && truncatedText.length > 0) {
+                truncatedText = truncatedText.slice(0, -1);
+                this.ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+                const newMetrics = this.ctx.measureText(truncatedText + '...');
+                textWidth = Math.ceil(newMetrics.width);
+            }
+            text = truncatedText + '...';
+        }
+        
+        this.canvas.width = Math.min(textWidth, maxTextureWidth);
         this.canvas.height = textHeight;
         
         // Clear and redraw
