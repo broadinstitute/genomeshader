@@ -1,0 +1,1188 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Genomeshader Prototype (SVG scaffolding)</title>
+
+  <style>
+    :root {
+      --sidebar-w: 240px;
+      --tracks-h: 260px;   /* ideogram + genes + repeats + ruler */
+      --flow-h: 500px;     /* sankey placeholder */
+      --reads-h: 220px;    /* IGV-style reads area placeholder */
+
+      --bg: #0b0d10;
+      --panel: #11151b;
+      --panel2: rgba(255,255,255,0.03);
+
+      --border: rgba(255,255,255,0.10);
+      --border2: rgba(255,255,255,0.08);
+
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.65);
+      --muted2: rgba(255,255,255,0.45);
+
+      --grid: rgba(255,255,255,0.12);
+      --grid2: rgba(255,255,255,0.07);
+
+      --accent: #ff4d4d;
+
+      --blue: rgba(120,180,255,0.9);
+      --blueFill: rgba(120,180,255,0.18);
+
+      --shadow: 0 10px 30px rgba(0,0,0,0.35);
+      --hudBg: rgba(0,0,0,0.35);
+    }
+
+    html[data-theme="light"] {
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --panel2: rgba(0,0,0,0.03);
+
+      --border: rgba(0,0,0,0.12);
+      --border2: rgba(0,0,0,0.10);
+
+      --text: rgba(0,0,0,0.90);
+      --muted: rgba(0,0,0,0.62);
+      --muted2: rgba(0,0,0,0.45);
+
+      --grid: rgba(0,0,0,0.12);
+      --grid2: rgba(0,0,0,0.07);
+
+      --accent: #d81b1b;
+
+      --blue: rgba(18, 110, 255, 0.85);
+      --blueFill: rgba(18, 110, 255, 0.14);
+
+      --shadow: 0 10px 30px rgba(0,0,0,0.12);
+      --hudBg: rgba(255,255,255,0.78);
+    }
+
+    @media (prefers-color-scheme: light) {
+      html[data-theme="auto"] {
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --panel2: rgba(0,0,0,0.03);
+
+        --border: rgba(0,0,0,0.12);
+        --border2: rgba(0,0,0,0.10);
+
+        --text: rgba(0,0,0,0.90);
+        --muted: rgba(0,0,0,0.62);
+        --muted2: rgba(0,0,0,0.45);
+
+        --grid: rgba(0,0,0,0.12);
+        --grid2: rgba(0,0,0,0.07);
+
+        --accent: #d81b1b;
+
+        --blue: rgba(18, 110, 255, 0.85);
+        --blueFill: rgba(18, 110, 255, 0.14);
+
+        --shadow: 0 10px 30px rgba(0,0,0,0.12);
+        --hudBg: rgba(255,255,255,0.78);
+      }
+    }
+
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui; }
+    * { box-sizing: border-box; }
+
+    .app {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) 1fr;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .sidebar {
+      position: relative;
+      background: var(--panel);
+      border-right: 1px solid var(--border2);
+      padding: 12px;
+      overflow: auto;
+      padding-bottom: 56px; /* space for gear button */
+    }
+
+    .sidebarHeader {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .sidebarHeader h3 {
+      margin: 0;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 650;
+      letter-spacing: 0.02em;
+    }
+
+    .group {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 10px;
+      margin: 7px 0;
+      border-radius: 10px;
+      background: var(--panel2);
+      cursor: pointer;
+      user-select: none;
+      border: 1px solid transparent;
+    }
+    .group:hover { border-color: var(--border2); }
+    .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,0.16); color: var(--muted); }
+
+    /* Gear button bottom-left (requested) */
+    .gearBtn {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      border: 1px solid var(--border2);
+      background: var(--panel2);
+      color: var(--text);
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      cursor: pointer;
+      user-select: none;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .gearBtn:hover { filter: brightness(1.06); }
+    .gearBtn:active { transform: translateY(1px); }
+
+    /* Context menu */
+    .menu {
+      position: absolute;
+      min-width: 220px;
+      padding: 8px;
+      border-radius: 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      z-index: 50;
+      display: none;
+    }
+    .menu.open { display: block; }
+    .menuTitle {
+      font-size: 11px;
+      color: var(--muted2);
+      padding: 6px 8px 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .menuItem {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 10px;
+      border-radius: 10px;
+      cursor: pointer;
+      user-select: none;
+      color: var(--text);
+      font-size: 13px;
+    }
+    .menuItem:hover { background: var(--panel2); }
+    .menuRight { color: var(--muted); font-size: 12px; }
+
+    .main {
+      position: relative;
+      overflow: hidden;
+      touch-action: none; /* we own pan/zoom gestures on right pane */
+    }
+
+    .tracks {
+      position: absolute;
+      left: 0; top: 0; right: 0;
+      height: var(--tracks-h);
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(to bottom, rgba(127,127,127,0.08), rgba(127,127,127,0.00));
+    }
+
+    .flow {
+      position: absolute;
+      left: 0; right: 0;
+      top: var(--tracks-h);
+      height: var(--flow-h);
+      background: rgba(127,127,127,0.04);
+    }
+
+    .reads {
+      position: absolute;
+      left: 0; right: 0;
+      top: calc(var(--tracks-h) + var(--flow-h));
+      height: var(--reads-h);
+      border-top: 1px solid var(--border2);
+      background: rgba(127,127,127,0.02);
+    }
+
+    canvas.canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    svg.overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    /* Locus indicator lower-left */
+    .hud {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: var(--hudBg);
+      border: 1px solid var(--border2);
+      font-size: 12px;
+      color: var(--muted);
+      backdrop-filter: blur(6px);
+      pointer-events: none;
+      white-space: nowrap;
+      box-shadow: var(--shadow);
+    }
+
+    /* SVG text classes */
+    .svg-label { fill: var(--muted); font-size: 12px; font-weight: 600; }
+    .svg-small { fill: var(--muted2); font-size: 10px; }
+    .svg-chr   { fill: var(--text); font-size: 12px; font-weight: 650; }
+
+    .svg-geneName { fill: rgba(180,220,255,0.92); font-size: 11px; font-weight: 650; }
+    html[data-theme="light"] .svg-geneName,
+    html[data-theme="auto"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
+
+    .svg-trackHint { fill: var(--muted2); font-size: 11px; }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <div class="sidebar" id="sidebar">
+      <div class="sidebarHeader">
+        <h3>Participant groups</h3>
+      </div>
+
+      <div class="group"><span>AFR</span><span class="pill">2634</span></div>
+      <div class="group"><span>AMR</span><span class="pill">603</span></div>
+      <div class="group"><span>EAS</span><span class="pill">1095</span></div>
+      <div class="group"><span>EUR</span><span class="pill">5340</span></div>
+      <div class="group"><span>SAS</span><span class="pill">328</span></div>
+
+      <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
+
+      <div class="menu" id="ctxMenu" role="menu" aria-hidden="true">
+        <div class="menuTitle">Display</div>
+        <div class="menuItem" id="themeItem" role="menuitem">
+          <span>Theme</span>
+          <span class="menuRight" id="themeLabel">Auto</span>
+        </div>
+
+        <div class="menuTitle">Grouping</div>
+        <div class="menuItem" role="menuitem">
+          <span>Variable</span>
+          <span class="menuRight">Super-pop</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="main" id="main">
+      <div class="tracks">
+        <svg id="tracksSvg" width="100%" height="100%"></svg>
+      </div>
+
+      <div class="flow" id="flow">
+        <canvas class="canvas" id="flowCanvas"></canvas>
+        <svg class="overlay" id="flowOverlay"></svg>
+      </div>
+
+      <div class="reads" id="reads">
+        <canvas class="canvas" id="readsCanvas"></canvas>
+        <svg class="overlay" id="readsOverlay"></svg>
+      </div>
+
+      <div class="hud" id="hud"></div>
+    </div>
+  </div>
+
+<script type="module">
+  // -----------------------------
+  // Theme + menu
+  // -----------------------------
+  const sidebar = document.getElementById("sidebar");
+  const menuBtn = document.getElementById("menuBtn");
+  const ctxMenu = document.getElementById("ctxMenu");
+  const themeItem = document.getElementById("themeItem");
+  const themeLabel = document.getElementById("themeLabel");
+
+  function getStoredTheme() {
+    return localStorage.getItem("genomeshader.theme"); // "dark" | "light" | "auto" | null
+  }
+  function setTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("genomeshader.theme", theme);
+    updateThemeLabel();
+  }
+  function updateThemeLabel() {
+    const t = document.documentElement.getAttribute("data-theme") || "auto";
+    themeLabel.textContent = t === "auto" ? "Auto" : (t === "light" ? "Light" : "Dark");
+  }
+
+  const stored = getStoredTheme();
+  document.documentElement.setAttribute("data-theme", stored ?? "auto");
+  updateThemeLabel();
+
+  function openMenu() {
+    // Anchor menu above the gear in the sidebar (now bottom-left)
+    const r = menuBtn.getBoundingClientRect();
+    const s = sidebar.getBoundingClientRect();
+    const left = Math.max(8, r.left - s.left);
+    const top  = Math.max(8, r.top  - s.top  - 160);
+    ctxMenu.style.left = `${left}px`;
+    ctxMenu.style.top  = `${top}px`;
+    ctxMenu.classList.add("open");
+    ctxMenu.setAttribute("aria-hidden", "false");
+  }
+  function closeMenu() {
+    ctxMenu.classList.remove("open");
+    ctxMenu.setAttribute("aria-hidden", "true");
+  }
+  function toggleMenu() {
+    ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
+  }
+
+  menuBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
+  document.addEventListener("click", () => closeMenu());
+  ctxMenu.addEventListener("click", (e) => e.stopPropagation());
+
+  themeItem.addEventListener("click", () => {
+    const cur = document.documentElement.getAttribute("data-theme") || "auto";
+    const next = cur === "dark" ? "light" : (cur === "light" ? "auto" : "dark");
+    setTheme(next);
+    renderAll();
+  });
+
+  const mq = window.matchMedia?.("(prefers-color-scheme: light)");
+  mq?.addEventListener?.("change", () => {
+    if ((document.documentElement.getAttribute("data-theme") || "auto") === "auto") {
+      updateThemeLabel();
+      renderAll();
+    }
+  });
+
+  // -----------------------------
+  // ViewState
+  // -----------------------------
+  const state = {
+    contig: "chr1",
+    startBp: 100_000,
+    endBp:   100_900,
+    pxPerBp: 1,
+
+    firstVariantIndex: 0,
+    K: 8,
+
+    // interaction
+    dragging: false,
+    lastX: 0,
+
+    // touch pinch
+    pointers: new Map(),     // pointerId -> {x,y}
+    pinchStartDist: null,
+    pinchStartSpan: null,
+    pinchAnchorBp: null
+  };
+
+  const main = document.getElementById("main");
+  const tracksSvg = document.getElementById("tracksSvg");
+  const flow = document.getElementById("flow");
+  const reads = document.getElementById("reads");
+  const flowCanvas = document.getElementById("flowCanvas");
+  const readsCanvas = document.getElementById("readsCanvas");
+  const hud = document.getElementById("hud");
+
+  function rectW(el) { return el.getBoundingClientRect().width; }
+  function rectH(el) { return el.getBoundingClientRect().height; }
+
+  function tracksWidthPx() { return tracksSvg.getBoundingClientRect().width; }
+  function flowWidthPx()   { return rectW(flow); }
+  function flowHeightPx()  { return rectH(flow); }
+  function readsWidthPx()  { return rectW(reads); }
+  function readsHeightPx() { return rectH(reads); }
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function updateDerived() {
+    const w = tracksWidthPx();
+    const span = state.endBp - state.startBp;
+    state.pxPerBp = w / span;
+  }
+
+  // IMPORTANT: canonical genome-x mapping for the right pane (tracks/canvases)
+  function xGenomeCanonical(bp, W) {
+    const leftPad = 16, rightPad = 16;
+    const innerW = W - leftPad - rightPad;
+    const span = state.endBp - state.startBp;
+    return leftPad + ((bp - state.startBp) / span) * innerW;
+  }
+  function xGenome(bp) {
+    return xGenomeCanonical(bp, tracksWidthPx());
+  }
+  function bpFromXGenome(xPx, W) {
+    const leftPad = 16, rightPad = 16;
+    const innerW = W - leftPad - rightPad;
+    const t = (xPx - leftPad) / innerW;
+    return state.startBp + t * (state.endBp - state.startBp);
+  }
+
+  function xColumn(i) {
+    const W = flowWidthPx();
+    const margin = 60;
+    const innerW = Math.max(10, W - 2*margin);
+    if (state.K <= 1) return margin;
+    return margin + (i / (state.K - 1)) * innerW;
+  }
+
+  // -----------------------------
+  // Demo data
+  // -----------------------------
+  const variants = [
+    { id: "v1", pos: 100_120, alleles: ["ref","a1"] },
+    { id: "v2", pos: 100_240, alleles: ["ref","a1"] },
+    { id: "v3", pos: 100_410, alleles: ["ref","a1","a2"] },
+    { id: "v4", pos: 100_610, alleles: ["ref","a1"] },
+    { id: "v5", pos: 100_720, alleles: ["ref","a1"] },
+    { id: "v6", pos: 100_780, alleles: ["ref","a1"] },
+    { id: "v7", pos: 100_860, alleles: ["ref","a1"] },
+    { id: "v8", pos: 100_895, alleles: ["ref","a1"] },
+    { id: "v9", pos: 100_930, alleles: ["ref","a1"] },
+  ];
+
+  // Genes: now with strand + exons
+  const transcripts = [
+    {
+      name: "C2", lane: 0, strand: "+",
+      start: 100_030, end: 100_115,
+      exons: [[100_030,100_052],[100_060,100_072],[100_090,100_115]],
+    },
+    {
+      name: "CFB", lane: 1, strand: "-",
+      start: 100_070, end: 100_230,
+      exons: [[100_070,100_095],[100_110,100_135],[100_170,100_230]],
+    },
+    {
+      name: "NELFE", lane: 2, strand: "+",
+      start: 100_260, end: 100_520,
+      exons: [[100_260,100_290],[100_305,100_332],[100_410,100_520]],
+    },
+    {
+      name: "SKIV2L", lane: 0, strand: "+",
+      start: 100_535, end: 100_820,
+      exons: [[100_535,100_570],[100_610,100_640],[100_700,100_820]],
+    },
+    {
+      name: "STK19", lane: 1, strand: "-",
+      start: 100_610, end: 100_720,
+      exons: [[100_610,100_640],[100_690,100_720]],
+    },
+    {
+      name: "ABHD16A", lane: 2, strand: "+",
+      start: 100_700, end: 100_875,
+      exons: [[100_700,100_730],[100_760,100_790],[100_840,100_875]],
+    },
+  ];
+
+  // RepeatMasker-like intervals (placeholder)
+  const repeats = [
+    { start: 100_045, end: 100_062, cls: "SINE" },
+    { start: 100_155, end: 100_190, cls: "LINE" },
+    { start: 100_265, end: 100_275, cls: "Simple" },
+    { start: 100_360, end: 100_388, cls: "LTR" },
+    { start: 100_615, end: 100_645, cls: "DNA" },
+    { start: 100_815, end: 100_845, cls: "SINE" },
+  ];
+
+  // -----------------------------
+  // SVG helpers
+  // -----------------------------
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function clearSvg(svg) { while (svg.firstChild) svg.removeChild(svg.firstChild); }
+  function el(tag, attrs = {}, text = null) {
+    const n = document.createElementNS(SVGNS, tag);
+    for (const [k,v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    if (text !== null) n.textContent = text;
+    return n;
+  }
+
+  // -----------------------------
+  // "Nice" tick selection for ruler
+  // -----------------------------
+  function trimZeros(s) {
+    return s.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+  }
+  function formatBp(bp) {
+    if (bp >= 1_000_000) return `${trimZeros((bp / 1_000_000).toFixed(2))} Mb`;
+    if (bp >= 1_000)     return `${trimZeros((bp / 1_000).toFixed(1))} kb`;
+    return `${bp} bp`;
+  }
+  function chooseNiceTickBp(spanBp, desiredTicks) {
+    const target = spanBp / desiredTicks;
+    const pow = Math.pow(10, Math.floor(Math.log10(target)));
+    const candidates = [1,2,5,10].map(m => m*pow);
+    let best = candidates[0], bestDiff = Infinity;
+    for (const c of candidates) {
+      const diff = Math.abs((spanBp / c) - desiredTicks);
+      if (diff < bestDiff) { bestDiff = diff; best = c; }
+    }
+    return best;
+  }
+
+  // -----------------------------
+  // Tracks rendering (ideogram + genes + repeats + ruler)
+  // -----------------------------
+  function renderTracks() {
+    clearSvg(tracksSvg);
+    const W = tracksWidthPx();
+
+    // Layout
+    const ideogramY = 12, ideogramH = 16;           // shorter height (requested)
+    const geneLabelY = 44;
+    const geneTopY = 52;
+    const laneH = 30, lanes = 3;
+    const genesH = lanes * laneH;
+
+    const repeatsLabelY = geneTopY + genesH + 18;
+    const repeatsY = repeatsLabelY + 8;
+    const repeatsH = 22;
+
+    const rulerLabelY = repeatsY + repeatsH + 26;
+    const rulerY = rulerLabelY + 8;
+    const rulerH = 56;
+
+    // --- Chromosome label
+    tracksSvg.appendChild(el("text", {
+      x: 16,
+      y: ideogramY + ideogramH/2 + 1,
+      class: "svg-chr",
+      "dominant-baseline": "middle"
+    }, state.contig));
+
+    // --- Ideogram (p/q arm rounded rects + cytobands clipped inside)
+    const bandX = 70;
+    const bandW = W - bandX - 16;
+
+    const centromereGap = 10;
+    const pFrac = 0.48;
+    const qFrac = 1 - pFrac;
+
+    const pW = Math.max(10, Math.floor(bandW * pFrac) - centromereGap/2);
+    const qW = Math.max(10, Math.floor(bandW * qFrac) - centromereGap/2);
+
+    const pX = bandX;
+    const qX = bandX + pW + centromereGap;
+
+    // defs + clipPath that matches both arms
+    const defs = el("defs");
+    const clipId = "chrClip";
+    const clip = el("clipPath", { id: clipId });
+
+    const armStroke = "rgba(127,127,127,0.22)";
+    const armFill = "rgba(127,127,127,0.12)";
+
+    const pArm = el("rect", { x: pX, y: ideogramY, width: pW, height: ideogramH, rx: 9, fill: armFill, stroke: armStroke });
+    const qArm = el("rect", { x: qX, y: ideogramY, width: qW, height: ideogramH, rx: 9, fill: armFill, stroke: armStroke });
+
+    clip.appendChild(el("rect", { x: pX, y: ideogramY, width: pW, height: ideogramH, rx: 9 }));
+    clip.appendChild(el("rect", { x: qX, y: ideogramY, width: qW, height: ideogramH, rx: 9 }));
+
+    defs.appendChild(clip);
+    tracksSvg.appendChild(defs);
+
+    tracksSvg.appendChild(pArm);
+    tracksSvg.appendChild(qArm);
+
+    // cytobands (drawn as rectangles across the full ideogram span, then clipped)
+    const stripes = 26;
+    const bandInnerY = ideogramY - 2;       // make top/bottom "hidden" by clip
+    const bandInnerH = ideogramH + 4;
+
+    for (let i=0;i<stripes;i++) {
+      const x = bandX + (i/stripes)*bandW;
+      tracksSvg.appendChild(el("rect", {
+        x, y: bandInnerY, width: bandW/stripes, height: bandInnerH,
+        fill: i%2===0 ? "rgba(127,127,127,0.10)" : "rgba(127,127,127,0.24)",
+        "clip-path": `url(#${clipId})`
+      }));
+    }
+
+    // locus highlight as a red rectangle, clipped to the chromosome shape
+    const fracStart = 0.38, fracEnd = 0.56;
+    tracksSvg.appendChild(el("rect", {
+      x: bandX + fracStart*bandW,
+      y: ideogramY - 1,
+      width: (fracEnd-fracStart)*bandW,
+      height: ideogramH + 2,
+      fill: "rgba(255,77,77,0.25)",
+      stroke: "rgba(255,77,77,0.95)",
+      "stroke-width": 1,
+      "clip-path": `url(#${clipId})`
+    }));
+
+    // --- Genes track (exons/introns/strand)
+    tracksSvg.appendChild(el("text", { x: 16, y: geneLabelY, class:"svg-label" }, "Genes"));
+
+    for (let lane=0; lane<lanes; lane++) {
+      const y = geneTopY + lane*laneH + laneH/2;
+      tracksSvg.appendChild(el("line", {
+        x1: 16, x2: W-16, y1: y, y2: y,
+        stroke: "rgba(127,127,127,0.14)"
+      }));
+    }
+
+    function drawStrandArrows(x1, x2, y, strand) {
+      const dir = strand === "-" ? -1 : 1;
+      const step = 24;
+      const start = Math.min(x1, x2), end = Math.max(x1, x2);
+      for (let x = start + 10; x < end - 10; x += step) {
+        const cx = x;
+        const size = 5;
+        const p1 = `${cx},${y}`;
+        const p2 = `${cx - dir*size},${y - size*0.8}`;
+        const p3 = `${cx - dir*size},${y + size*0.8}`;
+        tracksSvg.appendChild(el("polygon", {
+          points: `${p1} ${p2} ${p3}`,
+          fill: "rgba(127,127,127,0.45)"
+        }));
+      }
+    }
+
+    for (const t of transcripts) {
+      const s = Math.max(t.start, state.startBp);
+      const e = Math.min(t.end,   state.endBp);
+      if (e <= state.startBp || s >= state.endBp) continue;
+
+      const yMid = geneTopY + t.lane*laneH + laneH/2;
+
+      // intron baseline (full transcript span)
+      const x1 = xGenome(s);
+      const x2 = xGenome(e);
+      tracksSvg.appendChild(el("line", {
+        x1, x2, y1: yMid, y2: yMid,
+        stroke: "rgba(127,127,127,0.40)",
+        "stroke-width": 1
+      }));
+
+      // strand arrows along intron line
+      drawStrandArrows(x1, x2, yMid, t.strand);
+
+      // exons
+      for (const [es0, ee0] of t.exons) {
+        const es = Math.max(es0, state.startBp);
+        const ee = Math.min(ee0, state.endBp);
+        if (ee <= state.startBp || es >= state.endBp) continue;
+        const ex1 = xGenome(es);
+        const ex2 = xGenome(ee);
+
+        tracksSvg.appendChild(el("rect", {
+          x: ex1, y: yMid - 6,
+          width: Math.max(2, ex2 - ex1),
+          height: 12,
+          rx: 4,
+          fill: "var(--blueFill)",
+          stroke: "var(--blue)",
+          "stroke-width": 1
+        }));
+      }
+
+      // gene label near transcript start
+      tracksSvg.appendChild(el("text", {
+        x: x1,
+        y: yMid - 12,
+        class:"svg-geneName"
+      }, `${t.name}`));
+      // small strand marker
+      tracksSvg.appendChild(el("text", {
+        x: x1 + 2,
+        y: yMid + 16,
+        class:"svg-small"
+      }, t.strand === "+" ? "→" : "←"));
+    }
+
+    // --- RepeatMasker track
+    tracksSvg.appendChild(el("text", { x: 16, y: repeatsLabelY, class:"svg-label" }, "RepeatMasker"));
+
+    // background guide line
+    tracksSvg.appendChild(el("line", {
+      x1: 16, x2: W-16, y1: repeatsY + repeatsH/2, y2: repeatsY + repeatsH/2,
+      stroke: "rgba(127,127,127,0.16)"
+    }));
+
+    function repeatColor(cls) {
+      // simple palette-ish mapping; kept subtle
+      switch (cls) {
+        case "SINE": return "rgba(255, 206, 86, 0.35)";
+        case "LINE": return "rgba(75, 192, 192, 0.28)";
+        case "LTR":  return "rgba(153, 102, 255, 0.28)";
+        case "DNA":  return "rgba(255, 99, 132, 0.22)";
+        default:     return "rgba(201, 203, 207, 0.22)";
+      }
+    }
+
+    for (const r of repeats) {
+      if (r.end <= state.startBp || r.start >= state.endBp) continue;
+      const rs = Math.max(r.start, state.startBp);
+      const re = Math.min(r.end, state.endBp);
+
+      const x1 = xGenome(rs);
+      const x2 = xGenome(re);
+
+      tracksSvg.appendChild(el("rect", {
+        x: x1,
+        y: repeatsY + 4,
+        width: Math.max(2, x2-x1),
+        height: repeatsH - 8,
+        rx: 6,
+        fill: repeatColor(r.cls),
+        stroke: "rgba(127,127,127,0.20)"
+      }));
+    }
+
+    // --- Locus ruler
+    tracksSvg.appendChild(el("text", { x: 16, y: rulerLabelY, class:"svg-label" }, "Locus"));
+
+    const baseY = rulerY + 14;
+
+    tracksSvg.appendChild(el("line", {
+      x1: 16, x2: W-16, y1: baseY, y2: baseY,
+      stroke: "rgba(127,127,127,0.70)",
+      "stroke-width": 1.2
+    }));
+
+    const span = state.endBp - state.startBp;
+    const desiredMajorTicks = Math.max(5, Math.min(10, Math.floor((W - 32) / 140)));
+    const majorBp = chooseNiceTickBp(span, desiredMajorTicks);
+    const minorBp = majorBp / 5;
+
+    const pxPerMajor = (W - 32) / (span / majorBp);
+    const showLabels = pxPerMajor >= 80;
+
+    const firstMinor = Math.ceil(state.startBp / minorBp) * minorBp;
+
+    for (let bp = firstMinor; bp <= state.endBp; bp += minorBp) {
+      const x = xGenome(bp);
+      const isMajor = (Math.round(bp / minorBp) % 5) === 0;
+
+      tracksSvg.appendChild(el("line", {
+        x1: x, x2: x,
+        y1: baseY - (isMajor ? 9 : 5),
+        y2: baseY + (isMajor ? 9 : 5),
+        stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
+        "stroke-width": isMajor ? 1.1 : 1
+      }));
+
+      if (isMajor && showLabels) {
+        tracksSvg.appendChild(el("text", {
+          x: x,
+          y: baseY + 26,
+          class: "svg-small",
+          "text-anchor": "middle"
+        }, formatBp(Math.round(bp))));
+      }
+    }
+
+    tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
+      formatBp(Math.round(state.startBp))
+    ));
+    tracksSvg.appendChild(el("text", {
+      x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
+    }, formatBp(Math.round(state.endBp))));
+
+    // Variant marks
+    for (const v of variants) {
+      if (v.pos < state.startBp || v.pos > state.endBp) continue;
+      const x = xGenome(v.pos);
+
+      tracksSvg.appendChild(el("line", {
+        x1:x, x2:x,
+        y1: baseY - 18, y2: baseY + 18,
+        stroke: "rgba(127,127,127,0.88)",
+        "stroke-width": 1.2
+      }));
+
+      tracksSvg.appendChild(el("circle", {
+        cx:x, cy: baseY - 18, r: 3.4,
+        fill: "none",
+        stroke: "rgba(127,127,127,0.95)",
+        "stroke-width": 1.4
+      }));
+    }
+
+    // bottom separator
+    tracksSvg.appendChild(el("line", {
+      x1: 0, x2: W, y1: rulerY + rulerH, y2: rulerY + rulerH,
+      stroke: "rgba(127,127,127,0.12)"
+    }));
+  }
+
+  // -----------------------------
+  // Canvas helpers
+  // -----------------------------
+  function resizeCanvasTo(el, canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.floor(rectW(el) * dpr);
+    const h = Math.floor(rectH(el) * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    return dpr;
+  }
+
+  function visibleVariantWindow() {
+    const start = state.firstVariantIndex;
+    const end = Math.min(variants.length, start + state.K);
+    return variants.slice(start, end);
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w/2, h/2);
+    ctx.moveTo(x+rr, y);
+    ctx.arcTo(x+w, y,   x+w, y+h, rr);
+    ctx.arcTo(x+w, y+h, x,   y+h, rr);
+    ctx.arcTo(x,   y+h, x,   y,   rr);
+    ctx.arcTo(x,   y,   x+w, y,   rr);
+    ctx.closePath();
+  }
+
+  // -----------------------------
+  // Sankey placeholder (Canvas2D)
+  // -----------------------------
+  function renderFlowCanvas() {
+    const dpr = resizeCanvasTo(flow, flowCanvas);
+    const ctx = flowCanvas.getContext("2d");
+
+    const junctionY = 40;
+
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,flowCanvas.width,flowCanvas.height);
+    ctx.scale(dpr, dpr);
+
+    const W = flowWidthPx(), H = flowHeightPx();
+
+    const colLines = cssVar("--grid");
+    const colGrid  = cssVar("--grid2");
+    const colText  = cssVar("--muted");
+
+    // background
+    ctx.fillStyle = "rgba(127,127,127,0.035)";
+    ctx.fillRect(0,0,W,H);
+
+    // columns
+    ctx.strokeStyle = colLines;
+    ctx.lineWidth = 1;
+    for (let i=0;i<state.K;i++) {
+      const x = xColumn(i);
+      ctx.beginPath();
+      ctx.moveTo(x, junctionY);
+      ctx.lineTo(x, H-18);
+      ctx.stroke();
+
+      ctx.fillStyle = colText;
+      ctx.font = "12px ui-sans-serif, system-ui";
+      ctx.fillText(`v${state.firstVariantIndex + i + 1}`, x - 10, 14);
+    }
+
+    // connectors (make them meet the ruler variant x precisely)
+    const win = visibleVariantWindow();
+    ctx.strokeStyle = colGrid;
+    ctx.lineWidth = 1;
+
+    const y0 = 6;
+    for (let i=0; i<win.length; i++) {
+      const v = win[i];
+      const vx = xGenomeCanonical(v.pos, W); // canonical mapping on this canvas width
+      const cx = xColumn(i);
+      ctx.beginPath();
+      ctx.moveTo(vx, y0);
+      ctx.lineTo(cx, junctionY);
+      ctx.stroke();
+    }
+
+    // placeholder nodes
+    for (let i=0;i<win.length;i++){
+      const cx = xColumn(i);
+      const nodeW = 16, nodeH = 18, gap = 8, top = 70;
+      const labels = ["./.","ref","a1"];
+
+      for (let j=0;j<labels.length;j++){
+        const y = top + j*(nodeH+gap);
+
+        ctx.fillStyle = "rgba(127,127,127,0.08)";
+        ctx.strokeStyle = "rgba(127,127,127,0.18)";
+        ctx.beginPath();
+        roundRect(ctx, cx - nodeW/2, y, nodeW, nodeH, 5);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = colText;
+        ctx.font = "11px ui-sans-serif, system-ui";
+        ctx.fillText(labels[j], cx + 12, y + 13);
+      }
+    }
+  }
+
+  // -----------------------------
+  // Reads placeholder (IGV-style area)
+  // -----------------------------
+  function renderReadsCanvas() {
+    const dpr = resizeCanvasTo(reads, readsCanvas);
+    const ctx = readsCanvas.getContext("2d");
+
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,readsCanvas.width,readsCanvas.height);
+    ctx.scale(dpr, dpr);
+
+    const W = readsWidthPx(), H = readsHeightPx();
+    const colText = cssVar("--muted");
+    const grid = cssVar("--grid2");
+
+    // soft background
+    ctx.fillStyle = "rgba(127,127,127,0.02)";
+    ctx.fillRect(0,0,W,H);
+
+    // label
+    ctx.fillStyle = colText;
+    ctx.font = "12px ui-sans-serif, system-ui";
+    ctx.fillText("Reads (IGV-style placeholder)", 16, 18);
+
+    // a few rows to suggest lanes
+    ctx.strokeStyle = grid;
+    ctx.lineWidth = 1;
+    const top = 28;
+    const rowH = 18;
+    const rows = Math.floor((H - top - 12) / rowH);
+    for (let i=0; i<rows; i++) {
+      const y = top + i*rowH + rowH/2;
+      ctx.beginPath();
+      ctx.moveTo(16, y);
+      ctx.lineTo(W-16, y);
+      ctx.stroke();
+    }
+
+    // placeholder "reads" as rounded rects aligned in genome space
+    function drawRead(bpStart, bpEnd, row, alpha=0.20) {
+      const x1 = xGenomeCanonical(bpStart, W);
+      const x2 = xGenomeCanonical(bpEnd, W);
+      const y = top + row*rowH + 2;
+      const h = rowH - 6;
+
+      ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+      ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
+      ctx.beginPath();
+      roundRect(ctx, x1, y, Math.max(6, x2-x1), h, 6);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // a few fake reads
+    drawRead(100_030, 100_160, 1, 0.10);
+    drawRead(100_090, 100_240, 2, 0.12);
+    drawRead(100_210, 100_420, 3, 0.10);
+    drawRead(100_380, 100_610, 4, 0.11);
+    drawRead(100_590, 100_820, 5, 0.10);
+    drawRead(100_700, 100_900, 6, 0.11);
+
+    // variant guide lines (subtle)
+    ctx.strokeStyle = "rgba(127,127,127,0.10)";
+    for (const v of variants) {
+      if (v.pos < state.startBp || v.pos > state.endBp) continue;
+      const x = xGenomeCanonical(v.pos, W);
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, H-10);
+      ctx.stroke();
+    }
+  }
+
+  // -----------------------------
+  // HUD + renderAll
+  // -----------------------------
+  function renderHUD() {
+    hud.textContent =
+      `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
+  }
+
+  function renderAll() {
+    updateDerived();
+    renderTracks();
+    renderFlowCanvas();
+    renderReadsCanvas();
+    renderHUD();
+  }
+
+  // -----------------------------
+  // Pan + Zoom helpers
+  // -----------------------------
+  function clampSpan(span) {
+    const MIN_SPAN = 50;
+    const MAX_SPAN = 5_000_000;
+    return Math.max(MIN_SPAN, Math.min(MAX_SPAN, span));
+  }
+
+  function zoomByFactor(factor, anchorBp) {
+    const oldSpan = state.endBp - state.startBp;
+    const newSpan = clampSpan(oldSpan / factor);
+
+    const leftFrac = (anchorBp - state.startBp) / oldSpan;
+    const newStart = anchorBp - leftFrac * newSpan;
+
+    state.startBp = newStart;
+    state.endBp = newStart + newSpan;
+
+    renderAll();
+  }
+
+  function panByPixels(dxPx) {
+    const dxBp = dxPx / state.pxPerBp;
+    state.startBp -= dxBp;
+    state.endBp   -= dxBp;
+
+    // Placeholder heuristic for shifting the variant window
+    const win = visibleVariantWindow();
+    if (win.length > 0) {
+      const first = win[0].pos;
+      while (state.firstVariantIndex > 0 && first > state.endBp) state.firstVariantIndex--;
+      while (state.firstVariantIndex + 1 < variants.length &&
+             first < state.startBp - (state.endBp-state.startBp)*0.25) {
+        state.firstVariantIndex++;
+        if (state.firstVariantIndex + state.K > variants.length) break;
+      }
+      state.firstVariantIndex = Math.max(0, Math.min(state.firstVariantIndex, Math.max(0, variants.length - state.K)));
+    }
+
+    renderAll();
+  }
+
+  function anchorBpFromClientX(clientX) {
+    const rect = tracksSvg.getBoundingClientRect();
+    const xInPane = clientX - rect.left;
+    return bpFromXGenome(xInPane, tracksWidthPx());
+  }
+
+  // -----------------------------
+  // Interaction (right pane)
+  // -----------------------------
+  main.addEventListener("pointerdown", (e) => {
+    state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    main.setPointerCapture(e.pointerId);
+
+    if (state.pointers.size === 1) {
+      state.dragging = true;
+      state.lastX = e.clientX;
+    } else {
+      state.dragging = false;
+    }
+  });
+
+  main.addEventListener("pointermove", (e) => {
+    if (!state.pointers.has(e.pointerId)) return;
+    state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (state.pointers.size === 2) {
+      const pts = Array.from(state.pointers.values());
+      const dx = pts[0].x - pts[1].x;
+      const dy = pts[0].y - pts[1].y;
+      const dist = Math.hypot(dx, dy);
+
+      if (state.pinchStartDist == null) {
+        state.pinchStartDist = dist;
+        state.pinchStartSpan = (state.endBp - state.startBp);
+
+        const midX = (pts[0].x + pts[1].x) / 2;
+        state.pinchAnchorBp = anchorBpFromClientX(midX);
+      } else {
+        const scale = dist / state.pinchStartDist; // >1 apart => zoom in
+        const oldSpan = state.pinchStartSpan;
+        const newSpan = clampSpan(oldSpan / scale);
+
+        const anchorBp = state.pinchAnchorBp ?? (state.startBp + (state.endBp-state.startBp)/2);
+        const leftFrac = (anchorBp - state.startBp) / (state.endBp - state.startBp);
+        const newStart = anchorBp - leftFrac * newSpan;
+
+        state.startBp = newStart;
+        state.endBp = newStart + newSpan;
+
+        renderAll();
+      }
+      return;
+    }
+
+    if (state.dragging) {
+      const dx = e.clientX - state.lastX;
+      state.lastX = e.clientX;
+      panByPixels(-dx);
+    }
+  });
+
+  function endPointer(e) {
+    state.pointers.delete(e.pointerId);
+    if (state.pointers.size < 2) {
+      state.pinchStartDist = null;
+      state.pinchStartSpan = null;
+      state.pinchAnchorBp = null;
+    }
+    if (state.pointers.size === 0) state.dragging = false;
+  }
+  main.addEventListener("pointerup", endPointer);
+  main.addEventListener("pointercancel", endPointer);
+
+  // Wheel: default zoom (no ctrl/meta), shift+wheel (or horizontal) pan
+  main.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || e.metaKey) return;
+
+    const dx = e.deltaX;
+    const dy = e.deltaY;
+    const wantPan = e.shiftKey || Math.abs(dx) > Math.abs(dy);
+
+    if (wantPan) {
+      e.preventDefault();
+      const panDx = e.shiftKey ? dy : dx;
+      panByPixels(panDx);
+      return;
+    }
+
+    e.preventDefault();
+    const zoomIntensity = 0.0018;
+    const factor = Math.exp(-dy * zoomIntensity);
+
+    const anchorBp = anchorBpFromClientX(e.clientX);
+    zoomByFactor(factor, anchorBp);
+  }, { passive: false });
+
+  main.addEventListener("dblclick", (e) => {
+    const anchorBp = anchorBpFromClientX(e.clientX);
+    zoomByFactor(1.6, anchorBp);
+  });
+
+  // Resize
+  new ResizeObserver(() => renderAll()).observe(flow);
+  new ResizeObserver(() => renderAll()).observe(reads);
+  new ResizeObserver(() => renderAll()).observe(tracksSvg);
+  window.addEventListener("resize", renderAll);
+
+  renderAll();
+</script>
+</body>
+</html>
