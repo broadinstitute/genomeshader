@@ -202,20 +202,22 @@
       border-bottom: 1px solid var(--border);
       background: linear-gradient(to bottom, rgba(127,127,127,0.08), rgba(127,127,127,0.00));
     }
+    #trackControls {
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+    }
 
     .flow {
       position: absolute;
       left: 0; right: 0;
-      top: var(--tracks-h);
-      height: var(--flow-h);
       background: rgba(127,127,127,0.04);
     }
 
     .reads {
       position: absolute;
       left: 0; right: 0;
-      top: calc(var(--tracks-h) + var(--flow-h));
-      height: var(--reads-h);
       border-top: 1px solid var(--border2);
       background: rgba(127,127,127,0.02);
     }
@@ -263,6 +265,88 @@
     html[data-theme="auto"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 
     .svg-trackHint { fill: var(--muted2); font-size: 11px; }
+
+    /* Track controls */
+    .track-controls {
+      position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 12px;
+      background: rgba(127,127,127,0.03);
+      border-bottom: 1px solid var(--border2);
+      z-index: 10;
+      cursor: move;
+    }
+    .track-controls:hover { background: rgba(127,127,127,0.06); }
+
+    .track-collapse-btn {
+      width: 18px;
+      height: 18px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      padding: 0;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .track-collapse-btn:hover { background: var(--panel2); color: var(--text); }
+    .track-collapse-btn:active { transform: scale(0.95); }
+
+    .track-label {
+      flex: 1;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      user-select: none;
+      pointer-events: none;
+    }
+
+    .track-resize-handle {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 6px;
+      cursor: ns-resize;
+      z-index: 15;
+      background: transparent;
+      pointer-events: auto;
+    }
+    .track-resize-handle:hover {
+      background: var(--accent);
+      opacity: 0.3;
+    }
+    .track-resize-handle:active {
+      background: var(--accent);
+      opacity: 0.6;
+    }
+
+    .track-content {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 24px;
+      bottom: 0;
+      overflow: hidden;
+    }
+
+    .track-control-container {
+      pointer-events: none;
+    }
+    .track-control-container .track-controls,
+    .track-control-container .track-resize-handle {
+      pointer-events: auto;
+    }
   </style>
 </head>
 
@@ -297,8 +381,9 @@
     </div>
 
     <div class="main" id="main">
-      <div class="tracks">
+      <div class="tracks" id="tracksContainer">
         <svg id="tracksSvg" width="100%" height="100%"></svg>
+        <div id="trackControls"></div>
       </div>
 
       <div class="flow" id="flow">
@@ -400,7 +485,19 @@
     pointers: new Map(),     // pointerId -> {x,y}
     pinchStartDist: null,
     pinchStartSpan: null,
-    pinchAnchorBp: null
+    pinchAnchorBp: null,
+
+    // track management
+    tracks: [
+      { id: "ideogram", label: "Chromosome", collapsed: false, height: 28, minHeight: 20 },
+      { id: "genes", label: "Genes", collapsed: false, height: 142, minHeight: 30 },
+      { id: "repeats", label: "RepeatMasker", collapsed: false, height: 50, minHeight: 30 },
+      { id: "ruler", label: "Locus", collapsed: false, height: 90, minHeight: 40 },
+      { id: "flow", label: "Sankey", collapsed: false, height: 300, minHeight: 100 },
+      { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
+    ],
+    trackDragState: null,  // { trackId, startY, offset }
+    trackResizeState: null // { trackId, startY, startHeight }
   };
 
   const main = document.getElementById("main");
@@ -550,98 +647,137 @@
   }
 
   // -----------------------------
+  // Track layout calculation
+  // -----------------------------
+  function getTrackLayout() {
+    const layout = [];
+    let currentY = 0;
+    const headerH = 24;
+    const padding = 8;
+
+    for (const track of state.tracks) {
+      const effectiveHeight = track.collapsed ? headerH : (headerH + track.height);
+      layout.push({
+        track,
+        top: currentY,
+        height: effectiveHeight,
+        contentTop: currentY + headerH,
+        contentHeight: track.collapsed ? 0 : track.height
+      });
+      currentY += effectiveHeight + 2; // 2px gap between tracks
+    }
+
+    return layout;
+  }
+
+  function updateTracksHeight() {
+    const layout = getTrackLayout();
+    // Exclude flow and reads from tracks height since they're positioned separately
+    const tracksLayout = layout.filter(l => l.track.id !== "flow" && l.track.id !== "reads");
+    const totalH = tracksLayout.length > 0 
+      ? tracksLayout[tracksLayout.length - 1].top + tracksLayout[tracksLayout.length - 1].height
+      : 0;
+    document.documentElement.style.setProperty('--tracks-h', `${totalH}px`);
+  }
+
+  // -----------------------------
   // Tracks rendering (ideogram + genes + repeats + ruler)
   // -----------------------------
   function renderTracks() {
     clearSvg(tracksSvg);
     const W = tracksWidthPx();
+    const layout = getTrackLayout();
 
-    // Layout
-    const ideogramY = 12, ideogramH = 16;           // shorter height (requested)
-    const geneLabelY = 44;
-    const geneTopY = 52;
-    const laneH = 30, lanes = 3;
-    const genesH = lanes * laneH;
+    // Find track positions
+    const ideogramLayout = layout.find(l => l.track.id === "ideogram");
+    const genesLayout = layout.find(l => l.track.id === "genes");
+    const repeatsLayout = layout.find(l => l.track.id === "repeats");
+    const rulerLayout = layout.find(l => l.track.id === "ruler");
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    const readsLayout = layout.find(l => l.track.id === "reads");
 
-    const repeatsLabelY = geneTopY + genesH + 18;
-    const repeatsY = repeatsLabelY + 8;
-    const repeatsH = 22;
+    if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !flowLayout || !readsLayout) return;
 
-    const rulerLabelY = repeatsY + repeatsH + 26;
-    const rulerY = rulerLabelY + 8;
-    const rulerH = 56;
+    // Ideogram layout
+    if (!ideogramLayout.track.collapsed) {
+      const ideogramY = ideogramLayout.contentTop + 12;
+      const ideogramH = 16;
 
-    // --- Chromosome label
-    tracksSvg.appendChild(el("text", {
-      x: 16,
-      y: ideogramY + ideogramH/2 + 1,
-      class: "svg-chr",
-      "dominant-baseline": "middle"
-    }, state.contig));
+      // --- Chromosome label
+      tracksSvg.appendChild(el("text", {
+        x: 16,
+        y: ideogramY + ideogramH/2 + 1,
+        class: "svg-chr",
+        "dominant-baseline": "middle"
+      }, state.contig));
 
-    // --- Ideogram (p/q arm rounded rects + cytobands clipped inside)
-    const bandX = 70;
-    const bandW = W - bandX - 16;
+      // --- Ideogram (p/q arm rounded rects + cytobands clipped inside)
+      const bandX = 70;
+      const bandW = W - bandX - 16;
 
-    const centromereGap = 10;
-    const pFrac = 0.48;
-    const qFrac = 1 - pFrac;
+      const centromereGap = 10;
+      const pFrac = 0.48;
+      const qFrac = 1 - pFrac;
 
-    const pW = Math.max(10, Math.floor(bandW * pFrac) - centromereGap/2);
-    const qW = Math.max(10, Math.floor(bandW * qFrac) - centromereGap/2);
+      const pW = Math.max(10, Math.floor(bandW * pFrac) - centromereGap/2);
+      const qW = Math.max(10, Math.floor(bandW * qFrac) - centromereGap/2);
 
-    const pX = bandX;
-    const qX = bandX + pW + centromereGap;
+      const pX = bandX;
+      const qX = bandX + pW + centromereGap;
 
-    // defs + clipPath that matches both arms
-    const defs = el("defs");
-    const clipId = "chrClip";
-    const clip = el("clipPath", { id: clipId });
+      // defs + clipPath that matches both arms
+      const defs = el("defs");
+      const clipId = "chrClip";
+      const clip = el("clipPath", { id: clipId });
 
-    const armStroke = "rgba(127,127,127,0.22)";
-    const armFill = "rgba(127,127,127,0.12)";
+      const armStroke = "rgba(127,127,127,0.22)";
+      const armFill = "rgba(127,127,127,0.12)";
 
-    const pArm = el("rect", { x: pX, y: ideogramY, width: pW, height: ideogramH, rx: 9, fill: armFill, stroke: armStroke });
-    const qArm = el("rect", { x: qX, y: ideogramY, width: qW, height: ideogramH, rx: 9, fill: armFill, stroke: armStroke });
+      const pArm = el("rect", { x: pX, y: ideogramY, width: pW, height: ideogramH, rx: 9, fill: armFill, stroke: armStroke });
+      const qArm = el("rect", { x: qX, y: ideogramY, width: qW, height: ideogramH, rx: 9, fill: armFill, stroke: armStroke });
 
-    clip.appendChild(el("rect", { x: pX, y: ideogramY, width: pW, height: ideogramH, rx: 9 }));
-    clip.appendChild(el("rect", { x: qX, y: ideogramY, width: qW, height: ideogramH, rx: 9 }));
+      clip.appendChild(el("rect", { x: pX, y: ideogramY, width: pW, height: ideogramH, rx: 9 }));
+      clip.appendChild(el("rect", { x: qX, y: ideogramY, width: qW, height: ideogramH, rx: 9 }));
 
-    defs.appendChild(clip);
-    tracksSvg.appendChild(defs);
+      defs.appendChild(clip);
+      tracksSvg.appendChild(defs);
 
-    tracksSvg.appendChild(pArm);
-    tracksSvg.appendChild(qArm);
+      tracksSvg.appendChild(pArm);
+      tracksSvg.appendChild(qArm);
 
-    // cytobands (drawn as rectangles across the full ideogram span, then clipped)
-    const stripes = 26;
-    const bandInnerY = ideogramY - 2;       // make top/bottom "hidden" by clip
-    const bandInnerH = ideogramH + 4;
+      // cytobands (drawn as rectangles across the full ideogram span, then clipped)
+      const stripes = 26;
+      const bandInnerY = ideogramY - 2;       // make top/bottom "hidden" by clip
+      const bandInnerH = ideogramH + 4;
 
-    for (let i=0;i<stripes;i++) {
-      const x = bandX + (i/stripes)*bandW;
+      for (let i=0;i<stripes;i++) {
+        const x = bandX + (i/stripes)*bandW;
+        tracksSvg.appendChild(el("rect", {
+          x, y: bandInnerY, width: bandW/stripes, height: bandInnerH,
+          fill: i%2===0 ? "rgba(127,127,127,0.10)" : "rgba(127,127,127,0.24)",
+          "clip-path": `url(#${clipId})`
+        }));
+      }
+
+      // locus highlight as a red rectangle, clipped to the chromosome shape
+      const fracStart = 0.38, fracEnd = 0.56;
       tracksSvg.appendChild(el("rect", {
-        x, y: bandInnerY, width: bandW/stripes, height: bandInnerH,
-        fill: i%2===0 ? "rgba(127,127,127,0.10)" : "rgba(127,127,127,0.24)",
+        x: bandX + fracStart*bandW,
+        y: ideogramY - 1,
+        width: (fracEnd-fracStart)*bandW,
+        height: ideogramH + 2,
+        fill: "rgba(255,77,77,0.25)",
+        stroke: "rgba(255,77,77,0.95)",
+        "stroke-width": 1,
         "clip-path": `url(#${clipId})`
       }));
     }
 
-    // locus highlight as a red rectangle, clipped to the chromosome shape
-    const fracStart = 0.38, fracEnd = 0.56;
-    tracksSvg.appendChild(el("rect", {
-      x: bandX + fracStart*bandW,
-      y: ideogramY - 1,
-      width: (fracEnd-fracStart)*bandW,
-      height: ideogramH + 2,
-      fill: "rgba(255,77,77,0.25)",
-      stroke: "rgba(255,77,77,0.95)",
-      "stroke-width": 1,
-      "clip-path": `url(#${clipId})`
-    }));
-
     // --- Genes track (exons/introns/strand)
-    tracksSvg.appendChild(el("text", { x: 16, y: geneLabelY, class:"svg-label" }, "Genes"));
+    if (!genesLayout.track.collapsed) {
+      const geneTopY = genesLayout.contentTop + 8;
+      const laneH = 30, lanes = 3;
+      const genesH = lanes * laneH;
 
     for (let lane=0; lane<lanes; lane++) {
       const y = geneTopY + lane*laneH + laneH/2;
@@ -719,15 +855,18 @@
         class:"svg-small"
       }, t.strand === "+" ? "→" : "←"));
     }
+    }
 
     // --- RepeatMasker track
-    tracksSvg.appendChild(el("text", { x: 16, y: repeatsLabelY, class:"svg-label" }, "RepeatMasker"));
+    if (!repeatsLayout.track.collapsed) {
+      const repeatsY = repeatsLayout.contentTop + 8;
+      const repeatsH = 22;
 
-    // background guide line
-    tracksSvg.appendChild(el("line", {
-      x1: 16, x2: W-16, y1: repeatsY + repeatsH/2, y2: repeatsY + repeatsH/2,
-      stroke: "rgba(127,127,127,0.16)"
-    }));
+      // background guide line
+      tracksSvg.appendChild(el("line", {
+        x1: 16, x2: W-16, y1: repeatsY + repeatsH/2, y2: repeatsY + repeatsH/2,
+        stroke: "rgba(127,127,127,0.16)"
+      }));
 
     function repeatColor(cls) {
       // simple palette-ish mapping; kept subtle
@@ -758,11 +897,14 @@
         stroke: "rgba(127,127,127,0.20)"
       }));
     }
+    }
 
     // --- Locus ruler
-    tracksSvg.appendChild(el("text", { x: 16, y: rulerLabelY, class:"svg-label" }, "Locus"));
+    if (!rulerLayout.track.collapsed) {
+      const rulerY = rulerLayout.contentTop + 8;
+      const rulerH = 56;
 
-    const baseY = rulerY + 14;
+      const baseY = rulerY + 14;
 
     tracksSvg.appendChild(el("line", {
       x1: 16, x2: W-16, y1: baseY, y2: baseY,
@@ -845,11 +987,12 @@
       }));
     }
 
-    // bottom separator
-    tracksSvg.appendChild(el("line", {
-      x1: 0, x2: W, y1: rulerY + rulerH, y2: rulerY + rulerH,
-      stroke: "rgba(127,127,127,0.12)"
-    }));
+      // bottom separator
+      tracksSvg.appendChild(el("line", {
+        x1: 0, x2: W, y1: rulerY + rulerH, y2: rulerY + rulerH,
+        stroke: "rgba(127,127,127,0.12)"
+      }));
+    }
   }
 
   // -----------------------------
@@ -886,14 +1029,24 @@
   // Sankey placeholder (Canvas2D)
   // -----------------------------
   function renderFlowCanvas() {
+    const layout = getTrackLayout();
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    if (!flowLayout || flowLayout.track.collapsed) {
+      // Clear canvas if collapsed
+      const ctx = flowCanvas.getContext("2d");
+      ctx.clearRect(0, 0, flowCanvas.width, flowCanvas.height);
+      return;
+    }
+
     const dpr = resizeCanvasTo(flow, flowCanvas);
     const ctx = flowCanvas.getContext("2d");
-
-    const junctionY = 40;
-
+    
+    // Clear and set up canvas
     ctx.setTransform(1,0,0,1,0,0);
     ctx.clearRect(0,0,flowCanvas.width,flowCanvas.height);
     ctx.scale(dpr, dpr);
+
+    const junctionY = 40;
 
     const W = flowWidthPx(), H = flowHeightPx();
 
@@ -963,6 +1116,12 @@
   // Reads placeholder (IGV-style area)
   // -----------------------------
   function renderReadsCanvas() {
+    const layout = getTrackLayout();
+    const readsLayout = layout.find(l => l.track.id === "reads");
+    if (!readsLayout || readsLayout.track.collapsed) {
+      return; // Don't render if collapsed
+    }
+
     const dpr = resizeCanvasTo(reads, readsCanvas);
     const ctx = readsCanvas.getContext("2d");
 
@@ -978,15 +1137,10 @@
     ctx.fillStyle = "rgba(127,127,127,0.02)";
     ctx.fillRect(0,0,W,H);
 
-    // label
-    ctx.fillStyle = colText;
-    ctx.font = "12px ui-sans-serif, system-ui";
-    ctx.fillText("Reads (IGV-style placeholder)", 16, 18);
-
     // a few rows to suggest lanes
     ctx.strokeStyle = grid;
     ctx.lineWidth = 1;
-    const top = 28;
+    const top = 8;
     const rowH = 18;
     const rows = Math.floor((H - top - 12) / rowH);
     for (let i=0; i<rows; i++) {
@@ -1033,6 +1187,60 @@
   }
 
   // -----------------------------
+  // Track controls rendering
+  // -----------------------------
+  const trackControls = document.getElementById("trackControls");
+  function renderTrackControls() {
+    trackControls.innerHTML = "";
+    const layout = getTrackLayout();
+
+    for (const item of layout) {
+      const track = item.track;
+      const container = document.createElement("div");
+      container.className = "track-control-container";
+      container.style.position = "absolute";
+      container.style.left = "0";
+      container.style.right = "0";
+      container.style.top = `${item.top}px`;
+      container.style.height = `${item.height}px`;
+      container.dataset.trackId = track.id;
+
+      const controls = document.createElement("div");
+      controls.className = "track-controls";
+      controls.dataset.trackId = track.id;
+
+      const collapseBtn = document.createElement("button");
+      collapseBtn.className = "track-collapse-btn";
+      collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      collapseBtn.type = "button";
+      collapseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        track.collapsed = !track.collapsed;
+        updateTracksHeight();
+        renderAll();
+      });
+
+      const label = document.createElement("div");
+      label.className = "track-label";
+      label.textContent = track.label;
+
+      controls.appendChild(collapseBtn);
+      controls.appendChild(label);
+      container.appendChild(controls);
+
+      if (!track.collapsed) {
+        const resizeHandle = document.createElement("div");
+        resizeHandle.className = "track-resize-handle";
+        resizeHandle.dataset.trackId = track.id;
+        container.appendChild(resizeHandle);
+      }
+
+      trackControls.appendChild(container);
+    }
+  }
+
+  // -----------------------------
   // HUD + renderAll
   // -----------------------------
   function renderHUD() {
@@ -1042,10 +1250,33 @@
 
   function renderAll() {
     updateDerived();
+    updateTracksHeight();
     renderTracks();
+    renderTrackControls();
+    updateFlowAndReadsPosition();
     renderFlowCanvas();
     renderReadsCanvas();
     renderHUD();
+  }
+
+  function updateFlowAndReadsPosition() {
+    const layout = getTrackLayout();
+    
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    if (flowLayout) {
+      // Position flow based on its position in the layout
+      flow.style.top = `${flowLayout.top}px`;
+      flow.style.height = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentHeight}px`;
+      flow.style.display = flowLayout.track.collapsed ? "none" : "block";
+    }
+    
+    const readsLayout = layout.find(l => l.track.id === "reads");
+    if (readsLayout) {
+      // Position reads based on its position in the layout
+      reads.style.top = `${readsLayout.top}px`;
+      reads.style.height = readsLayout.track.collapsed ? "0px" : `${readsLayout.contentHeight}px`;
+      reads.style.display = readsLayout.track.collapsed ? "none" : "block";
+    }
   }
 
   // -----------------------------
@@ -1191,6 +1422,148 @@
     const anchorBp = anchorBpFromClientX(e.clientX);
     zoomByFactor(1.6, anchorBp);
   });
+
+  // -----------------------------
+  // Track interactions (drag, resize)
+  // -----------------------------
+  if (trackControls) {
+  trackControls.addEventListener("pointerdown", (e) => {
+    // Don't start drag if clicking on collapse button
+    if (e.target.closest(".track-collapse-btn")) {
+      e.stopPropagation();
+      return;
+    }
+    
+    const controls = e.target.closest(".track-controls");
+    const resizeHandle = e.target.closest(".track-resize-handle");
+    
+    if (resizeHandle) {
+      // Start resizing
+      e.stopPropagation();
+      const trackId = resizeHandle.dataset.trackId;
+      const track = state.tracks.find(t => t.id === trackId);
+      if (!track) return;
+      
+      e.preventDefault();
+      state.trackResizeState = {
+        trackId,
+        startY: e.clientY,
+        startHeight: track.height
+      };
+      trackControls.setPointerCapture(e.pointerId);
+    } else if (controls) {
+      // Start dragging for reorder
+      e.stopPropagation();
+      const trackId = controls.dataset.trackId;
+      e.preventDefault();
+      state.trackDragState = {
+        trackId,
+        startY: e.clientY,
+        offset: 0
+      };
+      trackControls.setPointerCapture(e.pointerId);
+    }
+  });
+
+  trackControls.addEventListener("pointermove", (e) => {
+    if (state.trackResizeState) {
+      // Resizing
+      const track = state.tracks.find(t => t.id === state.trackResizeState.trackId);
+      if (!track) return;
+      
+      e.preventDefault();
+      const dy = e.clientY - state.trackResizeState.startY;
+      const newHeight = Math.max(track.minHeight, state.trackResizeState.startHeight + dy);
+      track.height = newHeight;
+      updateTracksHeight();
+      renderAll();
+    } else if (state.trackDragState) {
+      // Dragging for reorder
+      e.preventDefault();
+      const dy = e.clientY - state.trackDragState.startY;
+      state.trackDragState.offset = dy;
+      
+      // Visual feedback: move the dragged track
+      const layout = getTrackLayout();
+      const draggedItem = layout.find(l => l.track.id === state.trackDragState.trackId);
+      if (draggedItem) {
+        const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
+        if (container) {
+          container.style.transform = `translateY(${dy}px)`;
+          container.style.zIndex = "100";
+          container.style.opacity = "0.8";
+        }
+      }
+    }
+  });
+
+  function endTrackInteraction(e) {
+    // Only process if we have an active interaction
+    if (!state.trackResizeState && !state.trackDragState) return;
+    
+    // Release pointer capture
+    if (e.target.releasePointerCapture) {
+      try {
+        e.target.releasePointerCapture(e.pointerId);
+      } catch (err) {
+        // Ignore if already released
+      }
+    }
+    
+    if (state.trackResizeState) {
+      state.trackResizeState = null;
+    } else if (state.trackDragState) {
+      // Handle reordering
+      const layout = getTrackLayout();
+      const draggedItem = layout.find(l => l.track.id === state.trackDragState.trackId);
+      if (draggedItem) {
+        const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
+        if (container) {
+          container.style.transform = "";
+          container.style.zIndex = "";
+          container.style.opacity = "";
+        }
+        
+        // Find new position
+        const newY = draggedItem.top + state.trackDragState.offset;
+        let newIndex = 0;
+        for (let i = 0; i < layout.length; i++) {
+          if (newY > layout[i].top + layout[i].height / 2) {
+            newIndex = i + 1;
+          }
+        }
+        newIndex = Math.max(0, Math.min(newIndex, layout.length - 1));
+        
+        // Reorder tracks
+        const currentIndex = state.tracks.findIndex(t => t.id === state.trackDragState.trackId);
+        if (currentIndex !== newIndex && currentIndex !== -1) {
+          const [track] = state.tracks.splice(currentIndex, 1);
+          state.tracks.splice(newIndex, 0, track);
+          renderAll();
+        } else {
+          // Just re-render to reset visual state
+          renderAll();
+        }
+      }
+      state.trackDragState = null;
+    }
+  }
+
+  trackControls.addEventListener("pointerup", endTrackInteraction);
+  trackControls.addEventListener("pointercancel", endTrackInteraction);
+  
+  // Also listen on document to catch pointerup events that might occur outside
+  document.addEventListener("pointerup", (e) => {
+    if (state.trackResizeState || state.trackDragState) {
+      endTrackInteraction(e);
+    }
+  });
+  document.addEventListener("pointercancel", (e) => {
+    if (state.trackResizeState || state.trackDragState) {
+      endTrackInteraction(e);
+    }
+  });
+  }
 
   // Resize
   new ResizeObserver(() => renderAll()).observe(flow);
