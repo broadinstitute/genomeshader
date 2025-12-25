@@ -8,7 +8,7 @@
   <style>
     :root {
       --sidebar-w: 240px;
-      --tracks-h: 260px;   /* ideogram + genes + repeats + ruler */
+      --tracks-h: 280px;   /* ideogram + genes + repeats + ruler */
       --flow-h: 500px;     /* sankey placeholder */
       --reads-h: 220px;    /* IGV-style reads area placeholder */
 
@@ -780,6 +780,9 @@
 
     const firstMinor = Math.ceil(state.startBp / minorBp) * minorBp;
 
+    // Track major tick label positions to avoid overlap with edge labels
+    const majorTickLabelXs = [];
+
     for (let bp = firstMinor; bp <= state.endBp; bp += minorBp) {
       const x = xGenome(bp);
       const isMajor = (Math.round(bp / minorBp) % 5) === 0;
@@ -799,15 +802,28 @@
           class: "svg-small",
           "text-anchor": "middle"
         }, formatBp(Math.round(bp))));
+        majorTickLabelXs.push(x);
       }
     }
 
-    tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
-      formatBp(Math.round(state.startBp))
-    ));
-    tracksSvg.appendChild(el("text", {
-      x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
-    }, formatBp(Math.round(state.endBp))));
+    // Only show edge labels if no tick label is too close
+    const edgeThreshold = 100; // pixels
+    const leftEdgeX = 16;
+    const rightEdgeX = W - 16;
+    
+    const hasNearbyLeftTick = majorTickLabelXs.some(tickX => Math.abs(tickX - leftEdgeX) < edgeThreshold);
+    const hasNearbyRightTick = majorTickLabelXs.some(tickX => Math.abs(tickX - rightEdgeX) < edgeThreshold);
+
+    if (!hasNearbyLeftTick) {
+      tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
+        formatBp(Math.round(state.startBp))
+      ));
+    }
+    if (!hasNearbyRightTick) {
+      tracksSvg.appendChild(el("text", {
+        x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
+      }, formatBp(Math.round(state.endBp))));
+    }
 
     // Variant marks
     for (const v of variants) {
