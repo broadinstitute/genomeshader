@@ -634,6 +634,7 @@
       { id: "genes", label: "Genes", collapsed: false, height: 110, minHeight: 30 },
       { id: "repeats", label: "RepeatMasker", collapsed: false, height: 50, minHeight: 30 },
       { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
+      { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
       { id: "flow", label: "Sankey", collapsed: false, height: 300, minHeight: 100 },
       { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
     ],
@@ -920,10 +921,11 @@
     const genesLayout = layout.find(l => l.track.id === "genes");
     const repeatsLayout = layout.find(l => l.track.id === "repeats");
     const rulerLayout = layout.find(l => l.track.id === "ruler");
+    const referenceLayout = layout.find(l => l.track.id === "reference");
     const flowLayout = layout.find(l => l.track.id === "flow");
     const readsLayout = layout.find(l => l.track.id === "reads");
 
-    if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !flowLayout || !readsLayout) return;
+    if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout || !readsLayout) return;
 
     // Ideogram layout
     if (!ideogramLayout.track.collapsed) {
@@ -1367,10 +1369,10 @@
         const baseWidth = gapWidth / insertedSeq.length;
         
         const nucleotideColors = {
-          'A': 'rgba(255,77,77,0.8)',
-          'C': 'rgba(77,148,255,0.8)',
-          'G': 'rgba(77,255,148,0.8)',
-          'T': 'rgba(255,200,77,0.8)'
+          'A': 'rgba(0, 200, 0, 0.8)',      // green
+          'C': 'rgba(0, 0, 255, 0.8)',      // blue
+          'G': 'rgba(255, 165, 0, 0.8)',    // orange
+          'T': 'rgba(255, 0, 0, 0.8)'       // red
         };
         
         for (let i = 0; i < insertedSeq.length; i++) {
@@ -1390,11 +1392,12 @@
           if (baseWidth >= 8) {
             tracksSvg.appendChild(el("text", {
               x: baseX + baseWidth / 2,
-              y: baseY + 4,
+              y: baseY,
               class: "svg-small",
               "text-anchor": "middle",
               fill: "white",
-              "font-weight": "bold"
+              "font-weight": "bold",
+              "dominant-baseline": "middle"
             }, base));
           }
         }
@@ -1404,6 +1407,125 @@
       // bottom separator
       tracksSvg.appendChild(el("line", {
         x1: 0, x2: W, y1: rulerY + rulerH, y2: rulerY + rulerH,
+        stroke: "rgba(127,127,127,0.12)"
+      }));
+    }
+
+    // --- Reference track
+    if (!referenceLayout.track.collapsed) {
+      const referenceY = referenceLayout.contentTop + 8;
+      const referenceH = 24;
+
+      // Helper function to generate a demo reference sequence
+      function generateReferenceSequence(startBp, endBp) {
+        // Generate a simple repeating pattern for demo purposes
+        // In a real implementation, this would fetch from a reference genome
+        const bases = ['A', 'T', 'G', 'C'];
+        const seq = [];
+        for (let bp = Math.floor(startBp); bp <= Math.floor(endBp); bp++) {
+          // Use a deterministic pattern based on position
+          seq.push(bases[bp % 4]);
+        }
+        return seq;
+      }
+
+      const span = state.endBp - state.startBp;
+      const startBpInt = Math.floor(state.startBp);
+      const endBpInt = Math.floor(state.endBp);
+      const refSeq = generateReferenceSequence(startBpInt, endBpInt);
+
+      const nucleotideColors = {
+        'A': 'rgba(0, 200, 0, 0.8)',      // green
+        'C': 'rgba(0, 0, 255, 0.8)',      // blue
+        'G': 'rgba(255, 165, 0, 0.8)',    // orange
+        'T': 'rgba(255, 0, 0, 0.8)'       // red
+      };
+
+      // Calculate base width based on zoom level
+      const minBaseWidth = 2; // Minimum width per base in pixels
+      const baseWidth = Math.max(minBaseWidth, state.pxPerBp);
+
+      // Only show individual bases if zoomed in enough
+      const showIndividualBases = baseWidth >= 4;
+
+      if (showIndividualBases) {
+        // Render individual bases
+        for (let i = 0; i < refSeq.length; i++) {
+          const bp = startBpInt + i;
+          if (bp < state.startBp || bp > state.endBp) continue;
+
+          // Use xGenomeCanonical to account for insertion gaps
+          const x = xGenomeCanonical(bp, W);
+          const nextX = i < refSeq.length - 1 ? xGenomeCanonical(bp + 1, W) : xGenomeCanonical(state.endBp, W);
+          const actualWidth = Math.max(minBaseWidth, nextX - x);
+
+          const base = refSeq[i].toUpperCase();
+          const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+
+          tracksSvg.appendChild(el("rect", {
+            x: x,
+            y: referenceY,
+            width: actualWidth - 0.5,
+            height: referenceH,
+            fill: color
+          }));
+
+          // Draw base letter if space allows
+          if (actualWidth >= 8) {
+            tracksSvg.appendChild(el("text", {
+              x: x + actualWidth / 2,
+              y: referenceY + referenceH / 2,
+              class: "svg-small",
+              "text-anchor": "middle",
+              fill: "white",
+              "font-weight": "bold",
+              "dominant-baseline": "middle"
+            }, base));
+          }
+        }
+      } else {
+        // Zoomed out: show a continuous reference line with subtle pattern
+        const leftPad = 16, rightPad = 16;
+        const innerW = W - leftPad - rightPad;
+        const totalGapPx = getTotalInsertionGapWidth();
+        const totalGapBp = totalGapPx / state.pxPerBp;
+        const effectiveSpan = span + totalGapBp;
+
+        // Draw background
+        tracksSvg.appendChild(el("rect", {
+          x: leftPad,
+          y: referenceY,
+          width: innerW,
+          height: referenceH,
+          fill: "rgba(127,127,127,0.08)",
+          rx: 4
+        }));
+
+        // Draw a subtle pattern indicating reference sequence
+        const patternWidth = 20;
+        for (let x = leftPad; x < leftPad + innerW; x += patternWidth * 2) {
+          tracksSvg.appendChild(el("rect", {
+            x: x,
+            y: referenceY,
+            width: Math.min(patternWidth, leftPad + innerW - x),
+            height: referenceH,
+            fill: "rgba(127,127,127,0.12)"
+          }));
+        }
+
+        // Label
+        tracksSvg.appendChild(el("text", {
+          x: leftPad + 8,
+          y: referenceY + referenceH / 2 + 4,
+          class: "svg-small",
+          fill: "var(--muted2)",
+          "dominant-baseline": "middle"
+        }, "Reference sequence"));
+      }
+
+      // Top separator
+      tracksSvg.appendChild(el("line", {
+        x1: 0, x2: W, y1: referenceY - 4, y2: referenceY - 4,
         stroke: "rgba(127,127,127,0.12)"
       }));
     }
