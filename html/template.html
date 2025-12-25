@@ -1294,6 +1294,8 @@
     ctx.globalAlpha = 1.0;
 
     // connectors from Sankey columns down to Reads track (diagonal lines)
+    // Disabled for now - makes display too busy
+    /*
     const win = visibleVariantWindow();
     const trackLayoutForConnectors = getTrackLayout();
     const flowLayoutItem = trackLayoutForConnectors.find(l => l.track.id === "flow");
@@ -1332,6 +1334,7 @@
       }
       ctx.globalAlpha = 1.0;
     }
+    */
   }
 
   // -----------------------------
