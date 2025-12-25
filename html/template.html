@@ -856,15 +856,15 @@
       const bandX = 70;
       const bandW = W - bandX - 16;
 
-      const centromereGap = 10;
       const pFrac = 0.48;
       const qFrac = 1 - pFrac;
 
-      const pW = Math.max(10, Math.floor(bandW * pFrac) - centromereGap/2);
-      const qW = Math.max(10, Math.floor(bandW * qFrac) - centromereGap/2);
+      // Calculate widths so p-arm and q-arm touch
+      const pW = Math.max(10, Math.floor(bandW * pFrac));
+      const qW = Math.max(10, Math.floor(bandW * qFrac));
 
       const pX = bandX;
-      const qX = bandX + pW + centromereGap;
+      const qX = bandX + pW;
 
       // defs + clipPath that matches both arms
       const defs = el("defs");
@@ -887,30 +887,81 @@
       tracksSvg.appendChild(qArm);
 
       // cytobands (drawn as rectangles across the full ideogram span, then clipped)
+      // The centromere is a special red cytoband at the junction between p-arm and q-arm
       const stripes = 26;
       const bandInnerY = ideogramY - 2;       // make top/bottom "hidden" by clip
       const bandInnerH = ideogramH + 4;
+      const centromereBandIndex = Math.floor(stripes * pFrac);
+      const centromereWidth = bandW / stripes;
 
       for (let i=0;i<stripes;i++) {
         const x = bandX + (i/stripes)*bandW;
+        const isCentromere = i === centromereBandIndex;
+        const fill = isCentromere 
+          ? "rgba(255,77,77,0.35)" 
+          : (i%2===0 ? "rgba(127,127,127,0.10)" : "rgba(127,127,127,0.24)");
+        const stroke = isCentromere ? "rgba(255,77,77,0.95)" : "none";
+        const strokeWidth = isCentromere ? 1 : 0;
+        
         tracksSvg.appendChild(el("rect", {
           x, y: bandInnerY, width: bandW/stripes, height: bandInnerH,
-          fill: i%2===0 ? "rgba(127,127,127,0.10)" : "rgba(127,127,127,0.24)",
+          fill: fill,
+          stroke: stroke,
+          "stroke-width": strokeWidth,
           "clip-path": `url(#${clipId})`
         }));
       }
 
-      // locus highlight as a red rectangle, clipped to the chromosome shape
-      const fracStart = 0.38, fracEnd = 0.56;
+      // Locus highlight - small red rectangle showing current view position
+      // For chr1, approximate length is ~249M bp
+      const chrLengths = {
+        "chr1": 248_956_422,
+        "chr2": 242_193_529,
+        "chr3": 198_295_559,
+        "chr4": 190_214_555,
+        "chr5": 181_538_259,
+        "chr6": 170_805_979,
+        "chr7": 159_345_973,
+        "chr8": 145_138_636,
+        "chr9": 138_394_717,
+        "chr10": 133_797_422,
+        "chr11": 135_086_622,
+        "chr12": 133_275_309,
+        "chr13": 114_364_328,
+        "chr14": 107_043_718,
+        "chr15": 101_991_189,
+        "chr16": 90_338_345,
+        "chr17": 83_257_441,
+        "chr18": 80_373_285,
+        "chr19": 58_617_616,
+        "chr20": 64_444_167,
+        "chr21": 46_709_983,
+        "chr22": 50_818_468,
+        "chrX": 156_040_895,
+        "chrY": 57_227_415
+      };
+      const chrLength = chrLengths[state.contig] || 248_956_422; // default to chr1 length
+      const locusCenter = (state.startBp + state.endBp) / 2;
+      const locusFrac = locusCenter / chrLength;
+      
+      // Position the highlight on the p-arm (always place it on p-arm, further in)
+      // Place it at about 60% along the p-arm
+      const pArmFrac = 0.6;
+      const locusX = pX + pArmFrac * pW;
+      
+      // Locus highlight should be small (10-15px wide)
+      const locusHighlightWidth = 12;
+      const locusHighlightX = Math.max(pX, Math.min(pX + pW - locusHighlightWidth, locusX - locusHighlightWidth / 2));
+      
+      // Locus highlight - drawn on top of the ideogram (not clipped)
       tracksSvg.appendChild(el("rect", {
-        x: bandX + fracStart*bandW,
+        x: locusHighlightX,
         y: ideogramY - 1,
-        width: (fracEnd-fracStart)*bandW,
+        width: locusHighlightWidth,
         height: ideogramH + 2,
         fill: "rgba(255,77,77,0.25)",
         stroke: "rgba(255,77,77,0.95)",
-        "stroke-width": 1,
-        "clip-path": `url(#${clipId})`
+        "stroke-width": 1
       }));
     }
 
