@@ -84,6 +84,31 @@
         --hudBg: rgba(255,255,255,0.78);
       }
     }
+    @media (prefers-color-scheme: dark) {
+      html[data-theme="auto"] {
+        --bg: #0b0d10;
+        --panel: #11151b;
+        --panel2: rgba(255,255,255,0.03);
+
+        --border: rgba(255,255,255,0.10);
+        --border2: rgba(255,255,255,0.08);
+
+        --text: rgba(255,255,255,0.92);
+        --muted: rgba(255,255,255,0.65);
+        --muted2: rgba(255,255,255,0.45);
+
+        --grid: rgba(255,255,255,0.12);
+        --grid2: rgba(255,255,255,0.07);
+
+        --accent: #ff4d4d;
+
+        --blue: rgba(120,180,255,0.9);
+        --blueFill: rgba(120,180,255,0.18);
+
+        --shadow: 0 10px 30px rgba(0,0,0,0.35);
+        --hudBg: rgba(0,0,0,0.35);
+      }
+    }
 
     html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui; }
     * { box-sizing: border-box; }
@@ -333,8 +358,13 @@
     .svg-chr   { fill: var(--text); font-size: 12px; font-weight: 650; }
 
     .svg-geneName { fill: rgba(180,220,255,0.92); font-size: 11px; font-weight: 650; }
-    html[data-theme="light"] .svg-geneName,
-    html[data-theme="auto"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
+    html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
+    @media (prefers-color-scheme: light) {
+      html[data-theme="auto"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
+    }
+    @media (prefers-color-scheme: dark) {
+      html[data-theme="auto"] .svg-geneName { fill: rgba(180,220,255,0.92); }
+    }
 
     .svg-trackHint { fill: var(--muted2); font-size: 11px; }
 
@@ -599,10 +629,10 @@
 
     // track management
     tracks: [
-      { id: "ideogram", label: "Chromosome", collapsed: false, height: 28, minHeight: 20 },
-      { id: "genes", label: "Genes", collapsed: false, height: 142, minHeight: 30 },
+      { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
+      { id: "genes", label: "Genes", collapsed: false, height: 110, minHeight: 30 },
       { id: "repeats", label: "RepeatMasker", collapsed: false, height: 50, minHeight: 30 },
-      { id: "ruler", label: "Locus", collapsed: false, height: 90, minHeight: 40 },
+      { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
       { id: "flow", label: "Sankey", collapsed: false, height: 300, minHeight: 100 },
       { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
     ],
