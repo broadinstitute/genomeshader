@@ -290,7 +290,6 @@
     .reads {
       position: absolute;
       left: 0; right: 0;
-      border-top: 1px solid var(--border2);
       background: rgba(127,127,127,0.02);
     }
 
@@ -646,12 +645,13 @@
     return state.startBp + t * (state.endBp - state.startBp);
   }
 
-  function xColumn(i) {
+  function xColumn(i, totalColumns) {
     const W = flowWidthPx();
     const margin = 60;
     const innerW = Math.max(10, W - 2*margin);
-    if (state.K <= 1) return margin;
-    return margin + (i / (state.K - 1)) * innerW;
+    const numCols = totalColumns !== undefined ? totalColumns : state.K;
+    if (numCols <= 1) return margin;
+    return margin + (i / (numCols - 1)) * innerW;
   }
 
   // -----------------------------
@@ -766,7 +766,7 @@
         contentTop: currentY + headerH,
         contentHeight: track.collapsed ? 0 : track.height
       });
-      currentY += effectiveHeight + 2; // 2px gap between tracks
+      currentY += effectiveHeight; // no gap between tracks
     }
 
     return layout;
@@ -1113,8 +1113,15 @@
 
   function visibleVariantWindow() {
     const start = state.firstVariantIndex;
-    const end = Math.min(variants.length, start + state.K);
-    return variants.slice(start, end);
+    // Return all variants in the visible genomic range, not limited by state.K
+    // state.K is just used for initial window sizing
+    const visibleVariants = variants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
+    if (visibleVariants.length === 0) {
+      // Fallback to state.K if no variants in range
+      const end = Math.min(variants.length, start + state.K);
+      return variants.slice(start, end);
+    }
+    return visibleVariants;
   }
 
   function roundRect(ctx, x, y, w, h, r) {
@@ -1161,12 +1168,15 @@
     ctx.fillStyle = "rgba(127,127,127,0.035)";
     ctx.fillRect(0,0,W,H);
 
+    // connectors (diagonal lines - make them meet the ruler variant x precisely)
+    const win = visibleVariantWindow();
+    
     // columns (vertical lines)
     ctx.strokeStyle = colBlue;
     ctx.globalAlpha = 0.6;
     ctx.lineWidth = 1;
-    for (let i=0;i<state.K;i++) {
-      const x = xColumn(i);
+    for (let i=0;i<win.length;i++) {
+      const x = xColumn(i, win.length);
       ctx.beginPath();
       ctx.moveTo(x, junctionY);
       ctx.lineTo(x, H-18);
@@ -1176,9 +1186,6 @@
       ctx.font = "12px ui-sans-serif, system-ui";
       ctx.fillText(`v${state.firstVariantIndex + i + 1}`, x - 10, 14);
     }
-
-    // connectors (diagonal lines - make them meet the ruler variant x precisely)
-    const win = visibleVariantWindow();
     ctx.strokeStyle = colBlue;
     ctx.globalAlpha = 0.5;
     ctx.lineWidth = 1;
@@ -1187,7 +1194,7 @@
     for (let i=0; i<win.length; i++) {
       const v = win[i];
       const vx = xGenomeCanonical(v.pos, W); // canonical mapping on this canvas width
-      const cx = xColumn(i);
+      const cx = xColumn(i, win.length);
       ctx.beginPath();
       ctx.moveTo(vx, y0);
       ctx.lineTo(cx, junctionY);
@@ -1197,7 +1204,7 @@
 
     // placeholder nodes
     for (let i=0;i<win.length;i++){
-      const cx = xColumn(i);
+      const cx = xColumn(i, win.length);
       const nodeW = 16, nodeH = 18, gap = 8, top = 70;
       const labels = ["./.","ref","a1"];
 
@@ -1415,16 +1422,16 @@
     
     const flowLayout = layout.find(l => l.track.id === "flow");
     if (flowLayout) {
-      // Position flow based on its position in the layout
-      flow.style.top = `${flowLayout.top}px`;
+      // Position flow based on its position in the layout (excluding header since it's a separate div)
+      flow.style.top = `${flowLayout.contentTop}px`;
       flow.style.height = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentHeight}px`;
       flow.style.display = flowLayout.track.collapsed ? "none" : "block";
     }
     
     const readsLayout = layout.find(l => l.track.id === "reads");
     if (readsLayout) {
-      // Position reads based on its position in the layout
-      reads.style.top = `${readsLayout.top}px`;
+      // Position reads based on its position in the layout (excluding header since it's a separate div)
+      reads.style.top = `${readsLayout.contentTop}px`;
       reads.style.height = readsLayout.track.collapsed ? "0px" : `${readsLayout.contentHeight}px`;
       reads.style.display = readsLayout.track.collapsed ? "none" : "block";
     }
