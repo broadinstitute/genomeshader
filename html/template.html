@@ -577,6 +577,7 @@
 
     firstVariantIndex: 0,
     K: 8,
+    hoveredVariantIndex: null, // index of hovered variant, or null
 
     // interaction
     dragging: false,
@@ -1070,23 +1071,47 @@
     }
 
     // Variant marks
-    for (const v of variants) {
+    for (let idx = 0; idx < variants.length; idx++) {
+      const v = variants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
       const x = xGenome(v.pos);
+      const isHovered = state.hoveredVariantIndex === idx;
+      const strokeWidth = isHovered ? 2.5 : 1.2;
+      const circleStrokeWidth = isHovered ? 2.2 : 1.4;
 
-      tracksSvg.appendChild(el("line", {
+      const lineEl = el("line", {
         x1:x, x2:x,
         y1: baseY - 18, y2: baseY + 18,
         stroke: "var(--blue)",
-        "stroke-width": 1.2
-      }));
+        "stroke-width": strokeWidth,
+        style: "cursor: pointer;"
+      });
+      lineEl.addEventListener("mouseenter", () => {
+        state.hoveredVariantIndex = idx;
+        renderAll();
+      });
+      lineEl.addEventListener("mouseleave", () => {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      });
+      tracksSvg.appendChild(lineEl);
 
-      tracksSvg.appendChild(el("circle", {
+      const circleEl = el("circle", {
         cx:x, cy: baseY - 18, r: 3.4,
         fill: "none",
         stroke: "var(--blue)",
-        "stroke-width": 1.4
-      }));
+        "stroke-width": circleStrokeWidth,
+        style: "cursor: pointer;"
+      });
+      circleEl.addEventListener("mouseenter", () => {
+        state.hoveredVariantIndex = idx;
+        renderAll();
+      });
+      circleEl.addEventListener("mouseleave", () => {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      });
+      tracksSvg.appendChild(circleEl);
     }
 
       // bottom separator
@@ -1174,8 +1199,10 @@
     // columns (vertical lines)
     ctx.strokeStyle = colBlue;
     ctx.globalAlpha = 0.6;
-    ctx.lineWidth = 1;
     for (let i=0;i<win.length;i++) {
+      const variantIdx = state.firstVariantIndex + i;
+      const isHovered = state.hoveredVariantIndex === variantIdx;
+      ctx.lineWidth = isHovered ? 2.5 : 1;
       const x = xColumn(i, win.length);
       ctx.beginPath();
       ctx.moveTo(x, junctionY);
@@ -1188,10 +1215,12 @@
     }
     ctx.strokeStyle = colBlue;
     ctx.globalAlpha = 0.5;
-    ctx.lineWidth = 1;
 
     const y0 = 6;
     for (let i=0; i<win.length; i++) {
+      const variantIdx = state.firstVariantIndex + i;
+      const isHovered = state.hoveredVariantIndex === variantIdx;
+      ctx.lineWidth = isHovered ? 2.5 : 1;
       const v = win[i];
       const vx = xGenomeCanonical(v.pos, W); // canonical mapping on this canvas width
       const cx = xColumn(i, win.length);
@@ -1289,9 +1318,12 @@
 
     // variant guide lines (bright blue)
     ctx.strokeStyle = cssVar("--blue");
-    ctx.globalAlpha = 0.4;
-    for (const v of variants) {
+    for (let idx = 0; idx < variants.length; idx++) {
+      const v = variants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
+      const isHovered = state.hoveredVariantIndex === idx;
+      ctx.globalAlpha = isHovered ? 0.7 : 0.4;
+      ctx.lineWidth = isHovered ? 2.5 : 1;
       const x = xGenomeCanonical(v.pos, W);
       ctx.beginPath();
       ctx.moveTo(x, top);
@@ -1415,6 +1447,131 @@
     renderFlowCanvas();
     renderReadsCanvas();
     renderHUD();
+    setupCanvasHover();
+  }
+
+  // Setup hover detection for canvas elements
+  let flowHoverHandler = null;
+  let flowLeaveHandler = null;
+  let readsHoverHandler = null;
+  let readsLeaveHandler = null;
+
+  function setupCanvasHover() {
+    // Remove existing listeners to avoid duplicates
+    if (flowHoverHandler) {
+      flow.removeEventListener("mousemove", flowHoverHandler);
+      flow.removeEventListener("mouseleave", flowLeaveHandler);
+    }
+    if (readsHoverHandler) {
+      reads.removeEventListener("mousemove", readsHoverHandler);
+      reads.removeEventListener("mouseleave", readsLeaveHandler);
+    }
+
+    // Flow canvas hover detection
+    flowHoverHandler = (e) => {
+      const rect = flow.getBoundingClientRect();
+      // Use CSS pixel coordinates (logical coordinates, not physical canvas pixels)
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      const win = visibleVariantWindow();
+      const junctionY = 40;
+      const W = flowWidthPx();
+      
+      // Check if mouse is near a column line
+      for (let i = 0; i < win.length; i++) {
+        const cx = xColumn(i, win.length);
+        const variantIdx = state.firstVariantIndex + i;
+        
+        // Check if mouse is within 10px of the column line and below junctionY
+        if (Math.abs(x - cx) < 10 && y >= junctionY) {
+          if (state.hoveredVariantIndex !== variantIdx) {
+            state.hoveredVariantIndex = variantIdx;
+            renderAll();
+          }
+          return;
+        }
+      }
+      
+      // Check if mouse is near a diagonal connector
+      const y0 = 6;
+      for (let i = 0; i < win.length; i++) {
+        const v = win[i];
+        if (v.pos < state.startBp || v.pos > state.endBp) continue;
+        const vx = xGenomeCanonical(v.pos, W);
+        const cx = xColumn(i, win.length);
+        const variantIdx = state.firstVariantIndex + i;
+        
+        // Check if mouse is near the diagonal line (within 5px)
+        const dist = Math.abs((y - y0) * (cx - vx) / (junctionY - y0) + vx - x);
+        if (dist < 5 && y >= y0 && y <= junctionY) {
+          if (state.hoveredVariantIndex !== variantIdx) {
+            state.hoveredVariantIndex = variantIdx;
+            renderAll();
+          }
+          return;
+        }
+      }
+      
+      // No variant hovered
+      if (state.hoveredVariantIndex !== null) {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      }
+    };
+    
+    flowLeaveHandler = () => {
+      if (state.hoveredVariantIndex !== null) {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      }
+    };
+    
+    flow.addEventListener("mousemove", flowHoverHandler);
+    flow.addEventListener("mouseleave", flowLeaveHandler);
+
+    // Reads canvas hover detection
+    readsHoverHandler = (e) => {
+      const rect = reads.getBoundingClientRect();
+      // Use CSS pixel coordinates (logical coordinates, not physical canvas pixels)
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      const W = readsWidthPx();
+      const top = 8;
+      
+      // Check if mouse is near a variant line
+      for (let idx = 0; idx < variants.length; idx++) {
+        const v = variants[idx];
+        if (v.pos < state.startBp || v.pos > state.endBp) continue;
+        const vx = xGenomeCanonical(v.pos, W);
+        
+        // Check if mouse is within 10px of the variant line
+        if (Math.abs(x - vx) < 10 && y >= top) {
+          if (state.hoveredVariantIndex !== idx) {
+            state.hoveredVariantIndex = idx;
+            renderAll();
+          }
+          return;
+        }
+      }
+      
+      // No variant hovered
+      if (state.hoveredVariantIndex !== null) {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      }
+    };
+    
+    readsLeaveHandler = () => {
+      if (state.hoveredVariantIndex !== null) {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      }
+    };
+    
+    reads.addEventListener("mousemove", readsHoverHandler);
+    reads.addEventListener("mouseleave", readsLeaveHandler);
   }
 
   function updateFlowAndReadsPosition() {
