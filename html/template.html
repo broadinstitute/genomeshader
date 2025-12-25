@@ -1077,14 +1077,14 @@
       tracksSvg.appendChild(el("line", {
         x1:x, x2:x,
         y1: baseY - 18, y2: baseY + 18,
-        stroke: "rgba(127,127,127,0.88)",
+        stroke: "var(--blue)",
         "stroke-width": 1.2
       }));
 
       tracksSvg.appendChild(el("circle", {
         cx:x, cy: baseY - 18, r: 3.4,
         fill: "none",
-        stroke: "rgba(127,127,127,0.95)",
+        stroke: "var(--blue)",
         "stroke-width": 1.4
       }));
     }
@@ -1155,13 +1155,15 @@
     const colLines = cssVar("--grid");
     const colGrid  = cssVar("--grid2");
     const colText  = cssVar("--muted");
+    const colBlue  = cssVar("--blue");
 
     // background
     ctx.fillStyle = "rgba(127,127,127,0.035)";
     ctx.fillRect(0,0,W,H);
 
-    // columns
-    ctx.strokeStyle = colLines;
+    // columns (vertical lines)
+    ctx.strokeStyle = colBlue;
+    ctx.globalAlpha = 0.6;
     ctx.lineWidth = 1;
     for (let i=0;i<state.K;i++) {
       const x = xColumn(i);
@@ -1175,9 +1177,10 @@
       ctx.fillText(`v${state.firstVariantIndex + i + 1}`, x - 10, 14);
     }
 
-    // connectors (make them meet the ruler variant x precisely)
+    // connectors (diagonal lines - make them meet the ruler variant x precisely)
     const win = visibleVariantWindow();
-    ctx.strokeStyle = colGrid;
+    ctx.strokeStyle = colBlue;
+    ctx.globalAlpha = 0.5;
     ctx.lineWidth = 1;
 
     const y0 = 6;
@@ -1190,6 +1193,7 @@
       ctx.lineTo(cx, junctionY);
       ctx.stroke();
     }
+    ctx.globalAlpha = 1.0;
 
     // placeholder nodes
     for (let i=0;i<win.length;i++){
@@ -1276,8 +1280,9 @@
     drawRead(100_590, 100_820, 5, 0.10);
     drawRead(100_700, 100_900, 6, 0.11);
 
-    // variant guide lines (subtle)
-    ctx.strokeStyle = "rgba(127,127,127,0.10)";
+    // variant guide lines (bright blue)
+    ctx.strokeStyle = cssVar("--blue");
+    ctx.globalAlpha = 0.4;
     for (const v of variants) {
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
       const x = xGenomeCanonical(v.pos, W);
@@ -1285,6 +1290,47 @@
       ctx.moveTo(x, top);
       ctx.lineTo(x, H-10);
       ctx.stroke();
+    }
+    ctx.globalAlpha = 1.0;
+
+    // connectors from Sankey columns down to Reads track (diagonal lines)
+    const win = visibleVariantWindow();
+    const trackLayoutForConnectors = getTrackLayout();
+    const flowLayoutItem = trackLayoutForConnectors.find(l => l.track.id === "flow");
+    const readsLayoutItem = trackLayoutForConnectors.find(l => l.track.id === "reads");
+    
+    if (flowLayoutItem && readsLayoutItem && !flowLayoutItem.track.collapsed && !readsLayoutItem.track.collapsed) {
+      ctx.strokeStyle = cssVar("--blue");
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 1;
+      
+      // Draw diagonal lines from Sankey columns to variant positions in Reads track
+      // Similar to how Locus connects to Sankey, but in reverse direction
+      for (let i=0; i<win.length; i++) {
+        const v = win[i];
+        if (v.pos < state.startBp || v.pos > state.endBp) continue;
+        
+        // Calculate column x position in Reads canvas coordinates
+        // Use the same logic as xColumn but with Reads canvas width
+        const margin = 60;
+        const innerW = Math.max(10, W - 2*margin);
+        let columnX;
+        if (state.K <= 1) {
+          columnX = margin;
+        } else {
+          columnX = margin + (i / (state.K - 1)) * innerW;
+        }
+        
+        // Variant position x in Reads track (genomic coordinate mapping)
+        const variantX = xGenomeCanonical(v.pos, W);
+        
+        // Draw diagonal line from column position to variant position
+        ctx.beginPath();
+        ctx.moveTo(columnX, 0); // top of reads canvas, at column x position
+        ctx.lineTo(variantX, top); // connect to variant position at top of read lanes
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
     }
   }
 
