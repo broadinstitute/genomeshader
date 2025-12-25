@@ -616,6 +616,7 @@
     firstVariantIndex: 0,
     K: 8,
     hoveredVariantIndex: null, // index of hovered variant, or null
+    expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
 
     // interaction
     dragging: false,
@@ -667,21 +668,73 @@
     state.pxPerBp = w / span;
   }
 
+  // Calculate total insertion gap width for expanded insertions (in pixels)
+  function getTotalInsertionGapWidth() {
+    let totalGap = 0;
+    for (const variant of variants) {
+      if (state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
+        const maxInsertLen = getMaxInsertionLength(variant);
+        // Each inserted base gets 8px width
+        totalGap += maxInsertLen * 8;
+      }
+    }
+    return totalGap;
+  }
+  
   // IMPORTANT: canonical genome-x mapping for the right pane (tracks/canvases)
+  // Accounts for expanded insertion gaps
   function xGenomeCanonical(bp, W) {
     const leftPad = 16, rightPad = 16;
     const innerW = W - leftPad - rightPad;
     const span = state.endBp - state.startBp;
-    return leftPad + ((bp - state.startBp) / span) * innerW;
+    const totalGapPx = getTotalInsertionGapWidth();
+    const totalGapBp = totalGapPx / state.pxPerBp;
+    const effectiveSpan = span + totalGapBp;
+    
+    // Calculate x position, accounting for insertion gaps before this position
+    let accumulatedGapPx = 0;
+    for (const variant of variants) {
+      if (variant.pos < bp && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
+        const maxInsertLen = getMaxInsertionLength(variant);
+        accumulatedGapPx += maxInsertLen * 8;
+      }
+    }
+    
+    const bpOffset = bp - state.startBp;
+    const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+    
+    return leftPad + normalizedPos * innerW;
   }
+  
   function xGenome(bp) {
     return xGenomeCanonical(bp, tracksWidthPx());
   }
+  
   function bpFromXGenome(xPx, W) {
     const leftPad = 16, rightPad = 16;
     const innerW = W - leftPad - rightPad;
+    const span = state.endBp - state.startBp;
+    const totalGapPx = getTotalInsertionGapWidth();
+    const totalGapBp = totalGapPx / state.pxPerBp;
+    const effectiveSpan = span + totalGapBp;
     const t = (xPx - leftPad) / innerW;
-    return state.startBp + t * (state.endBp - state.startBp);
+    
+    // Reverse calculation accounting for gaps - iterative refinement
+    let bpEstimate = state.startBp + t * effectiveSpan;
+    for (let iter = 0; iter < 5; iter++) {
+      let accumulatedGapPx = 0;
+      for (const variant of variants) {
+        if (variant.pos < bpEstimate && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
+          const maxInsertLen = getMaxInsertionLength(variant);
+          accumulatedGapPx += maxInsertLen * 8;
+        }
+      }
+      const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+      bpEstimate = state.startBp + (t * effectiveSpan) - accumulatedGapBp;
+    }
+    
+    return bpEstimate;
   }
 
   function xColumn(i, totalColumns) {
@@ -697,7 +750,7 @@
   // Demo data
   // -----------------------------
   const variants = [
-    { id: "v1", pos: 100_120, alleles: ["ref","a1"] },
+    { id: "v1", pos: 100_120, alleles: ["ref","a1"], refAllele: "A", altAlleles: ["A" + "ATCGATCGATCGATCGATCGATCGATCGAT"] }, // insertion example (30 bp inserted: ATCGATCGATCGATCGATCGATCGATCGAT)
     { id: "v2", pos: 100_240, alleles: ["ref","a1"] },
     { id: "v3", pos: 100_410, alleles: ["ref","a1","a2"] },
     { id: "v4", pos: 100_610, alleles: ["ref","a1"] },
@@ -707,6 +760,20 @@
     { id: "v8", pos: 100_895, alleles: ["ref","a1"] },
     { id: "v9", pos: 100_930, alleles: ["ref","a1"] },
   ];
+  
+  // Helper to check if variant is an insertion
+  function isInsertion(variant) {
+    if (!variant.refAllele || !variant.altAlleles) return false;
+    const refLen = variant.refAllele.length;
+    return variant.altAlleles.some(alt => alt.length > refLen);
+  }
+  
+  // Get the longest insertion allele length for a variant
+  function getMaxInsertionLength(variant) {
+    if (!variant.refAllele || !variant.altAlleles) return 0;
+    const refLen = variant.refAllele.length;
+    return Math.max(...variant.altAlleles.map(alt => Math.max(0, alt.length - refLen)));
+  }
 
   // Genes: now with strand + exons
   const transcripts = [
@@ -770,9 +837,28 @@
   function trimZeros(s) {
     return s.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
   }
-  function formatBp(bp) {
+  function formatBp(bp, spanBp = null) {
+    // Determine precision based on span if provided
+    let kbPrecision = 1;
+    
+    if (spanBp !== null) {
+      if (spanBp < 100) {
+        // Very zoomed in - show full base pair position with commas
+        return `${Math.round(bp).toLocaleString()} bp`;
+      } else if (spanBp < 1_000) {
+        // Zoomed in - show more decimal places for kb
+        kbPrecision = 2;
+      } else if (spanBp < 10_000) {
+        // Moderately zoomed - show 2 decimal places
+        kbPrecision = 2;
+      } else {
+        // Normal zoom - show 1 decimal place
+        kbPrecision = 1;
+      }
+    }
+    
     if (bp >= 1_000_000) return `${trimZeros((bp / 1_000_000).toFixed(2))} Mb`;
-    if (bp >= 1_000)     return `${trimZeros((bp / 1_000).toFixed(1))} kb`;
+    if (bp >= 1_000)     return `${trimZeros((bp / 1_000).toFixed(kbPrecision))} kb`;
     return `${bp} bp`;
   }
   function chooseNiceTickBp(spanBp, desiredTicks) {
@@ -1135,7 +1221,7 @@
           y: baseY + 26,
           class: "svg-small",
           "text-anchor": "middle"
-        }, formatBp(Math.round(bp))));
+        }, formatBp(Math.round(bp), span)));
         majorTickLabelXs.push(x);
       }
     }
@@ -1150,13 +1236,13 @@
 
     if (!hasNearbyLeftTick) {
       tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
-        formatBp(Math.round(state.startBp))
+        formatBp(Math.round(state.startBp), span)
       ));
     }
     if (!hasNearbyRightTick) {
       tracksSvg.appendChild(el("text", {
         x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
-      }, formatBp(Math.round(state.endBp))));
+      }, formatBp(Math.round(state.endBp), span)));
     }
 
     // Variant marks
@@ -1167,6 +1253,7 @@
       const isHovered = state.hoveredVariantIndex === idx;
       const strokeWidth = isHovered ? 2.5 : 1.2;
       const circleStrokeWidth = isHovered ? 2.2 : 1.4;
+      const isIns = isInsertion(v);
 
       const lineEl = el("line", {
         x1:x, x2:x,
@@ -1183,7 +1270,46 @@
         state.hoveredVariantIndex = null;
         renderAll();
       });
+      
+      // For insertions, add pointerdown handler to the line itself
+      if (isInsertion(v)) {
+        lineEl.style.pointerEvents = "auto";
+        lineEl.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (state.expandedInsertions.has(v.id)) {
+            state.expandedInsertions.delete(v.id);
+          } else {
+            state.expandedInsertions.add(v.id);
+          }
+          renderAll();
+        });
+      }
       tracksSvg.appendChild(lineEl);
+      
+      // For insertions, add a larger invisible clickable area AFTER the line (so it's on top)
+      if (isInsertion(v)) {
+        // Add an invisible wider rectangle for easier clicking
+        const clickArea = el("rect", {
+          x: x - 5,
+          y: baseY - 20,
+          width: 10,
+          height: 40,
+          fill: "transparent",
+          style: "cursor: pointer; pointer-events: auto;"
+        });
+        clickArea.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (state.expandedInsertions.has(v.id)) {
+            state.expandedInsertions.delete(v.id);
+          } else {
+            state.expandedInsertions.add(v.id);
+          }
+          renderAll();
+        });
+        tracksSvg.appendChild(clickArea);
+      }
 
       const circleEl = el("circle", {
         cx:x, cy: baseY - 18, r: 3.4,
@@ -1200,7 +1326,79 @@
         state.hoveredVariantIndex = null;
         renderAll();
       });
+      // Pointerdown handler to toggle insertion expansion
+      if (isInsertion(v)) {
+        circleEl.style.pointerEvents = "auto";
+        circleEl.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (state.expandedInsertions.has(v.id)) {
+            state.expandedInsertions.delete(v.id);
+          } else {
+            state.expandedInsertions.add(v.id);
+          }
+          renderAll();
+        });
+      }
       tracksSvg.appendChild(circleEl);
+      
+      // Draw expanded insertion sequence if expanded
+      if (state.expandedInsertions.has(v.id) && isInsertion(v)) {
+        const maxInsertLen = getMaxInsertionLength(v);
+        const gapWidth = maxInsertLen * 8;
+        const gapStartX = x;
+        const gapEndX = gapStartX + gapWidth;
+        
+        // Draw gap background
+        tracksSvg.appendChild(el("rect", {
+          x: gapStartX,
+          y: baseY - 18,
+          width: gapWidth,
+          height: 36,
+          fill: "rgba(255,255,255,0.1)",
+          stroke: "rgba(127,127,127,0.3)",
+          "stroke-width": 1,
+          "stroke-dasharray": "2,2"
+        }));
+        
+        // Draw inserted sequence (use longest alt allele)
+        const longestAlt = v.altAlleles.reduce((a, b) => a.length > b.length ? a : b);
+        const insertedSeq = longestAlt.substring(v.refAllele.length);
+        const baseWidth = gapWidth / insertedSeq.length;
+        
+        const nucleotideColors = {
+          'A': 'rgba(255,77,77,0.8)',
+          'C': 'rgba(77,148,255,0.8)',
+          'G': 'rgba(77,255,148,0.8)',
+          'T': 'rgba(255,200,77,0.8)'
+        };
+        
+        for (let i = 0; i < insertedSeq.length; i++) {
+          const base = insertedSeq[i].toUpperCase();
+          const baseX = gapStartX + i * baseWidth;
+          const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+          
+          tracksSvg.appendChild(el("rect", {
+            x: baseX,
+            y: baseY - 16,
+            width: baseWidth - 1,
+            height: 32,
+            fill: color
+          }));
+          
+          // Draw base letter if space allows
+          if (baseWidth >= 8) {
+            tracksSvg.appendChild(el("text", {
+              x: baseX + baseWidth / 2,
+              y: baseY + 4,
+              class: "svg-small",
+              "text-anchor": "middle",
+              fill: "white",
+              "font-weight": "bold"
+            }, base));
+          }
+        }
+      }
     }
 
       // bottom separator
@@ -1736,6 +1934,22 @@
   // Interaction (right pane)
   // -----------------------------
   main.addEventListener("pointerdown", (e) => {
+    // Don't start drag if clicking on a variant (for insertion expansion)
+    // Check if clicking on SVG elements that are variants
+    const target = e.target;
+    if (target && target.tagName && (target.tagName === "line" || target.tagName === "circle" || target.tagName === "rect")) {
+      // Check if this is a variant element (has blue stroke or is in the variant area)
+      const stroke = target.getAttribute ? target.getAttribute("stroke") : null;
+      if (stroke && (stroke === "var(--blue)" || stroke === cssVar("--blue") || stroke.includes("blue"))) {
+        // This might be a variant - don't start dragging, let click handler work
+        return;
+      }
+      // Also check if it's the invisible click area for insertions
+      if (target.getAttribute && target.getAttribute("fill") === "transparent" && target.getAttribute("width") === "10") {
+        return;
+      }
+    }
+    
     state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     main.setPointerCapture(e.pointerId);
 
