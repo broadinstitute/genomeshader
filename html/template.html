@@ -1467,6 +1467,8 @@
       }
 
       // exons
+      let firstExonY = null; // Track first exon Y position for gene name alignment in vertical mode
+      let firstExonX = null; // Track first exon X position for gene name alignment in horizontal mode
       for (const [es0, ee0] of t.exons) {
         const es = Math.max(es0, state.startBp);
         const ee = Math.min(ee0, state.endBp);
@@ -1479,6 +1481,10 @@
           // exPos1 and exPos2 are Y coordinates, need to ensure correct ordering
           const yMin = Math.min(exPos1, exPos2);
           const yMax = Math.max(exPos1, exPos2);
+          // Track the first exon's Y position for gene name alignment
+          if (firstExonY === null) {
+            firstExonY = yMin;
+          }
           tracksSvg.appendChild(el("rect", {
             x: perpPos - 6, y: yMin,
             width: 12, height: Math.max(2, yMax - yMin),
@@ -1488,6 +1494,10 @@
             "stroke-width": 1
           }));
         } else {
+          // Track the first exon's X position for gene name alignment
+          if (firstExonX === null) {
+            firstExonX = exPos1;
+          }
           tracksSvg.appendChild(el("rect", {
             x: exPos1, y: perpPos - 6,
             width: Math.max(2, exPos2 - exPos1), height: 12,
@@ -1501,14 +1511,16 @@
 
       // gene label near transcript start
       if (isVertical) {
-        // Gene name to the left of the gene track (keep original y-position, just move x left a bit)
+        // Gene name to the left of the gene track
+        // Y position should match the first exon's Y position (bottom-aligned, like R pos=4)
+        const geneNameY = firstExonY !== null ? firstExonY : pos1;
         tracksSvg.appendChild(el("text", {
           x: perpPos - 8,
-          y: pos1 - 12,
+          y: geneNameY,
           class:"svg-geneName",
-          "text-anchor": "end",
-          "dominant-baseline": "auto",
-          transform: "rotate(-90 " + (perpPos - 8) + " " + (pos1 - 12) + ")"
+          "text-anchor": "start",
+          "dominant-baseline": "alphabetic",
+          transform: "rotate(-90 " + (perpPos - 8) + " " + geneNameY + ")"
         }, `${t.name}`));
         // Strand indicator to the right of the gene track (just a bit to the right)
         tracksSvg.appendChild(el("text", {
@@ -1519,8 +1531,10 @@
           "dominant-baseline": "middle"
         }, t.strand === "+" ? "↑" : "↓"));
       } else {
+        // In horizontal mode, X position should match the first exon's X position
+        const geneNameX = firstExonX !== null ? firstExonX : pos1;
         tracksSvg.appendChild(el("text", {
-          x: pos1,
+          x: geneNameX,
           y: perpPos - 12,
           class:"svg-geneName"
         }, `${t.name}`));
@@ -1540,7 +1554,8 @@
         repeatsX = repeatsLayout.contentLeft + 8;
         repeatsW = 22;
         repeatsY = 16;
-        repeatsH = H - 32;
+        // In vertical mode, repeatsH should use W (genomic axis dimension), not H
+        repeatsH = W - 32;
       } else {
         repeatsY = repeatsLayout.contentTop + 8;
         repeatsH = 22;
@@ -1551,7 +1566,7 @@
       // background guide line
       if (isVertical) {
         tracksSvg.appendChild(el("line", {
-          x1: repeatsX + repeatsW/2, x2: repeatsX + repeatsW/2, y1: 16, y2: H-16,
+          x1: repeatsX + repeatsW/2, x2: repeatsX + repeatsW/2, y1: 16, y2: W-16,
           stroke: "rgba(127,127,127,0.16)"
         }));
       } else {
@@ -1581,11 +1596,16 @@
       const pos2 = genomePos(re);
 
       if (isVertical) {
+        // In vertical mode, pos1 and pos2 are Y coordinates
+        // Since coordinate system is inverted (bottom=start, top=end), pos1 > pos2
+        // Need to ensure correct ordering for rect positioning
+        const yMin = Math.min(pos1, pos2);
+        const yMax = Math.max(pos1, pos2);
         tracksSvg.appendChild(el("rect", {
           x: repeatsX + 4,
-          y: pos1,
+          y: yMin,
           width: repeatsW - 8,
-          height: Math.max(2, pos2 - pos1),
+          height: Math.max(2, yMax - yMin),
           rx: 6,
           fill: repeatColor(r.cls),
           stroke: "rgba(127,127,127,0.20)"
