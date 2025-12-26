@@ -564,6 +564,14 @@
           <span class="menuRight">Super-pop</span>
         </div>
       </div>
+
+      <div class="menu" id="flowTrackMenu" role="menu" aria-hidden="true">
+        <div class="menuTitle">Variant Layout</div>
+        <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
+          <span>Layout Mode</span>
+          <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
+        </div>
+      </div>
     </div>
 
     <div class="main" id="main">
@@ -662,6 +670,24 @@
   function isVerticalMode() {
     return (getStoredOrientation() ?? "horizontal") === "vertical";
   }
+  function getStoredVariantLayoutMode() {
+    return localStorage.getItem("genomeshader.variantLayoutMode"); // "equidistant" | "genomic" | null
+  }
+  function setVariantLayoutMode(mode) {
+    localStorage.setItem("genomeshader.variantLayoutMode", mode);
+    state.variantLayoutMode = mode;
+    updateVariantLayoutModeLabel();
+  }
+  function updateVariantLayoutModeLabel() {
+    const mode = state.variantLayoutMode || "equidistant";
+    const labelEl = document.getElementById("variantLayoutModeLabel");
+    if (labelEl) {
+      labelEl.textContent = mode === "equidistant" ? "Equidistant" : "Genomic";
+    }
+  }
+  function getVariantLayoutMode() {
+    return state.variantLayoutMode || "equidistant";
+  }
 
   const stored = getStoredTheme();
   document.documentElement.setAttribute("data-theme", stored ?? "auto");
@@ -687,7 +713,10 @@
   }
 
   menuBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
-  document.addEventListener("click", () => closeMenu());
+  document.addEventListener("click", () => {
+    closeMenu();
+    closeFlowTrackMenu();
+  });
   ctxMenu.addEventListener("click", (e) => e.stopPropagation());
 
   themeItem.addEventListener("click", () => {
@@ -703,6 +732,31 @@
     setOrientation(next);
     renderAll();
   });
+
+  // Flow track context menu
+  const flowTrackMenu = document.getElementById("flowTrackMenu");
+  const variantLayoutModeItem = document.getElementById("variantLayoutModeItem");
+  
+  function openFlowTrackMenu(x, y) {
+    flowTrackMenu.style.left = `${x}px`;
+    flowTrackMenu.style.top = `${y}px`;
+    flowTrackMenu.classList.add("open");
+    flowTrackMenu.setAttribute("aria-hidden", "false");
+    updateVariantLayoutModeLabel();
+  }
+  function closeFlowTrackMenu() {
+    flowTrackMenu.classList.remove("open");
+    flowTrackMenu.setAttribute("aria-hidden", "true");
+  }
+  
+  variantLayoutModeItem.addEventListener("click", () => {
+    const cur = getVariantLayoutMode();
+    const next = (cur === "equidistant") ? "genomic" : "equidistant";
+    setVariantLayoutMode(next);
+    renderAll();
+  });
+  
+  flowTrackMenu.addEventListener("click", (e) => e.stopPropagation());
 
   const mq = window.matchMedia?.("(prefers-color-scheme: light)");
   mq?.addEventListener?.("change", () => {
@@ -748,8 +802,17 @@
       { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
     ],
     trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
-    trackResizeState: null // { trackId, startX, startY, startHeight }
+    trackResizeState: null, // { trackId, startX, startY, startHeight }
+    
+    // variant layout mode: "equidistant" or "genomic"
+    variantLayoutMode: null // will be initialized from localStorage
   };
+
+  // Initialize variant layout mode
+  const storedVariantMode = getStoredVariantLayoutMode();
+  state.variantLayoutMode = storedVariantMode ?? "equidistant";
+  // Initialize label after DOM is ready
+  setTimeout(() => updateVariantLayoutModeLabel(), 0);
 
   const main = document.getElementById("main");
   const tracksSvg = document.getElementById("tracksSvg");
@@ -932,7 +995,9 @@
     const innerH = Math.max(10, H - 2*margin);
     const numCols = totalColumns !== undefined ? totalColumns : state.K;
     if (numCols <= 1) return margin;
-    return margin + (i / (numCols - 1)) * innerH;
+    // Invert: index 0 (earliest variant) should be at bottom (higher Y), 
+    // last index (latest variant) should be at top (lower Y)
+    return margin + innerH - (i / (numCols - 1)) * innerH;
   }
 
   // -----------------------------
@@ -2244,6 +2309,7 @@
     ctx.scale(dpr, dpr);
 
     const isVertical = isVerticalMode();
+    const variantMode = getVariantLayoutMode();
     const junctionY = 40;
     const junctionX = 40;
 
@@ -2262,10 +2328,10 @@
     const win = visibleVariantWindow();
     
     if (isVertical) {
-      // In vertical mode, sort variants by position and map columns based on genomic position
+      // In vertical mode, sort variants by position for consistent ordering
       const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
       
-      // columns (horizontal lines in vertical mode) - positioned based on genomic position
+      // columns (horizontal lines in vertical mode)
       ctx.strokeStyle = colBlue;
       ctx.globalAlpha = 0.6;
       for (let i=0;i<sortedWin.length;i++) {
@@ -2273,8 +2339,10 @@
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const isHovered = state.hoveredVariantIndex === variantIdx;
         ctx.lineWidth = isHovered ? 2.5 : 1;
-        // Position column based on genomic position, not array index
-        const y = yGenomeCanonical(v.pos, H);
+        // Position column based on mode
+        const y = variantMode === "genomic" 
+          ? yGenomeCanonical(v.pos, H)
+          : yColumn(i, sortedWin.length);
         ctx.beginPath();
         ctx.moveTo(junctionX, y);
         ctx.lineTo(W-18, y);
@@ -2297,8 +2365,10 @@
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const isHovered = state.hoveredVariantIndex === variantIdx;
         ctx.lineWidth = isHovered ? 2.5 : 1;
-        const vy = yGenomeCanonical(v.pos, H); // canonical mapping on this canvas height
-        const cy = yGenomeCanonical(v.pos, H); // same position for column
+        const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
+        const cy = variantMode === "genomic"
+          ? yGenomeCanonical(v.pos, H)
+          : yColumn(i, sortedWin.length);
         ctx.beginPath();
         ctx.moveTo(x0, vy);
         ctx.lineTo(junctionX, cy);
@@ -2313,7 +2383,10 @@
         const variantIdx = state.firstVariantIndex + i;
         const isHovered = state.hoveredVariantIndex === variantIdx;
         ctx.lineWidth = isHovered ? 2.5 : 1;
-        const x = xColumn(i, win.length);
+        // Position column based on mode
+        const x = variantMode === "genomic"
+          ? xGenomeCanonical(win[i].pos, W)
+          : xColumn(i, win.length);
         ctx.beginPath();
         ctx.moveTo(x, junctionY);
         ctx.lineTo(x, H-18);
@@ -2332,8 +2405,10 @@
         const isHovered = state.hoveredVariantIndex === variantIdx;
         ctx.lineWidth = isHovered ? 2.5 : 1;
         const v = win[i];
-        const vx = xGenomeCanonical(v.pos, W); // canonical mapping on this canvas width
-        const cx = xColumn(i, win.length);
+        const vx = xGenomeCanonical(v.pos, W); // always use genomic position for ruler connection
+        const cx = variantMode === "genomic"
+          ? xGenomeCanonical(v.pos, W)
+          : xColumn(i, win.length);
         ctx.beginPath();
         ctx.moveTo(vx, y0);
         ctx.lineTo(cx, junctionY);
@@ -2352,7 +2427,10 @@
       
       for (let i=0;i<sortedWin.length;i++){
         const v = sortedWin[i];
-        const cy = yGenomeCanonical(v.pos, H); // Position based on genomic position
+        // Position based on variant layout mode
+        const cy = variantMode === "genomic"
+          ? yGenomeCanonical(v.pos, H)
+          : yColumn(i, sortedWin.length);
         
         for (let j=0;j<labels.length;j++){
           const x = left + j*(nodeW+gap);
@@ -2375,7 +2453,10 @@
       }
     } else {
       for (let i=0;i<win.length;i++){
-        const cx = xColumn(i, win.length);
+        // Position based on variant layout mode
+        const cx = variantMode === "genomic"
+          ? xGenomeCanonical(win[i].pos, W)
+          : xColumn(i, win.length);
         const top = 70;
 
         for (let j=0;j<labels.length;j++){
@@ -2606,6 +2687,16 @@
       const controls = document.createElement("div");
       controls.className = "track-controls";
       controls.dataset.trackId = track.id;
+      
+      // Add right-click context menu for flow track
+      if (track.id === "flow") {
+        controls.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const rect = controls.getBoundingClientRect();
+          openFlowTrackMenu(e.clientX, e.clientY);
+        });
+      }
 
       const collapseBtn = document.createElement("button");
       collapseBtn.className = "track-collapse-btn";
@@ -2709,6 +2800,7 @@
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
       const isVertical = isVerticalMode();
+      const variantMode = getVariantLayoutMode();
       const win = visibleVariantWindow();
       
       if (isVertical) {
@@ -2719,7 +2811,10 @@
         // Check if mouse is near a column line (horizontal in vertical mode)
         for (let i = 0; i < sortedWin.length; i++) {
           const v = sortedWin[i];
-          const cy = yGenomeCanonical(v.pos, H); // Position based on genomic position
+          // Position based on variant layout mode
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           
           if (Math.abs(y - cy) < 10 && x >= junctionX) {
@@ -2736,8 +2831,10 @@
         for (let i = 0; i < sortedWin.length; i++) {
           const v = sortedWin[i];
           if (v.pos < state.startBp || v.pos > state.endBp) continue;
-          const vy = yGenomeCanonical(v.pos, H);
-          const cy = yGenomeCanonical(v.pos, H); // Same position
+          const vy = yGenomeCanonical(v.pos, H); // always genomic for ruler connection
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           
           const dist = Math.abs((x - x0) * (cy - vy) / (junctionX - x0) + vy - y);
@@ -2755,7 +2852,10 @@
         
         // Check if mouse is near a column line
         for (let i = 0; i < win.length; i++) {
-          const cx = xColumn(i, win.length);
+          // Position based on variant layout mode
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(win[i].pos, W)
+            : xColumn(i, win.length);
           const variantIdx = state.firstVariantIndex + i;
           
           if (Math.abs(x - cx) < 10 && y >= junctionY) {
@@ -2772,8 +2872,10 @@
         for (let i = 0; i < win.length; i++) {
           const v = win[i];
           if (v.pos < state.startBp || v.pos > state.endBp) continue;
-          const vx = xGenomeCanonical(v.pos, W);
-          const cx = xColumn(i, win.length);
+          const vx = xGenomeCanonical(v.pos, W); // always genomic for ruler connection
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
           const variantIdx = state.firstVariantIndex + i;
           
           const dist = Math.abs((y - y0) * (cx - vx) / (junctionY - y0) + vx - x);
