@@ -1461,7 +1461,7 @@
       }
 
       // exons
-      let firstExonY = null; // Track first exon Y position for gene name alignment in vertical mode
+      let firstExonY = null; // Track bottom-most exon Y position for gene name alignment in vertical mode
       let firstExonX = null; // Track first exon X position for gene name alignment in horizontal mode
       for (const [es0, ee0] of t.exons) {
         const es = Math.max(es0, state.startBp);
@@ -1475,9 +1475,11 @@
           // exPos1 and exPos2 are Y coordinates, need to ensure correct ordering
           const yMin = Math.min(exPos1, exPos2);
           const yMax = Math.max(exPos1, exPos2);
-          // Track the first exon's Y position for gene name alignment
-          if (firstExonY === null) {
-            firstExonY = yMin;
+          // Track the bottom-most exon's bottom Y position for gene name alignment
+          // (yMax is the bottom of the exon in vertical mode where higher Y = bottom)
+          // We want the highest Y value (bottom-most exon)
+          if (firstExonY === null || yMax > firstExonY) {
+            firstExonY = yMax;
           }
           tracksSvg.appendChild(el("rect", {
             x: perpPos - 6, y: yMin,
@@ -1506,14 +1508,14 @@
       // gene label near transcript start
       if (isVertical) {
         // Gene name to the left of the gene track
-        // Y position should match the first exon's Y position (bottom-aligned, like R pos=4)
+        // Y position should match the bottom of the bottom-most exon
         const geneNameY = firstExonY !== null ? firstExonY : pos1;
         tracksSvg.appendChild(el("text", {
           x: perpPos - 8,
           y: geneNameY,
           class:"svg-geneName",
           "text-anchor": "start",
-          "dominant-baseline": "alphabetic",
+          "dominant-baseline": "text-after-edge",
           transform: "rotate(-90 " + (perpPos - 8) + " " + geneNameY + ")"
         }, `${t.name}`));
         // Strand indicator to the right of the gene track (just a bit to the right)
