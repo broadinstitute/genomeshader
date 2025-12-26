@@ -748,8 +748,8 @@
       { id: "flow", label: "Sankey", collapsed: false, height: 300, minHeight: 100 },
       { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
     ],
-    trackDragState: null,  // { trackId, startY, offset }
-    trackResizeState: null // { trackId, startY, startHeight }
+    trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
+    trackResizeState: null // { trackId, startX, startY, startHeight }
   };
 
   const main = document.getElementById("main");
@@ -3132,8 +3132,10 @@
       if (!track) return;
       
       e.preventDefault();
+      const isVertical = isVerticalMode();
       state.trackResizeState = {
         trackId,
+        startX: e.clientX,
         startY: e.clientY,
         startHeight: track.height
       };
@@ -3143,10 +3145,13 @@
       e.stopPropagation();
       const trackId = controls.dataset.trackId;
       e.preventDefault();
+      const isVertical = isVerticalMode();
       state.trackDragState = {
         trackId,
+        startX: e.clientX,
         startY: e.clientY,
-        offset: 0
+        offsetX: 0,
+        offsetY: 0
       };
       trackControls.setPointerCapture(e.pointerId);
     }
@@ -3159,16 +3164,31 @@
       if (!track) return;
       
       e.preventDefault();
-      const dy = e.clientY - state.trackResizeState.startY;
-      const newHeight = Math.max(track.minHeight, state.trackResizeState.startHeight + dy);
+      const isVertical = isVerticalMode();
+      let delta;
+      if (isVertical) {
+        // In vertical mode, resize based on horizontal movement
+        delta = e.clientX - state.trackResizeState.startX;
+      } else {
+        // In horizontal mode, resize based on vertical movement
+        delta = e.clientY - state.trackResizeState.startY;
+      }
+      const newHeight = Math.max(track.minHeight, state.trackResizeState.startHeight + delta);
       track.height = newHeight;
       updateTracksHeight();
       renderAll();
     } else if (state.trackDragState) {
       // Dragging for reorder
       e.preventDefault();
+      const isVertical = isVerticalMode();
+      const dx = e.clientX - state.trackDragState.startX;
       const dy = e.clientY - state.trackDragState.startY;
-      state.trackDragState.offset = dy;
+      
+      if (isVertical) {
+        state.trackDragState.offsetX = dx;
+      } else {
+        state.trackDragState.offsetY = dy;
+      }
       
       // Visual feedback: move the dragged track
       const layout = getTrackLayout();
@@ -3176,7 +3196,11 @@
       if (draggedItem) {
         const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
         if (container) {
-          container.style.transform = `translateY(${dy}px)`;
+          if (isVertical) {
+            container.style.transform = `translateX(${dx}px)`;
+          } else {
+            container.style.transform = `translateY(${dy}px)`;
+          }
           container.style.zIndex = "100";
           container.style.opacity = "0.8";
         }
@@ -3211,12 +3235,22 @@
           container.style.opacity = "";
         }
         
-        // Find new position
-        const newY = draggedItem.top + state.trackDragState.offset;
+        // Find new position based on orientation
+        const isVertical = isVerticalMode();
         let newIndex = 0;
-        for (let i = 0; i < layout.length; i++) {
-          if (newY > layout[i].top + layout[i].height / 2) {
-            newIndex = i + 1;
+        if (isVertical) {
+          const newX = draggedItem.left + state.trackDragState.offsetX;
+          for (let i = 0; i < layout.length; i++) {
+            if (newX > layout[i].left + layout[i].width / 2) {
+              newIndex = i + 1;
+            }
+          }
+        } else {
+          const newY = draggedItem.top + state.trackDragState.offsetY;
+          for (let i = 0; i < layout.length; i++) {
+            if (newY > layout[i].top + layout[i].height / 2) {
+              newIndex = i + 1;
+            }
           }
         }
         newIndex = Math.max(0, Math.min(newIndex, layout.length - 1));
