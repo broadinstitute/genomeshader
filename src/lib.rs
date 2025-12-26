@@ -3,6 +3,7 @@ pub mod env;
 pub mod stage;
 pub mod storage_gcs;
 pub mod storage_local;
+pub mod variants;
 
 use stage::stage_data;
 use storage_gcs::*;
@@ -24,6 +25,7 @@ pub struct Session {
     reads_cohort: HashSet<(Url, String)>,
     loci: HashSet<(String, u64, u64)>,
     staged_tree: HashMap<String, IntervalMap<u64, PathBuf>>,
+    variant_files: HashSet<String>,
 }
 
 #[pymethods]
@@ -34,6 +36,7 @@ impl Session {
             reads_cohort: HashSet::new(),
             loci: HashSet::new(),
             staged_tree: HashMap::new(),
+            variant_files: HashSet::new(),
         }
     }
 
@@ -188,10 +191,27 @@ impl Session {
         )
     }
 
+    fn attach_variants(&mut self, variant_files: Vec<String>) -> PyResult<()> {
+        for variant_file in &variant_files {
+            if !variant_file.ends_with(".bcf") && !variant_file.ends_with(".vcf") && !variant_file.ends_with(".vcf.gz") {
+                return Err(
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        format!("File '{}' is not a .bcf, .vcf, or .vcf.gz file.", variant_file)
+                    )
+                );
+            }
+
+            self.variant_files.insert(variant_file.clone());
+        }
+
+        Ok(())
+    }
+
     fn reset(&mut self) -> PyResult<()> {
         self.reads_cohort = HashSet::new();
         self.loci = HashSet::new();
         self.staged_tree = HashMap::new();
+        self.variant_files = HashSet::new();
 
         Ok(())
     }
@@ -245,6 +265,21 @@ fn _version() -> PyResult<String> {
     Ok(env!("CARGO_PKG_VERSION").to_string())
 }
 
+#[pyfunction]
+fn _extract_variants(
+    bcf_path: String,
+    chr: String,
+    start: u64,
+    stop: u64
+) -> PyResult<PyDataFrame> {
+    match variants::extract_variants(&bcf_path, &chr, &start, &stop) {
+        Ok(df) => Ok(PyDataFrame(df)),
+        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            format!("Failed to extract variants: {}", e)
+        ))
+    }
+}
+
 /// A Python module implemented in Rust. The name of this function must match
 /// the `lib.name` setting in the `Cargo.toml`, else Python will not be able to
 /// import the module.
@@ -254,6 +289,7 @@ fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_gcs_list_files_of_type, m)?)?;
     m.add_function(wrap_pyfunction!(_init, m)?)?;
     m.add_function(wrap_pyfunction!(_version, m)?)?;
+    m.add_function(wrap_pyfunction!(_extract_variants, m)?)?;
 
     Ok(())
 }

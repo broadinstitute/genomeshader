@@ -43,6 +43,7 @@ rust-htslib = { version = "*", features = ["curl", "gcs"] }
 sprs = "0.11.1"
 sys-info = "0.9.1"
 tokio = "*"
+time = "0.3.44"  # Fix for compilation error in time 0.3.31
 url = "*"
 #egui = "0.23.0"
 #eframe = "*"
