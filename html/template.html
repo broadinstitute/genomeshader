@@ -357,10 +357,10 @@
       pointer-events: none;
     }
 
-    /* Locus indicator lower-left */
+    /* Locus indicator lower-right */
     .hud {
       position: absolute;
-      left: 10px;
+      right: 10px;
       bottom: 10px;
       padding: 8px 10px;
       border-radius: 10px;
@@ -372,12 +372,6 @@
       pointer-events: none;
       white-space: nowrap;
       box-shadow: var(--shadow);
-    }
-    .main.vertical .hud {
-      left: auto;
-      right: 10px;
-      bottom: 10px;
-      top: auto;
     }
 
     /* SVG text classes */
@@ -1684,12 +1678,12 @@
 
         if (isMajor && showLabels) {
           const textEl = el("text", {
-            x: baseX - 26,
+            x: baseX + 26,
             y: pos,
             class: "svg-small",
-            "text-anchor": "end",
+            "text-anchor": "start",
             "dominant-baseline": "middle",
-            transform: "rotate(-90 " + (baseX - 26) + " " + pos + ")"
+            transform: "rotate(-90 " + (baseX + 26) + " " + pos + ")"
           }, formatBp(Math.round(bp), span));
           tracksSvg.appendChild(textEl);
           majorTickLabelPositions.push(pos);
@@ -1724,15 +1718,15 @@
 
       if (!hasNearbyBottomTick) {
         const textEl = el("text", {
-          x: baseX - 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"end", "dominant-baseline":"middle",
-          transform: "rotate(-90 " + (baseX - 26) + " " + bottomEdgeY + ")"
+          x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
+          transform: "rotate(-90 " + (baseX + 26) + " " + bottomEdgeY + ")"
         }, formatBp(Math.round(state.startBp), span));
         tracksSvg.appendChild(textEl);
       }
       if (!hasNearbyTopTick) {
         const textEl = el("text", {
-          x: baseX - 26, y: topEdgeY, class:"svg-small", "text-anchor":"end", "dominant-baseline":"middle",
-          transform: "rotate(-90 " + (baseX - 26) + " " + topEdgeY + ")"
+          x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
+          transform: "rotate(-90 " + (baseX + 26) + " " + topEdgeY + ")"
         }, formatBp(Math.round(state.endBp), span));
         tracksSvg.appendChild(textEl);
       }
@@ -2143,18 +2137,6 @@
               fill: "rgba(127,127,127,0.12)"
             }));
           }
-
-          // Label
-          const textEl = el("text", {
-            x: referenceX + referenceW / 2,
-            y: topPad + 8,
-            class: "svg-small",
-            fill: "var(--muted2)",
-            "text-anchor": "middle",
-            "dominant-baseline": "hanging",
-            transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (topPad + 8) + ")"
-          }, "Reference sequence");
-          tracksSvg.appendChild(textEl);
         } else {
           const leftPad = 16, rightPad = 16;
           const innerW = W - leftPad - rightPad;
@@ -2183,15 +2165,6 @@
               fill: "rgba(127,127,127,0.12)"
             }));
           }
-
-          // Label
-          tracksSvg.appendChild(el("text", {
-            x: leftPad + 8,
-            y: referenceY + referenceH / 2 + 4,
-            class: "svg-small",
-            fill: "var(--muted2)",
-            "dominant-baseline": "middle"
-          }, "Reference sequence"));
         }
       }
 
