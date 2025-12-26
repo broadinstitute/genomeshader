@@ -478,6 +478,8 @@
       left: 50%;
       transform-origin: left center;
       flex-shrink: 0;
+      /* Default transform to prevent flash of unstyled content */
+      transform: rotate(-90deg) translateX(12px) translateY(0.0px);
     }
     .main.vertical .track-collapse-btn {
       align-self: center;
