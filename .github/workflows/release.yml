@@ -220,19 +220,19 @@ jobs:
     needs: [release, linux, macos, sdist]
     steps:
       - name: Download linux wheels
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v7
         with:
           name: wheels-linux-x86_64
       - name: Download macos wheels x86_64
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v7
         with:
           name: wheels-macos-x86_64
       - name: Download macos wheels aarch64
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v7
         with:
           name: wheels-macos-aarch64
       - name: Download sdist
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v7
         with:
           name: wheels-sdist
       - name: Combine artifacts
