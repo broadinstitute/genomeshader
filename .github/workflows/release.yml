@@ -17,7 +17,10 @@ jobs:
     # Automatic release will run on a Github-hosted machine
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        ref: ${{ github.ref }}
 
     - name: Read Current Version
       id: read_property
@@ -44,11 +47,23 @@ jobs:
     - name: New Version
       run: echo ${{ steps.version-bump.outputs.new_ver }}
 
+    - name: Configure Git
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Fetch and rebase latest changes
+      run: |
+        BRANCH=$(git branch --show-current)
+        git fetch origin $BRANCH
+        git rebase origin/$BRANCH || git pull --rebase origin $BRANCH || true
+
     - name: Push Changes To Master/Main
       uses: ad-m/github-push-action@master
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         tags: true
+        force: false
 
     - name: Create Github release
       id: create_release
