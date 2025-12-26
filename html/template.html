@@ -2332,7 +2332,7 @@
         ctx.fillStyle = colText;
         ctx.font = "12px ui-sans-serif, system-ui";
         ctx.save();
-        ctx.translate(14, y);
+        ctx.translate(14, y + 6); // Move down by 6px total
         ctx.rotate(-Math.PI/2);
         ctx.fillText(`v${variantIdx + 1}`, 0, 0);
         ctx.restore();
@@ -2426,7 +2426,8 @@
           ctx.fillStyle = colText;
           ctx.font = "11px ui-sans-serif, system-ui";
           ctx.save();
-          ctx.translate(x + nodeW + 12, cy);
+          // Position label above the node (shift left for better alignment)
+          ctx.translate(x + nodeW/2 - gap - 5 + 12, cy - 12); // Center on node, shift left by gap + 5px, move up by 12px total
           ctx.rotate(-Math.PI/2);
           ctx.fillText(labels[j], 0, 4);
           ctx.restore();
