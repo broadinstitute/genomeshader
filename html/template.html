@@ -1409,8 +1409,8 @@
           if (isVert) {
             const cy = p;
             const p1 = `${perpPos},${cy}`;
-            const p2 = `${perpPos - dir*size*0.8},${cy - dir*size}`;
-            const p3 = `${perpPos + dir*size*0.8},${cy - dir*size}`;
+            const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
+            const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
             tracksSvg.appendChild(el("polygon", {
               points: `${p1} ${p2} ${p3}`,
               fill: "rgba(127,127,127,0.45)"
