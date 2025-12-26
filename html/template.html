@@ -450,14 +450,15 @@
       display: flex;
       flex-direction: column;
       justify-content: flex-end;
+      align-items: flex-start;
     }
     .main.vertical .track-controls {
       width: 24px;
-      height: auto;
+      height: 100%;
       flex-direction: column;
       padding: 0;
-      border-bottom: 1px solid var(--border2);
-      border-right: none;
+      border-bottom: none;
+      border-right: 1px solid var(--border2);
       position: relative;
       left: 0;
       right: auto;
@@ -468,13 +469,15 @@
       margin-bottom: 0;
     }
     .main.vertical .track-label {
-      align-self: center;
       order: 1;
-      transform: rotate(-90deg);
-      transform-origin: left center;
       white-space: nowrap;
       writing-mode: horizontal-tb;
-      margin-bottom: 0;
+      margin: 0;
+      position: absolute;
+      bottom: 0;
+      left: 50%;
+      transform-origin: left center;
+      flex-shrink: 0;
     }
     .main.vertical .track-collapse-btn {
       align-self: center;
@@ -2633,10 +2636,11 @@
           try {
             const width = label.offsetWidth || label.getBoundingClientRect().width;
             if (width > 0) {
-              // After -90deg rotation, translateY moves horizontally
-              // Translate by half width to center the label while keeping first char at bottom
-              // Add translateX(-10px) for fine-tuning alignment
-              label.style.transform = `rotate(-90deg) translateX(-10.0px) translateY(${width / 2}px)`;
+              // After -90deg rotation:
+              // - translateX moves vertically (negative = up, positive = down)
+              // - translateY moves horizontally (negative = left, positive = right)
+              // Use translateX(12px) to position vertically and translateY(0.0px) for horizontal
+              label.style.transform = `rotate(-90deg) translateX(12px) translateY(0.0px)`;
             }
           } catch (e) {
             console.error('Error adjusting label transform:', e);
