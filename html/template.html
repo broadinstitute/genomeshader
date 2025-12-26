@@ -558,18 +558,15 @@
           <span class="menuRight" id="orientationLabel">Horizontal</span>
         </div>
 
+        <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
+          <span>Variant Layout</span>
+          <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
+        </div>
+
         <div class="menuTitle">Grouping</div>
         <div class="menuItem" role="menuitem">
           <span>Variable</span>
           <span class="menuRight">Super-pop</span>
-        </div>
-      </div>
-
-      <div class="menu" id="flowTrackMenu" role="menu" aria-hidden="true">
-        <div class="menuTitle">Variant Layout</div>
-        <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
-          <span>Layout Mode</span>
-          <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
         </div>
       </div>
     </div>
@@ -703,6 +700,8 @@
     ctxMenu.style.top  = `${top}px`;
     ctxMenu.classList.add("open");
     ctxMenu.setAttribute("aria-hidden", "false");
+    // Update variant layout mode label when menu opens
+    updateVariantLayoutModeLabel();
   }
   function closeMenu() {
     ctxMenu.classList.remove("open");
@@ -713,10 +712,7 @@
   }
 
   menuBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
-  document.addEventListener("click", () => {
-    closeMenu();
-    closeFlowTrackMenu();
-  });
+  document.addEventListener("click", () => closeMenu());
   ctxMenu.addEventListener("click", (e) => e.stopPropagation());
 
   themeItem.addEventListener("click", () => {
@@ -733,21 +729,8 @@
     renderAll();
   });
 
-  // Flow track context menu
-  const flowTrackMenu = document.getElementById("flowTrackMenu");
+  // Variant layout mode toggle in settings menu
   const variantLayoutModeItem = document.getElementById("variantLayoutModeItem");
-  
-  function openFlowTrackMenu(x, y) {
-    flowTrackMenu.style.left = `${x}px`;
-    flowTrackMenu.style.top = `${y}px`;
-    flowTrackMenu.classList.add("open");
-    flowTrackMenu.setAttribute("aria-hidden", "false");
-    updateVariantLayoutModeLabel();
-  }
-  function closeFlowTrackMenu() {
-    flowTrackMenu.classList.remove("open");
-    flowTrackMenu.setAttribute("aria-hidden", "true");
-  }
   
   variantLayoutModeItem.addEventListener("click", () => {
     const cur = getVariantLayoutMode();
@@ -755,8 +738,6 @@
     setVariantLayoutMode(next);
     renderAll();
   });
-  
-  flowTrackMenu.addEventListener("click", (e) => e.stopPropagation());
 
   const mq = window.matchMedia?.("(prefers-color-scheme: light)");
   mq?.addEventListener?.("change", () => {
@@ -2687,16 +2668,6 @@
       const controls = document.createElement("div");
       controls.className = "track-controls";
       controls.dataset.trackId = track.id;
-      
-      // Add right-click context menu for flow track
-      if (track.id === "flow") {
-        controls.addEventListener("contextmenu", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const rect = controls.getBoundingClientRect();
-          openFlowTrackMenu(e.clientX, e.clientY);
-        });
-      }
 
       const collapseBtn = document.createElement("button");
       collapseBtn.className = "track-collapse-btn";
