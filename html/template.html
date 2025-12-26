@@ -1175,8 +1175,11 @@
       if (isVertical) {
         ideogramX = ideogramLayout.contentLeft + 12;
         ideogramW = 16;
+        // Leave space at bottom for chromosome label, start ideogram higher
         ideogramY = 16;
-        ideogramH = H - 32;
+        // In vertical mode, ideogram spans the genomic axis (W dimension, which is SVG height)
+        // Leave space at bottom (about 40px) for the chromosome label
+        ideogramH = W - 32 - 40;
       } else {
         ideogramY = ideogramLayout.contentTop + 12;
         ideogramH = 16;
@@ -1186,13 +1189,15 @@
 
       // --- Chromosome label
       if (isVertical) {
+        // Position chromosome label at the bottom
+        const labelY = W - 16;
         tracksSvg.appendChild(el("text", {
           x: ideogramX + ideogramW/2 + 1,
-          y: 16,
+          y: labelY,
           class: "svg-chr",
           "text-anchor": "middle",
-          "dominant-baseline": "hanging",
-          transform: "rotate(-90 " + (ideogramX + ideogramW/2) + " 16)"
+          "dominant-baseline": "middle",
+          transform: "rotate(-90 " + (ideogramX + ideogramW/2) + " " + labelY + ")"
         }, state.contig));
       } else {
         tracksSvg.appendChild(el("text", {
@@ -1207,7 +1212,8 @@
       const bandX = isVertical ? ideogramX : 70;
       const bandY = isVertical ? ideogramY : ideogramY;
       const bandW = isVertical ? ideogramW : (W - bandX - 16);
-      const bandH = isVertical ? (H - bandY - 16) : ideogramH;
+      // In vertical mode, bandH should use the full available height
+      const bandH = isVertical ? ideogramH : ideogramH;
 
       const pFrac = 0.48;
       const qFrac = 1 - pFrac;
