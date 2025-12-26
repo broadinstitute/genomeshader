@@ -459,9 +459,9 @@
       border-bottom: 1px solid var(--border2);
       border-right: none;
       position: relative;
-      left: 50%;
+      left: 0;
       right: auto;
-      transform: translateX(-50%);
+      transform: none;
       align-items: center;
       justify-content: flex-end;
       gap: 8px;
@@ -2603,7 +2603,11 @@
 
       const collapseBtn = document.createElement("button");
       collapseBtn.className = "track-collapse-btn";
-      collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      if (isVertical) {
+        collapseBtn.textContent = track.collapsed ? "▲" : "▶";
+      } else {
+        collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      }
       collapseBtn.type = "button";
       collapseBtn.addEventListener("click", (e) => {
         e.stopPropagation();
