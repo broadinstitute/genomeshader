@@ -2631,7 +2631,8 @@
             if (width > 0) {
               // After -90deg rotation, translateY moves horizontally
               // Translate by half width to center the label while keeping first char at bottom
-              label.style.transform = `rotate(-90deg) translateY(${width / 2}px)`;
+              // Add translateX(-10px) for fine-tuning alignment
+              label.style.transform = `rotate(-90deg) translateX(-10.0px) translateY(${width / 2}px)`;
             }
           } catch (e) {
             console.error('Error adjusting label transform:', e);
