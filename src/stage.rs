@@ -93,9 +93,9 @@ fn write_to_disk(
     let mut locus_to_file = HashMap::new();
 
     let groups = outer_df.group_by(["chunk"]).unwrap();
-    for group in groups.groups() {
+    while let Ok(group) = groups.groups() {
         let l_fmt = group.column("chunk").unwrap().str().unwrap().get(0).unwrap().to_string();
-        let parts: Vec<&str> = l_fmt.split(|c| (c == ':' || c == '-')).collect();
+        let parts: Vec<&str> = l_fmt.split(|c| c == ':' || c == '-').collect();
 
         let chr = parts[0].to_string();
         let start = parts[1].parse::<u64>().unwrap();
