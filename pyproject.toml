@@ -6,11 +6,7 @@ build-backend = "maturin"
 name = "genomeshader"
 version = "0.1.83"
 dependencies = [
-    "polars",
-    "holoviews",
-    "datashader",
-    "pyarrow>=14.0.1",
-    "pyparsing"
+    "polars"
 ]
 
 [tool.maturin]
