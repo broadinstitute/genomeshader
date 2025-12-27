@@ -241,7 +241,8 @@ class GenomeShader:
             pl.col("gieStain").alias("color").replace(color_lookup)
         )
 
-        return ideo_df.write_json()
+        # Convert to list of dictionaries for JSON serialization
+        return ideo_df.to_dicts()
 
     def genes(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> pl.DataFrame:
         # Define the API endpoint with the track, contig, start, end parameters
@@ -308,6 +309,9 @@ class GenomeShader:
         ref_start = samples_df["reference_start"].min()
         ref_end = samples_df["reference_end"].max()
 
+        # Load cytoband data for the chromosome
+        ideogram_data = self.ideogram(ref_chr)
+
         # Load template HTML
         template_html = self._load_template_html()
 
@@ -318,6 +322,7 @@ class GenomeShader:
         config = {
             'region': f"{ref_chr}:{ref_start}-{ref_end}",
             'genome_build': self.genome_build,
+            'ideogram_data': ideogram_data,
         }
 
         # Build bootstrap snippet with manifest URL and config
