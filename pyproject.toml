@@ -6,7 +6,9 @@ build-backend = "maturin"
 name = "genomeshader"
 version = "0.1.85"
 dependencies = [
-    "polars"
+    "polars",
+    "requests",
+    "requests-cache"
 ]
 
 [tool.maturin]
