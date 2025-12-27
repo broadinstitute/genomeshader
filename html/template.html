@@ -597,14 +597,218 @@
   // -----------------------------
   // Genomeshader bootstrap
   // -----------------------------
+  // Store lazy loading status to display in HUD
+  window._genomeshaderLazyStatus = null;
+  
+  function showError(message) {
+    window._genomeshaderLazyStatus = { type: 'error', message };
+    updateHUDWithStatus();
+    console.error(message);
+  }
+  
+  function showInfo(message) {
+    window._genomeshaderLazyStatus = { type: 'info', message };
+    updateHUDWithStatus();
+    console.log(message);
+  }
+  
+  function updateHUDWithStatus() {
+    const hudEl = document.getElementById('hud');
+    if (!hudEl || !window._genomeshaderLazyStatus) return;
+    
+    const status = window._genomeshaderLazyStatus;
+    const statusColor = status.type === 'error' ? 'var(--accent)' : 'var(--text)';
+    const statusBorder = status.type === 'error' ? 'var(--accent)' : 'var(--border)';
+    
+    // Get current locus text if state is available
+    // Note: state is defined later in the script, so we'll update HUD with locus later
+    // For now, just show the status message
+    hudEl.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span>`;
+  }
+  
+  // True lazy loading via postMessage
   const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
+  
   if (!manifestUrl) {
-    console.warn('Missing GENOMESHADER_MANIFEST_URL');
+    showError('Missing GENOMESHADER_MANIFEST_URL');
   } else {
     console.log('Manifest URL:', manifestUrl);
-    document.body.dataset.manifestUrl = manifestUrl;
-    // Later: fetch(manifestUrl)...
+    
+    // Request manifest via postMessage to opener (Jupyter notebook window)
+    // The opener can fetch from localhost, avoiding CORS issues
+    let requestId = 0;
+    const pendingRequests = new Map();
+    
+    function requestData(url) {
+      return new Promise((resolve, reject) => {
+        const id = `req_${Date.now()}_${++requestId}`;
+        pendingRequests.set(id, { resolve, reject });
+        
+        if (!window.opener) {
+          reject(new Error('No window.opener - cannot request data'));
+          return;
+        }
+        
+        // Send request to opener
+        window.opener.postMessage({
+          type: 'genomeshader_fetch',
+          requestId: id,
+          url: url
+        }, '*');
+        
+        // Set timeout
+        setTimeout(() => {
+          if (pendingRequests.has(id)) {
+            pendingRequests.delete(id);
+            reject(new Error('Request timeout'));
+          }
+        }, 30000); // 30 second timeout
+      });
+    }
+    
+    // Listen for responses from opener
+    window.addEventListener('message', function(event) {
+      // Only accept messages from opener
+      if (event.source !== window.opener) {
+        return;
+      }
+      
+      const data = event.data;
+      if (data && data.type === 'genomeshader_fetch_response') {
+        const request = pendingRequests.get(data.requestId);
+        if (request) {
+          pendingRequests.delete(data.requestId);
+          if (data.success) {
+            request.resolve(data.data);
+          } else {
+            request.reject(new Error(data.error || 'Fetch failed'));
+          }
+        }
+      }
+    });
+    
+    // Request manifest
+    requestData(manifestUrl)
+      .then(manifest => {
+        console.log('Loaded manifest via postMessage:', manifest);
+        
+        // Compute track URL
+        const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/') + 1);
+        const trackUrl = baseUrl + manifest.tracks.demo.url;
+        console.log('Track URL:', trackUrl);
+        
+        // Request track file
+        return requestData(trackUrl)
+          .then(trackData => {
+            console.log('Loaded track data via postMessage:', trackData);
+            const recordCount = Array.isArray(trackData) ? trackData.length : 0;
+            showInfo(`Run ID: ${manifest.run_id}<br>Loaded ${recordCount} records`);
+          })
+          .catch(error => {
+            console.error('Track fetch error:', error);
+            showError(`Failed to load track: ${error.message}`);
+          });
+      })
+      .catch(error => {
+        console.error('Manifest fetch error:', error);
+        showError(`Failed to load manifest: ${error.message}`);
+      });
   }
+
+  // -----------------------------
+  // Jupyter Comms Test (minimal implementation)
+  // -----------------------------
+  (function() {
+    console.log('🔵 Genomeshader comms test script loaded');
+    console.log('Window opener:', window.opener ? 'exists' : 'null');
+    
+    let commReady = false;
+    window._pendingRequests = {};
+    
+    // Check if we have an opener (popup window)
+    if (!window.opener) {
+      console.warn('⚠️ No window.opener - this script should run in a popup window');
+      return;
+    }
+    
+    window.addEventListener('message', function(event) {
+      console.log('📨 Message received:', event.data);
+      
+      if (event.source !== window.opener) {
+        console.log('⚠️ Message from wrong source, ignoring');
+        return;
+      }
+      
+      const data = event.data;
+      
+      if (data.type === 'genomeshader_ready') {
+        commReady = true;
+        console.log('✅ Comm bridge ready!');
+        
+        // Auto-test: request dummy data after 1 second
+        setTimeout(() => {
+          console.log('🚀 Starting test fetch...');
+          testFetchData();
+        }, 1000);
+      } else if (data.type === 'genomeshader_response') {
+        const requestId = data.request_id;
+        const handler = window._pendingRequests[requestId];
+        
+        if (handler) {
+          delete window._pendingRequests[requestId];
+          if (data.success) {
+            console.log('✅ Received data:', data.data);
+            handler.resolve(data.data);
+          } else {
+            console.error('❌ Error:', data.error);
+            handler.reject(new Error(data.error));
+          }
+        } else {
+          console.warn('⚠️ No handler for request_id:', requestId);
+        }
+      }
+    });
+    
+    // Also log when we don't receive ready message after 5 seconds
+    setTimeout(() => {
+      if (!commReady) {
+        console.warn('⚠️ Comm bridge not ready after 5 seconds. Check parent window console.');
+      }
+    }, 5000);
+    
+    function testFetchData() {
+      if (!commReady || !window.opener) {
+        console.error('Comm not ready');
+        return;
+      }
+      
+      const requestId = 'test_' + Date.now();
+      
+      return new Promise((resolve, reject) => {
+        window._pendingRequests[requestId] = { resolve, reject };
+        
+        window.opener.postMessage({
+          type: 'genomeshader_request',
+          request_id: requestId,
+          action: 'test'
+        }, '*');
+        
+        setTimeout(() => {
+          if (window._pendingRequests[requestId]) {
+            delete window._pendingRequests[requestId];
+            reject(new Error('Timeout'));
+          }
+        }, 5000);
+      }).then(data => {
+        console.log('Test successful! Data:', data);
+        // You could display this in the UI somewhere
+        alert('Test successful! Check console for data.');
+      }).catch(err => {
+        console.error('Test failed:', err);
+        alert('Test failed: ' + err.message);
+      });
+    }
+  })();
 
   // -----------------------------
   // Theme + menu
@@ -2861,8 +3065,16 @@
   // HUD + renderAll
   // -----------------------------
   function renderHUD() {
-    hud.textContent =
-      `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
+    const locusText = `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
+    
+    // Preserve lazy loading status if it exists
+    if (window._genomeshaderLazyStatus) {
+      const status = window._genomeshaderLazyStatus;
+      const statusColor = status.type === 'error' ? 'var(--accent)' : 'var(--text)';
+      hud.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span> | ${locusText}`;
+    } else {
+      hud.textContent = locusText;
+    }
   }
 
   function renderAll() {

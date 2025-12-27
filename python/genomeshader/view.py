@@ -1,7 +1,12 @@
 import os
 import re
-from typing import Union, List
+import hashlib
+import threading
+import socket
+from typing import Union, List, Optional
+from pathlib import Path
 import importlib.resources
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 import requests
 import requests_cache
@@ -12,6 +17,7 @@ import json
 import base64
 
 import genomeshader.genomeshader as gs
+from . import staging
 
 
 class GenomeShader:
@@ -40,6 +46,11 @@ class GenomeShader:
         requests_cache.install_cache('gs_rest_cache')
 
         self._session = gs._init()
+        
+        # Localhost HTTP server for serving staged files
+        self._localhost_server: Optional[HTTPServer] = None
+        self._localhost_port: Optional[int] = None
+        self._localhost_thread: Optional[threading.Thread] = None
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
@@ -278,6 +289,83 @@ class GenomeShader:
 
         return ref_df.write_json()
 
+    def _start_localhost_server(self, serve_dir: Path) -> int:
+        """
+        Starts a localhost HTTP server to serve files from the given directory.
+        
+        Args:
+            serve_dir: Directory to serve files from
+            
+        Returns:
+            int: Port number the server is running on
+        """
+        if self._localhost_server is not None:
+            # Server already running, return existing port
+            return self._localhost_port
+        
+        # Find an available port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        
+        # Create a custom handler that serves from the specified directory with CORS headers
+        class StagingHandler(SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(serve_dir), **kwargs)
+            
+            def end_headers(self):
+                # Add CORS headers to allow requests from Jupyter notebook
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+                self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+                super().end_headers()
+            
+            def do_OPTIONS(self):
+                # Handle preflight requests
+                self.send_response(200)
+                self.end_headers()
+            
+            def log_message(self, format, *args):
+                # Suppress server logs
+                pass
+        
+        # Create and start server
+        server = HTTPServer(('127.0.0.1', port), StagingHandler)
+        
+        def run_server():
+            server.serve_forever()
+        
+        thread = threading.Thread(target=run_server, daemon=True)
+        thread.start()
+        
+        self._localhost_server = server
+        self._localhost_port = port
+        self._localhost_thread = thread
+        
+        return port
+    
+    def _get_manifest_url(self, manifest_path: Path) -> str:
+        """
+        Gets the URL for accessing the manifest file.
+        Uses localhost HTTP server since Jupyter /files/ route doesn't work reliably.
+        
+        Args:
+            manifest_path: Absolute path to the manifest file
+            
+        Returns:
+            str: URL to access the manifest file
+        """
+        # Use localhost server approach since /files/ route has 403 issues
+        serve_dir = manifest_path.parent
+        port = self._start_localhost_server(serve_dir)
+        
+        # Get relative path from serve directory
+        rel_path = manifest_path.relative_to(serve_dir)
+        rel_path_str = rel_path.as_posix()
+        
+        return f"http://127.0.0.1:{port}/{rel_path_str}"
+
     def render(
         self,
         locus_or_dataframe: Union[str, pl.DataFrame],
@@ -309,14 +397,62 @@ class GenomeShader:
         ref_start = samples_df["reference_start"].min()
         ref_end = samples_df["reference_end"].max()
 
+        # Compute stable run_id from region + genome_build
+        region_str = f"{ref_chr}:{ref_start}-{ref_end}"
+        hash_input = f"{region_str}:{self.genome_build}"
+        run_id = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()[:8]
+
+        # Create run directory structure
+        try:
+            run_dir = staging.make_run_dir(run_id)
+            tracks_dir = run_dir / "tracks"
+        except Exception as e:
+            raise RuntimeError(f"Failed to create run directory: {e}")
+
+        # Write track.json file
+        try:
+            if len(samples_df) > 0:
+                # Convert DataFrame to list of dicts
+                track_data = samples_df.to_dicts()
+            else:
+                # Use dummy data if dataframe is empty
+                track_data = [{"x": 1, "label": "a"}, {"x": 2, "label": "b"}]
+            
+            track_path = tracks_dir / "track.json"
+            staging.write_json(track_path, track_data)
+        except Exception as e:
+            raise RuntimeError(f"Failed to write track file: {e}")
+
+        # Write manifest.json
+        try:
+            manifest_data = {
+                "version": 1,
+                "run_id": run_id,
+                "region": {
+                    "contig": str(ref_chr),
+                    "start": int(ref_start),
+                    "end": int(ref_end)
+                },
+                "tracks": {
+                    "demo": {
+                        "url": "tracks/track.json",
+                        "format": "json"
+                    }
+                }
+            }
+            manifest_path = run_dir / "manifest.json"
+            staging.write_json(manifest_path, manifest_data)
+        except Exception as e:
+            raise RuntimeError(f"Failed to write manifest file: {e}")
+
         # Load cytoband data for the chromosome
         ideogram_data = self.ideogram(ref_chr)
 
         # Load template HTML
         template_html = self._load_template_html()
 
-        # Construct manifest URL (placeholder for future lazy loading)
-        manifest_url = f"{self.gcs_session_dir}/manifest.json"
+        # Get manifest URL using localhost server
+        manifest_url = self._get_manifest_url(manifest_path)
 
         # Build config dict first, then JSON-encode it
         config = {
@@ -325,10 +461,26 @@ class GenomeShader:
             'ideogram_data': ideogram_data,
         }
 
+        # Get Jupyter origin for constructing absolute URLs
+        # Try to get it from environment or use a default
+        jupyter_origin = os.environ.get("JUPYTER_ORIGIN", "")
+        if not jupyter_origin:
+            # Try to construct from JUPYTERHUB_SERVICE_PREFIX if available
+            prefix = os.environ.get("JUPYTERHUB_SERVICE_PREFIX", "")
+            if prefix:
+                # Extract origin from prefix (e.g., "/user/username/" -> "")
+                # We'll let JavaScript figure it out from window.opener
+                jupyter_origin = ""
+            else:
+                # Default to localhost:8888 (common Jupyter port)
+                jupyter_origin = "http://localhost:8888"
+        
         # Build bootstrap snippet with manifest URL and config
+        # Data will be fetched lazily via postMessage (not embedded)
         bootstrap = f"""<script>
 window.GENOMESHADER_MANIFEST_URL = {json.dumps(manifest_url)};
 window.GENOMESHADER_CONFIG = {json.dumps(config)};
+window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
 </script>"""
 
         # Inject bootstrap into template
@@ -372,9 +524,59 @@ window.GENOMESHADER_CONFIG = {json.dumps(config)};
       return;
     }}
     
+    // Set up postMessage handler for lazy loading data requests
+    // The popup window will request data via postMessage, and we'll fetch it from localhost
+    window.addEventListener('message', function(event) {{
+      // Only accept messages from the popup window we just opened
+      if (event.source !== win) {{
+        return;
+      }}
+      
+      const data = event.data;
+      
+      // Handle data fetch requests from popup
+      if (data && data.type === 'genomeshader_fetch') {{
+        const url = data.url;
+        console.log('Genomeshader: Fetching data from popup request:', url);
+        
+        // Fetch the data from localhost (we can do this from Jupyter notebook context)
+        fetch(url)
+          .then(response => {{
+            if (!response.ok) {{
+              throw new Error(`HTTP ${{response.status}}: ${{response.statusText}}`);
+            }}
+            return response.json();
+          }})
+          .then(jsonData => {{
+            // Send data back to popup
+            win.postMessage({{
+              type: 'genomeshader_fetch_response',
+              requestId: data.requestId,
+              url: url,
+              data: jsonData,
+              success: true
+            }}, '*');
+            console.log('Genomeshader: Sent data to popup for:', url);
+          }})
+          .catch(error => {{
+            // Send error back to popup
+            win.postMessage({{
+              type: 'genomeshader_fetch_response',
+              requestId: data.requestId,
+              url: url,
+              error: error.message,
+              success: false
+            }}, '*');
+            console.error('Genomeshader: Error fetching data:', error);
+          }});
+      }}
+    }});
+    
     // Wait for window to load before setting up cleanup
     win.addEventListener('load', function() {{
       console.log("Genomeshader window loaded successfully");
+      // Notify popup that we're ready to handle fetch requests
+      win.postMessage({{ type: 'genomeshader_ready' }}, '*');
     }});
     
     // Keep the blob URL alive - don't revoke immediately
