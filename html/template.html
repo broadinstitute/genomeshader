@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Genomeshader Prototype (SVG scaffolding)</title>
 
+  <!--__GENOMESHADER_BOOTSTRAP__-->
+
   <style>
     :root {
       --sidebar-w: 240px;
@@ -593,6 +595,18 @@
 
 <script type="module">
   // -----------------------------
+  // Genomeshader bootstrap
+  // -----------------------------
+  const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
+  if (!manifestUrl) {
+    console.warn('Missing GENOMESHADER_MANIFEST_URL');
+  } else {
+    console.log('Manifest URL:', manifestUrl);
+    document.body.dataset.manifestUrl = manifestUrl;
+    // Later: fetch(manifestUrl)...
+  }
+
+  // -----------------------------
   // Theme + menu
   // -----------------------------
   const app = document.querySelector(".app");
@@ -794,6 +808,18 @@
   state.variantLayoutMode = storedVariantMode ?? "equidistant";
   // Initialize label after DOM is ready
   setTimeout(() => updateVariantLayoutModeLabel(), 0);
+
+  // Initialize state from GENOMESHADER_CONFIG if available
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
+    const region = window.GENOMESHADER_CONFIG.region;
+    // Parse region string format: "chr1:100000-200000"
+    const match = region.match(/^([^:]+):(\d+)-(\d+)$/);
+    if (match) {
+      state.contig = match[1];
+      state.startBp = parseInt(match[2], 10);
+      state.endBp = parseInt(match[3], 10);
+    }
+  }
 
   const main = document.getElementById("main");
   const tracksSvg = document.getElementById("tracksSvg");
@@ -1255,7 +1281,64 @@
       // In vertical mode, bandH should use the full available height
       const bandH = isVertical ? ideogramH : ideogramH;
 
-      const pFrac = 0.48;
+      // Chromosome lengths for mapping cytoband positions
+      const chrLengths = {
+        "chr1": 248_956_422,
+        "chr2": 242_193_529,
+        "chr3": 198_295_559,
+        "chr4": 190_214_555,
+        "chr5": 181_538_259,
+        "chr6": 170_805_979,
+        "chr7": 159_345_973,
+        "chr8": 145_138_636,
+        "chr9": 138_394_717,
+        "chr10": 133_797_422,
+        "chr11": 135_086_622,
+        "chr12": 133_275_309,
+        "chr13": 114_364_328,
+        "chr14": 107_043_718,
+        "chr15": 101_991_189,
+        "chr16": 90_338_345,
+        "chr17": 83_257_441,
+        "chr18": 80_373_285,
+        "chr19": 58_617_616,
+        "chr20": 64_444_167,
+        "chr21": 46_709_983,
+        "chr22": 50_818_468,
+        "chrX": 156_040_895,
+        "chrY": 57_227_415
+      };
+      const chrLength = chrLengths[state.contig] || 248_956_422;
+      
+      // Get ideogram data from config (already parsed from JSON in Python)
+      let ideogramData = [];
+      if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.ideogram_data) {
+        const data = window.GENOMESHADER_CONFIG.ideogram_data;
+        // Data should already be an array, but ensure it is
+        if (Array.isArray(data)) {
+          ideogramData = data;
+        } else {
+          console.warn("Ideogram data is not in expected array format:", data);
+        }
+      }
+      
+      // Find centromere position to determine p/q arm split
+      let centromereStart = null;
+      let centromereEnd = null;
+      for (const band of ideogramData) {
+        if (band.gieStain === "acen") {
+          if (centromereStart === null) {
+            centromereStart = band.chromStart;
+          }
+          centromereEnd = band.chromEnd;
+        }
+      }
+      
+      // Calculate actual p/q arm proportions based on centromere position
+      // If no centromere found, use approximate position (p-arm is typically ~48% of chromosome)
+      const defaultPFrac = 0.48;
+      const centromerePos = centromereStart !== null ? centromereStart : Math.floor(chrLength * defaultPFrac);
+      const pFrac = centromerePos / chrLength;
       const qFrac = 1 - pFrac;
 
       let pX, pY, pW, pH, qX, qY, qW, qH;
@@ -1296,50 +1379,96 @@
 
       tracksSvg.appendChild(pArm);
       tracksSvg.appendChild(qArm);
-
-      // cytobands (drawn as rectangles across the full ideogram span, then clipped)
-      // The centromere is a special red cytoband at the junction between p-arm and q-arm
-      const stripes = 26;
-      const centromereBandIndex = Math.floor(stripes * pFrac);
       
-      if (isVertical) {
-        const bandInnerX = bandX - 2;
-        const bandInnerW = bandW + 4;
-        const stripeHeight = bandH / stripes;
-        for (let i=0;i<stripes;i++) {
-          const y = bandY + (i/stripes)*bandH;
-          const isCentromere = i === centromereBandIndex;
-          const fill = isCentromere 
-            ? "rgba(255,77,77,0.35)" 
-            : (i%2===0 ? "rgba(127,127,127,0.10)" : "rgba(127,127,127,0.24)");
-          const stroke = isCentromere ? "rgba(255,77,77,0.95)" : "none";
-          const strokeWidth = isCentromere ? 1 : 0;
+      // Calculate p-arm and q-arm lengths in base pairs
+      const pArmLength = centromerePos;
+      const qArmLength = chrLength - centromerePos;
+      
+      const bandInnerX = isVertical ? bandX - 2 : bandX;
+      const bandInnerY = isVertical ? bandY : bandY - 2;
+      const bandInnerW = isVertical ? bandW + 4 : bandW;
+      const bandInnerH = isVertical ? bandH : bandH + 4;
+      
+      // Render each cytoband
+      for (const band of ideogramData) {
+        const bandStart = band.chromStart;
+        const bandEnd = band.chromEnd;
+        const isCentromere = band.gieStain === "acen";
+        const isPArm = bandEnd <= centromerePos;
+        
+        // Determine which arm and calculate position
+        let bandPos, bandSize;
+        if (isPArm) {
+          // p-arm: map from 0 to pArmLength onto p-arm dimensions
+          const pFracStart = bandStart / pArmLength;
+          const pFracEnd = bandEnd / pArmLength;
+          const pFracSize = (bandEnd - bandStart) / pArmLength;
           
+          if (isVertical) {
+            // p-arm is at bottom, so we go from bottom up
+            bandPos = pY + pH - (pFracEnd * pH);
+            bandSize = pFracSize * pH;
+          } else {
+            // p-arm is on left
+            bandPos = pX + (pFracStart * pW);
+            bandSize = pFracSize * pW;
+          }
+        } else {
+          // q-arm: map from centromerePos to chrLength onto q-arm dimensions
+          const qFracStart = (bandStart - centromerePos) / qArmLength;
+          const qFracEnd = (bandEnd - centromerePos) / qArmLength;
+          const qFracSize = (bandEnd - bandStart) / qArmLength;
+          
+          if (isVertical) {
+            // q-arm is at top
+            bandPos = qY + (qFracStart * qH);
+            bandSize = qFracSize * qH;
+          } else {
+            // q-arm is on right
+            bandPos = qX + (qFracStart * qW);
+            bandSize = qFracSize * qW;
+          }
+        }
+        
+        // Convert color from hex to rgba for better visibility
+        const color = band.color || "#808080";
+        let fillColor, strokeColor, strokeWidth;
+        if (isCentromere) {
+          fillColor = "rgba(255,77,77,0.35)";
+          strokeColor = "none";
+          strokeWidth = 0;
+        } else {
+          // Convert hex to rgba with opacity
+          const r = parseInt(color.slice(1, 3), 16);
+          const g = parseInt(color.slice(3, 5), 16);
+          const b = parseInt(color.slice(5, 7), 16);
+          // Adjust opacity based on color intensity (darker = more opaque)
+          const intensity = (r + g + b) / 3;
+          const opacity = 0.1 + (1 - intensity / 255) * 0.3;
+          fillColor = `rgba(${r},${g},${b},${opacity})`;
+          strokeColor = "none";
+          strokeWidth = 0;
+        }
+        
+        if (isVertical) {
           tracksSvg.appendChild(el("rect", {
-            x: bandInnerX, y, width: bandInnerW, height: stripeHeight,
-            fill: fill,
-            stroke: stroke,
+            x: bandInnerX,
+            y: bandPos,
+            width: bandInnerW,
+            height: Math.max(1, bandSize),
+            fill: fillColor,
+            stroke: strokeColor,
             "stroke-width": strokeWidth,
             "clip-path": `url(#${clipId})`
           }));
-        }
-      } else {
-        const bandInnerY = bandY - 2;
-        const bandInnerH = bandH + 4;
-        const stripeWidth = bandW / stripes;
-        for (let i=0;i<stripes;i++) {
-          const x = bandX + (i/stripes)*bandW;
-          const isCentromere = i === centromereBandIndex;
-          const fill = isCentromere 
-            ? "rgba(255,77,77,0.35)" 
-            : (i%2===0 ? "rgba(127,127,127,0.10)" : "rgba(127,127,127,0.24)");
-          const stroke = isCentromere ? "rgba(255,77,77,0.95)" : "none";
-          const strokeWidth = isCentromere ? 1 : 0;
-          
+        } else {
           tracksSvg.appendChild(el("rect", {
-            x, y: bandInnerY, width: stripeWidth, height: bandInnerH,
-            fill: fill,
-            stroke: stroke,
+            x: bandPos,
+            y: bandInnerY,
+            width: Math.max(1, bandSize),
+            height: bandInnerH,
+            fill: fillColor,
+            stroke: strokeColor,
             "stroke-width": strokeWidth,
             "clip-path": `url(#${clipId})`
           }));
@@ -1347,65 +1476,64 @@
       }
 
       // Locus highlight - small red rectangle showing current view position
-      // For chr1, approximate length is ~249M bp
-      const chrLengths = {
-        "chr1": 248_956_422,
-        "chr2": 242_193_529,
-        "chr3": 198_295_559,
-        "chr4": 190_214_555,
-        "chr5": 181_538_259,
-        "chr6": 170_805_979,
-        "chr7": 159_345_973,
-        "chr8": 145_138_636,
-        "chr9": 138_394_717,
-        "chr10": 133_797_422,
-        "chr11": 135_086_622,
-        "chr12": 133_275_309,
-        "chr13": 114_364_328,
-        "chr14": 107_043_718,
-        "chr15": 101_991_189,
-        "chr16": 90_338_345,
-        "chr17": 83_257_441,
-        "chr18": 80_373_285,
-        "chr19": 58_617_616,
-        "chr20": 64_444_167,
-        "chr21": 46_709_983,
-        "chr22": 50_818_468,
-        "chrX": 156_040_895,
-        "chrY": 57_227_415
-      };
-      const chrLength = chrLengths[state.contig] || 248_956_422; // default to chr1 length
       const locusCenter = (state.startBp + state.endBp) / 2;
       const locusFrac = locusCenter / chrLength;
       
+      // Determine if locus is on p-arm or q-arm
+      const isLocusPArm = locusCenter <= centromerePos;
+      
       if (isVertical) {
-        // Position the highlight on the p-arm (bottom part)
-        const pArmFrac = 0.6;
-        const locusY = pY + (1 - pArmFrac) * pH;
-        const locusHighlightHeight = 12;
-        const locusHighlightY = Math.max(pY, Math.min(pY + pH - locusHighlightHeight, locusY - locusHighlightHeight / 2));
+        let locusY, locusHighlightHeight = 12;
+        if (isLocusPArm) {
+          // p-arm is at bottom
+          const pFrac = locusCenter / pArmLength;
+          locusY = pY + pH - (pFrac * pH);
+        } else {
+          // q-arm is at top
+          const qFrac = (locusCenter - centromerePos) / qArmLength;
+          locusY = qY + (qFrac * qH);
+        }
+        const locusHighlightY = Math.max(
+          isLocusPArm ? pY : qY,
+          Math.min(
+            (isLocusPArm ? pY + pH : qY + qH) - locusHighlightHeight,
+            locusY - locusHighlightHeight / 2
+          )
+        );
         
         tracksSvg.appendChild(el("rect", {
-          x: pX - 1,
+          x: (isLocusPArm ? pX : qX) - 1,
           y: locusHighlightY,
-          width: pW + 2,
+          width: (isLocusPArm ? pW : qW) + 2,
           height: locusHighlightHeight,
           fill: "rgba(255,77,77,0.25)",
           stroke: "rgba(255,77,77,0.95)",
           "stroke-width": 1
         }));
       } else {
-        // Position the highlight on the p-arm (always place it on p-arm, further in)
-        const pArmFrac = 0.6;
-        const locusX = pX + pArmFrac * pW;
-        const locusHighlightWidth = 12;
-        const locusHighlightX = Math.max(pX, Math.min(pX + pW - locusHighlightWidth, locusX - locusHighlightWidth / 2));
+        let locusX, locusHighlightWidth = 12;
+        if (isLocusPArm) {
+          // p-arm is on left
+          const pFrac = locusCenter / pArmLength;
+          locusX = pX + (pFrac * pW);
+        } else {
+          // q-arm is on right
+          const qFrac = (locusCenter - centromerePos) / qArmLength;
+          locusX = qX + (qFrac * qW);
+        }
+        const locusHighlightX = Math.max(
+          isLocusPArm ? pX : qX,
+          Math.min(
+            (isLocusPArm ? pX + pW : qX + qW) - locusHighlightWidth,
+            locusX - locusHighlightWidth / 2
+          )
+        );
         
         tracksSvg.appendChild(el("rect", {
           x: locusHighlightX,
-          y: pY - 1,
+          y: (isLocusPArm ? pY : qY) - 1,
           width: locusHighlightWidth,
-          height: pH + 2,
+          height: (isLocusPArm ? pH : qH) + 2,
           fill: "rgba(255,77,77,0.25)",
           stroke: "rgba(255,77,77,0.95)",
           "stroke-width": 1
