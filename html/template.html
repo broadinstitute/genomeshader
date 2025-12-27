@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Genomeshader Prototype (SVG scaffolding)</title>
 
+  <!--__GENOMESHADER_BOOTSTRAP__-->
+
   <style>
     :root {
       --sidebar-w: 240px;
@@ -592,6 +594,18 @@
   </div>
 
 <script type="module">
+  // -----------------------------
+  // Genomeshader bootstrap
+  // -----------------------------
+  const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
+  if (!manifestUrl) {
+    console.warn('Missing GENOMESHADER_MANIFEST_URL');
+  } else {
+    console.log('Manifest URL:', manifestUrl);
+    document.body.dataset.manifestUrl = manifestUrl;
+    // Later: fetch(manifestUrl)...
+  }
+
   // -----------------------------
   // Theme + menu
   // -----------------------------
