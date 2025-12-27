@@ -219,33 +219,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: [release, linux, macos, sdist]
     steps:
-      - name: Download linux wheels
+      - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
-          name: wheels-linux-x86_64
-      - name: Download macos wheels x86_64
-        uses: actions/download-artifact@v7
-        with:
-          name: wheels-macos-x86_64
-      - name: Download macos wheels aarch64
-        uses: actions/download-artifact@v7
-        with:
-          name: wheels-macos-aarch64
-      - name: Download sdist
-        uses: actions/download-artifact@v7
-        with:
-          name: wheels-sdist
-      - name: Combine artifacts
-        run: |
-          mkdir -p dist
-          cp wheels-linux-x86_64/* dist/ 2>/dev/null || true
-          cp wheels-macos-x86_64/* dist/ 2>/dev/null || true
-          cp wheels-macos-aarch64/* dist/ 2>/dev/null || true
-          cp wheels-sdist/* dist/ 2>/dev/null || true
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
       - name: List artifacts to upload
         run: |
           echo "Files in dist directory:"
           ls -la dist/ || echo "No files found in dist/"
+          echo "File count:"
+          find dist -type f 2>/dev/null | wc -l || echo "0"
       - name: Install maturin
         run: pip install maturin
       - name: Publish to PyPI
