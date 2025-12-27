@@ -85,16 +85,26 @@ class GenomeShader:
         Returns:
             str: The template HTML content as a string
         """
-        # Try to load from package resources first
+        # Try to load from package resources first (when installed via pip)
         try:
-            # Try relative to genomeshader package
-            template_path = importlib.resources.files("genomeshader").joinpath("../html/template.html")
+            template_path = importlib.resources.files("genomeshader").joinpath("html", "template.html")
             if template_path.is_file():
                 return template_path.read_text(encoding='utf-8')
         except (AttributeError, FileNotFoundError, TypeError):
             pass
         
-        # Fallback to relative path from this file
+        # Fallback 1: Try relative path from this file (when installed via pip, html is in package)
+        try:
+            template_path = os.path.join(
+                os.path.dirname(__file__), 'html', 'template.html'
+            )
+            if os.path.exists(template_path):
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+        except (FileNotFoundError, OSError):
+            pass
+        
+        # Fallback 2: Try relative path from project root (for development)
         template_path = os.path.join(
             os.path.dirname(__file__), '..', '..', 'html', 'template.html'
         )

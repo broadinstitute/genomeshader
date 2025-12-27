@@ -1,0 +1,3631 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Genomeshader Prototype (SVG scaffolding)</title>
+
+  <!--__GENOMESHADER_BOOTSTRAP__-->
+
+  <style>
+    :root {
+      --sidebar-w: 240px;
+      --tracks-h: 280px;   /* ideogram + genes + repeats + ruler */
+      --flow-h: 500px;     /* sankey placeholder */
+      --reads-h: 220px;    /* IGV-style reads area placeholder */
+
+      --bg: #0b0d10;
+      --panel: #11151b;
+      --panel2: rgba(255,255,255,0.03);
+
+      --border: rgba(255,255,255,0.10);
+      --border2: rgba(255,255,255,0.08);
+
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.65);
+      --muted2: rgba(255,255,255,0.45);
+
+      --grid: rgba(255,255,255,0.12);
+      --grid2: rgba(255,255,255,0.07);
+
+      --accent: #ff4d4d;
+
+      --blue: rgba(120,180,255,0.9);
+      --blueFill: rgba(120,180,255,0.18);
+
+      --shadow: 0 10px 30px rgba(0,0,0,0.35);
+      --hudBg: rgba(0,0,0,0.35);
+    }
+
+    html[data-theme="light"] {
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --panel2: rgba(0,0,0,0.03);
+
+      --border: rgba(0,0,0,0.12);
+      --border2: rgba(0,0,0,0.10);
+
+      --text: rgba(0,0,0,0.90);
+      --muted: rgba(0,0,0,0.62);
+      --muted2: rgba(0,0,0,0.45);
+
+      --grid: rgba(0,0,0,0.12);
+      --grid2: rgba(0,0,0,0.07);
+
+      --accent: #d81b1b;
+
+      --blue: rgba(18, 110, 255, 0.85);
+      --blueFill: rgba(18, 110, 255, 0.14);
+
+      --shadow: 0 10px 30px rgba(0,0,0,0.12);
+      --hudBg: rgba(255,255,255,0.78);
+    }
+
+    @media (prefers-color-scheme: light) {
+      html[data-theme="auto"] {
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --panel2: rgba(0,0,0,0.03);
+
+        --border: rgba(0,0,0,0.12);
+        --border2: rgba(0,0,0,0.10);
+
+        --text: rgba(0,0,0,0.90);
+        --muted: rgba(0,0,0,0.62);
+        --muted2: rgba(0,0,0,0.45);
+
+        --grid: rgba(0,0,0,0.12);
+        --grid2: rgba(0,0,0,0.07);
+
+        --accent: #d81b1b;
+
+        --blue: rgba(18, 110, 255, 0.85);
+        --blueFill: rgba(18, 110, 255, 0.14);
+
+        --shadow: 0 10px 30px rgba(0,0,0,0.12);
+        --hudBg: rgba(255,255,255,0.78);
+      }
+    }
+    @media (prefers-color-scheme: dark) {
+      html[data-theme="auto"] {
+        --bg: #0b0d10;
+        --panel: #11151b;
+        --panel2: rgba(255,255,255,0.03);
+
+        --border: rgba(255,255,255,0.10);
+        --border2: rgba(255,255,255,0.08);
+
+        --text: rgba(255,255,255,0.92);
+        --muted: rgba(255,255,255,0.65);
+        --muted2: rgba(255,255,255,0.45);
+
+        --grid: rgba(255,255,255,0.12);
+        --grid2: rgba(255,255,255,0.07);
+
+        --accent: #ff4d4d;
+
+        --blue: rgba(120,180,255,0.9);
+        --blueFill: rgba(120,180,255,0.18);
+
+        --shadow: 0 10px 30px rgba(0,0,0,0.35);
+        --hudBg: rgba(0,0,0,0.35);
+      }
+    }
+
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui; }
+    * { box-sizing: border-box; }
+
+    .app {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) 1fr;
+      height: 100%;
+      overflow: hidden;
+      transition: grid-template-columns 0.2s ease;
+    }
+    .app.sidebar-collapsed {
+      grid-template-columns: 12px 1fr;
+    }
+    .app.sidebar-collapsed .sidebar {
+      min-width: 12px;
+    }
+
+    .sidebar {
+      position: relative;
+      background: var(--panel);
+      border-right: 1px solid var(--border2);
+      padding: 12px;
+      overflow: visible;
+      padding-bottom: 56px; /* space for gear button */
+      transition: opacity 0.2s ease;
+    }
+    .sidebar::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 4px;
+      cursor: pointer;
+      transition: background-color 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
+      z-index: 10;
+    }
+    .sidebar:hover::after {
+      background: var(--blue);
+      width: 6px;
+      box-shadow: 0 0 8px rgba(120, 180, 255, 0.4);
+    }
+    .app.sidebar-collapsed .sidebar {
+      padding: 0;
+      overflow: visible;
+    }
+    .app.sidebar-collapsed .sidebar > * {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .app.sidebar-collapsed .sidebar::after {
+      pointer-events: auto;
+      opacity: 1 !important;
+      right: 0;
+      width: 12px;
+      background: rgba(127, 127, 127, 0.08);
+      border-right: 1px solid var(--border2);
+    }
+    .app.sidebar-collapsed .sidebar:hover::after {
+      width: 14px;
+      background: var(--blue);
+      border-right: none;
+      box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
+    }
+
+    .sidebarHeader {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      gap: 8px;
+    }
+    
+    .sidebarToggle {
+      width: 24px;
+      height: 24px;
+      border: 1px solid var(--border2);
+      background: var(--panel2);
+      color: var(--text);
+      border-radius: 6px;
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      padding: 0;
+      flex-shrink: 0;
+      transition: all 0.15s ease;
+    }
+    .sidebarToggle:hover {
+      background: var(--panel);
+      border-color: var(--border);
+    }
+    .sidebarToggle:active {
+      transform: scale(0.95);
+    }
+    
+    .sidebarHeader h3 {
+      margin: 0;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 650;
+      letter-spacing: 0.02em;
+    }
+
+    .group {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 10px;
+      margin: 7px 0;
+      border-radius: 10px;
+      background: var(--panel2);
+      cursor: pointer;
+      user-select: none;
+      border: 1px solid transparent;
+    }
+    .group:hover { border-color: var(--border2); }
+    .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,0.16); color: var(--muted); }
+
+    /* Gear button bottom-left (requested) */
+    .gearBtn {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      border: 1px solid var(--border2);
+      background: var(--panel2);
+      color: var(--text);
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      cursor: pointer;
+      user-select: none;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .gearBtn:hover { filter: brightness(1.06); }
+    .gearBtn:active { transform: translateY(1px); }
+
+    /* Context menu */
+    .menu {
+      position: absolute;
+      min-width: 220px;
+      padding: 8px;
+      border-radius: 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      z-index: 50;
+      display: none;
+    }
+    .menu.open { display: block; }
+    .menuTitle {
+      font-size: 11px;
+      color: var(--muted2);
+      padding: 6px 8px 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .menuItem {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 10px;
+      border-radius: 10px;
+      cursor: pointer;
+      user-select: none;
+      color: var(--text);
+      font-size: 13px;
+    }
+    .menuItem:hover { background: var(--panel2); }
+    .menuRight { color: var(--muted); font-size: 12px; }
+
+    .main {
+      position: relative;
+      overflow: hidden;
+      touch-action: none; /* we own pan/zoom gestures on right pane */
+    }
+
+    .tracks {
+      position: absolute;
+      left: 0; top: 0; right: 0;
+      height: var(--tracks-h);
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(to bottom, rgba(127,127,127,0.08), rgba(127,127,127,0.00));
+    }
+    #trackControls {
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    .flow {
+      position: absolute;
+      left: 0; right: 0;
+      background: rgba(127,127,127,0.04);
+    }
+
+    .reads {
+      position: absolute;
+      left: 0; right: 0;
+      background: rgba(127,127,127,0.02);
+    }
+
+    /* Vertical mode: tracks laid out side-by-side */
+    .main.vertical .tracks {
+      display: flex;
+      flex-direction: row;
+      height: 100%;
+      width: 100%;
+      left: 0;
+      top: 0;
+      right: auto;
+      bottom: 0;
+      border-bottom: none;
+      border-right: 1px solid var(--border);
+    }
+
+    .main.vertical .flow,
+    .main.vertical .reads {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      height: 100%;
+    }
+
+    canvas.canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    svg.overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    /* Locus indicator lower-right */
+    .hud {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: var(--hudBg);
+      border: 1px solid var(--border2);
+      font-size: 12px;
+      color: var(--muted);
+      backdrop-filter: blur(6px);
+      pointer-events: none;
+      white-space: nowrap;
+      box-shadow: var(--shadow);
+    }
+
+    /* SVG text classes */
+    .svg-label { fill: var(--muted); font-size: 12px; font-weight: 600; }
+    .svg-small { fill: var(--muted2); font-size: 10px; }
+    .svg-chr   { fill: var(--text); font-size: 12px; font-weight: 650; }
+
+    .svg-geneName { fill: rgba(180,220,255,0.92); font-size: 11px; font-weight: 650; }
+    html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
+    @media (prefers-color-scheme: light) {
+      html[data-theme="auto"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
+    }
+    @media (prefers-color-scheme: dark) {
+      html[data-theme="auto"] .svg-geneName { fill: rgba(180,220,255,0.92); }
+    }
+
+    .svg-trackHint { fill: var(--muted2); font-size: 11px; }
+
+    /* Track controls */
+    .track-controls {
+      position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 12px;
+      background: rgba(127,127,127,0.03);
+      border-bottom: 1px solid var(--border2);
+      z-index: 10;
+      cursor: move;
+    }
+    .main.vertical .track-controls {
+      top: auto;
+    }
+    .track-controls:hover { background: rgba(127,127,127,0.06); }
+
+    .track-collapse-btn {
+      width: 18px;
+      height: 18px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      padding: 0;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .track-collapse-btn:hover { background: var(--panel2); color: var(--text); }
+    .track-collapse-btn:active { transform: scale(0.95); }
+
+    .track-label {
+      flex: 1;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      user-select: none;
+      pointer-events: none;
+    }
+
+    /* Vertical mode: track controls at bottom, vertically oriented */
+    .main.vertical .track-control-container {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      align-items: flex-start;
+    }
+    .main.vertical .track-controls {
+      width: 24px;
+      height: 100%;
+      flex-direction: column;
+      padding: 0;
+      border-bottom: none;
+      border-right: 1px solid var(--border2);
+      position: relative;
+      left: 0;
+      right: auto;
+      transform: none;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-bottom: 0;
+    }
+    .main.vertical .track-label {
+      order: 1;
+      white-space: nowrap;
+      writing-mode: horizontal-tb;
+      margin: 0;
+      position: absolute;
+      bottom: 0;
+      left: 50%;
+      transform-origin: left center;
+      flex-shrink: 0;
+      /* Default transform to prevent flash of unstyled content */
+      transform: rotate(-90deg) translateX(12px) translateY(0.0px);
+    }
+    .main.vertical .track-collapse-btn {
+      align-self: center;
+      order: 2;
+      margin-top: 0;
+      margin-bottom: 0;
+    }
+
+    .track-resize-handle {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 6px;
+      cursor: ns-resize;
+      z-index: 15;
+      background: transparent;
+      pointer-events: auto;
+    }
+    .track-resize-handle:hover {
+      background: var(--accent);
+      opacity: 0.3;
+    }
+    .track-resize-handle:active {
+      background: var(--accent);
+      opacity: 0.6;
+    }
+    .main.vertical .track-resize-handle {
+      left: auto;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 6px;
+      height: 100%;
+      cursor: ew-resize;
+    }
+
+    .track-content {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 24px;
+      bottom: 0;
+      overflow: hidden;
+    }
+
+    .track-control-container {
+      pointer-events: none;
+    }
+    .track-control-container .track-controls,
+    .track-control-container .track-resize-handle {
+      pointer-events: auto;
+    }
+
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <div class="sidebar" id="sidebar">
+      <div class="sidebarHeader">
+        <h3>Participant groups</h3>
+      </div>
+
+      <div class="group"><span>AFR</span><span class="pill">2634</span></div>
+      <div class="group"><span>AMR</span><span class="pill">603</span></div>
+      <div class="group"><span>EAS</span><span class="pill">1095</span></div>
+      <div class="group"><span>EUR</span><span class="pill">5340</span></div>
+      <div class="group"><span>SAS</span><span class="pill">328</span></div>
+
+      <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
+
+      <div class="menu" id="ctxMenu" role="menu" aria-hidden="true">
+        <div class="menuTitle">Display</div>
+        <div class="menuItem" id="themeItem" role="menuitem">
+          <span>Theme</span>
+          <span class="menuRight" id="themeLabel">Auto</span>
+        </div>
+
+        <div class="menuItem" id="orientationItem" role="menuitem">
+          <span>Orientation</span>
+          <span class="menuRight" id="orientationLabel">Horizontal</span>
+        </div>
+
+        <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
+          <span>Variant Layout</span>
+          <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
+        </div>
+
+        <div class="menuTitle">Grouping</div>
+        <div class="menuItem" role="menuitem">
+          <span>Variable</span>
+          <span class="menuRight">Super-pop</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="main" id="main">
+      <div class="tracks" id="tracksContainer">
+        <svg id="tracksSvg" width="100%" height="100%"></svg>
+        <div id="trackControls"></div>
+      </div>
+
+      <div class="flow" id="flow">
+        <canvas class="canvas" id="flowCanvas"></canvas>
+        <svg class="overlay" id="flowOverlay"></svg>
+      </div>
+
+      <div class="reads" id="reads">
+        <canvas class="canvas" id="readsCanvas"></canvas>
+        <svg class="overlay" id="readsOverlay"></svg>
+      </div>
+
+      <div class="hud" id="hud"></div>
+    </div>
+  </div>
+
+<script type="module">
+  // -----------------------------
+  // Genomeshader bootstrap
+  // -----------------------------
+  // Store lazy loading status to display in HUD
+  window._genomeshaderLazyStatus = null;
+  
+  function showError(message) {
+    window._genomeshaderLazyStatus = { type: 'error', message };
+    updateHUDWithStatus();
+    console.error(message);
+  }
+  
+  function showInfo(message) {
+    window._genomeshaderLazyStatus = { type: 'info', message };
+    updateHUDWithStatus();
+    console.log(message);
+  }
+  
+  function updateHUDWithStatus() {
+    const hudEl = document.getElementById('hud');
+    if (!hudEl || !window._genomeshaderLazyStatus) return;
+    
+    const status = window._genomeshaderLazyStatus;
+    const statusColor = status.type === 'error' ? 'var(--accent)' : 'var(--text)';
+    const statusBorder = status.type === 'error' ? 'var(--accent)' : 'var(--border)';
+    
+    // Get current locus text if state is available
+    // Note: state is defined later in the script, so we'll update HUD with locus later
+    // For now, just show the status message
+    hudEl.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span>`;
+  }
+  
+  // True lazy loading via postMessage
+  const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
+  
+  if (!manifestUrl) {
+    showError('Missing GENOMESHADER_MANIFEST_URL');
+  } else {
+    console.log('Manifest URL:', manifestUrl);
+    
+    // Request manifest via postMessage to opener (Jupyter notebook window)
+    // The opener can fetch from localhost, avoiding CORS issues
+    let requestId = 0;
+    const pendingRequests = new Map();
+    
+    function requestData(url) {
+      return new Promise((resolve, reject) => {
+        const id = `req_${Date.now()}_${++requestId}`;
+        pendingRequests.set(id, { resolve, reject });
+        
+        if (!window.opener) {
+          reject(new Error('No window.opener - cannot request data'));
+          return;
+        }
+        
+        // Send request to opener
+        window.opener.postMessage({
+          type: 'genomeshader_fetch',
+          requestId: id,
+          url: url
+        }, '*');
+        
+        // Set timeout
+        setTimeout(() => {
+          if (pendingRequests.has(id)) {
+            pendingRequests.delete(id);
+            reject(new Error('Request timeout'));
+          }
+        }, 30000); // 30 second timeout
+      });
+    }
+    
+    // Listen for responses from opener
+    window.addEventListener('message', function(event) {
+      // Only accept messages from opener
+      if (event.source !== window.opener) {
+        return;
+      }
+      
+      const data = event.data;
+      if (data && data.type === 'genomeshader_fetch_response') {
+        const request = pendingRequests.get(data.requestId);
+        if (request) {
+          pendingRequests.delete(data.requestId);
+          if (data.success) {
+            request.resolve(data.data);
+          } else {
+            request.reject(new Error(data.error || 'Fetch failed'));
+          }
+        }
+      }
+    });
+    
+    // Request manifest
+    requestData(manifestUrl)
+      .then(manifest => {
+        console.log('Loaded manifest via postMessage:', manifest);
+        
+        // Compute track URL
+        const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/') + 1);
+        const trackUrl = baseUrl + manifest.tracks.demo.url;
+        console.log('Track URL:', trackUrl);
+        
+        // Request track file
+        return requestData(trackUrl)
+          .then(trackData => {
+            console.log('Loaded track data via postMessage:', trackData);
+            const recordCount = Array.isArray(trackData) ? trackData.length : 0;
+            showInfo(`Run ID: ${manifest.run_id}<br>Loaded ${recordCount} records`);
+          })
+          .catch(error => {
+            console.error('Track fetch error:', error);
+            showError(`Failed to load track: ${error.message}`);
+          });
+      })
+      .catch(error => {
+        console.error('Manifest fetch error:', error);
+        showError(`Failed to load manifest: ${error.message}`);
+      });
+  }
+
+  // -----------------------------
+  // Jupyter Comms Test - REMOVED
+  // This test code has been removed as it was showing unwanted dialogs
+  // -----------------------------
+
+  // -----------------------------
+  // Theme + menu
+  // -----------------------------
+  const app = document.querySelector(".app");
+  const sidebar = document.getElementById("sidebar");
+  const menuBtn = document.getElementById("menuBtn");
+  const ctxMenu = document.getElementById("ctxMenu");
+  const themeItem = document.getElementById("themeItem");
+  const themeLabel = document.getElementById("themeLabel");
+  const orientationItem = document.getElementById("orientationItem");
+  const orientationLabel = document.getElementById("orientationLabel");
+
+  // Sidebar collapse/expand
+  function getSidebarCollapsed() {
+    return localStorage.getItem("genomeshader.sidebarCollapsed") === "true";
+  }
+  function setSidebarCollapsed(collapsed) {
+    localStorage.setItem("genomeshader.sidebarCollapsed", String(collapsed));
+    updateSidebarState();
+  }
+  function updateSidebarState() {
+    const collapsed = getSidebarCollapsed();
+    if (collapsed) {
+      app.classList.add("sidebar-collapsed");
+    } else {
+      app.classList.remove("sidebar-collapsed");
+    }
+  }
+  
+  // Make sidebar border clickable
+  sidebar.addEventListener("click", (e) => {
+    const collapsed = getSidebarCollapsed();
+    const rect = sidebar.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    
+    // Check if click is within 12px of the right edge (or anywhere if collapsed)
+    if (collapsed) {
+      // When collapsed, the entire 12px strip is clickable
+      setSidebarCollapsed(false);
+    } else if (clickX >= rect.width - 12) {
+      // When open, only the right 12px edge is clickable
+      setSidebarCollapsed(true);
+    }
+  });
+  
+  updateSidebarState();
+
+  function getStoredTheme() {
+    return localStorage.getItem("genomeshader.theme"); // "dark" | "light" | "auto" | null
+  }
+  function setTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("genomeshader.theme", theme);
+    updateThemeLabel();
+  }
+  function updateThemeLabel() {
+    const t = document.documentElement.getAttribute("data-theme") || "auto";
+    themeLabel.textContent = t === "auto" ? "Auto" : (t === "light" ? "Light" : "Dark");
+  }
+  function getStoredOrientation() {
+    return localStorage.getItem("genomeshader.orientation"); // "horizontal" | "vertical" | null
+  }
+  function setOrientation(o) {
+    localStorage.setItem("genomeshader.orientation", o);
+    updateOrientationState();
+  }
+  function updateOrientationState() {
+    const o = getStoredOrientation() ?? "horizontal";
+    // Apply on the main pane so CSS can target all track contents
+    main.classList.toggle("vertical", o === "vertical");
+    orientationLabel.textContent = (o === "vertical") ? "Vertical" : "Horizontal";
+  }
+  function isVerticalMode() {
+    return (getStoredOrientation() ?? "horizontal") === "vertical";
+  }
+  function getStoredVariantLayoutMode() {
+    return localStorage.getItem("genomeshader.variantLayoutMode"); // "equidistant" | "genomic" | null
+  }
+  function setVariantLayoutMode(mode) {
+    localStorage.setItem("genomeshader.variantLayoutMode", mode);
+    state.variantLayoutMode = mode;
+    updateVariantLayoutModeLabel();
+  }
+  function updateVariantLayoutModeLabel() {
+    const mode = state.variantLayoutMode || "equidistant";
+    const labelEl = document.getElementById("variantLayoutModeLabel");
+    if (labelEl) {
+      labelEl.textContent = mode === "equidistant" ? "Equidistant" : "Genomic";
+    }
+  }
+  function getVariantLayoutMode() {
+    return state.variantLayoutMode || "equidistant";
+  }
+
+  const stored = getStoredTheme();
+  document.documentElement.setAttribute("data-theme", stored ?? "auto");
+  updateThemeLabel();
+
+  function openMenu() {
+    // Anchor menu above the gear in the sidebar (now bottom-left)
+    const r = menuBtn.getBoundingClientRect();
+    const s = sidebar.getBoundingClientRect();
+    const left = Math.max(8, r.left - s.left);
+    const top  = Math.max(8, r.top  - s.top  - 160);
+    ctxMenu.style.left = `${left}px`;
+    ctxMenu.style.top  = `${top}px`;
+    ctxMenu.classList.add("open");
+    ctxMenu.setAttribute("aria-hidden", "false");
+    // Update variant layout mode label when menu opens
+    updateVariantLayoutModeLabel();
+  }
+  function closeMenu() {
+    ctxMenu.classList.remove("open");
+    ctxMenu.setAttribute("aria-hidden", "true");
+  }
+  function toggleMenu() {
+    ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
+  }
+
+  menuBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
+  document.addEventListener("click", () => closeMenu());
+  ctxMenu.addEventListener("click", (e) => e.stopPropagation());
+
+  themeItem.addEventListener("click", () => {
+    const cur = document.documentElement.getAttribute("data-theme") || "auto";
+    const next = cur === "dark" ? "light" : (cur === "light" ? "auto" : "dark");
+    setTheme(next);
+    renderAll();
+  });
+
+  orientationItem.addEventListener("click", () => {
+    const cur = getStoredOrientation() ?? "horizontal";
+    const next = (cur === "horizontal") ? "vertical" : "horizontal";
+    setOrientation(next);
+    renderAll();
+  });
+
+  // Variant layout mode toggle in settings menu
+  const variantLayoutModeItem = document.getElementById("variantLayoutModeItem");
+  
+  variantLayoutModeItem.addEventListener("click", () => {
+    const cur = getVariantLayoutMode();
+    const next = (cur === "equidistant") ? "genomic" : "equidistant";
+    setVariantLayoutMode(next);
+    renderAll();
+  });
+
+  const mq = window.matchMedia?.("(prefers-color-scheme: light)");
+  mq?.addEventListener?.("change", () => {
+    if ((document.documentElement.getAttribute("data-theme") || "auto") === "auto") {
+      updateThemeLabel();
+      renderAll();
+    }
+  });
+
+  // -----------------------------
+  // ViewState
+  // -----------------------------
+  const state = {
+    contig: "chr1",
+    startBp: 100_000,
+    endBp:   100_900,
+    pxPerBp: 1,
+
+    firstVariantIndex: 0,
+    K: 8,
+    hoveredVariantIndex: null, // index of hovered variant, or null
+    expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
+
+    // interaction
+    dragging: false,
+    lastX: 0,
+    lastY: 0,
+
+    // touch pinch
+    pointers: new Map(),     // pointerId -> {x,y}
+    pinchStartDist: null,
+    pinchStartSpan: null,
+    pinchAnchorBp: null,
+
+    // track management
+    tracks: [
+      { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
+      { id: "genes", label: "Genes", collapsed: false, height: 110, minHeight: 30 },
+      { id: "repeats", label: "RepeatMasker", collapsed: false, height: 50, minHeight: 30 },
+      { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
+      { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
+      { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 300, minHeight: 100 },
+      { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
+    ],
+    trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
+    trackResizeState: null, // { trackId, startX, startY, startHeight }
+    
+    // variant layout mode: "equidistant" or "genomic"
+    variantLayoutMode: null // will be initialized from localStorage
+  };
+
+  // Initialize variant layout mode
+  const storedVariantMode = getStoredVariantLayoutMode();
+  state.variantLayoutMode = storedVariantMode ?? "equidistant";
+  // Initialize label after DOM is ready
+  setTimeout(() => updateVariantLayoutModeLabel(), 0);
+
+  // Initialize state from GENOMESHADER_CONFIG if available
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
+    const region = window.GENOMESHADER_CONFIG.region;
+    // Parse region string format: "chr1:100000-200000"
+    const match = region.match(/^([^:]+):(\d+)-(\d+)$/);
+    if (match) {
+      state.contig = match[1];
+      state.startBp = parseInt(match[2], 10);
+      state.endBp = parseInt(match[3], 10);
+    }
+  }
+
+  const main = document.getElementById("main");
+  const tracksSvg = document.getElementById("tracksSvg");
+  const flow = document.getElementById("flow");
+  const reads = document.getElementById("reads");
+  const flowCanvas = document.getElementById("flowCanvas");
+  const readsCanvas = document.getElementById("readsCanvas");
+  const hud = document.getElementById("hud");
+
+  // Initialize orientation state after DOM elements are available
+  updateOrientationState();
+
+  function rectW(el) { return el.getBoundingClientRect().width; }
+  function rectH(el) { return el.getBoundingClientRect().height; }
+
+  function tracksWidthPx() { return tracksSvg.getBoundingClientRect().width; }
+  function flowWidthPx()   { return rectW(flow); }
+  function flowHeightPx()  { return rectH(flow); }
+  function readsWidthPx()  { return rectW(reads); }
+  function readsHeightPx() { return rectH(reads); }
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function updateDerived() {
+    const span = state.endBp - state.startBp;
+    if (isVerticalMode()) {
+      const h = tracksHeightPx();
+      state.pxPerBp = h / span;
+    } else {
+      const w = tracksWidthPx();
+      state.pxPerBp = w / span;
+    }
+  }
+
+  // Calculate total insertion gap width for expanded insertions (in pixels)
+  function getTotalInsertionGapWidth() {
+    let totalGap = 0;
+    for (const variant of variants) {
+      if (state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
+        const maxInsertLen = getMaxInsertionLength(variant);
+        // Each inserted base gets 8px width
+        totalGap += maxInsertLen * 8;
+      }
+    }
+    return totalGap;
+  }
+  
+  // IMPORTANT: canonical genome-x mapping for the right pane (tracks/canvases)
+  // Accounts for expanded insertion gaps
+  function xGenomeCanonical(bp, W) {
+    const leftPad = 16, rightPad = 16;
+    const innerW = W - leftPad - rightPad;
+    const span = state.endBp - state.startBp;
+    const totalGapPx = getTotalInsertionGapWidth();
+    const totalGapBp = totalGapPx / state.pxPerBp;
+    const effectiveSpan = span + totalGapBp;
+    
+    // Calculate x position, accounting for insertion gaps before this position
+    let accumulatedGapPx = 0;
+    for (const variant of variants) {
+      if (variant.pos < bp && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
+        const maxInsertLen = getMaxInsertionLength(variant);
+        accumulatedGapPx += maxInsertLen * 8;
+      }
+    }
+    
+    const bpOffset = bp - state.startBp;
+    const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+    
+    return leftPad + normalizedPos * innerW;
+  }
+  
+  function xGenome(bp) {
+    return xGenomeCanonical(bp, tracksWidthPx());
+  }
+  
+  function bpFromXGenome(xPx, W) {
+    const leftPad = 16, rightPad = 16;
+    const innerW = W - leftPad - rightPad;
+    const span = state.endBp - state.startBp;
+    const totalGapPx = getTotalInsertionGapWidth();
+    const totalGapBp = totalGapPx / state.pxPerBp;
+    const effectiveSpan = span + totalGapBp;
+    const t = (xPx - leftPad) / innerW;
+    
+    // Reverse calculation accounting for gaps - iterative refinement
+    let bpEstimate = state.startBp + t * effectiveSpan;
+    for (let iter = 0; iter < 5; iter++) {
+      let accumulatedGapPx = 0;
+      for (const variant of variants) {
+        if (variant.pos < bpEstimate && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
+          const maxInsertLen = getMaxInsertionLength(variant);
+          accumulatedGapPx += maxInsertLen * 8;
+        }
+      }
+      const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+      bpEstimate = state.startBp + (t * effectiveSpan) - accumulatedGapBp;
+    }
+    
+    return bpEstimate;
+  }
+
+  // Vertical mode coordinate mapping (genomic axis vertical: bottom=start, top=end)
+  function yGenomeCanonical(bp, H) {
+    const topPad = 16, bottomPad = 16;
+    const innerH = H - topPad - bottomPad;
+    const span = state.endBp - state.startBp;
+    const totalGapPx = getTotalInsertionGapWidth();
+    const totalGapBp = totalGapPx / state.pxPerBp;
+    const effectiveSpan = span + totalGapBp;
+    
+    // Calculate y position, accounting for insertion gaps before this position
+    let accumulatedGapPx = 0;
+    for (const variant of variants) {
+      if (variant.pos < bp && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
+        const maxInsertLen = getMaxInsertionLength(variant);
+        accumulatedGapPx += maxInsertLen * 8;
+      }
+    }
+    
+    const bpOffset = bp - state.startBp;
+    const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+    
+    // Invert: bottom (H - bottomPad) = start, top (topPad) = end
+    return H - bottomPad - normalizedPos * innerH;
+  }
+  
+  function yGenome(bp) {
+    return yGenomeCanonical(bp, tracksHeightPx());
+  }
+  
+  function tracksHeightPx() {
+    return tracksSvg.getBoundingClientRect().height;
+  }
+  
+  function bpFromYGenome(yPx, H) {
+    const topPad = 16, bottomPad = 16;
+    const innerH = H - topPad - bottomPad;
+    const span = state.endBp - state.startBp;
+    const totalGapPx = getTotalInsertionGapWidth();
+    const totalGapBp = totalGapPx / state.pxPerBp;
+    const effectiveSpan = span + totalGapBp;
+    
+    // Invert: yPx is from top, but we want position from bottom
+    const normalizedPos = (H - bottomPad - yPx) / innerH;
+    const t = Math.max(0, Math.min(1, normalizedPos));
+    
+    // Reverse calculation accounting for gaps - iterative refinement
+    let bpEstimate = state.startBp + t * effectiveSpan;
+    for (let iter = 0; iter < 5; iter++) {
+      let accumulatedGapPx = 0;
+      for (const variant of variants) {
+        if (variant.pos < bpEstimate && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
+          const maxInsertLen = getMaxInsertionLength(variant);
+          accumulatedGapPx += maxInsertLen * 8;
+        }
+      }
+      const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+      bpEstimate = state.startBp + (t * effectiveSpan) - accumulatedGapBp;
+    }
+    
+    return bpEstimate;
+  }
+
+  function xColumn(i, totalColumns) {
+    const W = flowWidthPx();
+    const margin = 60;
+    const innerW = Math.max(10, W - 2*margin);
+    const numCols = totalColumns !== undefined ? totalColumns : state.K;
+    if (numCols <= 1) return margin;
+    return margin + (i / (numCols - 1)) * innerW;
+  }
+  function yColumn(i, totalColumns) {
+    const H = flowHeightPx();
+    const margin = 60;
+    const innerH = Math.max(10, H - 2*margin);
+    const numCols = totalColumns !== undefined ? totalColumns : state.K;
+    if (numCols <= 1) return margin;
+    // Invert: index 0 (earliest variant) should be at bottom (higher Y), 
+    // last index (latest variant) should be at top (lower Y)
+    return margin + innerH - (i / (numCols - 1)) * innerH;
+  }
+
+  // -----------------------------
+  // Demo data
+  // -----------------------------
+  const variants = [
+    { id: "v1", pos: 100_120, alleles: ["ref","a1"], refAllele: "A", altAlleles: ["A" + "ATCGATCGATCGATCGATCGATCGATCGAT"] }, // insertion example (30 bp inserted: ATCGATCGATCGATCGATCGATCGATCGAT)
+    { id: "v2", pos: 100_240, alleles: ["ref","a1"] },
+    { id: "v3", pos: 100_410, alleles: ["ref","a1","a2"] },
+    { id: "v4", pos: 100_610, alleles: ["ref","a1"] },
+    { id: "v5", pos: 100_720, alleles: ["ref","a1"] },
+    { id: "v6", pos: 100_780, alleles: ["ref","a1"] },
+    { id: "v7", pos: 100_860, alleles: ["ref","a1"] },
+    { id: "v8", pos: 100_895, alleles: ["ref","a1"] },
+    { id: "v9", pos: 100_930, alleles: ["ref","a1"] },
+  ];
+  
+  // Helper to check if variant is an insertion
+  function isInsertion(variant) {
+    if (!variant.refAllele || !variant.altAlleles) return false;
+    const refLen = variant.refAllele.length;
+    return variant.altAlleles.some(alt => alt.length > refLen);
+  }
+  
+  // Get the longest insertion allele length for a variant
+  function getMaxInsertionLength(variant) {
+    if (!variant.refAllele || !variant.altAlleles) return 0;
+    const refLen = variant.refAllele.length;
+    return Math.max(...variant.altAlleles.map(alt => Math.max(0, alt.length - refLen)));
+  }
+
+  // Genes: now with strand + exons
+  const transcripts = [
+    {
+      name: "C2", lane: 0, strand: "+",
+      start: 100_030, end: 100_115,
+      exons: [[100_030,100_052],[100_060,100_072],[100_090,100_115]],
+    },
+    {
+      name: "CFB", lane: 1, strand: "-",
+      start: 100_070, end: 100_230,
+      exons: [[100_070,100_095],[100_110,100_135],[100_170,100_230]],
+    },
+    {
+      name: "NELFE", lane: 2, strand: "+",
+      start: 100_260, end: 100_520,
+      exons: [[100_260,100_290],[100_305,100_332],[100_410,100_520]],
+    },
+    {
+      name: "SKIV2L", lane: 0, strand: "+",
+      start: 100_535, end: 100_820,
+      exons: [[100_535,100_570],[100_610,100_640],[100_700,100_820]],
+    },
+    {
+      name: "STK19", lane: 1, strand: "-",
+      start: 100_610, end: 100_720,
+      exons: [[100_610,100_640],[100_690,100_720]],
+    },
+    {
+      name: "ABHD16A", lane: 2, strand: "+",
+      start: 100_700, end: 100_875,
+      exons: [[100_700,100_730],[100_760,100_790],[100_840,100_875]],
+    },
+  ];
+
+  // RepeatMasker-like intervals (placeholder)
+  const repeats = [
+    { start: 100_045, end: 100_062, cls: "SINE" },
+    { start: 100_155, end: 100_190, cls: "LINE" },
+    { start: 100_265, end: 100_275, cls: "Simple" },
+    { start: 100_360, end: 100_388, cls: "LTR" },
+    { start: 100_615, end: 100_645, cls: "DNA" },
+    { start: 100_815, end: 100_845, cls: "SINE" },
+  ];
+
+  // -----------------------------
+  // SVG helpers
+  // -----------------------------
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function clearSvg(svg) { while (svg.firstChild) svg.removeChild(svg.firstChild); }
+  function el(tag, attrs = {}, text = null) {
+    const n = document.createElementNS(SVGNS, tag);
+    for (const [k,v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    if (text !== null) n.textContent = text;
+    return n;
+  }
+
+  // -----------------------------
+  // "Nice" tick selection for ruler
+  // -----------------------------
+  function trimZeros(s) {
+    return s.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+  }
+  function formatBp(bp, spanBp = null) {
+    // Determine precision based on span if provided
+    let kbPrecision = 1;
+    
+    if (spanBp !== null) {
+      if (spanBp < 100) {
+        // Very zoomed in - show full base pair position with commas
+        return `${Math.round(bp).toLocaleString()} bp`;
+      } else if (spanBp < 1_000) {
+        // Zoomed in - show more decimal places for kb
+        kbPrecision = 2;
+      } else if (spanBp < 10_000) {
+        // Moderately zoomed - show 2 decimal places
+        kbPrecision = 2;
+      } else {
+        // Normal zoom - show 1 decimal place
+        kbPrecision = 1;
+      }
+    }
+    
+    if (bp >= 1_000_000) return `${trimZeros((bp / 1_000_000).toFixed(2))} Mb`;
+    if (bp >= 1_000)     return `${trimZeros((bp / 1_000).toFixed(kbPrecision))} kb`;
+    return `${bp} bp`;
+  }
+  function chooseNiceTickBp(spanBp, desiredTicks) {
+    const target = spanBp / desiredTicks;
+    const pow = Math.pow(10, Math.floor(Math.log10(target)));
+    const candidates = [1,2,5,10].map(m => m*pow);
+    let best = candidates[0], bestDiff = Infinity;
+    for (const c of candidates) {
+      const diff = Math.abs((spanBp / c) - desiredTicks);
+      if (diff < bestDiff) { bestDiff = diff; best = c; }
+    }
+    return best;
+  }
+
+  // -----------------------------
+  // Track layout calculation
+  // -----------------------------
+  function getTrackLayout() {
+    const layout = [];
+    const headerH = 24;
+    const padding = 8;
+    const isVertical = isVerticalMode();
+
+    if (isVertical) {
+      // Vertical mode: tracks side-by-side (left/width based)
+      let currentX = 0;
+      const mainHeight = rectH(main);
+      
+      for (const track of state.tracks) {
+        const effectiveWidth = track.collapsed ? headerH : (headerH + track.height);
+        layout.push({
+          track,
+          left: currentX,
+          width: effectiveWidth,
+          contentLeft: currentX + headerH,
+          contentWidth: track.collapsed ? 0 : track.height,
+          // Also include top/height for compatibility
+          top: 0,
+          height: mainHeight,
+          contentTop: 0,
+          contentHeight: mainHeight
+        });
+        currentX += effectiveWidth; // no gap between tracks
+      }
+    } else {
+      // Horizontal mode: tracks stacked vertically (top/height based)
+      let currentY = 0;
+      
+      for (const track of state.tracks) {
+        const effectiveHeight = track.collapsed ? headerH : (headerH + track.height);
+        layout.push({
+          track,
+          top: currentY,
+          height: effectiveHeight,
+          contentTop: currentY + headerH,
+          contentHeight: track.collapsed ? 0 : track.height,
+          // Also include left/width for compatibility
+          left: 0,
+          width: rectW(main),
+          contentLeft: 0,
+          contentWidth: rectW(main)
+        });
+        currentY += effectiveHeight; // no gap between tracks
+      }
+    }
+
+    return layout;
+  }
+
+  function updateTracksHeight() {
+    const layout = getTrackLayout();
+    const isVertical = isVerticalMode();
+    // Exclude flow and reads from tracks height/width since they're positioned separately
+    const tracksLayout = layout.filter(l => l.track.id !== "flow" && l.track.id !== "reads");
+    if (isVertical) {
+      const totalW = tracksLayout.length > 0 
+        ? tracksLayout[tracksLayout.length - 1].left + tracksLayout[tracksLayout.length - 1].width
+        : 0;
+      // In vertical mode, tracks are side-by-side, so we don't need to set --tracks-h
+      // But we might want to set a width variable if needed
+    } else {
+      const totalH = tracksLayout.length > 0 
+        ? tracksLayout[tracksLayout.length - 1].top + tracksLayout[tracksLayout.length - 1].height
+        : 0;
+      document.documentElement.style.setProperty('--tracks-h', `${totalH}px`);
+    }
+  }
+
+  // -----------------------------
+  // Tracks rendering (ideogram + genes + repeats + ruler)
+  // -----------------------------
+  function renderTracks() {
+    clearSvg(tracksSvg);
+    const isVertical = isVerticalMode();
+    const W = isVertical ? tracksHeightPx() : tracksWidthPx();
+    const H = isVertical ? tracksWidthPx() : tracksHeightPx();
+    const layout = getTrackLayout();
+    
+    // Coordinate mapping functions based on orientation
+    const genomePos = isVertical ? yGenome.bind(null) : xGenome.bind(null);
+    const genomePosCanonical = isVertical 
+      ? (bp) => yGenomeCanonical(bp, H)
+      : (bp) => xGenomeCanonical(bp, W);
+
+    // Find track positions
+    const ideogramLayout = layout.find(l => l.track.id === "ideogram");
+    const genesLayout = layout.find(l => l.track.id === "genes");
+    const repeatsLayout = layout.find(l => l.track.id === "repeats");
+    const rulerLayout = layout.find(l => l.track.id === "ruler");
+    const referenceLayout = layout.find(l => l.track.id === "reference");
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    const readsLayout = layout.find(l => l.track.id === "reads");
+
+    if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout || !readsLayout) return;
+
+    // Ideogram layout
+    if (!ideogramLayout.track.collapsed) {
+      let ideogramX, ideogramY, ideogramW, ideogramH;
+      if (isVertical) {
+        ideogramX = ideogramLayout.contentLeft + 12;
+        ideogramW = 16;
+        // Leave space at bottom for chromosome label, start ideogram higher
+        ideogramY = 16;
+        // In vertical mode, ideogram spans the genomic axis (W dimension, which is SVG height)
+        // Leave space at bottom (about 40px) for the chromosome label
+        ideogramH = W - 32 - 40;
+      } else {
+        ideogramY = ideogramLayout.contentTop + 12;
+        ideogramH = 16;
+        ideogramX = 16;
+        ideogramW = W - 32;
+      }
+
+      // --- Chromosome label
+      if (isVertical) {
+        // Position chromosome label at the bottom
+        const labelY = W - 16;
+        tracksSvg.appendChild(el("text", {
+          x: ideogramX + ideogramW/2 + 1,
+          y: labelY,
+          class: "svg-chr",
+          "text-anchor": "middle",
+          "dominant-baseline": "middle",
+          transform: "rotate(-90 " + (ideogramX + ideogramW/2) + " " + labelY + ")"
+        }, state.contig));
+      } else {
+        tracksSvg.appendChild(el("text", {
+          x: 16,
+          y: ideogramY + ideogramH/2 + 1,
+          class: "svg-chr",
+          "dominant-baseline": "middle"
+        }, state.contig));
+      }
+
+      // --- Ideogram (p/q arm rounded rects + cytobands clipped inside)
+      const bandX = isVertical ? ideogramX : 70;
+      const bandY = isVertical ? ideogramY : ideogramY;
+      const bandW = isVertical ? ideogramW : (W - bandX - 16);
+      // In vertical mode, bandH should use the full available height
+      const bandH = isVertical ? ideogramH : ideogramH;
+
+      // Chromosome lengths for mapping cytoband positions
+      const chrLengths = {
+        "chr1": 248_956_422,
+        "chr2": 242_193_529,
+        "chr3": 198_295_559,
+        "chr4": 190_214_555,
+        "chr5": 181_538_259,
+        "chr6": 170_805_979,
+        "chr7": 159_345_973,
+        "chr8": 145_138_636,
+        "chr9": 138_394_717,
+        "chr10": 133_797_422,
+        "chr11": 135_086_622,
+        "chr12": 133_275_309,
+        "chr13": 114_364_328,
+        "chr14": 107_043_718,
+        "chr15": 101_991_189,
+        "chr16": 90_338_345,
+        "chr17": 83_257_441,
+        "chr18": 80_373_285,
+        "chr19": 58_617_616,
+        "chr20": 64_444_167,
+        "chr21": 46_709_983,
+        "chr22": 50_818_468,
+        "chrX": 156_040_895,
+        "chrY": 57_227_415
+      };
+      const chrLength = chrLengths[state.contig] || 248_956_422;
+      
+      // Get ideogram data from config (already parsed from JSON in Python)
+      let ideogramData = [];
+      if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.ideogram_data) {
+        const data = window.GENOMESHADER_CONFIG.ideogram_data;
+        // Data should already be an array, but ensure it is
+        if (Array.isArray(data)) {
+          ideogramData = data;
+        } else {
+          console.warn("Ideogram data is not in expected array format:", data);
+        }
+      }
+      
+      // Find centromere position to determine p/q arm split
+      let centromereStart = null;
+      let centromereEnd = null;
+      for (const band of ideogramData) {
+        if (band.gieStain === "acen") {
+          if (centromereStart === null) {
+            centromereStart = band.chromStart;
+          }
+          centromereEnd = band.chromEnd;
+        }
+      }
+      
+      // Calculate actual p/q arm proportions based on centromere position
+      // If no centromere found, use approximate position (p-arm is typically ~48% of chromosome)
+      const defaultPFrac = 0.48;
+      const centromerePos = centromereStart !== null ? centromereStart : Math.floor(chrLength * defaultPFrac);
+      const pFrac = centromerePos / chrLength;
+      const qFrac = 1 - pFrac;
+
+      let pX, pY, pW, pH, qX, qY, qW, qH;
+      if (isVertical) {
+        // In vertical mode, arms are vertical (p-arm bottom, q-arm top)
+        pH = Math.max(10, Math.floor(bandH * pFrac));
+        qH = Math.max(10, Math.floor(bandH * qFrac));
+        pW = qW = bandW;
+        pX = qX = bandX;
+        pY = bandY + bandH - pH; // p-arm at bottom
+        qY = bandY; // q-arm at top
+      } else {
+        // Horizontal mode: arms are horizontal
+        pW = Math.max(10, Math.floor(bandW * pFrac));
+        qW = Math.max(10, Math.floor(bandW * qFrac));
+        pH = qH = bandH;
+        pX = bandX;
+        qX = bandX + pW;
+        pY = qY = bandY;
+      }
+
+      // defs + clipPath that matches both arms
+      const defs = el("defs");
+      const clipId = "chrClip";
+      const clip = el("clipPath", { id: clipId });
+
+      const armStroke = "rgba(127,127,127,0.22)";
+      const armFill = "rgba(127,127,127,0.12)";
+
+      const pArm = el("rect", { x: pX, y: pY, width: pW, height: pH, rx: 9, fill: armFill, stroke: armStroke });
+      const qArm = el("rect", { x: qX, y: qY, width: qW, height: qH, rx: 9, fill: armFill, stroke: armStroke });
+
+      clip.appendChild(el("rect", { x: pX, y: pY, width: pW, height: pH, rx: 9 }));
+      clip.appendChild(el("rect", { x: qX, y: qY, width: qW, height: qH, rx: 9 }));
+
+      defs.appendChild(clip);
+      tracksSvg.appendChild(defs);
+
+      tracksSvg.appendChild(pArm);
+      tracksSvg.appendChild(qArm);
+      
+      // Calculate p-arm and q-arm lengths in base pairs
+      const pArmLength = centromerePos;
+      const qArmLength = chrLength - centromerePos;
+      
+      const bandInnerX = isVertical ? bandX - 2 : bandX;
+      const bandInnerY = isVertical ? bandY : bandY - 2;
+      const bandInnerW = isVertical ? bandW + 4 : bandW;
+      const bandInnerH = isVertical ? bandH : bandH + 4;
+      
+      // Render each cytoband
+      for (const band of ideogramData) {
+        const bandStart = band.chromStart;
+        const bandEnd = band.chromEnd;
+        const isCentromere = band.gieStain === "acen";
+        const isPArm = bandEnd <= centromerePos;
+        
+        // Determine which arm and calculate position
+        let bandPos, bandSize;
+        if (isPArm) {
+          // p-arm: map from 0 to pArmLength onto p-arm dimensions
+          const pFracStart = bandStart / pArmLength;
+          const pFracEnd = bandEnd / pArmLength;
+          const pFracSize = (bandEnd - bandStart) / pArmLength;
+          
+          if (isVertical) {
+            // p-arm is at bottom, so we go from bottom up
+            bandPos = pY + pH - (pFracEnd * pH);
+            bandSize = pFracSize * pH;
+          } else {
+            // p-arm is on left
+            bandPos = pX + (pFracStart * pW);
+            bandSize = pFracSize * pW;
+          }
+        } else {
+          // q-arm: map from centromerePos to chrLength onto q-arm dimensions
+          const qFracStart = (bandStart - centromerePos) / qArmLength;
+          const qFracEnd = (bandEnd - centromerePos) / qArmLength;
+          const qFracSize = (bandEnd - bandStart) / qArmLength;
+          
+          if (isVertical) {
+            // q-arm is at top
+            bandPos = qY + (qFracStart * qH);
+            bandSize = qFracSize * qH;
+          } else {
+            // q-arm is on right
+            bandPos = qX + (qFracStart * qW);
+            bandSize = qFracSize * qW;
+          }
+        }
+        
+        // Convert color from hex to rgba for better visibility
+        const color = band.color || "#808080";
+        let fillColor, strokeColor, strokeWidth;
+        if (isCentromere) {
+          fillColor = "rgba(255,77,77,0.35)";
+          strokeColor = "none";
+          strokeWidth = 0;
+        } else {
+          // Convert hex to rgba with opacity
+          const r = parseInt(color.slice(1, 3), 16);
+          const g = parseInt(color.slice(3, 5), 16);
+          const b = parseInt(color.slice(5, 7), 16);
+          // Adjust opacity based on color intensity (darker = more opaque)
+          const intensity = (r + g + b) / 3;
+          const opacity = 0.1 + (1 - intensity / 255) * 0.3;
+          fillColor = `rgba(${r},${g},${b},${opacity})`;
+          strokeColor = "none";
+          strokeWidth = 0;
+        }
+        
+        if (isVertical) {
+          tracksSvg.appendChild(el("rect", {
+            x: bandInnerX,
+            y: bandPos,
+            width: bandInnerW,
+            height: Math.max(1, bandSize),
+            fill: fillColor,
+            stroke: strokeColor,
+            "stroke-width": strokeWidth,
+            "clip-path": `url(#${clipId})`
+          }));
+        } else {
+          tracksSvg.appendChild(el("rect", {
+            x: bandPos,
+            y: bandInnerY,
+            width: Math.max(1, bandSize),
+            height: bandInnerH,
+            fill: fillColor,
+            stroke: strokeColor,
+            "stroke-width": strokeWidth,
+            "clip-path": `url(#${clipId})`
+          }));
+        }
+      }
+
+      // Locus highlight - small red rectangle showing current view position
+      const locusCenter = (state.startBp + state.endBp) / 2;
+      const locusFrac = locusCenter / chrLength;
+      
+      // Determine if locus is on p-arm or q-arm
+      const isLocusPArm = locusCenter <= centromerePos;
+      
+      if (isVertical) {
+        let locusY, locusHighlightHeight = 12;
+        if (isLocusPArm) {
+          // p-arm is at bottom
+          const pFrac = locusCenter / pArmLength;
+          locusY = pY + pH - (pFrac * pH);
+        } else {
+          // q-arm is at top
+          const qFrac = (locusCenter - centromerePos) / qArmLength;
+          locusY = qY + (qFrac * qH);
+        }
+        const locusHighlightY = Math.max(
+          isLocusPArm ? pY : qY,
+          Math.min(
+            (isLocusPArm ? pY + pH : qY + qH) - locusHighlightHeight,
+            locusY - locusHighlightHeight / 2
+          )
+        );
+        
+        tracksSvg.appendChild(el("rect", {
+          x: (isLocusPArm ? pX : qX) - 1,
+          y: locusHighlightY,
+          width: (isLocusPArm ? pW : qW) + 2,
+          height: locusHighlightHeight,
+          fill: "rgba(255,77,77,0.25)",
+          stroke: "rgba(255,77,77,0.95)",
+          "stroke-width": 1
+        }));
+      } else {
+        let locusX, locusHighlightWidth = 12;
+        if (isLocusPArm) {
+          // p-arm is on left
+          const pFrac = locusCenter / pArmLength;
+          locusX = pX + (pFrac * pW);
+        } else {
+          // q-arm is on right
+          const qFrac = (locusCenter - centromerePos) / qArmLength;
+          locusX = qX + (qFrac * qW);
+        }
+        const locusHighlightX = Math.max(
+          isLocusPArm ? pX : qX,
+          Math.min(
+            (isLocusPArm ? pX + pW : qX + qW) - locusHighlightWidth,
+            locusX - locusHighlightWidth / 2
+          )
+        );
+        
+        tracksSvg.appendChild(el("rect", {
+          x: locusHighlightX,
+          y: (isLocusPArm ? pY : qY) - 1,
+          width: locusHighlightWidth,
+          height: (isLocusPArm ? pH : qH) + 2,
+          fill: "rgba(255,77,77,0.25)",
+          stroke: "rgba(255,77,77,0.95)",
+          "stroke-width": 1
+        }));
+      }
+    }
+
+    // --- Genes track (exons/introns/strand)
+    if (!genesLayout.track.collapsed) {
+      let geneStartX, geneStartY, laneDim, lanes, genesDim;
+      if (isVertical) {
+        geneStartX = genesLayout.contentLeft + 8;
+        laneDim = 30;
+        lanes = 3;
+        genesDim = lanes * laneDim;
+        geneStartY = 16;
+      } else {
+        geneStartY = genesLayout.contentTop + 8;
+        laneDim = 30;
+        lanes = 3;
+        genesDim = lanes * laneDim;
+        geneStartX = 16;
+      }
+
+      for (let lane=0; lane<lanes; lane++) {
+        if (isVertical) {
+          const x = geneStartX + lane*laneDim + laneDim/2;
+          tracksSvg.appendChild(el("line", {
+            x1: x, x2: x, y1: 16, y2: H-16,
+            stroke: "rgba(127,127,127,0.14)"
+          }));
+        } else {
+          const y = geneStartY + lane*laneDim + laneDim/2;
+          tracksSvg.appendChild(el("line", {
+            x1: 16, x2: W-16, y1: y, y2: y,
+            stroke: "rgba(127,127,127,0.14)"
+          }));
+        }
+      }
+
+      function drawStrandArrows(pos1, pos2, perpPos, strand, isVert) {
+        const dir = strand === "-" ? -1 : 1;
+        const step = 24;
+        const start = Math.min(pos1, pos2), end = Math.max(pos1, pos2);
+        for (let p = start + 10; p < end - 10; p += step) {
+          const size = 5;
+          if (isVert) {
+            const cy = p;
+            const p1 = `${perpPos},${cy}`;
+            const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
+            const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
+            tracksSvg.appendChild(el("polygon", {
+              points: `${p1} ${p2} ${p3}`,
+              fill: "rgba(127,127,127,0.45)"
+            }));
+          } else {
+            const cx = p;
+            const p1 = `${cx},${perpPos}`;
+            const p2 = `${cx - dir*size},${perpPos - size*0.8}`;
+            const p3 = `${cx - dir*size},${perpPos + size*0.8}`;
+            tracksSvg.appendChild(el("polygon", {
+              points: `${p1} ${p2} ${p3}`,
+              fill: "rgba(127,127,127,0.45)"
+            }));
+          }
+        }
+      }
+
+    for (const t of transcripts) {
+      const s = Math.max(t.start, state.startBp);
+      const e = Math.min(t.end,   state.endBp);
+      if (e <= state.startBp || s >= state.endBp) continue;
+
+      let perpPos;
+      if (isVertical) {
+        perpPos = geneStartX + t.lane*laneDim + laneDim/2;
+      } else {
+        perpPos = geneStartY + t.lane*laneDim + laneDim/2;
+      }
+
+      // intron baseline (full transcript span)
+      const pos1 = genomePos(s);
+      const pos2 = genomePos(e);
+      
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: perpPos, x2: perpPos, y1: pos1, y2: pos2,
+          stroke: "rgba(127,127,127,0.40)",
+          "stroke-width": 1
+        }));
+        drawStrandArrows(pos1, pos2, perpPos, t.strand, true);
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: pos1, x2: pos2, y1: perpPos, y2: perpPos,
+          stroke: "rgba(127,127,127,0.40)",
+          "stroke-width": 1
+        }));
+        drawStrandArrows(pos1, pos2, perpPos, t.strand, false);
+      }
+
+      // exons
+      let firstExonY = null; // Track bottom-most exon Y position for gene name alignment in vertical mode
+      let firstExonX = null; // Track first exon X position for gene name alignment in horizontal mode
+      for (const [es0, ee0] of t.exons) {
+        const es = Math.max(es0, state.startBp);
+        const ee = Math.min(ee0, state.endBp);
+        if (ee <= state.startBp || es >= state.endBp) continue;
+        const exPos1 = genomePos(es);
+        const exPos2 = genomePos(ee);
+
+        if (isVertical) {
+          // In vertical mode, exons are horizontal bars
+          // exPos1 and exPos2 are Y coordinates, need to ensure correct ordering
+          const yMin = Math.min(exPos1, exPos2);
+          const yMax = Math.max(exPos1, exPos2);
+          // Track the bottom-most exon's bottom Y position for gene name alignment
+          // (yMax is the bottom of the exon in vertical mode where higher Y = bottom)
+          // We want the highest Y value (bottom-most exon)
+          if (firstExonY === null || yMax > firstExonY) {
+            firstExonY = yMax;
+          }
+          tracksSvg.appendChild(el("rect", {
+            x: perpPos - 6, y: yMin,
+            width: 12, height: Math.max(2, yMax - yMin),
+            rx: 4,
+            fill: "var(--blueFill)",
+            stroke: "var(--blue)",
+            "stroke-width": 1
+          }));
+        } else {
+          // Track the first exon's X position for gene name alignment
+          if (firstExonX === null) {
+            firstExonX = exPos1;
+          }
+          tracksSvg.appendChild(el("rect", {
+            x: exPos1, y: perpPos - 6,
+            width: Math.max(2, exPos2 - exPos1), height: 12,
+            rx: 4,
+            fill: "var(--blueFill)",
+            stroke: "var(--blue)",
+            "stroke-width": 1
+          }));
+        }
+      }
+
+      // gene label near transcript start
+      if (isVertical) {
+        // Gene name to the left of the gene track
+        // Y position should match the bottom of the bottom-most exon
+        const geneNameY = firstExonY !== null ? firstExonY : pos1;
+        tracksSvg.appendChild(el("text", {
+          x: perpPos - 8,
+          y: geneNameY,
+          class:"svg-geneName",
+          "text-anchor": "start",
+          "dominant-baseline": "text-after-edge",
+          transform: "rotate(-90 " + (perpPos - 8) + " " + geneNameY + ")"
+        }, `${t.name}`));
+        // Strand indicator to the right of the gene track (just a bit to the right)
+        tracksSvg.appendChild(el("text", {
+          x: perpPos + 8,
+          y: pos1,
+          class:"svg-small",
+          "text-anchor": "start",
+          "dominant-baseline": "middle"
+        }, t.strand === "+" ? "↑" : "↓"));
+      } else {
+        // In horizontal mode, X position should match the first exon's X position
+        const geneNameX = firstExonX !== null ? firstExonX : pos1;
+        tracksSvg.appendChild(el("text", {
+          x: geneNameX,
+          y: perpPos - 12,
+          class:"svg-geneName"
+        }, `${t.name}`));
+        tracksSvg.appendChild(el("text", {
+          x: pos1 + 2,
+          y: perpPos + 16,
+          class:"svg-small"
+        }, t.strand === "+" ? "→" : "←"));
+      }
+    }
+    }
+
+    // --- RepeatMasker track
+    if (!repeatsLayout.track.collapsed) {
+      let repeatsX, repeatsY, repeatsW, repeatsH;
+      if (isVertical) {
+        repeatsX = repeatsLayout.contentLeft + 8;
+        repeatsW = 22;
+        repeatsY = 16;
+        // In vertical mode, repeatsH should use W (genomic axis dimension), not H
+        repeatsH = W - 32;
+      } else {
+        repeatsY = repeatsLayout.contentTop + 8;
+        repeatsH = 22;
+        repeatsX = 16;
+        repeatsW = W - 32;
+      }
+
+      // background guide line
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: repeatsX + repeatsW/2, x2: repeatsX + repeatsW/2, y1: 16, y2: W-16,
+          stroke: "rgba(127,127,127,0.16)"
+        }));
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: 16, x2: W-16, y1: repeatsY + repeatsH/2, y2: repeatsY + repeatsH/2,
+          stroke: "rgba(127,127,127,0.16)"
+        }));
+      }
+
+    function repeatColor(cls) {
+      // simple palette-ish mapping; kept subtle
+      switch (cls) {
+        case "SINE": return "rgba(255, 206, 86, 0.35)";
+        case "LINE": return "rgba(75, 192, 192, 0.28)";
+        case "LTR":  return "rgba(153, 102, 255, 0.28)";
+        case "DNA":  return "rgba(255, 99, 132, 0.22)";
+        default:     return "rgba(201, 203, 207, 0.22)";
+      }
+    }
+
+    for (const r of repeats) {
+      if (r.end <= state.startBp || r.start >= state.endBp) continue;
+      const rs = Math.max(r.start, state.startBp);
+      const re = Math.min(r.end, state.endBp);
+
+      const pos1 = genomePos(rs);
+      const pos2 = genomePos(re);
+
+      if (isVertical) {
+        // In vertical mode, pos1 and pos2 are Y coordinates
+        // Since coordinate system is inverted (bottom=start, top=end), pos1 > pos2
+        // Need to ensure correct ordering for rect positioning
+        const yMin = Math.min(pos1, pos2);
+        const yMax = Math.max(pos1, pos2);
+        tracksSvg.appendChild(el("rect", {
+          x: repeatsX + 4,
+          y: yMin,
+          width: repeatsW - 8,
+          height: Math.max(2, yMax - yMin),
+          rx: 6,
+          fill: repeatColor(r.cls),
+          stroke: "rgba(127,127,127,0.20)"
+        }));
+      } else {
+        tracksSvg.appendChild(el("rect", {
+          x: pos1,
+          y: repeatsY + 4,
+          width: Math.max(2, pos2 - pos1),
+          height: repeatsH - 8,
+          rx: 6,
+          fill: repeatColor(r.cls),
+          stroke: "rgba(127,127,127,0.20)"
+        }));
+      }
+    }
+    }
+
+    // --- Locus ruler
+    if (!rulerLayout.track.collapsed) {
+      let rulerX, rulerY, rulerW, rulerH, baseX, baseY;
+      if (isVertical) {
+        rulerX = rulerLayout.contentLeft + 8;
+        rulerW = 56;
+        rulerY = 16;
+        rulerH = H - 32;
+        baseX = rulerX + 14;
+      } else {
+        rulerY = rulerLayout.contentTop + 8;
+        rulerH = 56;
+        rulerX = 16;
+        rulerW = W - 32;
+        baseY = rulerY + 14;
+      }
+
+      // Base line
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: baseX, x2: baseX, y1: 16, y2: H-16,
+          stroke: "rgba(127,127,127,0.70)",
+          "stroke-width": 1.2
+        }));
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: 16, x2: W-16, y1: baseY, y2: baseY,
+          stroke: "rgba(127,127,127,0.70)",
+          "stroke-width": 1.2
+        }));
+      }
+
+      const span = state.endBp - state.startBp;
+      const dim = isVertical ? H : W;
+      const desiredMajorTicks = Math.max(5, Math.min(10, Math.floor((dim - 32) / 140)));
+      const majorBp = chooseNiceTickBp(span, desiredMajorTicks);
+      const minorBp = majorBp / 5;
+
+      const pxPerMajor = (dim - 32) / (span / majorBp);
+      const showLabels = pxPerMajor >= 80;
+
+    const firstMinor = Math.ceil(state.startBp / minorBp) * minorBp;
+
+    // Track major tick label positions to avoid overlap with edge labels
+    const majorTickLabelPositions = [];
+
+    for (let bp = firstMinor; bp <= state.endBp; bp += minorBp) {
+      const pos = genomePos(bp);
+      const isMajor = (Math.round(bp / minorBp) % 5) === 0;
+
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: baseX - (isMajor ? 9 : 5), x2: baseX + (isMajor ? 9 : 5),
+          y1: pos, y2: pos,
+          stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
+          "stroke-width": isMajor ? 1.1 : 1
+        }));
+
+        if (isMajor && showLabels) {
+          const textEl = el("text", {
+            x: baseX + 26,
+            y: pos,
+            class: "svg-small",
+            "text-anchor": "start",
+            "dominant-baseline": "middle",
+            transform: "rotate(-90 " + (baseX + 26) + " " + pos + ")"
+          }, formatBp(Math.round(bp), span));
+          tracksSvg.appendChild(textEl);
+          majorTickLabelPositions.push(pos);
+        }
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: pos, x2: pos,
+          y1: baseY - (isMajor ? 9 : 5), y2: baseY + (isMajor ? 9 : 5),
+          stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
+          "stroke-width": isMajor ? 1.1 : 1
+        }));
+
+        if (isMajor && showLabels) {
+          tracksSvg.appendChild(el("text", {
+            x: pos,
+            y: baseY + 26,
+            class: "svg-small",
+            "text-anchor": "middle"
+          }, formatBp(Math.round(bp), span)));
+          majorTickLabelPositions.push(pos);
+        }
+      }
+    }
+
+    // Only show edge labels if no tick label is too close
+    const edgeThreshold = 100; // pixels
+    if (isVertical) {
+      const bottomEdgeY = H - 16;
+      const topEdgeY = 16;
+      const hasNearbyBottomTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - bottomEdgeY) < edgeThreshold);
+      const hasNearbyTopTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - topEdgeY) < edgeThreshold);
+
+      if (!hasNearbyBottomTick) {
+        const textEl = el("text", {
+          x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
+          transform: "rotate(-90 " + (baseX + 26) + " " + bottomEdgeY + ")"
+        }, formatBp(Math.round(state.startBp), span));
+        tracksSvg.appendChild(textEl);
+      }
+      if (!hasNearbyTopTick) {
+        const textEl = el("text", {
+          x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
+          transform: "rotate(-90 " + (baseX + 26) + " " + topEdgeY + ")"
+        }, formatBp(Math.round(state.endBp), span));
+        tracksSvg.appendChild(textEl);
+      }
+    } else {
+      const leftEdgeX = 16;
+      const rightEdgeX = W - 16;
+      const hasNearbyLeftTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - leftEdgeX) < edgeThreshold);
+      const hasNearbyRightTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - rightEdgeX) < edgeThreshold);
+
+      if (!hasNearbyLeftTick) {
+        tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
+          formatBp(Math.round(state.startBp), span)
+        ));
+      }
+      if (!hasNearbyRightTick) {
+        tracksSvg.appendChild(el("text", {
+          x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
+        }, formatBp(Math.round(state.endBp), span)));
+      }
+    }
+
+    // Variant marks
+    for (let idx = 0; idx < variants.length; idx++) {
+      const v = variants[idx];
+      if (v.pos < state.startBp || v.pos > state.endBp) continue;
+      const pos = genomePos(v.pos);
+      const isHovered = state.hoveredVariantIndex === idx;
+      const strokeWidth = isHovered ? 2.5 : 1.2;
+      const circleStrokeWidth = isHovered ? 2.2 : 1.4;
+      const isIns = isInsertion(v);
+
+      let lineEl;
+      if (isVertical) {
+        lineEl = el("line", {
+          x1: baseX - 18, x2: baseX + 18,
+          y1: pos, y2: pos,
+          stroke: "var(--blue)",
+          "stroke-width": strokeWidth,
+          style: "cursor: pointer;"
+        });
+      } else {
+        lineEl = el("line", {
+          x1: pos, x2: pos,
+          y1: baseY - 18, y2: baseY + 18,
+          stroke: "var(--blue)",
+          "stroke-width": strokeWidth,
+          style: "cursor: pointer;"
+        });
+      }
+      lineEl.addEventListener("mouseenter", () => {
+        state.hoveredVariantIndex = idx;
+        renderAll();
+      });
+      lineEl.addEventListener("mouseleave", () => {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      });
+      
+      // For insertions, add pointerdown handler to the line itself
+      if (isInsertion(v)) {
+        lineEl.style.pointerEvents = "auto";
+        lineEl.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (state.expandedInsertions.has(v.id)) {
+            state.expandedInsertions.delete(v.id);
+          } else {
+            state.expandedInsertions.add(v.id);
+          }
+          renderAll();
+        });
+      }
+      tracksSvg.appendChild(lineEl);
+      
+      // For insertions, add a larger invisible clickable area AFTER the line (so it's on top)
+      if (isInsertion(v)) {
+        // Add an invisible wider rectangle for easier clicking
+        let clickArea;
+        if (isVertical) {
+          clickArea = el("rect", {
+            x: baseX - 20,
+            y: pos - 5,
+            width: 40,
+            height: 10,
+            fill: "transparent",
+            style: "cursor: pointer; pointer-events: auto;"
+          });
+        } else {
+          clickArea = el("rect", {
+            x: pos - 5,
+            y: baseY - 20,
+            width: 10,
+            height: 40,
+            fill: "transparent",
+            style: "cursor: pointer; pointer-events: auto;"
+          });
+        }
+        clickArea.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (state.expandedInsertions.has(v.id)) {
+            state.expandedInsertions.delete(v.id);
+          } else {
+            state.expandedInsertions.add(v.id);
+          }
+          renderAll();
+        });
+        tracksSvg.appendChild(clickArea);
+      }
+
+      let circleEl;
+      if (isVertical) {
+        circleEl = el("circle", {
+          cx: baseX - 18, cy: pos, r: 3.4,
+          fill: "none",
+          stroke: "var(--blue)",
+          "stroke-width": circleStrokeWidth,
+          style: "cursor: pointer;"
+        });
+      } else {
+        circleEl = el("circle", {
+          cx: pos, cy: baseY - 18, r: 3.4,
+          fill: "none",
+          stroke: "var(--blue)",
+          "stroke-width": circleStrokeWidth,
+          style: "cursor: pointer;"
+        });
+      }
+      circleEl.addEventListener("mouseenter", () => {
+        state.hoveredVariantIndex = idx;
+        renderAll();
+      });
+      circleEl.addEventListener("mouseleave", () => {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      });
+      // Pointerdown handler to toggle insertion expansion
+      if (isInsertion(v)) {
+        circleEl.style.pointerEvents = "auto";
+        circleEl.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (state.expandedInsertions.has(v.id)) {
+            state.expandedInsertions.delete(v.id);
+          } else {
+            state.expandedInsertions.add(v.id);
+          }
+          renderAll();
+        });
+      }
+      tracksSvg.appendChild(circleEl);
+      
+      // Draw expanded insertion sequence if expanded
+      if (state.expandedInsertions.has(v.id) && isInsertion(v)) {
+        const maxInsertLen = getMaxInsertionLength(v);
+        const gapSize = maxInsertLen * 8;
+        
+        // Draw inserted sequence (use longest alt allele)
+        const longestAlt = v.altAlleles.reduce((a, b) => a.length > b.length ? a : b);
+        const insertedSeq = longestAlt.substring(v.refAllele.length);
+        const baseSize = gapSize / insertedSeq.length;
+        
+        const nucleotideColors = {
+          'A': 'rgba(0, 200, 0, 0.8)',      // green
+          'C': 'rgba(0, 0, 255, 0.8)',      // blue
+          'G': 'rgba(255, 165, 0, 0.8)',    // orange
+          'T': 'rgba(255, 0, 0, 0.8)'       // red
+        };
+        
+        if (isVertical) {
+          const gapStartY = pos;
+          const gapEndY = gapStartY - gapSize; // going up (toward start)
+          
+          // Draw gap background
+          tracksSvg.appendChild(el("rect", {
+            x: baseX - 18,
+            y: gapEndY,
+            width: 36,
+            height: gapSize,
+            fill: "rgba(255,255,255,0.1)",
+            stroke: "rgba(127,127,127,0.3)",
+            "stroke-width": 1,
+            "stroke-dasharray": "2,2"
+          }));
+          
+          for (let i = 0; i < insertedSeq.length; i++) {
+            const base = insertedSeq[i].toUpperCase();
+            const baseY = gapStartY - (i + 1) * baseSize;
+            const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+            
+            tracksSvg.appendChild(el("rect", {
+              x: baseX - 16,
+              y: baseY,
+              width: 32,
+              height: baseSize - 1,
+              fill: color
+            }));
+            
+            // Draw base letter if space allows
+            if (baseSize >= 8) {
+              const textEl = el("text", {
+                x: baseX,
+                y: baseY + baseSize / 2,
+                class: "svg-small",
+                "text-anchor": "middle",
+                fill: "white",
+                "font-weight": "bold",
+                "dominant-baseline": "middle",
+                transform: "rotate(-90 " + baseX + " " + (baseY + baseSize / 2) + ")"
+              }, base);
+              tracksSvg.appendChild(textEl);
+            }
+          }
+        } else {
+          const gapStartX = pos;
+          const gapEndX = gapStartX + gapSize;
+          
+          // Draw gap background
+          tracksSvg.appendChild(el("rect", {
+            x: gapStartX,
+            y: baseY - 18,
+            width: gapSize,
+            height: 36,
+            fill: "rgba(255,255,255,0.1)",
+            stroke: "rgba(127,127,127,0.3)",
+            "stroke-width": 1,
+            "stroke-dasharray": "2,2"
+          }));
+          
+          for (let i = 0; i < insertedSeq.length; i++) {
+            const base = insertedSeq[i].toUpperCase();
+            const baseX = gapStartX + i * baseSize;
+            const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+            
+            tracksSvg.appendChild(el("rect", {
+              x: baseX,
+              y: baseY - 16,
+              width: baseSize - 1,
+              height: 32,
+              fill: color
+            }));
+            
+            // Draw base letter if space allows
+            if (baseSize >= 8) {
+              tracksSvg.appendChild(el("text", {
+                x: baseX + baseSize / 2,
+                y: baseY,
+                class: "svg-small",
+                "text-anchor": "middle",
+                fill: "white",
+                "font-weight": "bold",
+                "dominant-baseline": "middle"
+              }, base));
+            }
+          }
+        }
+      }
+    }
+
+      // separator
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: rulerX + rulerW, x2: rulerX + rulerW, y1: 0, y2: H,
+          stroke: "rgba(127,127,127,0.12)"
+        }));
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: 0, x2: W, y1: rulerY + rulerH, y2: rulerY + rulerH,
+          stroke: "rgba(127,127,127,0.12)"
+        }));
+      }
+    }
+
+    // --- Reference track
+    if (!referenceLayout.track.collapsed) {
+      let referenceX, referenceY, referenceW, referenceH;
+      if (isVertical) {
+        referenceX = referenceLayout.contentLeft + 8;
+        referenceW = 24;
+        referenceY = 16;
+        referenceH = H - 32;
+      } else {
+        referenceY = referenceLayout.contentTop + 8;
+        referenceH = 24;
+        referenceX = 16;
+        referenceW = W - 32;
+      }
+
+      // Helper function to generate a demo reference sequence
+      function generateReferenceSequence(startBp, endBp) {
+        // Generate a simple repeating pattern for demo purposes
+        // In a real implementation, this would fetch from a reference genome
+        const bases = ['A', 'T', 'G', 'C'];
+        const seq = [];
+        for (let bp = Math.floor(startBp); bp <= Math.floor(endBp); bp++) {
+          // Use a deterministic pattern based on position
+          seq.push(bases[bp % 4]);
+        }
+        return seq;
+      }
+
+      const span = state.endBp - state.startBp;
+      const startBpInt = Math.floor(state.startBp);
+      const endBpInt = Math.floor(state.endBp);
+      const refSeq = generateReferenceSequence(startBpInt, endBpInt);
+
+      const nucleotideColors = {
+        'A': 'rgba(0, 200, 0, 0.8)',      // green
+        'C': 'rgba(0, 0, 255, 0.8)',      // blue
+        'G': 'rgba(255, 165, 0, 0.8)',    // orange
+        'T': 'rgba(255, 0, 0, 0.8)'       // red
+      };
+
+      // Calculate base size based on zoom level
+      const minBaseSize = 2; // Minimum size per base in pixels
+      const baseSize = Math.max(minBaseSize, state.pxPerBp);
+
+      // Only show individual bases if zoomed in enough
+      const showIndividualBases = baseSize >= 4;
+
+      if (showIndividualBases) {
+        // Render individual bases
+        for (let i = 0; i < refSeq.length; i++) {
+          const bp = startBpInt + i;
+          if (bp < state.startBp || bp > state.endBp) continue;
+
+          // Use genomePosCanonical to account for insertion gaps
+          const pos = genomePosCanonical(bp);
+          const nextPos = i < refSeq.length - 1 ? genomePosCanonical(bp + 1) : genomePosCanonical(state.endBp);
+          const actualSize = Math.max(minBaseSize, Math.abs(nextPos - pos));
+
+          const base = refSeq[i].toUpperCase();
+          const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+
+          if (isVertical) {
+            tracksSvg.appendChild(el("rect", {
+              x: referenceX,
+              y: pos,
+              width: referenceW,
+              height: actualSize - 0.5,
+              fill: color
+            }));
+
+            // Draw base letter if space allows
+            if (actualSize >= 8) {
+              const textEl = el("text", {
+                x: referenceX + referenceW / 2,
+                y: pos + actualSize / 2,
+                class: "svg-small",
+                "text-anchor": "middle",
+                fill: "white",
+                "font-weight": "bold",
+                "dominant-baseline": "middle",
+                transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
+              }, base);
+              tracksSvg.appendChild(textEl);
+            }
+          } else {
+            tracksSvg.appendChild(el("rect", {
+              x: pos,
+              y: referenceY,
+              width: actualSize - 0.5,
+              height: referenceH,
+              fill: color
+            }));
+
+            // Draw base letter if space allows
+            if (actualSize >= 8) {
+              tracksSvg.appendChild(el("text", {
+                x: pos + actualSize / 2,
+                y: referenceY + referenceH / 2,
+                class: "svg-small",
+                "text-anchor": "middle",
+                fill: "white",
+                "font-weight": "bold",
+                "dominant-baseline": "middle"
+              }, base));
+            }
+          }
+        }
+      } else {
+        // Zoomed out: show a continuous reference line with subtle pattern
+        if (isVertical) {
+          const topPad = 16, bottomPad = 16;
+          const innerH = H - topPad - bottomPad;
+          const totalGapPx = getTotalInsertionGapWidth();
+          const totalGapBp = totalGapPx / state.pxPerBp;
+          const effectiveSpan = span + totalGapBp;
+
+          // Draw background
+          tracksSvg.appendChild(el("rect", {
+            x: referenceX,
+            y: topPad,
+            width: referenceW,
+            height: innerH,
+            fill: "rgba(127,127,127,0.08)",
+            rx: 4
+          }));
+
+          // Draw a subtle pattern indicating reference sequence
+          const patternHeight = 20;
+          for (let y = topPad; y < topPad + innerH; y += patternHeight * 2) {
+            tracksSvg.appendChild(el("rect", {
+              x: referenceX,
+              y: y,
+              width: referenceW,
+              height: Math.min(patternHeight, topPad + innerH - y),
+              fill: "rgba(127,127,127,0.12)"
+            }));
+          }
+        } else {
+          const leftPad = 16, rightPad = 16;
+          const innerW = W - leftPad - rightPad;
+          const totalGapPx = getTotalInsertionGapWidth();
+          const totalGapBp = totalGapPx / state.pxPerBp;
+          const effectiveSpan = span + totalGapBp;
+
+          // Draw background
+          tracksSvg.appendChild(el("rect", {
+            x: leftPad,
+            y: referenceY,
+            width: innerW,
+            height: referenceH,
+            fill: "rgba(127,127,127,0.08)",
+            rx: 4
+          }));
+
+          // Draw a subtle pattern indicating reference sequence
+          const patternWidth = 20;
+          for (let x = leftPad; x < leftPad + innerW; x += patternWidth * 2) {
+            tracksSvg.appendChild(el("rect", {
+              x: x,
+              y: referenceY,
+              width: Math.min(patternWidth, leftPad + innerW - x),
+              height: referenceH,
+              fill: "rgba(127,127,127,0.12)"
+            }));
+          }
+        }
+      }
+
+      // Separator
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: referenceX + referenceW, x2: referenceX + referenceW, y1: 0, y2: H,
+          stroke: "rgba(127,127,127,0.12)"
+        }));
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: 0, x2: W, y1: referenceY - 4, y2: referenceY - 4,
+          stroke: "rgba(127,127,127,0.12)"
+        }));
+      }
+    }
+  }
+
+  // -----------------------------
+  // Canvas helpers
+  // -----------------------------
+  function resizeCanvasTo(el, canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.floor(rectW(el) * dpr);
+    const h = Math.floor(rectH(el) * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    return dpr;
+  }
+
+  function visibleVariantWindow() {
+    const start = state.firstVariantIndex;
+    // Return all variants in the visible genomic range, not limited by state.K
+    // state.K is just used for initial window sizing
+    const visibleVariants = variants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
+    if (visibleVariants.length === 0) {
+      // Fallback to state.K if no variants in range
+      const end = Math.min(variants.length, start + state.K);
+      return variants.slice(start, end);
+    }
+    return visibleVariants;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w/2, h/2);
+    ctx.moveTo(x+rr, y);
+    ctx.arcTo(x+w, y,   x+w, y+h, rr);
+    ctx.arcTo(x+w, y+h, x,   y+h, rr);
+    ctx.arcTo(x,   y+h, x,   y,   rr);
+    ctx.arcTo(x,   y,   x+w, y,   rr);
+    ctx.closePath();
+  }
+
+  // -----------------------------
+  // Sankey placeholder (Canvas2D)
+  // -----------------------------
+  function renderFlowCanvas() {
+    const layout = getTrackLayout();
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    if (!flowLayout || flowLayout.track.collapsed) {
+      // Clear canvas if collapsed
+      const ctx = flowCanvas.getContext("2d");
+      ctx.clearRect(0, 0, flowCanvas.width, flowCanvas.height);
+      return;
+    }
+
+    const dpr = resizeCanvasTo(flow, flowCanvas);
+    const ctx = flowCanvas.getContext("2d");
+    
+    // Clear and set up canvas
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,flowCanvas.width,flowCanvas.height);
+    ctx.scale(dpr, dpr);
+
+    const isVertical = isVerticalMode();
+    const variantMode = getVariantLayoutMode();
+    const junctionY = 40;
+    const junctionX = 40;
+
+    const W = flowWidthPx(), H = flowHeightPx();
+
+    const colLines = cssVar("--grid");
+    const colGrid  = cssVar("--grid2");
+    const colText  = cssVar("--muted");
+    const colBlue  = cssVar("--blue");
+
+    // background
+    ctx.fillStyle = "rgba(127,127,127,0.035)";
+    ctx.fillRect(0,0,W,H);
+
+    // connectors (diagonal lines - make them meet the ruler variant position precisely)
+    const win = visibleVariantWindow();
+    
+    if (isVertical) {
+      // In vertical mode, sort variants by position for consistent ordering
+      const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
+      
+      // columns (horizontal lines in vertical mode)
+      ctx.strokeStyle = colBlue;
+      ctx.globalAlpha = 0.6;
+      for (let i=0;i<sortedWin.length;i++) {
+        const v = sortedWin[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        const isHovered = state.hoveredVariantIndex === variantIdx;
+        ctx.lineWidth = isHovered ? 2.5 : 1;
+        // Position column based on mode
+        const y = variantMode === "genomic" 
+          ? yGenomeCanonical(v.pos, H)
+          : yColumn(i, sortedWin.length);
+        ctx.beginPath();
+        ctx.moveTo(junctionX, y);
+        ctx.lineTo(W-18, y);
+        ctx.stroke();
+
+        ctx.fillStyle = colText;
+        ctx.font = "12px ui-sans-serif, system-ui";
+        ctx.save();
+        ctx.translate(14, y + 6); // Move down by 6px total
+        ctx.rotate(-Math.PI/2);
+        ctx.fillText(`v${variantIdx + 1}`, 0, 0);
+        ctx.restore();
+      }
+      ctx.strokeStyle = colBlue;
+      ctx.globalAlpha = 0.5;
+
+      const x0 = 6;
+      for (let i=0; i<sortedWin.length; i++) {
+        const v = sortedWin[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        const isHovered = state.hoveredVariantIndex === variantIdx;
+        ctx.lineWidth = isHovered ? 2.5 : 1;
+        const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
+        const cy = variantMode === "genomic"
+          ? yGenomeCanonical(v.pos, H)
+          : yColumn(i, sortedWin.length);
+        ctx.beginPath();
+        ctx.moveTo(x0, vy);
+        ctx.lineTo(junctionX, cy);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    } else {
+      // columns (vertical lines)
+      ctx.strokeStyle = colBlue;
+      ctx.globalAlpha = 0.6;
+      for (let i=0;i<win.length;i++) {
+        const variantIdx = state.firstVariantIndex + i;
+        const isHovered = state.hoveredVariantIndex === variantIdx;
+        ctx.lineWidth = isHovered ? 2.5 : 1;
+        // Position column based on mode
+        const x = variantMode === "genomic"
+          ? xGenomeCanonical(win[i].pos, W)
+          : xColumn(i, win.length);
+        ctx.beginPath();
+        ctx.moveTo(x, junctionY);
+        ctx.lineTo(x, H-18);
+        ctx.stroke();
+
+        ctx.fillStyle = colText;
+        ctx.font = "12px ui-sans-serif, system-ui";
+        ctx.fillText(`v${state.firstVariantIndex + i + 1}`, x - 10, 14);
+      }
+      ctx.strokeStyle = colBlue;
+      ctx.globalAlpha = 0.5;
+
+      const y0 = 6;
+      for (let i=0; i<win.length; i++) {
+        const variantIdx = state.firstVariantIndex + i;
+        const isHovered = state.hoveredVariantIndex === variantIdx;
+        ctx.lineWidth = isHovered ? 2.5 : 1;
+        const v = win[i];
+        const vx = xGenomeCanonical(v.pos, W); // always use genomic position for ruler connection
+        const cx = variantMode === "genomic"
+          ? xGenomeCanonical(v.pos, W)
+          : xColumn(i, win.length);
+        ctx.beginPath();
+        ctx.moveTo(vx, y0);
+        ctx.lineTo(cx, junctionY);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    }
+
+    // placeholder nodes
+    const labels = ["./.","ref","a1"];
+    const nodeW = 16, nodeH = 18, gap = 8;
+    
+    if (isVertical) {
+      const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
+      const left = 70;
+      
+      for (let i=0;i<sortedWin.length;i++){
+        const v = sortedWin[i];
+        // Position based on variant layout mode
+        const cy = variantMode === "genomic"
+          ? yGenomeCanonical(v.pos, H)
+          : yColumn(i, sortedWin.length);
+        
+        for (let j=0;j<labels.length;j++){
+          const x = left + j*(nodeW+gap);
+
+          ctx.fillStyle = "rgba(127,127,127,0.08)";
+          ctx.strokeStyle = "rgba(127,127,127,0.18)";
+          ctx.beginPath();
+          roundRect(ctx, x, cy - nodeH/2, nodeW, nodeH, 5);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = colText;
+          ctx.font = "11px ui-sans-serif, system-ui";
+          ctx.save();
+          // Position label above the node (shift left for better alignment)
+          ctx.translate(x + nodeW/2 - gap - 5 + 12, cy - 12); // Center on node, shift left by gap + 5px, move up by 12px total
+          ctx.rotate(-Math.PI/2);
+          ctx.fillText(labels[j], 0, 4);
+          ctx.restore();
+        }
+      }
+    } else {
+      for (let i=0;i<win.length;i++){
+        // Position based on variant layout mode
+        const cx = variantMode === "genomic"
+          ? xGenomeCanonical(win[i].pos, W)
+          : xColumn(i, win.length);
+        const top = 70;
+
+        for (let j=0;j<labels.length;j++){
+          const y = top + j*(nodeH+gap);
+
+          ctx.fillStyle = "rgba(127,127,127,0.08)";
+          ctx.strokeStyle = "rgba(127,127,127,0.18)";
+          ctx.beginPath();
+          roundRect(ctx, cx - nodeW/2, y, nodeW, nodeH, 5);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = colText;
+          ctx.font = "11px ui-sans-serif, system-ui";
+          ctx.fillText(labels[j], cx + 12, y + 13);
+        }
+      }
+    }
+  }
+
+  // -----------------------------
+  // Reads placeholder (IGV-style area)
+  // -----------------------------
+  function renderReadsCanvas() {
+    const layout = getTrackLayout();
+    const readsLayout = layout.find(l => l.track.id === "reads");
+    if (!readsLayout || readsLayout.track.collapsed) {
+      return; // Don't render if collapsed
+    }
+
+    const dpr = resizeCanvasTo(reads, readsCanvas);
+    const ctx = readsCanvas.getContext("2d");
+
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,readsCanvas.width,readsCanvas.height);
+    ctx.scale(dpr, dpr);
+
+    const isVertical = isVerticalMode();
+    const W = readsWidthPx(), H = readsHeightPx();
+    const colText = cssVar("--muted");
+    const grid = cssVar("--grid2");
+
+    // soft background
+    ctx.fillStyle = "rgba(127,127,127,0.02)";
+    ctx.fillRect(0,0,W,H);
+
+    if (isVertical) {
+      // a few columns to suggest lanes (vertical mode)
+      ctx.strokeStyle = grid;
+      ctx.lineWidth = 1;
+      const left = 8;
+      const colW = 18;
+      const cols = Math.floor((W - left - 12) / colW);
+      for (let i=0; i<cols; i++) {
+        const x = left + i*colW + colW/2;
+        ctx.beginPath();
+        ctx.moveTo(x, 16);
+        ctx.lineTo(x, H-16);
+        ctx.stroke();
+      }
+
+      // placeholder "reads" as rounded rects aligned in genome space
+      function drawRead(bpStart, bpEnd, col, alpha=0.20) {
+        const y1 = yGenomeCanonical(bpStart, H);
+        const y2 = yGenomeCanonical(bpEnd, H);
+        const x = left + col*colW + 2;
+        const w = colW - 6;
+
+        ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+        ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
+        ctx.beginPath();
+        roundRect(ctx, x, Math.min(y1, y2), w, Math.max(6, Math.abs(y2-y1)), 6);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      // a few fake reads
+      drawRead(100_030, 100_160, 1, 0.10);
+      drawRead(100_090, 100_240, 2, 0.12);
+      drawRead(100_210, 100_420, 3, 0.10);
+      drawRead(100_380, 100_610, 4, 0.11);
+      drawRead(100_590, 100_820, 5, 0.10);
+      drawRead(100_700, 100_900, 6, 0.11);
+
+      // variant guide lines (bright blue)
+      ctx.strokeStyle = cssVar("--blue");
+      for (let idx = 0; idx < variants.length; idx++) {
+        const v = variants[idx];
+        if (v.pos < state.startBp || v.pos > state.endBp) continue;
+        const isHovered = state.hoveredVariantIndex === idx;
+        ctx.globalAlpha = isHovered ? 0.7 : 0.4;
+        ctx.lineWidth = isHovered ? 2.5 : 1;
+        const y = yGenomeCanonical(v.pos, H);
+        ctx.beginPath();
+        ctx.moveTo(left, y);
+        ctx.lineTo(W-10, y);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    } else {
+      // a few rows to suggest lanes
+      ctx.strokeStyle = grid;
+      ctx.lineWidth = 1;
+      const top = 8;
+      const rowH = 18;
+      const rows = Math.floor((H - top - 12) / rowH);
+      for (let i=0; i<rows; i++) {
+        const y = top + i*rowH + rowH/2;
+        ctx.beginPath();
+        ctx.moveTo(16, y);
+        ctx.lineTo(W-16, y);
+        ctx.stroke();
+      }
+
+      // placeholder "reads" as rounded rects aligned in genome space
+      function drawRead(bpStart, bpEnd, row, alpha=0.20) {
+        const x1 = xGenomeCanonical(bpStart, W);
+        const x2 = xGenomeCanonical(bpEnd, W);
+        const y = top + row*rowH + 2;
+        const h = rowH - 6;
+
+        ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+        ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
+        ctx.beginPath();
+        roundRect(ctx, x1, y, Math.max(6, x2-x1), h, 6);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      // a few fake reads
+      drawRead(100_030, 100_160, 1, 0.10);
+      drawRead(100_090, 100_240, 2, 0.12);
+      drawRead(100_210, 100_420, 3, 0.10);
+      drawRead(100_380, 100_610, 4, 0.11);
+      drawRead(100_590, 100_820, 5, 0.10);
+      drawRead(100_700, 100_900, 6, 0.11);
+
+      // variant guide lines (bright blue)
+      ctx.strokeStyle = cssVar("--blue");
+      for (let idx = 0; idx < variants.length; idx++) {
+        const v = variants[idx];
+        if (v.pos < state.startBp || v.pos > state.endBp) continue;
+        const isHovered = state.hoveredVariantIndex === idx;
+        ctx.globalAlpha = isHovered ? 0.7 : 0.4;
+        ctx.lineWidth = isHovered ? 2.5 : 1;
+        const x = xGenomeCanonical(v.pos, W);
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, H-10);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    }
+
+    // connectors from Sankey columns down to Reads track (diagonal lines)
+    // Disabled for now - makes display too busy
+    /*
+    const win = visibleVariantWindow();
+    const trackLayoutForConnectors = getTrackLayout();
+    const flowLayoutItem = trackLayoutForConnectors.find(l => l.track.id === "flow");
+    const readsLayoutItem = trackLayoutForConnectors.find(l => l.track.id === "reads");
+    
+    if (flowLayoutItem && readsLayoutItem && !flowLayoutItem.track.collapsed && !readsLayoutItem.track.collapsed) {
+      ctx.strokeStyle = cssVar("--blue");
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 1;
+      
+      // Draw diagonal lines from Sankey columns to variant positions in Reads track
+      // Similar to how Locus connects to Sankey, but in reverse direction
+      for (let i=0; i<win.length; i++) {
+        const v = win[i];
+        if (v.pos < state.startBp || v.pos > state.endBp) continue;
+        
+        // Calculate column x position in Reads canvas coordinates
+        // Use the same logic as xColumn but with Reads canvas width
+        const margin = 60;
+        const innerW = Math.max(10, W - 2*margin);
+        let columnX;
+        if (state.K <= 1) {
+          columnX = margin;
+        } else {
+          columnX = margin + (i / (state.K - 1)) * innerW;
+        }
+        
+        // Variant position x in Reads track (genomic coordinate mapping)
+        const variantX = xGenomeCanonical(v.pos, W);
+        
+        // Draw diagonal line from column position to variant position
+        ctx.beginPath();
+        ctx.moveTo(columnX, 0); // top of reads canvas, at column x position
+        ctx.lineTo(variantX, top); // connect to variant position at top of read lanes
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    }
+    */
+  }
+
+  // -----------------------------
+  // Track controls rendering
+  // -----------------------------
+  const trackControls = document.getElementById("trackControls");
+  function renderTrackControls() {
+    trackControls.innerHTML = "";
+    const layout = getTrackLayout();
+    const isVertical = isVerticalMode();
+
+    for (const item of layout) {
+      const track = item.track;
+      const container = document.createElement("div");
+      container.className = "track-control-container";
+      
+      if (isVertical) {
+        container.style.position = "absolute";
+        container.style.left = `${item.left}px`;
+        container.style.width = `${item.width}px`;
+        container.style.top = "0";
+        container.style.height = "100%";
+      } else {
+        container.style.position = "absolute";
+        container.style.left = "0";
+        container.style.right = "0";
+        container.style.top = `${item.top}px`;
+        container.style.height = `${item.height}px`;
+      }
+      container.dataset.trackId = track.id;
+
+      const controls = document.createElement("div");
+      controls.className = "track-controls";
+      controls.dataset.trackId = track.id;
+
+      const collapseBtn = document.createElement("button");
+      collapseBtn.className = "track-collapse-btn";
+      if (isVertical) {
+        collapseBtn.textContent = track.collapsed ? "▲" : "▶";
+      } else {
+        collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      }
+      collapseBtn.type = "button";
+      collapseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        track.collapsed = !track.collapsed;
+        updateTracksHeight();
+        renderAll();
+      });
+
+      const label = document.createElement("div");
+      label.className = "track-label";
+      label.textContent = track.label;
+
+      // In vertical mode, reverse order: label on top, button on bottom
+      if (isVertical) {
+        controls.appendChild(label);
+        controls.appendChild(collapseBtn);
+        container.appendChild(controls);
+        // After appending, measure the label's width and adjust transform
+        // With transform-origin: left center, the first character stays at bottom
+        // We need to translate right by half width to center it horizontally
+        setTimeout(() => {
+          try {
+            const width = label.offsetWidth || label.getBoundingClientRect().width;
+            if (width > 0) {
+              // After -90deg rotation:
+              // - translateX moves vertically (negative = up, positive = down)
+              // - translateY moves horizontally (negative = left, positive = right)
+              // Use translateX(12px) to position vertically and translateY(0.0px) for horizontal
+              label.style.transform = `rotate(-90deg) translateX(12px) translateY(0.0px)`;
+            }
+          } catch (e) {
+            console.error('Error adjusting label transform:', e);
+          }
+        }, 10);
+      } else {
+        controls.appendChild(collapseBtn);
+        controls.appendChild(label);
+        container.appendChild(controls);
+      }
+
+      if (!track.collapsed) {
+        const resizeHandle = document.createElement("div");
+        resizeHandle.className = "track-resize-handle";
+        resizeHandle.dataset.trackId = track.id;
+        container.appendChild(resizeHandle);
+      }
+
+      trackControls.appendChild(container);
+    }
+  }
+
+  // -----------------------------
+  // HUD + renderAll
+  // -----------------------------
+  function renderHUD() {
+    const locusText = `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
+    
+    // Preserve lazy loading status if it exists
+    if (window._genomeshaderLazyStatus) {
+      const status = window._genomeshaderLazyStatus;
+      const statusColor = status.type === 'error' ? 'var(--accent)' : 'var(--text)';
+      hud.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span> | ${locusText}`;
+    } else {
+      hud.textContent = locusText;
+    }
+  }
+
+  function renderAll() {
+    updateDerived();
+    updateTracksHeight();
+    renderTracks();
+    renderTrackControls();
+    updateFlowAndReadsPosition();
+    renderFlowCanvas();
+    renderReadsCanvas();
+    renderHUD();
+    setupCanvasHover();
+  }
+
+  // Setup hover detection for canvas elements
+  let flowHoverHandler = null;
+  let flowLeaveHandler = null;
+  let readsHoverHandler = null;
+  let readsLeaveHandler = null;
+
+  function setupCanvasHover() {
+    // Remove existing listeners to avoid duplicates
+    if (flowHoverHandler) {
+      flow.removeEventListener("mousemove", flowHoverHandler);
+      flow.removeEventListener("mouseleave", flowLeaveHandler);
+    }
+    if (readsHoverHandler) {
+      reads.removeEventListener("mousemove", readsHoverHandler);
+      reads.removeEventListener("mouseleave", readsLeaveHandler);
+    }
+
+    // Flow canvas hover detection
+    flowHoverHandler = (e) => {
+      const rect = flow.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const isVertical = isVerticalMode();
+      const variantMode = getVariantLayoutMode();
+      const win = visibleVariantWindow();
+      
+      if (isVertical) {
+        const junctionX = 40;
+        const H = flowHeightPx();
+        const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
+        
+        // Check if mouse is near a column line (horizontal in vertical mode)
+        for (let i = 0; i < sortedWin.length; i++) {
+          const v = sortedWin[i];
+          // Position based on variant layout mode
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          
+          if (Math.abs(y - cy) < 10 && x >= junctionX) {
+            if (state.hoveredVariantIndex !== variantIdx) {
+              state.hoveredVariantIndex = variantIdx;
+              renderAll();
+            }
+            return;
+          }
+        }
+        
+        // Check if mouse is near a diagonal connector
+        const x0 = 6;
+        for (let i = 0; i < sortedWin.length; i++) {
+          const v = sortedWin[i];
+          if (v.pos < state.startBp || v.pos > state.endBp) continue;
+          const vy = yGenomeCanonical(v.pos, H); // always genomic for ruler connection
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          
+          const dist = Math.abs((x - x0) * (cy - vy) / (junctionX - x0) + vy - y);
+          if (dist < 5 && x >= x0 && x <= junctionX) {
+            if (state.hoveredVariantIndex !== variantIdx) {
+              state.hoveredVariantIndex = variantIdx;
+              renderAll();
+            }
+            return;
+          }
+        }
+      } else {
+        const junctionY = 40;
+        const W = flowWidthPx();
+        
+        // Check if mouse is near a column line
+        for (let i = 0; i < win.length; i++) {
+          // Position based on variant layout mode
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(win[i].pos, W)
+            : xColumn(i, win.length);
+          const variantIdx = state.firstVariantIndex + i;
+          
+          if (Math.abs(x - cx) < 10 && y >= junctionY) {
+            if (state.hoveredVariantIndex !== variantIdx) {
+              state.hoveredVariantIndex = variantIdx;
+              renderAll();
+            }
+            return;
+          }
+        }
+        
+        // Check if mouse is near a diagonal connector
+        const y0 = 6;
+        for (let i = 0; i < win.length; i++) {
+          const v = win[i];
+          if (v.pos < state.startBp || v.pos > state.endBp) continue;
+          const vx = xGenomeCanonical(v.pos, W); // always genomic for ruler connection
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          const variantIdx = state.firstVariantIndex + i;
+          
+          const dist = Math.abs((y - y0) * (cx - vx) / (junctionY - y0) + vx - x);
+          if (dist < 5 && y >= y0 && y <= junctionY) {
+            if (state.hoveredVariantIndex !== variantIdx) {
+              state.hoveredVariantIndex = variantIdx;
+              renderAll();
+            }
+            return;
+          }
+        }
+      }
+      
+      // No variant hovered
+      if (state.hoveredVariantIndex !== null) {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      }
+    };
+    
+    flowLeaveHandler = () => {
+      if (state.hoveredVariantIndex !== null) {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      }
+    };
+    
+    flow.addEventListener("mousemove", flowHoverHandler);
+    flow.addEventListener("mouseleave", flowLeaveHandler);
+
+    // Reads canvas hover detection
+    readsHoverHandler = (e) => {
+      const rect = reads.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const isVertical = isVerticalMode();
+      
+      if (isVertical) {
+        const H = readsHeightPx();
+        const left = 8;
+        
+        // Check if mouse is near a variant line (horizontal in vertical mode)
+        for (let idx = 0; idx < variants.length; idx++) {
+          const v = variants[idx];
+          if (v.pos < state.startBp || v.pos > state.endBp) continue;
+          const vy = yGenomeCanonical(v.pos, H);
+          
+          if (Math.abs(y - vy) < 10 && x >= left) {
+            if (state.hoveredVariantIndex !== idx) {
+              state.hoveredVariantIndex = idx;
+              renderAll();
+            }
+            return;
+          }
+        }
+      } else {
+        const W = readsWidthPx();
+        const top = 8;
+        
+        // Check if mouse is near a variant line
+        for (let idx = 0; idx < variants.length; idx++) {
+          const v = variants[idx];
+          if (v.pos < state.startBp || v.pos > state.endBp) continue;
+          const vx = xGenomeCanonical(v.pos, W);
+          
+          if (Math.abs(x - vx) < 10 && y >= top) {
+            if (state.hoveredVariantIndex !== idx) {
+              state.hoveredVariantIndex = idx;
+              renderAll();
+            }
+            return;
+          }
+        }
+      }
+      
+      // No variant hovered
+      if (state.hoveredVariantIndex !== null) {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      }
+    };
+    
+    readsLeaveHandler = () => {
+      if (state.hoveredVariantIndex !== null) {
+        state.hoveredVariantIndex = null;
+        renderAll();
+      }
+    };
+    
+    reads.addEventListener("mousemove", readsHoverHandler);
+    reads.addEventListener("mouseleave", readsLeaveHandler);
+  }
+
+  function updateFlowAndReadsPosition() {
+    const layout = getTrackLayout();
+    const isVertical = isVerticalMode();
+    
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    if (flowLayout) {
+      if (isVertical) {
+        flow.style.left = `${flowLayout.contentLeft}px`;
+        flow.style.width = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentWidth}px`;
+        flow.style.top = "0";
+        flow.style.height = "100%";
+      } else {
+        flow.style.top = `${flowLayout.contentTop}px`;
+        flow.style.height = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentHeight}px`;
+        flow.style.left = "0";
+        flow.style.width = "100%";
+      }
+      flow.style.display = flowLayout.track.collapsed ? "none" : "block";
+    }
+    
+    const readsLayout = layout.find(l => l.track.id === "reads");
+    if (readsLayout) {
+      if (isVertical) {
+        reads.style.left = `${readsLayout.contentLeft}px`;
+        // Extend Reads track to the right edge of the main container
+        const mainWidth = rectW(main);
+        reads.style.width = readsLayout.track.collapsed ? "0px" : `${mainWidth - readsLayout.contentLeft}px`;
+        reads.style.top = "0";
+        reads.style.height = "100%";
+      } else {
+        reads.style.top = `${readsLayout.contentTop}px`;
+        reads.style.height = readsLayout.track.collapsed ? "0px" : `${readsLayout.contentHeight}px`;
+        reads.style.left = "0";
+        reads.style.width = "100%";
+      }
+      reads.style.display = readsLayout.track.collapsed ? "none" : "block";
+    }
+  }
+
+  // -----------------------------
+  // Pan + Zoom helpers
+  // -----------------------------
+  function clampSpan(span) {
+    const MIN_SPAN = 50;
+    const MAX_SPAN = 5_000_000;
+    return Math.max(MIN_SPAN, Math.min(MAX_SPAN, span));
+  }
+
+  function zoomByFactor(factor, anchorBp) {
+    const oldSpan = state.endBp - state.startBp;
+    const newSpan = clampSpan(oldSpan / factor);
+
+    const leftFrac = (anchorBp - state.startBp) / oldSpan;
+    const newStart = anchorBp - leftFrac * newSpan;
+
+    state.startBp = newStart;
+    state.endBp = newStart + newSpan;
+
+    renderAll();
+  }
+
+  function panByPixels(dxPx, dyPx) {
+    const isVertical = isVerticalMode();
+    const deltaPx = isVertical ? (dyPx !== undefined ? dyPx : 0) : (dxPx !== undefined ? dxPx : 0);
+    const deltaBp = deltaPx / state.pxPerBp;
+    // In vertical mode: down = lower locus (increase), up = higher locus (decrease)
+    // In horizontal mode: right = higher locus (increase), left = lower locus (decrease)
+    if (isVertical) {
+      state.startBp += deltaBp;
+      state.endBp   += deltaBp;
+    } else {
+      state.startBp -= deltaBp;
+      state.endBp   -= deltaBp;
+    }
+
+    // Placeholder heuristic for shifting the variant window
+    const win = visibleVariantWindow();
+    if (win.length > 0) {
+      const first = win[0].pos;
+      while (state.firstVariantIndex > 0 && first > state.endBp) state.firstVariantIndex--;
+      while (state.firstVariantIndex + 1 < variants.length &&
+             first < state.startBp - (state.endBp-state.startBp)*0.25) {
+        state.firstVariantIndex++;
+        if (state.firstVariantIndex + state.K > variants.length) break;
+      }
+      state.firstVariantIndex = Math.max(0, Math.min(state.firstVariantIndex, Math.max(0, variants.length - state.K)));
+    }
+
+    renderAll();
+  }
+
+  function anchorBpFromClientX(clientX) {
+    const rect = tracksSvg.getBoundingClientRect();
+    const xInPane = clientX - rect.left;
+    return bpFromXGenome(xInPane, tracksWidthPx());
+  }
+  function anchorBpFromClientY(clientY) {
+    const rect = tracksSvg.getBoundingClientRect();
+    const yInPane = clientY - rect.top;
+    return bpFromYGenome(yInPane, tracksHeightPx());
+  }
+  function anchorBpFromClient(clientX, clientY) {
+    const isVertical = isVerticalMode();
+    if (isVertical) {
+      return anchorBpFromClientY(clientY);
+    } else {
+      return anchorBpFromClientX(clientX);
+    }
+  }
+
+  // -----------------------------
+  // Interaction (right pane)
+  // -----------------------------
+  main.addEventListener("pointerdown", (e) => {
+    // Don't start drag if clicking on a variant (for insertion expansion)
+    // Check if clicking on SVG elements that are variants
+    const target = e.target;
+    if (target && target.tagName && (target.tagName === "line" || target.tagName === "circle" || target.tagName === "rect")) {
+      // Check if this is a variant element (has blue stroke or is in the variant area)
+      const stroke = target.getAttribute ? target.getAttribute("stroke") : null;
+      if (stroke && (stroke === "var(--blue)" || stroke === cssVar("--blue") || stroke.includes("blue"))) {
+        // This might be a variant - don't start dragging, let click handler work
+        return;
+      }
+      // Also check if it's the invisible click area for insertions
+      if (target.getAttribute && target.getAttribute("fill") === "transparent" && target.getAttribute("width") === "10") {
+        return;
+      }
+    }
+    
+    state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    main.setPointerCapture(e.pointerId);
+
+    if (state.pointers.size === 1) {
+      state.dragging = true;
+      state.lastX = e.clientX;
+      state.lastY = e.clientY;
+    } else {
+      state.dragging = false;
+    }
+  });
+
+  main.addEventListener("pointermove", (e) => {
+    if (!state.pointers.has(e.pointerId)) return;
+    state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (state.pointers.size === 2) {
+      const pts = Array.from(state.pointers.values());
+      const dx = pts[0].x - pts[1].x;
+      const dy = pts[0].y - pts[1].y;
+      const dist = Math.hypot(dx, dy);
+
+      if (state.pinchStartDist == null) {
+        state.pinchStartDist = dist;
+        state.pinchStartSpan = (state.endBp - state.startBp);
+
+        const midX = (pts[0].x + pts[1].x) / 2;
+        const midY = (pts[0].y + pts[1].y) / 2;
+        state.pinchAnchorBp = anchorBpFromClient(midX, midY);
+      } else {
+        const scale = dist / state.pinchStartDist; // >1 apart => zoom in
+        const oldSpan = state.pinchStartSpan;
+        const newSpan = clampSpan(oldSpan / scale);
+
+        const anchorBp = state.pinchAnchorBp ?? (state.startBp + (state.endBp-state.startBp)/2);
+        const leftFrac = (anchorBp - state.startBp) / (state.endBp - state.startBp);
+        const newStart = anchorBp - leftFrac * newSpan;
+
+        state.startBp = newStart;
+        state.endBp = newStart + newSpan;
+
+        renderAll();
+      }
+      return;
+    }
+
+    if (state.dragging) {
+      const isVertical = isVerticalMode();
+      const dx = e.clientX - state.lastX;
+      const dy = e.clientY - state.lastY;
+      state.lastX = e.clientX;
+      state.lastY = e.clientY;
+      if (isVertical) {
+        panByPixels(0, -dy);
+      } else {
+        panByPixels(-dx, 0);
+      }
+    }
+  });
+
+  function endPointer(e) {
+    state.pointers.delete(e.pointerId);
+    if (state.pointers.size < 2) {
+      state.pinchStartDist = null;
+      state.pinchStartSpan = null;
+      state.pinchAnchorBp = null;
+    }
+    if (state.pointers.size === 0) state.dragging = false;
+  }
+  main.addEventListener("pointerup", endPointer);
+  main.addEventListener("pointercancel", endPointer);
+
+  // Wheel: default zoom (no ctrl/meta), shift+wheel (or horizontal) pan
+  main.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || e.metaKey) return;
+
+    const isVertical = isVerticalMode();
+    const dx = e.deltaX;
+    const dy = e.deltaY;
+    
+    if (isVertical) {
+      // In vertical mode: vertical wheel = pan, horizontal wheel = zoom
+      const wantPan = e.shiftKey || Math.abs(dy) > Math.abs(dx);
+      
+      if (wantPan) {
+        e.preventDefault();
+        const panDy = e.shiftKey ? dx : dy;
+        panByPixels(0, panDy);
+        return;
+      }
+
+      e.preventDefault();
+      const zoomIntensity = 0.0018;
+      const factor = Math.exp(-dx * zoomIntensity);
+
+      const anchorBp = anchorBpFromClientY(e.clientY);
+      zoomByFactor(factor, anchorBp);
+    } else {
+      // In horizontal mode: horizontal wheel = pan, vertical wheel = zoom
+      const wantPan = e.shiftKey || Math.abs(dx) > Math.abs(dy);
+
+      if (wantPan) {
+        e.preventDefault();
+        const panDx = e.shiftKey ? dy : dx;
+        panByPixels(panDx, 0);
+        return;
+      }
+
+      e.preventDefault();
+      const zoomIntensity = 0.0018;
+      const factor = Math.exp(-dy * zoomIntensity);
+
+      const anchorBp = anchorBpFromClientX(e.clientX);
+      zoomByFactor(factor, anchorBp);
+    }
+  }, { passive: false });
+
+  main.addEventListener("dblclick", (e) => {
+    const anchorBp = anchorBpFromClient(e.clientX, e.clientY);
+    zoomByFactor(1.6, anchorBp);
+  });
+
+  // -----------------------------
+  // Track interactions (drag, resize)
+  // -----------------------------
+  if (trackControls) {
+  trackControls.addEventListener("pointerdown", (e) => {
+    // Don't start drag if clicking on collapse button
+    if (e.target.closest(".track-collapse-btn")) {
+      e.stopPropagation();
+      return;
+    }
+    
+    const controls = e.target.closest(".track-controls");
+    const resizeHandle = e.target.closest(".track-resize-handle");
+    
+    if (resizeHandle) {
+      // Start resizing
+      e.stopPropagation();
+      const trackId = resizeHandle.dataset.trackId;
+      const track = state.tracks.find(t => t.id === trackId);
+      if (!track) return;
+      
+      e.preventDefault();
+      const isVertical = isVerticalMode();
+      state.trackResizeState = {
+        trackId,
+        startX: e.clientX,
+        startY: e.clientY,
+        startHeight: track.height
+      };
+      trackControls.setPointerCapture(e.pointerId);
+    } else if (controls) {
+      // Start dragging for reorder
+      e.stopPropagation();
+      const trackId = controls.dataset.trackId;
+      e.preventDefault();
+      const isVertical = isVerticalMode();
+      state.trackDragState = {
+        trackId,
+        startX: e.clientX,
+        startY: e.clientY,
+        offsetX: 0,
+        offsetY: 0
+      };
+      trackControls.setPointerCapture(e.pointerId);
+    }
+  });
+
+  trackControls.addEventListener("pointermove", (e) => {
+    if (state.trackResizeState) {
+      // Resizing
+      const track = state.tracks.find(t => t.id === state.trackResizeState.trackId);
+      if (!track) return;
+      
+      e.preventDefault();
+      const isVertical = isVerticalMode();
+      let delta;
+      if (isVertical) {
+        // In vertical mode, resize based on horizontal movement
+        delta = e.clientX - state.trackResizeState.startX;
+      } else {
+        // In horizontal mode, resize based on vertical movement
+        delta = e.clientY - state.trackResizeState.startY;
+      }
+      const newHeight = Math.max(track.minHeight, state.trackResizeState.startHeight + delta);
+      track.height = newHeight;
+      updateTracksHeight();
+      renderAll();
+    } else if (state.trackDragState) {
+      // Dragging for reorder
+      e.preventDefault();
+      const isVertical = isVerticalMode();
+      const dx = e.clientX - state.trackDragState.startX;
+      const dy = e.clientY - state.trackDragState.startY;
+      
+      if (isVertical) {
+        state.trackDragState.offsetX = dx;
+      } else {
+        state.trackDragState.offsetY = dy;
+      }
+      
+      // Visual feedback: move the dragged track
+      const layout = getTrackLayout();
+      const draggedItem = layout.find(l => l.track.id === state.trackDragState.trackId);
+      if (draggedItem) {
+        const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
+        if (container) {
+          if (isVertical) {
+            container.style.transform = `translateX(${dx}px)`;
+          } else {
+            container.style.transform = `translateY(${dy}px)`;
+          }
+          container.style.zIndex = "100";
+          container.style.opacity = "0.8";
+        }
+      }
+    }
+  });
+
+  function endTrackInteraction(e) {
+    // Only process if we have an active interaction
+    if (!state.trackResizeState && !state.trackDragState) return;
+    
+    // Release pointer capture
+    if (e.target.releasePointerCapture) {
+      try {
+        e.target.releasePointerCapture(e.pointerId);
+      } catch (err) {
+        // Ignore if already released
+      }
+    }
+    
+    if (state.trackResizeState) {
+      state.trackResizeState = null;
+    } else if (state.trackDragState) {
+      // Handle reordering
+      const layout = getTrackLayout();
+      const draggedItem = layout.find(l => l.track.id === state.trackDragState.trackId);
+      if (draggedItem) {
+        const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
+        if (container) {
+          container.style.transform = "";
+          container.style.zIndex = "";
+          container.style.opacity = "";
+        }
+        
+        // Find new position based on orientation
+        const isVertical = isVerticalMode();
+        let newIndex = 0;
+        if (isVertical) {
+          const newX = draggedItem.left + state.trackDragState.offsetX;
+          for (let i = 0; i < layout.length; i++) {
+            if (newX > layout[i].left + layout[i].width / 2) {
+              newIndex = i + 1;
+            }
+          }
+        } else {
+          const newY = draggedItem.top + state.trackDragState.offsetY;
+          for (let i = 0; i < layout.length; i++) {
+            if (newY > layout[i].top + layout[i].height / 2) {
+              newIndex = i + 1;
+            }
+          }
+        }
+        newIndex = Math.max(0, Math.min(newIndex, layout.length - 1));
+        
+        // Reorder tracks
+        const currentIndex = state.tracks.findIndex(t => t.id === state.trackDragState.trackId);
+        if (currentIndex !== newIndex && currentIndex !== -1) {
+          const [track] = state.tracks.splice(currentIndex, 1);
+          state.tracks.splice(newIndex, 0, track);
+          renderAll();
+        } else {
+          // Just re-render to reset visual state
+          renderAll();
+        }
+      }
+      state.trackDragState = null;
+    }
+  }
+
+  trackControls.addEventListener("pointerup", endTrackInteraction);
+  trackControls.addEventListener("pointercancel", endTrackInteraction);
+  
+  // Also listen on document to catch pointerup events that might occur outside
+  document.addEventListener("pointerup", (e) => {
+    if (state.trackResizeState || state.trackDragState) {
+      endTrackInteraction(e);
+    }
+  });
+  document.addEventListener("pointercancel", (e) => {
+    if (state.trackResizeState || state.trackDragState) {
+      endTrackInteraction(e);
+    }
+  });
+  }
+
+  // Resize
+  new ResizeObserver(() => renderAll()).observe(flow);
+  new ResizeObserver(() => renderAll()).observe(reads);
+  new ResizeObserver(() => renderAll()).observe(tracksSvg);
+  window.addEventListener("resize", renderAll);
+
+  renderAll();
+</script>
+</body>
+</html>
