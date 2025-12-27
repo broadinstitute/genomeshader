@@ -242,10 +242,19 @@ jobs:
           cp wheels-macos-x86_64/* dist/ 2>/dev/null || true
           cp wheels-macos-aarch64/* dist/ 2>/dev/null || true
           cp wheels-sdist/* dist/ 2>/dev/null || true
+      - name: List artifacts to upload
+        run: |
+          echo "Files in dist directory:"
+          ls -la dist/ || echo "No files found in dist/"
+      - name: Install maturin
+        run: pip install maturin
       - name: Publish to PyPI
-        uses: PyO3/maturin-action@v1
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        with:
-          command: upload
-          args: --non-interactive --skip-existing dist/*
+        run: |
+          if [ -n "$(ls -A dist/ 2>/dev/null)" ]; then
+            maturin upload --non-interactive --skip-existing dist/*
+          else
+            echo "No files to upload in dist/"
+            exit 1
+          fi
