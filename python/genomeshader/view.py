@@ -342,7 +342,14 @@ window.GENOMESHADER_CONFIG = {json.dumps(config)};
     
     // Decode base64 HTML to avoid Jupyter rendering issues
     const htmlBase64 = {json.dumps(html_encoded)};
-    const html = atob(htmlBase64);
+    // atob() returns binary string, need to decode UTF-8 properly
+    const binaryString = atob(htmlBase64);
+    // Convert binary string to Uint8Array, then decode as UTF-8
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {{
+      bytes[i] = binaryString.charCodeAt(i);
+    }}
+    const html = new TextDecoder('utf-8').decode(bytes);
     
     const blob = new Blob([html], {{ type: "text/html;charset=utf-8" }});
     const url = URL.createObjectURL(blob);
