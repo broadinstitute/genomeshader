@@ -24,7 +24,7 @@ jobs:
       - name: Read base version
         id: version
         run: |
-          VERSION=$(grep -E '^version=' VERSION | cut -d'=' -f2 | tr -d ' ')
+          VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
           echo "base_version=$VERSION" >> $GITHUB_OUTPUT
           echo "Base version: $VERSION"
 
