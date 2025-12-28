@@ -1,5 +1,10 @@
 """
 Unit tests for the refactored view.py template-based popup creation.
+
+Note: Tests decode base64-encoded HTML from the render() output to verify
+that bootstrap variables (GENOMESHADER_MANIFEST_URL, GENOMESHADER_CONFIG)
+are properly injected into the template, since the HTML is embedded in
+JavaScript as a base64-encoded string.
 """
 import os
 import json
