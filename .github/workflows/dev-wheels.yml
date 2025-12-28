@@ -32,15 +32,18 @@ jobs:
         id: branch
         run: |
           BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          # Replace / with - and remove any other invalid characters
-          SANITIZED=$(echo "$BRANCH_NAME" | sed 's/\//-/g' | sed 's/[^a-zA-Z0-9.-]/-/g')
+          # Replace / with . and remove any other invalid characters for PEP 440 local version
+          # Local version identifiers can contain: alphanumeric, dots, hyphens, underscores
+          SANITIZED=$(echo "$BRANCH_NAME" | sed 's/\//./g' | sed 's/[^a-zA-Z0-9._-]/-/g')
           echo "branch_name=$SANITIZED" >> $GITHUB_OUTPUT
           echo "Branch name: $BRANCH_NAME -> $SANITIZED"
 
       - name: Create dev version
         id: dev_version
         run: |
-          DEV_VERSION="${{ steps.version.outputs.base_version }}.dev-${{ steps.branch.outputs.branch_name }}"
+          # Use PEP 440 local version identifier format: base+dev.branch-name
+          # This is valid: 0.1.89+dev.kvg-gh-yml
+          DEV_VERSION="${{ steps.version.outputs.base_version }}+dev.${{ steps.branch.outputs.branch_name }}"
           echo "dev_version=$DEV_VERSION" >> $GITHUB_OUTPUT
           echo "Dev version: $DEV_VERSION"
 
