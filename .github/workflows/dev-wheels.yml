@@ -130,14 +130,24 @@ jobs:
             import urllib.request
             import subprocess
             import sys
+            import json
             
+            # For public pre-releases (new format)
             tag = "dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}"
             filename = "${{ steps.wheel.outputs.filename }}"
             url = f"https://github.com/${{ github.repository }}/releases/download/{tag}/{filename}"
+            
+            # For draft releases, use GitHub API (requires GITHUB_TOKEN if private repo)
+            # Uncomment below if downloading from a draft release:
+            # import os
+            # token = os.environ.get('GITHUB_TOKEN', '')  # Set this if repo is private
+            # headers = {'Authorization': f'token {token}'} if token else {}
+            # req = urllib.request.Request(url, headers=headers)
+            
             urllib.request.urlretrieve(url, "/tmp/genomeshader.whl")
             subprocess.check_call([sys.executable, "-m", "pip", "install", "/tmp/genomeshader.whl", "--force-reinstall"])
             ```
-          draft: true
+          draft: false
           prerelease: true
           files: dist/*.whl
           token: ${{ secrets.GITHUB_TOKEN }}
