@@ -3,6 +3,9 @@ name: Build & Publish
 on:
   release:
     types: [published]
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
@@ -27,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -66,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || github.ref }}
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
@@ -110,5 +113,5 @@ jobs:
           SLACK_ICON: https://github.com/broadinstitute/genomeshader/blob/main/.github/workflows/dnagood.png?raw=true
           SLACK_COLOR: ${{ needs.publish.result == 'success' && '#50D9C9' || '#DF5A49' }}
           SLACK_MESSAGE: >
-            Publish ${{ needs.publish.result }} for ${{ github.event.release.tag_name }}
+            Publish ${{ needs.publish.result }} for ${{ github.event.release.tag_name || github.ref_name }}
 
