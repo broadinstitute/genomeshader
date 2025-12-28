@@ -116,36 +116,25 @@ jobs:
             1. Download the `.whl` file from the assets below
             2. Install with: `pip install genomeshader-*.whl`
             
-            **Option 2: Install via script (recommended)**
+            **Option 2: Install via script (bash)**
             ```bash
-            # Download and install in one command
             TAG="dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}"
-            curl -L -o /tmp/genomeshader.whl \
-              "https://github.com/${{ github.repository }}/releases/download/${TAG}/${{ steps.wheel.outputs.filename }}"
-            pip install /tmp/genomeshader.whl
+            FILENAME="${{ steps.wheel.outputs.filename }}"
+            URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${FILENAME}"
+            
+            wget -O "${FILENAME}" "${URL}"
+            pip install "${FILENAME}"
             ```
             
-            **Option 3: In Jupyter/Colab**
+            **Option 3: In Jupyter/Colab (recommended)**
             ```python
-            import urllib.request
-            import subprocess
-            import sys
-            import json
-            
-            # For public pre-releases (new format)
             tag = "dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}"
             filename = "${{ steps.wheel.outputs.filename }}"
             url = f"https://github.com/${{ github.repository }}/releases/download/{tag}/{filename}"
             
-            # For draft releases, use GitHub API (requires GITHUB_TOKEN if private repo)
-            # Uncomment below if downloading from a draft release:
-            # import os
-            # token = os.environ.get('GITHUB_TOKEN', '')  # Set this if repo is private
-            # headers = {'Authorization': f'token {token}'} if token else {}
-            # req = urllib.request.Request(url, headers=headers)
-            
-            urllib.request.urlretrieve(url, "/tmp/genomeshader.whl")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "/tmp/genomeshader.whl", "--force-reinstall"])
+            # Download with the actual wheel filename (pip needs this to parse metadata)
+            !wget -O {filename} {url}
+            !pip install {filename}
             ```
           draft: false
           prerelease: true
@@ -164,10 +153,21 @@ jobs:
           echo "### 📦 Install" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Download and install:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**In Jupyter/Colab:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`python" >> $GITHUB_STEP_SUMMARY
+          echo "tag = \"dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}\"" >> $GITHUB_STEP_SUMMARY
+          echo "filename = \"${{ steps.wheel.outputs.filename }}\"" >> $GITHUB_STEP_SUMMARY
+          echo "url = f\"https://github.com/${{ github.repository }}/releases/download/{tag}/{filename}\"" >> $GITHUB_STEP_SUMMARY
+          echo "!wget -O {filename} {url}" >> $GITHUB_STEP_SUMMARY
+          echo "!pip install {filename}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**In bash:**" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
           echo "TAG=\"dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}\"" >> $GITHUB_STEP_SUMMARY
-          echo "curl -L -o /tmp/genomeshader.whl \\" >> $GITHUB_STEP_SUMMARY
-          echo "  \"https://github.com/${{ github.repository }}/releases/download/\${TAG}/${{ steps.wheel.outputs.filename }}\"" >> $GITHUB_STEP_SUMMARY
-          echo "pip install /tmp/genomeshader.whl" >> $GITHUB_STEP_SUMMARY
+          echo "FILENAME=\"${{ steps.wheel.outputs.filename }}\"" >> $GITHUB_STEP_SUMMARY
+          echo "wget -O \"\${FILENAME}\" \"https://github.com/${{ github.repository }}/releases/download/\${TAG}/\${FILENAME}\"" >> $GITHUB_STEP_SUMMARY
+          echo "pip install \"\${FILENAME}\"" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
