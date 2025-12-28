@@ -1,0 +1,114 @@
+name: Build & Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write  # for PyPI Trusted Publishing
+
+jobs:
+  build-wheels:
+    name: build-wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-latest
+            target: aarch64
+          - os: macos-latest
+            target: x86_64
+          - os: macos-latest
+            target: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+          sccache: "true"
+          before-script-linux: |
+            # If we're running on rhel centos, install needed packages.
+            if command -v yum &> /dev/null; then
+              yum update -y && yum install -y perl-core openssl openssl-devel pkgconfig libatomic
+
+              # If we're running on i686 we need to symlink libatomic
+              # in order to build openssl with -latomic flag.
+              if [[ ! -d "/usr/lib64" ]]; then
+                ln -s /usr/lib/libatomic.so.1 /usr/lib/libatomic.so
+              fi
+            else
+            # If we're running on debian-based system.
+              apt update -y && apt-get install -y libssl-dev openssl pkg-config
+            fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*
+
+  build-sdist:
+    name: build-sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-sdist
+          path: dist/*
+
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    needs: [build-wheels, build-sdist]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # If Trusted Publishing is configured in PyPI, this works with OIDC automatically.
+        # Otherwise, set:
+        # with:
+        #   password: ${{ secrets.PYPI_API_TOKEN }}
+
+  slack:
+    name: slack
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [publish]
+    steps:
+      - name: Notify Slack
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_USERNAME: genomeshader
+          SLACK_ICON: https://github.com/broadinstitute/genomeshader/blob/main/.github/workflows/dnagood.png?raw=true
+          SLACK_COLOR: ${{ needs.publish.result == 'success' && '#50D9C9' || '#DF5A49' }}
+          SLACK_MESSAGE: >
+            Publish ${{ needs.publish.result }} for ${{ github.event.release.tag_name }}
+

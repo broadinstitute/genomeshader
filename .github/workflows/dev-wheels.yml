@@ -1,0 +1,97 @@
+name: Dev Wheels
+
+on:
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+  packages: write  # for GitHub Packages
+
+jobs:
+  build-dev-wheel:
+    name: build-dev-wheel
+    runs-on: ubuntu-latest
+    if: github.ref != 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Read base version
+        id: version
+        run: |
+          VERSION=$(grep -E '^version=' VERSION | cut -d'=' -f2 | tr -d ' ')
+          echo "base_version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Base version: $VERSION"
+
+      - name: Sanitize branch name
+        id: branch
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          # Replace / with - and remove any other invalid characters
+          SANITIZED=$(echo "$BRANCH_NAME" | sed 's/\//-/g' | sed 's/[^a-zA-Z0-9.-]/-/g')
+          echo "branch_name=$SANITIZED" >> $GITHUB_OUTPUT
+          echo "Branch name: $BRANCH_NAME -> $SANITIZED"
+
+      - name: Create dev version
+        id: dev_version
+        run: |
+          DEV_VERSION="${{ steps.version.outputs.base_version }}.dev-${{ steps.branch.outputs.branch_name }}"
+          echo "dev_version=$DEV_VERSION" >> $GITHUB_OUTPUT
+          echo "Dev version: $DEV_VERSION"
+
+      - name: Update version files for build
+        run: |
+          DEV_VERSION="${{ steps.dev_version.outputs.dev_version }}"
+          # Update pyproject.toml
+          sed -i.bak "s/version = \".*\"/version = \"$DEV_VERSION\"/" pyproject.toml
+          # Update Cargo.toml
+          sed -i.bak "s/^version = \".*\"/version = \"$DEV_VERSION\"/" Cargo.toml
+          # Show changes
+          echo "Updated versions:"
+          grep "version" pyproject.toml
+          grep "^version" Cargo.toml
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: --release --out dist
+          manylinux: auto
+          sccache: "true"
+
+      - name: Restore version files
+        if: always()
+        run: |
+          # Restore original files
+          mv pyproject.toml.bak pyproject.toml 2>/dev/null || true
+          mv Cargo.toml.bak Cargo.toml 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dev-wheel
+          path: dist/*.whl
+
+  publish-dev-wheel:
+    name: publish-dev-wheel
+    runs-on: ubuntu-latest
+    needs: [build-dev-wheel]
+    if: always() && needs.build-dev-wheel.result != 'failure'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dev-wheel
+          path: dist
+
+      - name: Publish to GitHub Packages
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          repository-url: https://pypi.packages.github.com/broadinstitute/genomeshader
+          username: __token__
+          password: ${{ secrets.GITHUB_TOKEN }}
+
