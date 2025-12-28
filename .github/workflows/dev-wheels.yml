@@ -90,6 +90,13 @@ jobs:
           # Restore original pyproject.toml
           mv pyproject.toml.bak pyproject.toml 2>/dev/null || true
 
+      - name: Get wheel filename
+        id: wheel
+        run: |
+          WHEEL_FILE=$(ls dist/*.whl | head -n 1 | xargs basename)
+          echo "filename=$WHEEL_FILE" >> $GITHUB_OUTPUT
+          echo "Wheel filename: $WHEEL_FILE"
+
       - name: Create or update GitHub Release
         id: release
         uses: softprops/action-gh-release@v1
@@ -105,14 +112,30 @@ jobs:
             
             ## Installation
             
-            Download the wheel file below and install with:
+            **Option 1: Download and install manually**
+            1. Download the `.whl` file from the assets below
+            2. Install with: `pip install genomeshader-*.whl`
+            
+            **Option 2: Install via script (recommended)**
             ```bash
-            pip install genomeshader-*.whl
+            # Download and install in one command
+            TAG="dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}"
+            curl -L -o /tmp/genomeshader.whl \
+              "https://github.com/${{ github.repository }}/releases/download/${TAG}/${{ steps.wheel.outputs.filename }}"
+            pip install /tmp/genomeshader.whl
             ```
             
-            Or install directly from the release:
-            ```bash
-            pip install https://github.com/${{ github.repository }}/releases/download/dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}/genomeshader-*.whl
+            **Option 3: In Jupyter/Colab**
+            ```python
+            import urllib.request
+            import subprocess
+            import sys
+            
+            tag = "dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}"
+            filename = "${{ steps.wheel.outputs.filename }}"
+            url = f"https://github.com/${{ github.repository }}/releases/download/{tag}/{filename}"
+            urllib.request.urlretrieve(url, "/tmp/genomeshader.whl")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "/tmp/genomeshader.whl", "--force-reinstall"])
             ```
           draft: true
           prerelease: true
@@ -130,8 +153,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 Install" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Install directly from the release:" >> $GITHUB_STEP_SUMMARY
+          echo "Download and install:" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "pip install https://github.com/${{ github.repository }}/releases/download/dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}/genomeshader-*.whl" >> $GITHUB_STEP_SUMMARY
+          echo "TAG=\"dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}\"" >> $GITHUB_STEP_SUMMARY
+          echo "curl -L -o /tmp/genomeshader.whl \\" >> $GITHUB_STEP_SUMMARY
+          echo "  \"https://github.com/${{ github.repository }}/releases/download/\${TAG}/${{ steps.wheel.outputs.filename }}\"" >> $GITHUB_STEP_SUMMARY
+          echo "pip install /tmp/genomeshader.whl" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
