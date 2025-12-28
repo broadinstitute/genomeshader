@@ -6,8 +6,7 @@ on:
       - main
 
 permissions:
-  contents: read
-  packages: write  # for GitHub Packages
+  contents: write  # needed to create releases and upload assets
 
 jobs:
   build-dev-wheel:
@@ -91,27 +90,48 @@ jobs:
           # Restore original pyproject.toml
           mv pyproject.toml.bak pyproject.toml 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v4
+      - name: Create or update GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v1
         with:
-          name: dev-wheel
-          path: dist/*.whl
+          tag_name: dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}
+          name: Dev Build - ${{ github.ref_name }} (${{ steps.dev_version.outputs.dev_version }})
+          body: |
+            Development wheel for branch `${{ github.ref_name }}`
+            
+            **Version:** `${{ steps.dev_version.outputs.dev_version }}`
+            **Commit:** ${{ github.sha }}
+            **Branch:** `${{ github.ref_name }}`
+            
+            ## Installation
+            
+            Download the wheel file below and install with:
+            ```bash
+            pip install genomeshader-*.whl
+            ```
+            
+            Or install directly from the release:
+            ```bash
+            pip install https://github.com/${{ github.repository }}/releases/download/dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}/genomeshader-*.whl
+            ```
+          draft: true
+          prerelease: true
+          files: dist/*.whl
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-dev-wheel:
-    name: publish-dev-wheel
-    runs-on: ubuntu-latest
-    needs: [build-dev-wheel]
-    if: always() && needs.build-dev-wheel.result != 'failure'
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dev-wheel
-          path: dist
-
-      - name: Publish to GitHub Packages
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist
-          repository-url: https://pypi.packages.github.com/broadinstitute/genomeshader
-          username: __token__
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Wheel build summary
+        if: success()
+        run: |
+          echo "## ✅ Dev Wheel Built and Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ steps.dev_version.outputs.dev_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Release:** [View Release](${{ steps.release.outputs.url }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Install" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Install directly from the release:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "pip install https://github.com/${{ github.repository }}/releases/download/dev-${{ steps.branch.outputs.branch_sanitized }}-${{ steps.branch.outputs.branch_hash }}/genomeshader-*.whl" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
