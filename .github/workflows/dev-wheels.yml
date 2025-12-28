@@ -28,51 +28,40 @@ jobs:
           echo "base_version=$VERSION" >> $GITHUB_OUTPUT
           echo "Base version: $VERSION"
 
-      - name: Sanitize branch name for PEP 440 (pyproject.toml)
-        id: branch_pep440
+      - name: Sanitize branch name
+        id: branch
         run: |
           BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          # PEP 440 local version: alphanumeric, dots, hyphens, underscores allowed
-          # Replace / with . for PEP 440
-          SANITIZED=$(echo "$BRANCH_NAME" | sed 's/\//./g' | sed 's/[^a-zA-Z0-9._-]/-/g')
-          echo "branch_name=$SANITIZED" >> $GITHUB_OUTPUT
-          echo "Branch name (PEP 440): $BRANCH_NAME -> $SANITIZED"
+          # Create a short hash of the branch name for use in version
+          # This ensures it's always valid and short
+          BRANCH_HASH=$(echo -n "$BRANCH_NAME" | sha256sum | cut -c1-8)
+          # Also create a sanitized version for readability (alphanumeric and hyphens only)
+          SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20)
+          echo "branch_hash=$BRANCH_HASH" >> $GITHUB_OUTPUT
+          echo "branch_sanitized=$SANITIZED" >> $GITHUB_OUTPUT
+          echo "Branch name: $BRANCH_NAME"
+          echo "Branch hash: $BRANCH_HASH"
+          echo "Branch sanitized: $SANITIZED"
 
-      - name: Sanitize branch name for SemVer (Cargo.toml)
-        id: branch_semver
-        run: |
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          # SemVer pre-release: only alphanumeric and hyphens allowed (no dots, no underscores)
-          # Replace / and . with - for SemVer
-          SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[\/.]/-/g' | sed 's/[^a-zA-Z0-9-]/-/g')
-          echo "branch_name=$SANITIZED" >> $GITHUB_OUTPUT
-          echo "Branch name (SemVer): $BRANCH_NAME -> $SANITIZED"
-
-      - name: Create dev versions
-        id: dev_versions
+      - name: Create dev version
+        id: dev_version
         run: |
           BASE_VERSION="${{ steps.version.outputs.base_version }}"
-          # PEP 440 format for pyproject.toml: 0.1.89+dev.kvg-gh-yml
-          PYTHON_VERSION="${BASE_VERSION}+dev.${{ steps.branch_pep440.outputs.branch_name }}"
-          # SemVer pre-release format for Cargo.toml: 0.1.89-dev-kvg-gh-yml
-          CARGO_VERSION="${BASE_VERSION}-dev-${{ steps.branch_semver.outputs.branch_name }}"
-          echo "python_version=$PYTHON_VERSION" >> $GITHUB_OUTPUT
-          echo "cargo_version=$CARGO_VERSION" >> $GITHUB_OUTPUT
-          echo "Python version (PEP 440): $PYTHON_VERSION"
-          echo "Cargo version (SemVer): $CARGO_VERSION"
+          # Use PEP 440 dev version format: 0.1.89.dev0+branch-hash
+          # This format is compatible with both PEP 440 and can be converted by maturin
+          # Using .dev0 (numeric) + local version identifier (branch hash)
+          DEV_VERSION="${BASE_VERSION}.dev0+${{ steps.branch.outputs.branch_hash }}"
+          echo "dev_version=$DEV_VERSION" >> $GITHUB_OUTPUT
+          echo "Dev version: $DEV_VERSION"
 
-      - name: Update version files for build
+      - name: Update pyproject.toml for build
         run: |
-          PYTHON_VERSION="${{ steps.dev_versions.outputs.python_version }}"
-          CARGO_VERSION="${{ steps.dev_versions.outputs.cargo_version }}"
-          # Update pyproject.toml with PEP 440 format
-          sed -i.bak "s/version = \".*\"/version = \"$PYTHON_VERSION\"/" pyproject.toml
-          # Update Cargo.toml with SemVer pre-release format
-          sed -i.bak "s/^version = \".*\"/version = \"$CARGO_VERSION\"/" Cargo.toml
+          DEV_VERSION="${{ steps.dev_version.outputs.dev_version }}"
+          # Only update pyproject.toml - maturin will sync to Cargo.toml automatically
+          sed -i.bak "s/version = \".*\"/version = \"$DEV_VERSION\"/" pyproject.toml
           # Show changes
-          echo "Updated versions:"
+          echo "Updated pyproject.toml version:"
           grep "version" pyproject.toml
-          grep "^version" Cargo.toml
 
       - name: Build wheel
         uses: PyO3/maturin-action@v1
@@ -82,12 +71,11 @@ jobs:
           manylinux: auto
           sccache: "true"
 
-      - name: Restore version files
+      - name: Restore version file
         if: always()
         run: |
-          # Restore original files
+          # Restore original pyproject.toml
           mv pyproject.toml.bak pyproject.toml 2>/dev/null || true
-          mv Cargo.toml.bak Cargo.toml 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:
