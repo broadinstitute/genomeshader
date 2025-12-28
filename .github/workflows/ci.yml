@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Create virtual environment
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install -U pip
+          pip install -U maturin pytest
+          # Install dev dependencies (including IPython)
+          pip install -r dev-requirements.txt
+
+      - name: Build & install (maturin develop)
+        run: |
+          source .venv/bin/activate
+          maturin develop --release
+
+      - name: Run tests
+        working-directory: python
+        run: |
+          source ../.venv/bin/activate
+          pytest -q
+
+  build-smoke-wheel:
+    name: build-smoke-wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Build wheel (smoke)
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: --release --out dist
+          manylinux: auto
+          sccache: "true"
+          before-script-linux: |
+            # If we're running on rhel centos, install needed packages.
+            if command -v yum &> /dev/null; then
+              yum update -y && yum install -y perl-core openssl openssl-devel pkgconfig libatomic
+
+              # If we're running on i686 we need to symlink libatomic
+              # in order to build openssl with -latomic flag.
+              if [[ ! -d "/usr/lib64" ]]; then
+                ln -s /usr/lib/libatomic.so.1 /usr/lib/libatomic.so
+              fi
+            else
+            # If we're running on debian-based system.
+              apt update -y && apt-get install -y libssl-dev openssl pkg-config perl
+            fi
+
