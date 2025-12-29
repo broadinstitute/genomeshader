@@ -376,6 +376,26 @@
       box-shadow: var(--shadow);
     }
 
+    /* Tooltip */
+    .tooltip {
+      position: fixed;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text);
+      pointer-events: none;
+      z-index: 1000;
+      white-space: pre-line;
+      box-shadow: var(--shadow);
+      display: none;
+      line-height: 1.4;
+    }
+    .tooltip.visible {
+      display: block;
+    }
+
     /* SVG text classes */
     .svg-label { fill: var(--muted); font-size: 12px; font-weight: 600; }
     .svg-small { fill: var(--muted2); font-size: 10px; }
@@ -590,6 +610,7 @@
       </div>
 
       <div class="hud" id="hud"></div>
+      <div class="tooltip" id="tooltip"></div>
     </div>
   </div>
 
@@ -888,6 +909,7 @@
     K: 8,
     hoveredVariantIndex: null, // index of hovered variant, or null
     expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
+    hoveredRepeatTooltip: null, // { text, x, y } or null
 
     // interaction
     dragging: false,
@@ -975,6 +997,7 @@
   }
 
   // Initialize state from GENOMESHADER_CONFIG if available
+  let dataBounds = null;
   if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
     const region = window.GENOMESHADER_CONFIG.region;
     // Parse region string format: "chr1:100000-200000"
@@ -983,6 +1006,14 @@
       state.contig = match[1];
       state.startBp = parseInt(match[2], 10);
       state.endBp = parseInt(match[3], 10);
+    }
+    
+    // Store data bounds if available (where actual read data exists)
+    if (window.GENOMESHADER_CONFIG.data_bounds) {
+      dataBounds = {
+        start: window.GENOMESHADER_CONFIG.data_bounds.start,
+        end: window.GENOMESHADER_CONFIG.data_bounds.end
+      };
     }
   }
 
@@ -993,6 +1024,7 @@
   const flowCanvas = document.getElementById("flowCanvas");
   const readsCanvas = document.getElementById("readsCanvas");
   const hud = document.getElementById("hud");
+  const tooltip = document.getElementById("tooltip");
 
   // Initialize orientation state after DOM elements are available
   updateOrientationState();
@@ -1201,49 +1233,35 @@
     return Math.max(...variant.altAlleles.map(alt => Math.max(0, alt.length - refLen)));
   }
 
-  // Genes: now with strand + exons
-  const transcripts = [
-    {
-      name: "C2", lane: 0, strand: "+",
-      start: 100_030, end: 100_115,
-      exons: [[100_030,100_052],[100_060,100_072],[100_090,100_115]],
-    },
-    {
-      name: "CFB", lane: 1, strand: "-",
-      start: 100_070, end: 100_230,
-      exons: [[100_070,100_095],[100_110,100_135],[100_170,100_230]],
-    },
-    {
-      name: "NELFE", lane: 2, strand: "+",
-      start: 100_260, end: 100_520,
-      exons: [[100_260,100_290],[100_305,100_332],[100_410,100_520]],
-    },
-    {
-      name: "SKIV2L", lane: 0, strand: "+",
-      start: 100_535, end: 100_820,
-      exons: [[100_535,100_570],[100_610,100_640],[100_700,100_820]],
-    },
-    {
-      name: "STK19", lane: 1, strand: "-",
-      start: 100_610, end: 100_720,
-      exons: [[100_610,100_640],[100_690,100_720]],
-    },
-    {
-      name: "ABHD16A", lane: 2, strand: "+",
-      start: 100_700, end: 100_875,
-      exons: [[100_700,100_730],[100_760,100_790],[100_840,100_875]],
-    },
-  ];
+  // Genes: load from config or use empty array as fallback
+  let transcripts = [];
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.transcripts_data) {
+    const data = window.GENOMESHADER_CONFIG.transcripts_data;
+    // Data should already be an array of transcript objects
+    if (Array.isArray(data)) {
+      transcripts = data;
+      console.log(`Loaded ${transcripts.length} transcripts for genes track`);
+    } else {
+      console.warn("Transcripts data is not in expected array format:", data);
+    }
+  } else {
+    console.warn("No transcripts_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
+  }
 
-  // RepeatMasker-like intervals (placeholder)
-  const repeats = [
-    { start: 100_045, end: 100_062, cls: "SINE" },
-    { start: 100_155, end: 100_190, cls: "LINE" },
-    { start: 100_265, end: 100_275, cls: "Simple" },
-    { start: 100_360, end: 100_388, cls: "LTR" },
-    { start: 100_615, end: 100_645, cls: "DNA" },
-    { start: 100_815, end: 100_845, cls: "SINE" },
-  ];
+  // RepeatMasker: load from config or use empty array as fallback
+  let repeats = [];
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.repeats_data) {
+    const data = window.GENOMESHADER_CONFIG.repeats_data;
+    // Data should already be an array of repeat objects with start, end, cls
+    if (Array.isArray(data)) {
+      repeats = data;
+      console.log(`Loaded ${repeats.length} repeats for RepeatMasker track`);
+    } else {
+      console.warn("Repeats data is not in expected array format:", data);
+    }
+  } else {
+    console.warn("No repeats_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
+  }
 
   // -----------------------------
   // SVG helpers
@@ -1388,6 +1406,82 @@
     const genomePosCanonical = isVertical 
       ? (bp) => yGenomeCanonical(bp, H)
       : (bp) => xGenomeCanonical(bp, W);
+    
+    // Draw data bounds overlays across all tracks (if data bounds exist and differ from view)
+    if (dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
+      const dataStartPos = genomePos(dataBounds.start);
+      const dataEndPos = genomePos(dataBounds.end);
+      
+      // Find the tracks container bounds
+      const tracksContainer = document.getElementById("tracksContainer");
+      if (tracksContainer) {
+        const containerRect = tracksContainer.getBoundingClientRect();
+        const svgRect = tracksSvg.getBoundingClientRect();
+        
+        if (isVertical) {
+          // Region before data start
+          if (dataBounds.start > state.startBp) {
+            const overlayY1 = 0;
+            const overlayY2 = dataStartPos;
+            tracksSvg.appendChild(el("rect", {
+              x: 0,
+              y: overlayY1,
+              width: W,
+              height: overlayY2 - overlayY1,
+              fill: "rgba(127,127,127,0.05)",
+              "pointer-events": "none",
+              "class": "data-bounds-overlay"
+            }));
+          }
+          
+          // Region after data end
+          if (dataBounds.end < state.endBp) {
+            const overlayY1 = dataEndPos;
+            const overlayY2 = H;
+            tracksSvg.appendChild(el("rect", {
+              x: 0,
+              y: overlayY1,
+              width: W,
+              height: overlayY2 - overlayY1,
+              fill: "rgba(127,127,127,0.05)",
+              "pointer-events": "none",
+              "class": "data-bounds-overlay"
+            }));
+          }
+        } else {
+          // Horizontal mode
+          // Region before data start
+          if (dataBounds.start > state.startBp) {
+            const overlayX1 = 0;
+            const overlayX2 = dataStartPos;
+            tracksSvg.appendChild(el("rect", {
+              x: overlayX1,
+              y: 0,
+              width: overlayX2 - overlayX1,
+              height: H,
+              fill: "rgba(127,127,127,0.05)",
+              "pointer-events": "none",
+              "class": "data-bounds-overlay"
+            }));
+          }
+          
+          // Region after data end
+          if (dataBounds.end < state.endBp) {
+            const overlayX1 = dataEndPos;
+            const overlayX2 = W;
+            tracksSvg.appendChild(el("rect", {
+              x: overlayX1,
+              y: 0,
+              width: overlayX2 - overlayX1,
+              height: H,
+              fill: "rgba(127,127,127,0.05)",
+              "pointer-events": "none",
+              "class": "data-bounds-overlay"
+            }));
+          }
+        }
+      }
+    }
 
     // Find track positions
     const ideogramLayout = layout.find(l => l.track.id === "ideogram");
@@ -1896,41 +1990,140 @@
       }
     }
 
+    // Optimize repeat rendering: filter, cluster, and batch DOM operations
+    // Calculate minimum pixel width (don't render repeats smaller than 1 pixel)
+    const minPixelWidth = 1;
+    const clusterThreshold = 5; // Cluster repeats within 5bp of each other
+    const maxRepeatsToRender = 5000; // Safety limit to prevent crashes
+
+    // Filter and prepare visible repeats
+    const visibleRepeats = [];
     for (const r of repeats) {
       if (r.end <= state.startBp || r.start >= state.endBp) continue;
       const rs = Math.max(r.start, state.startBp);
       const re = Math.min(r.end, state.endBp);
-
+      
       const pos1 = genomePos(rs);
       const pos2 = genomePos(re);
+      const width = Math.abs(pos2 - pos1);
+      
+      // Skip repeats that are too small to render
+      if (width < minPixelWidth) continue;
+      
+      visibleRepeats.push({
+        start: rs,
+        end: re,
+        cls: r.cls,
+        pos1: pos1,
+        pos2: pos2,
+        width: width
+      });
+    }
 
+    // Sort by position for clustering
+    visibleRepeats.sort((a, b) => a.start - b.start);
+
+    // Cluster nearby repeats of the same class to reduce DOM elements
+    const clusteredRepeats = [];
+    let currentCluster = null;
+    
+    for (const r of visibleRepeats) {
+      if (currentCluster && 
+          r.cls === currentCluster.cls &&
+          r.start - currentCluster.end <= clusterThreshold) {
+        // Merge into current cluster
+        currentCluster.end = Math.max(currentCluster.end, r.end);
+        currentCluster.pos2 = genomePos(currentCluster.end);
+        currentCluster.width = Math.abs(currentCluster.pos2 - currentCluster.pos1);
+      } else {
+        // Start new cluster
+        if (currentCluster) {
+          clusteredRepeats.push(currentCluster);
+        }
+        currentCluster = {
+          start: r.start,
+          end: r.end,
+          cls: r.cls,
+          pos1: r.pos1,
+          pos2: r.pos2,
+          width: r.width
+        };
+      }
+    }
+    if (currentCluster) {
+      clusteredRepeats.push(currentCluster);
+    }
+
+    // Limit the number of elements to render (take first N if too many)
+    const repeatsToRender = clusteredRepeats.slice(0, maxRepeatsToRender);
+    
+    if (clusteredRepeats.length > maxRepeatsToRender) {
+      console.warn(`Too many repeats (${clusteredRepeats.length}), rendering only first ${maxRepeatsToRender}`);
+    }
+
+    // Use document fragment for batch DOM operations (better performance)
+    const fragment = document.createDocumentFragment();
+    
+    for (const r of repeatsToRender) {
+      const pos1 = r.pos1;
+      const pos2 = r.pos2;
+      const isSmall = r.width < 3; // Don't add stroke for very small elements
+      
+      // Format tooltip text with repeat class and coordinates
+      const tooltipText = `${r.cls} repeat\n${r.start.toLocaleString()} - ${r.end.toLocaleString()}`;
+      
+      // Create rect element
+      let rect;
       if (isVertical) {
-        // In vertical mode, pos1 and pos2 are Y coordinates
-        // Since coordinate system is inverted (bottom=start, top=end), pos1 > pos2
-        // Need to ensure correct ordering for rect positioning
         const yMin = Math.min(pos1, pos2);
         const yMax = Math.max(pos1, pos2);
-        tracksSvg.appendChild(el("rect", {
+        rect = el("rect", {
           x: repeatsX + 4,
           y: yMin,
           width: repeatsW - 8,
-          height: Math.max(2, yMax - yMin),
-          rx: 6,
+          height: Math.max(1, yMax - yMin),
+          rx: isSmall ? 0 : 6,
           fill: repeatColor(r.cls),
-          stroke: "rgba(127,127,127,0.20)"
-        }));
+          style: "cursor: pointer;"
+        });
+        if (!isSmall) {
+          rect.setAttribute("stroke", "rgba(127,127,127,0.20)");
+        }
       } else {
-        tracksSvg.appendChild(el("rect", {
+        rect = el("rect", {
           x: pos1,
           y: repeatsY + 4,
-          width: Math.max(2, pos2 - pos1),
+          width: Math.max(1, pos2 - pos1),
           height: repeatsH - 8,
-          rx: 6,
+          rx: isSmall ? 0 : 6,
           fill: repeatColor(r.cls),
-          stroke: "rgba(127,127,127,0.20)"
-        }));
+          style: "cursor: pointer;"
+        });
+        if (!isSmall) {
+          rect.setAttribute("stroke", "rgba(127,127,127,0.20)");
+        }
       }
+      
+      // Add mouse event handlers for tooltip
+      rect.addEventListener("mousemove", (e) => {
+        state.hoveredRepeatTooltip = {
+          text: tooltipText,
+          x: e.clientX + 10,
+          y: e.clientY + 10
+        };
+        updateTooltip();
+      });
+      
+      rect.addEventListener("mouseleave", () => {
+        state.hoveredRepeatTooltip = null;
+        updateTooltip();
+      });
+      
+      fragment.appendChild(rect);
     }
+    
+    // Append all elements at once (single DOM operation)
+    tracksSvg.appendChild(fragment);
     }
 
     // --- Locus ruler
@@ -1963,6 +2156,72 @@
           stroke: "rgba(127,127,127,0.70)",
           "stroke-width": 1.2
         }));
+      }
+
+      // Data bounds indicators - show where actual read data exists
+      if (dataBounds) {
+        const dataStartPos = genomePos(dataBounds.start);
+        const dataEndPos = genomePos(dataBounds.end);
+        
+        // Draw semi-transparent overlays for regions outside data bounds
+        if (isVertical) {
+          // Region before data start
+          if (dataBounds.start > state.startBp) {
+            const overlayY1 = 16;
+            const overlayY2 = dataStartPos;
+            tracksSvg.appendChild(el("rect", {
+              x: rulerX,
+              y: overlayY1,
+              width: rulerW,
+              height: overlayY2 - overlayY1,
+              fill: "rgba(127,127,127,0.08)",
+              "pointer-events": "none"
+            }));
+          }
+          
+          // Region after data end
+          if (dataBounds.end < state.endBp) {
+            const overlayY1 = dataEndPos;
+            const overlayY2 = H - 16;
+            tracksSvg.appendChild(el("rect", {
+              x: rulerX,
+              y: overlayY1,
+              width: rulerW,
+              height: overlayY2 - overlayY1,
+              fill: "rgba(127,127,127,0.08)",
+              "pointer-events": "none"
+            }));
+          }
+        } else {
+          // Horizontal mode
+          // Region before data start
+          if (dataBounds.start > state.startBp) {
+            const overlayX1 = 16;
+            const overlayX2 = dataStartPos;
+            tracksSvg.appendChild(el("rect", {
+              x: overlayX1,
+              y: rulerY,
+              width: overlayX2 - overlayX1,
+              height: rulerH,
+              fill: "rgba(127,127,127,0.08)",
+              "pointer-events": "none"
+            }));
+          }
+          
+          // Region after data end
+          if (dataBounds.end < state.endBp) {
+            const overlayX1 = dataEndPos;
+            const overlayX2 = W - 16;
+            tracksSvg.appendChild(el("rect", {
+              x: overlayX1,
+              y: rulerY,
+              width: overlayX2 - overlayX1,
+              height: rulerH,
+              fill: "rgba(127,127,127,0.08)",
+              "pointer-events": "none"
+            }));
+          }
+        }
       }
 
       const span = state.endBp - state.startBp;
@@ -3007,6 +3266,17 @@
     }
   }
 
+  function updateTooltip() {
+    if (state.hoveredRepeatTooltip) {
+      tooltip.textContent = state.hoveredRepeatTooltip.text;
+      tooltip.style.left = state.hoveredRepeatTooltip.x + 'px';
+      tooltip.style.top = state.hoveredRepeatTooltip.y + 'px';
+      tooltip.classList.add('visible');
+    } else {
+      tooltip.classList.remove('visible');
+    }
+  }
+
   function renderAll() {
     updateDerived();
     updateTracksHeight();
@@ -3016,6 +3286,7 @@
     renderFlowCanvas();
     renderReadsCanvas();
     renderHUD();
+    updateTooltip();
     setupCanvasHover();
   }
 

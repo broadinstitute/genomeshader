@@ -265,7 +265,7 @@ class GenomeShader:
         # Convert to list of dictionaries for JSON serialization
         return ideo_df.to_dicts()
 
-    def genes(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> pl.DataFrame:
+    def genes(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> List[dict]:
         # Define the API endpoint with the track, contig, start, end parameters
         api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
 
@@ -274,13 +274,329 @@ class GenomeShader:
         if response.status_code == 200:
             data = response.json()
 
-            # Extract the 'contig' sub-key from the 'cytoBandIdeo' key
-            gene_data = data.get('ncbiRefSeq', {})
-            gene_df = pl.DataFrame(gene_data)
+            # Extract the gene data from the response
+            # UCSC API typically returns: {track_name: {contig: [{gene1}, {gene2}, ...]}}
+            # But can also be: {track_name: [{gene1}, {gene2}, ...]} for some endpoints
+            gene_data = None
+            
+            # Debug: print the top-level keys to understand structure
+            if not data:
+                print(f"Warning: Empty response from UCSC API for {contig}:{start}-{end}")
+                gene_data = []
+            else:
+                # Try to get data by track name first
+                if track in data:
+                    track_data = data[track]
+                    # If nested by chromosome
+                    if isinstance(track_data, dict) and contig in track_data:
+                        gene_data = track_data[contig]
+                    # If flat array
+                    elif isinstance(track_data, list):
+                        gene_data = track_data
+                
+                # Try alternative: 'ncbiRefSeq' key
+                if not gene_data:
+                    if 'ncbiRefSeq' in data:
+                        alt_data = data['ncbiRefSeq']
+                        if isinstance(alt_data, dict) and contig in alt_data:
+                            gene_data = alt_data[contig]
+                        elif isinstance(alt_data, list):
+                            gene_data = alt_data
+                
+                # If still not found, check if data has any keys that might contain the track
+                if not gene_data:
+                    # Try to find any key that contains a list or dict with our contig
+                    for key, value in data.items():
+                        if isinstance(value, dict) and contig in value:
+                            if isinstance(value[contig], list) and len(value[contig]) > 0:
+                                # Check if it looks like gene data (has chromStart/chromEnd)
+                                if isinstance(value[contig][0], dict) and 'chromStart' in value[contig][0]:
+                                    gene_data = value[contig]
+                                    break
+                        elif isinstance(value, list) and len(value) > 0:
+                            # Check if it looks like gene data
+                            if isinstance(value[0], dict) and 'chromStart' in value[0]:
+                                gene_data = value
+                                break
+                
+            # Default to empty list if nothing found
+            if gene_data is None:
+                gene_data = []
         else:
             raise ConnectionError(f"Failed to retrieve data from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
 
-        return gene_df.write_json()
+        # Transform UCSC gene data to transcript format
+        transcripts = []
+        if not isinstance(gene_data, list):
+            # If gene_data is not a list, return empty (shouldn't happen but be safe)
+            return transcripts
+            
+        for gene in gene_data:
+            try:
+                # Extract basic fields - UCSC API uses txStart/txEnd for genePred tracks
+                # But also support chromStart/chromEnd for other track types
+                chrom_start = gene.get('txStart') or gene.get('chromStart', 0)
+                chrom_end = gene.get('txEnd') or gene.get('chromEnd', 0)
+                strand = gene.get('strand', '+')
+                
+                # Skip if we don't have valid coordinates
+                if not chrom_start or not chrom_end:
+                    continue
+                
+                # Get gene name - prefer name2 (gene symbol) over name (transcript ID)
+                gene_name = gene.get('name2') or gene.get('name') or gene.get('geneName') or gene.get('transcriptName') or 'Unknown'
+                
+                # Parse exon information
+                # UCSC genePred format uses exonStarts/exonEnds
+                # Other formats might use blockStarts/blockSizes
+                exons = []
+                exon_count = gene.get('exonCount') or gene.get('blockCount', 0)
+                
+                if exon_count > 0:
+                    # Try exonStarts/exonEnds format (genePred)
+                    exon_starts_str = gene.get('exonStarts', '')
+                    exon_ends_str = gene.get('exonEnds', '')
+                    
+                    if exon_starts_str and exon_ends_str:
+                        try:
+                            # Parse comma-separated values (may have trailing comma)
+                            exon_starts = [int(x) for x in exon_starts_str.split(',') if x.strip()]
+                            exon_ends = [int(x) for x in exon_ends_str.split(',') if x.strip()]
+                            
+                            # Create exon arrays: [start, end] pairs in 1-based coordinates
+                            for i in range(min(len(exon_starts), len(exon_ends), exon_count)):
+                                exon_start = exon_starts[i] + 1  # Convert to 1-based
+                                exon_end = exon_ends[i]  # Already 1-based end
+                                exons.append([exon_start, exon_end])
+                        except (ValueError, IndexError):
+                            # If parsing fails, try blockStarts/blockSizes format
+                            pass
+                    
+                    # If exonStarts/exonEnds didn't work, try blockStarts/blockSizes
+                    if not exons:
+                        block_starts_str = str(gene.get('blockStarts', ''))
+                        block_sizes_str = str(gene.get('blockSizes', ''))
+                        
+                        if block_starts_str and block_sizes_str:
+                            try:
+                                # Parse comma-separated values
+                                block_starts = [int(x) for x in block_starts_str.split(',') if x.strip()]
+                                block_sizes = [int(x) for x in block_sizes_str.split(',') if x.strip()]
+                                
+                                # Create exon arrays: [start, end] pairs in 1-based coordinates
+                                for i in range(min(len(block_starts), len(block_sizes), exon_count)):
+                                    exon_start = chrom_start + block_starts[i] + 1  # Convert to 1-based
+                                    exon_end = exon_start + block_sizes[i] - 1
+                                    exons.append([exon_start, exon_end])
+                            except (ValueError, IndexError):
+                                # If parsing fails, fall back to transcript boundaries
+                                pass
+                
+                # If no exons found, use transcript boundaries
+                if not exons:
+                    exons = [[chrom_start + 1, chrom_end]]  # Convert to 1-based
+                
+                # Create transcript dict
+                transcript = {
+                    'name': str(gene_name),
+                    'strand': strand,
+                    'start': chrom_start + 1,  # Convert to 1-based
+                    'end': chrom_end,
+                    'exons': exons,
+                }
+                transcripts.append(transcript)
+            except Exception as e:
+                # Skip genes that fail to parse, but continue with others
+                print(f"Warning: Failed to parse gene entry: {e}")
+                continue
+        
+        # Sort transcripts by start position for lane assignment
+        transcripts.sort(key=lambda t: t['start'])
+        
+        # Assign lanes to avoid overlaps (simple greedy algorithm)
+        lanes = [[], [], []]  # Three lanes
+        for transcript in transcripts:
+            assigned = False
+            for lane_idx in range(3):
+                # Check if transcript overlaps with any existing transcript in this lane
+                overlaps = False
+                for existing in lanes[lane_idx]:
+                    # Check if intervals overlap
+                    if not (transcript['end'] < existing['start'] or transcript['start'] > existing['end']):
+                        overlaps = True
+                        break
+                
+                if not overlaps:
+                    transcript['lane'] = lane_idx
+                    lanes[lane_idx].append(transcript)
+                    assigned = True
+                    break
+            
+            # If no lane available, assign to lane 0 anyway (will overlap)
+            if not assigned:
+                transcript['lane'] = 0
+                lanes[0].append(transcript)
+        
+        return transcripts
+
+    def repeats(self, contig: str, start: int, end: int, track: str = "rmsk") -> List[dict]:
+        """
+        Fetches RepeatMasker repeat data from UCSC for a given genomic region.
+        
+        Args:
+            contig (str): Chromosome/contig name (e.g., 'chr1')
+            start (int): Start position (0-based)
+            end (int): End position (0-based)
+            track (str, optional): UCSC track name. Defaults to 'rmsk' (RepeatMasker).
+        
+        Returns:
+            List[dict]: List of repeat intervals, each with 'start', 'end', and 'cls' fields.
+        """
+        # Define the API endpoint with the track, contig, start, end parameters
+        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
+
+        # Make a GET request to the API endpoint
+        response = requests.get(api_endpoint)
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Check for API errors in response
+            if isinstance(data, dict) and 'error' in data:
+                error_msg = data.get('error', 'Unknown error')
+                print(f"Warning: UCSC API returned error for RepeatMasker track: {error_msg}")
+                return []
+
+            # Extract the repeat data from the response
+            # UCSC API typically returns: {track_name: {contig: [{repeat1}, {repeat2}, ...]}}
+            repeat_data = None
+            
+            if not data:
+                print(f"Warning: Empty response from UCSC API for {contig}:{start}-{end}")
+                repeat_data = []
+            else:
+                # Try to get data by track name first
+                if track in data:
+                    track_data = data[track]
+                    # If nested by chromosome
+                    if isinstance(track_data, dict) and contig in track_data:
+                        repeat_data = track_data[contig]
+                    # If flat array
+                    elif isinstance(track_data, list):
+                        repeat_data = track_data
+                
+                # Try alternative: 'rmsk' key
+                if not repeat_data:
+                    if 'rmsk' in data:
+                        alt_data = data['rmsk']
+                        if isinstance(alt_data, dict) and contig in alt_data:
+                            repeat_data = alt_data[contig]
+                        elif isinstance(alt_data, list):
+                            repeat_data = alt_data
+                
+                # Try alternative track names that UCSC might use
+                if not repeat_data:
+                    for alt_track_name in ['repeatMasker', 'RepeatMasker', 'rmsk', 'repeat']:
+                        if alt_track_name in data:
+                            alt_data = data[alt_track_name]
+                            if isinstance(alt_data, dict) and contig in alt_data:
+                                repeat_data = alt_data[contig]
+                                break
+                            elif isinstance(alt_data, list):
+                                repeat_data = alt_data
+                                break
+                
+                # If still not found, check if data has any keys that might contain the track
+                if not repeat_data:
+                    # Try to find any key that contains a list or dict with our contig
+                    for key, value in data.items():
+                        if isinstance(value, dict) and contig in value:
+                            if isinstance(value[contig], list) and len(value[contig]) > 0:
+                                # Check if it looks like repeat data (has genoStart/genoEnd or chromStart/chromEnd)
+                                first_item = value[contig][0]
+                                if isinstance(first_item, dict) and ('genoStart' in first_item or 'chromStart' in first_item):
+                                    repeat_data = value[contig]
+                                    break
+                        elif isinstance(value, list) and len(value) > 0:
+                            # Check if it looks like repeat data
+                            first_item = value[0]
+                            if isinstance(first_item, dict) and ('genoStart' in first_item or 'chromStart' in first_item):
+                                repeat_data = value
+                                break
+                
+            # Default to empty list if nothing found
+            if repeat_data is None:
+                # Only print warning if we actually got data but couldn't parse it
+                if data:
+                    print(f"Warning: Could not find repeat data in UCSC API response for track '{track}'. Available keys: {list(data.keys())}")
+                repeat_data = []
+        else:
+            # Try alternative track name if first attempt fails
+            repeat_data = None
+            if track == "rmsk":
+                print(f"Warning: Track 'rmsk' returned status {response.status_code}, trying 'repeatMasker'...")
+                alt_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track=repeatMasker;chrom={contig};start={start};end={end}"
+                alt_response = requests.get(alt_endpoint)
+                if alt_response.status_code == 200:
+                    data = alt_response.json()
+                    if isinstance(data, dict) and 'error' in data:
+                        error_msg = data.get('error', 'Unknown error')
+                        print(f"Warning: UCSC API returned error for RepeatMasker track: {error_msg}")
+                        return []
+                    if isinstance(data, dict) and 'repeatMasker' in data:
+                        track_data = data['repeatMasker']
+                        if isinstance(track_data, dict) and contig in track_data:
+                            repeat_data = track_data[contig]
+                        elif isinstance(track_data, list):
+                            repeat_data = track_data
+                    if not repeat_data:
+                        return []
+                else:
+                    raise ConnectionError(f"Failed to retrieve data from RepeatMasker track for locus '{contig}:{start}-{end}': {response.status_code}")
+            else:
+                raise ConnectionError(f"Failed to retrieve data from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
+            
+            # If we got here from the else block and repeat_data is still None, return empty
+            if repeat_data is None:
+                return []
+
+        # Transform UCSC repeat data to our format
+        repeats = []
+        if not isinstance(repeat_data, list):
+            # If repeat_data is not a list, return empty (shouldn't happen but be safe)
+            return repeats
+            
+        for repeat in repeat_data:
+            try:
+                # Extract basic fields - UCSC RepeatMasker API uses genoStart/genoEnd
+                # (not chromStart/chromEnd like other tracks)
+                chrom_start = repeat.get('genoStart') or repeat.get('chromStart', 0)
+                chrom_end = repeat.get('genoEnd') or repeat.get('chromEnd', 0)
+                
+                # Skip if we don't have valid coordinates
+                if not chrom_start or not chrom_end:
+                    continue
+                
+                # Get repeat class/family
+                # UCSC RepeatMasker tracks use 'repClass' for the main class (SINE, LINE, LTR, DNA, etc.)
+                # and 'repFamily' for the specific family
+                rep_class = repeat.get('repClass') or repeat.get('class') or repeat.get('type') or 'Unknown'
+                
+                # Create repeat dict with 1-based coordinates (matching genes format)
+                repeat_dict = {
+                    'start': chrom_start + 1,  # Convert to 1-based
+                    'end': chrom_end,  # Already 1-based end
+                    'cls': str(rep_class),  # Class as string
+                }
+                repeats.append(repeat_dict)
+            except Exception as e:
+                # Skip repeats that fail to parse, but continue with others
+                print(f"Warning: Failed to parse repeat entry: {e}")
+                continue
+        
+        # Sort repeats by start position
+        repeats.sort(key=lambda r: r['start'])
+        
+        return repeats
 
     def reference(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> pl.DataFrame:
         # Define the API endpoint with the track, contig, start, end parameters
@@ -406,6 +722,11 @@ class GenomeShader:
         ref_chr = samples_df["reference_contig"].min()
         ref_start = samples_df["reference_start"].min()
         ref_end = samples_df["reference_end"].max()
+        
+        # Store the actual data bounds (where reads exist)
+        # These may differ from the displayed region if user zooms/pans
+        data_start = int(ref_start)
+        data_end = int(ref_end)
 
         # Compute stable run_id from region + genome_build
         region_str = f"{ref_chr}:{ref_start}-{ref_end}"
@@ -458,6 +779,22 @@ class GenomeShader:
         # Load cytoband data for the chromosome
         ideogram_data = self.ideogram(ref_chr)
 
+        # Load gene/transcript data for the region
+        try:
+            transcripts_data = self.genes(ref_chr, ref_start, ref_end)
+        except Exception as e:
+            # If gene data retrieval fails, use empty list but don't crash
+            print(f"Warning: Failed to load gene data: {e}")
+            transcripts_data = []
+
+        # Load RepeatMasker data for the region
+        try:
+            repeats_data = self.repeats(ref_chr, ref_start, ref_end)
+        except Exception as e:
+            # If repeat data retrieval fails, use empty list but don't crash
+            print(f"Warning: Failed to load RepeatMasker data: {e}")
+            repeats_data = []
+
         # Load template HTML
         template_html = self._load_template_html()
 
@@ -469,6 +806,12 @@ class GenomeShader:
             'region': f"{ref_chr}:{ref_start}-{ref_end}",
             'genome_build': self.genome_build,
             'ideogram_data': ideogram_data,
+            'transcripts_data': transcripts_data,
+            'repeats_data': repeats_data,
+            'data_bounds': {
+                'start': data_start,
+                'end': data_end,
+            },
         }
 
         # Get Jupyter origin for constructing absolute URLs
