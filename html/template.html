@@ -923,6 +923,57 @@
   // Initialize label after DOM is ready
   setTimeout(() => updateVariantLayoutModeLabel(), 0);
 
+  // Chromosome lengths for bounds checking
+  const chrLengths = {
+    "chr1": 248_956_422,
+    "chr2": 242_193_529,
+    "chr3": 198_295_559,
+    "chr4": 190_214_555,
+    "chr5": 181_538_259,
+    "chr6": 170_805_979,
+    "chr7": 159_345_973,
+    "chr8": 145_138_636,
+    "chr9": 138_394_717,
+    "chr10": 133_797_422,
+    "chr11": 135_086_622,
+    "chr12": 133_275_309,
+    "chr13": 114_364_328,
+    "chr14": 107_043_718,
+    "chr15": 101_991_189,
+    "chr16": 90_338_345,
+    "chr17": 83_257_441,
+    "chr18": 80_373_285,
+    "chr19": 58_617_616,
+    "chr20": 64_444_167,
+    "chr21": 46_709_983,
+    "chr22": 50_818_468,
+    "chrX": 156_040_895,
+    "chrY": 57_227_415
+  };
+
+  // Helper function to get chromosome length for current contig
+  function getChromosomeLength() {
+    return chrLengths[state.contig] || 248_956_422;
+  }
+
+  // Helper function to clamp startBp and endBp to chromosome boundaries
+  function clampToChromosomeBounds() {
+    const chrLength = getChromosomeLength();
+    const span = state.endBp - state.startBp;
+    
+    // Clamp startBp to [0, chrLength - span]
+    state.startBp = Math.max(0, Math.min(state.startBp, chrLength - span));
+    
+    // Ensure endBp doesn't exceed chromosome length
+    state.endBp = Math.min(state.startBp + span, chrLength);
+    
+    // If span is larger than chromosome, center it
+    if (span > chrLength) {
+      state.startBp = 0;
+      state.endBp = chrLength;
+    }
+  }
+
   // Initialize state from GENOMESHADER_CONFIG if available
   if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
     const region = window.GENOMESHADER_CONFIG.region;
@@ -1395,34 +1446,8 @@
       // In vertical mode, bandH should use the full available height
       const bandH = isVertical ? ideogramH : ideogramH;
 
-      // Chromosome lengths for mapping cytoband positions
-      const chrLengths = {
-        "chr1": 248_956_422,
-        "chr2": 242_193_529,
-        "chr3": 198_295_559,
-        "chr4": 190_214_555,
-        "chr5": 181_538_259,
-        "chr6": 170_805_979,
-        "chr7": 159_345_973,
-        "chr8": 145_138_636,
-        "chr9": 138_394_717,
-        "chr10": 133_797_422,
-        "chr11": 135_086_622,
-        "chr12": 133_275_309,
-        "chr13": 114_364_328,
-        "chr14": 107_043_718,
-        "chr15": 101_991_189,
-        "chr16": 90_338_345,
-        "chr17": 83_257_441,
-        "chr18": 80_373_285,
-        "chr19": 58_617_616,
-        "chr20": 64_444_167,
-        "chr21": 46_709_983,
-        "chr22": 50_818_468,
-        "chrX": 156_040_895,
-        "chrY": 57_227_415
-      };
-      const chrLength = chrLengths[state.contig] || 248_956_422;
+      // Use global chromosome lengths for mapping cytoband positions
+      const chrLength = getChromosomeLength();
       
       // Get ideogram data from config (already parsed from JSON in Python)
       let ideogramData = [];
@@ -2488,15 +2513,9 @@
   }
 
   function visibleVariantWindow() {
-    const start = state.firstVariantIndex;
     // Return all variants in the visible genomic range, not limited by state.K
     // state.K is just used for initial window sizing
     const visibleVariants = variants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
-    if (visibleVariants.length === 0) {
-      // Fallback to state.K if no variants in range
-      const end = Math.min(variants.length, start + state.K);
-      return variants.slice(start, end);
-    }
     return visibleVariants;
   }
 
@@ -2603,12 +2622,13 @@
       ctx.strokeStyle = colBlue;
       ctx.globalAlpha = 0.6;
       for (let i=0;i<win.length;i++) {
-        const variantIdx = state.firstVariantIndex + i;
+        const v = win[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const isHovered = state.hoveredVariantIndex === variantIdx;
         ctx.lineWidth = isHovered ? 2.5 : 1;
         // Position column based on mode
         const x = variantMode === "genomic"
-          ? xGenomeCanonical(win[i].pos, W)
+          ? xGenomeCanonical(v.pos, W)
           : xColumn(i, win.length);
         ctx.beginPath();
         ctx.moveTo(x, junctionY);
@@ -2617,17 +2637,17 @@
 
         ctx.fillStyle = colText;
         ctx.font = "12px ui-sans-serif, system-ui";
-        ctx.fillText(`v${state.firstVariantIndex + i + 1}`, x - 10, 14);
+        ctx.fillText(`v${variantIdx + 1}`, x - 10, 14);
       }
       ctx.strokeStyle = colBlue;
       ctx.globalAlpha = 0.5;
 
       const y0 = 6;
       for (let i=0; i<win.length; i++) {
-        const variantIdx = state.firstVariantIndex + i;
+        const v = win[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const isHovered = state.hoveredVariantIndex === variantIdx;
         ctx.lineWidth = isHovered ? 2.5 : 1;
-        const v = win[i];
         const vx = xGenomeCanonical(v.pos, W); // always use genomic position for ruler connection
         const cx = variantMode === "genomic"
           ? xGenomeCanonical(v.pos, W)
@@ -3249,6 +3269,9 @@
     state.startBp = newStart;
     state.endBp = newStart + newSpan;
 
+    // Clamp to chromosome boundaries
+    clampToChromosomeBounds();
+
     renderAll();
   }
 
@@ -3265,6 +3288,9 @@
       state.startBp -= deltaBp;
       state.endBp   -= deltaBp;
     }
+
+    // Clamp to chromosome boundaries
+    clampToChromosomeBounds();
 
     // Placeholder heuristic for shifting the variant window
     const win = visibleVariantWindow();
@@ -3361,6 +3387,9 @@
 
         state.startBp = newStart;
         state.endBp = newStart + newSpan;
+
+        // Clamp to chromosome boundaries
+        clampToChromosomeBounds();
 
         renderAll();
       }
