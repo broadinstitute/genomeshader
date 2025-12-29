@@ -1963,6 +1963,21 @@
     console.warn("No repeats_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
   }
 
+  // Reference sequence: load from config or use empty string as fallback
+  let referenceSequence = "";
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.reference_data) {
+    const data = window.GENOMESHADER_CONFIG.reference_data;
+    // Data should be a string containing the DNA sequence
+    if (typeof data === 'string') {
+      referenceSequence = data;
+      console.log(`Loaded reference sequence of length ${referenceSequence.length} bases`);
+    } else {
+      console.warn("Reference data is not in expected string format:", data);
+    }
+  } else {
+    console.warn("No reference_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
+  }
+
   // -----------------------------
   // SVG helpers
   // -----------------------------
@@ -3353,23 +3368,42 @@
         referenceW = W - 32;
       }
 
-      // Helper function to generate a demo reference sequence
-      function generateReferenceSequence(startBp, endBp) {
-        // Generate a simple repeating pattern for demo purposes
-        // In a real implementation, this would fetch from a reference genome
-        const bases = ['A', 'T', 'G', 'C'];
-        const seq = [];
-        for (let bp = Math.floor(startBp); bp <= Math.floor(endBp); bp++) {
-          // Use a deterministic pattern based on position
-          seq.push(bases[bp % 4]);
+      // Helper function to get reference sequence for a region
+      // Returns { sequence: array, startBp: number } where startBp is the genomic position of sequence[0]
+      function getReferenceSequence(startBp, endBp) {
+        // Use the real reference sequence from config if available
+        if (referenceSequence && referenceSequence.length > 0) {
+          // Calculate the offset into the sequence
+          // The reference sequence starts at data_bounds.start (0-based)
+          // UCSC returns sequence for [start, end), so sequence[i] corresponds to genomic position (dataStart + i)
+          const dataStart = window.GENOMESHADER_CONFIG?.data_bounds?.start || 0;
+          const viewStart = Math.floor(startBp);
+          const viewEnd = Math.floor(endBp);
+          
+          // Calculate sequence indices (0-based relative to sequence start)
+          // seqStart: index in sequence string for viewStart genomic position
+          // seqEnd: index in sequence string for (viewEnd + 1) genomic position (exclusive end)
+          const seqStart = Math.max(0, viewStart - dataStart);
+          const seqEnd = Math.min(referenceSequence.length, viewEnd - dataStart + 1);
+          
+          // Only return sequence if we have valid indices within bounds
+          if (seqStart >= 0 && seqEnd > seqStart && seqStart < referenceSequence.length) {
+            const sequence = referenceSequence.slice(seqStart, seqEnd).split('');
+            // The actual genomic start position of the returned sequence
+            const actualStartBp = dataStart + seqStart;
+            return { sequence: sequence, startBp: actualStartBp };
+          }
         }
-        return seq;
+        // Fallback: return empty array if no sequence data
+        return { sequence: [], startBp: startBp };
       }
 
       const span = state.endBp - state.startBp;
       const startBpInt = Math.floor(state.startBp);
       const endBpInt = Math.floor(state.endBp);
-      const refSeq = generateReferenceSequence(startBpInt, endBpInt);
+      const refSeqData = getReferenceSequence(startBpInt, endBpInt);
+      const refSeq = refSeqData.sequence;
+      const refSeqStartBp = refSeqData.startBp;
 
       const nucleotideColors = {
         'A': 'rgba(0, 200, 0, 0.8)',      // green
@@ -3378,72 +3412,192 @@
         'T': 'rgba(255, 0, 0, 0.8)'       // red
       };
 
+      // Helper function to convert nucleotide color to RGBA array for WebGPU
+      function nucleotideColorToRgba(base) {
+        const rgbaStr = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+        const match = rgbaStr.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/);
+        if (match) {
+          return [
+            parseInt(match[1]) / 255,
+            parseInt(match[2]) / 255,
+            parseInt(match[3]) / 255,
+            parseFloat(match[4])
+          ];
+        }
+        return [0.5, 0.5, 0.5, 0.8]; // fallback
+      }
+
       // Calculate base size based on zoom level
       const minBaseSize = 2; // Minimum size per base in pixels
       const baseSize = Math.max(minBaseSize, state.pxPerBp);
 
-      // Only show individual bases if zoomed in enough
-      const showIndividualBases = baseSize >= 4;
+      // Only show individual bases if zoomed in enough (at least 2 actual pixels per base)
+      const showIndividualBases = state.pxPerBp >= 2;
 
-      if (showIndividualBases) {
-        // Render individual bases
+      // Performance limit: maximum number of bases to render
+      const maxBasesToRender = 10000;
+
+      if (showIndividualBases && refSeq.length > 0) {
+        // Filter and prepare visible bases
+        const visibleBases = [];
         for (let i = 0; i < refSeq.length; i++) {
-          const bp = startBpInt + i;
+          // Calculate the actual genomic position for this base
+          // refSeq[i] corresponds to genomic position refSeqStartBp + i
+          const bp = refSeqStartBp + i;
+          
+          // Only render bases that are within the visible view
           if (bp < state.startBp || bp > state.endBp) continue;
-
+          
           // Use genomePosCanonical to account for insertion gaps
           const pos = genomePosCanonical(bp);
-          const nextPos = i < refSeq.length - 1 ? genomePosCanonical(bp + 1) : genomePosCanonical(state.endBp);
+          const nextBp = bp + 1;
+          const nextPos = nextBp <= state.endBp ? genomePosCanonical(nextBp) : genomePosCanonical(state.endBp);
           const actualSize = Math.max(minBaseSize, Math.abs(nextPos - pos));
-
+          
+          // Skip bases that are too small to render
+          if (actualSize < minBaseSize) continue;
+          
           const base = refSeq[i].toUpperCase();
-          const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+          visibleBases.push({
+            bp: bp,
+            base: base,
+            pos: pos,
+            nextPos: nextPos,
+            actualSize: actualSize
+          });
+        }
 
-          if (isVertical) {
-            tracksSvg.appendChild(el("rect", {
-              x: referenceX,
-              y: pos,
-              width: referenceW,
-              height: actualSize - 0.5,
-              fill: color
-            }));
+        // Limit the number of bases to render
+        const basesToRender = visibleBases.slice(0, maxBasesToRender);
+        
+        if (visibleBases.length > maxBasesToRender) {
+          console.warn(`Too many bases (${visibleBases.length}), rendering only first ${maxBasesToRender}`);
+        }
 
-            // Draw base letter if space allows
-            if (actualSize >= 8) {
-              const textEl = el("text", {
-                x: referenceX + referenceW / 2,
-                y: pos + actualSize / 2,
-                class: "svg-small",
-                "text-anchor": "middle",
-                fill: "white",
-                "font-weight": "bold",
-                "dominant-baseline": "middle",
-                transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
-              }, base);
-              tracksSvg.appendChild(textEl);
+        // Use WebGPU if available, otherwise fall back to SVG
+        if (webgpuSupported && instancedRenderer) {
+          // Add rectangles to WebGPU renderer
+          // Scale by devicePixelRatio since WebGPU canvas uses physical pixels
+          const dpr = window.devicePixelRatio || 1;
+          
+          for (const b of basesToRender) {
+            const pos = b.pos;
+            const actualSize = b.actualSize;
+            const base = b.base;
+            const rgba = nucleotideColorToRgba(base);
+            
+            let x, y, w, h;
+            if (isVertical) {
+              x = referenceX;
+              y = pos;
+              w = referenceW;
+              h = actualSize - 0.5;
+            } else {
+              x = pos;
+              y = referenceY;
+              w = actualSize - 0.5;
+              h = referenceH;
             }
-          } else {
-            tracksSvg.appendChild(el("rect", {
-              x: pos,
-              y: referenceY,
-              width: actualSize - 0.5,
-              height: referenceH,
-              fill: color
-            }));
-
-            // Draw base letter if space allows
-            if (actualSize >= 8) {
-              tracksSvg.appendChild(el("text", {
-                x: pos + actualSize / 2,
-                y: referenceY + referenceH / 2,
-                class: "svg-small",
-                "text-anchor": "middle",
-                fill: "white",
-                "font-weight": "bold",
-                "dominant-baseline": "middle"
-              }, base));
+            
+            // Scale coordinates by DPR to match physical pixel canvas
+            instancedRenderer.addRect(x * dpr, y * dpr, w * dpr, h * dpr, rgba);
+          }
+          
+          // Draw base letters using SVG (text rendering can stay SVG-based)
+          const fragment = document.createDocumentFragment();
+          for (const b of basesToRender) {
+            if (b.actualSize >= 8) {
+              const base = b.base;
+              const pos = b.pos;
+              const actualSize = b.actualSize;
+              
+              if (isVertical) {
+                const textEl = el("text", {
+                  x: referenceX + referenceW / 2,
+                  y: pos + actualSize / 2,
+                  class: "svg-small",
+                  "text-anchor": "middle",
+                  fill: "#000",
+                  "font-weight": "bold",
+                  "dominant-baseline": "middle",
+                  transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
+                }, base);
+                fragment.appendChild(textEl);
+              } else {
+                const textEl = el("text", {
+                  x: pos + actualSize / 2,
+                  y: referenceY + referenceH / 2,
+                  class: "svg-small",
+                  "text-anchor": "middle",
+                  fill: "#000",
+                  "font-weight": "bold",
+                  "dominant-baseline": "middle"
+                }, base);
+                fragment.appendChild(textEl);
+              }
             }
           }
+          tracksSvg.appendChild(fragment);
+        } else {
+          // Fallback to SVG rendering
+          const fragment = document.createDocumentFragment();
+          
+          for (const b of basesToRender) {
+            const pos = b.pos;
+            const actualSize = b.actualSize;
+            const base = b.base;
+            const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+            
+            if (isVertical) {
+              fragment.appendChild(el("rect", {
+                x: referenceX,
+                y: pos,
+                width: referenceW,
+                height: actualSize - 0.5,
+                fill: color
+              }));
+
+              // Draw base letter if space allows
+              if (actualSize >= 8) {
+                const textEl = el("text", {
+                  x: referenceX + referenceW / 2,
+                  y: pos + actualSize / 2,
+                  class: "svg-small",
+                  "text-anchor": "middle",
+                  fill: "#000",
+                  "font-weight": "bold",
+                  "dominant-baseline": "middle",
+                  transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
+                }, base);
+                fragment.appendChild(textEl);
+              }
+            } else {
+              fragment.appendChild(el("rect", {
+                x: pos,
+                y: referenceY,
+                width: actualSize - 0.5,
+                height: referenceH,
+                fill: color
+              }));
+
+              // Draw base letter if space allows
+              if (actualSize >= 8) {
+                const textEl = el("text", {
+                  x: pos + actualSize / 2,
+                  y: referenceY + referenceH / 2,
+                  class: "svg-small",
+                  "text-anchor": "middle",
+                  fill: "#000",
+                  "font-weight": "bold",
+                  "dominant-baseline": "middle"
+                }, base);
+                fragment.appendChild(textEl);
+              }
+            }
+          }
+          
+          // Append all elements at once (single DOM operation)
+          tracksSvg.appendChild(fragment);
         }
       } else {
         // Zoomed out: show a continuous reference line with subtle pattern

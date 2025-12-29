@@ -598,7 +598,19 @@ class GenomeShader:
         
         return repeats
 
-    def reference(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> pl.DataFrame:
+    def reference(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> str:
+        """
+        Fetches reference sequence data from UCSC for a given genomic region.
+        
+        Args:
+            contig (str): Chromosome/contig name (e.g., 'chr1')
+            start (int): Start position (0-based)
+            end (int): End position (0-based)
+            track (str, optional): UCSC track name. Defaults to 'ncbiRefSeq'.
+        
+        Returns:
+            str: DNA sequence string for the specified region.
+        """
         # Define the API endpoint with the track, contig, start, end parameters
         api_endpoint = f"https://api.genome.ucsc.edu/getData/sequence?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
 
@@ -606,14 +618,24 @@ class GenomeShader:
         response = requests.get(api_endpoint)
         if response.status_code == 200:
             data = response.json()
-
-            # Extract the 'contig' sub-key from the 'cytoBandIdeo' key
-            ref_data = data.get('dna', {})
-            ref_df = pl.DataFrame(ref_data)
+            
+            # Check for API errors in response
+            if isinstance(data, dict) and 'error' in data:
+                error_msg = data.get('error', 'Unknown error')
+                print(f"Warning: UCSC API returned error for reference sequence: {error_msg}")
+                return ""
+            
+            # Extract the sequence string from the 'dna' field
+            # UCSC sequence API returns: {"dna": "ATCGATCG..."}
+            sequence = data.get('dna', '')
+            
+            if not sequence:
+                print(f"Warning: Empty sequence data from UCSC API for {contig}:{start}-{end}")
+                return ""
+            
+            return sequence
         else:
-            raise ConnectionError(f"Failed to retrieve data from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
-
-        return ref_df.write_json()
+            raise ConnectionError(f"Failed to retrieve reference sequence from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
 
     def _start_localhost_server(self, serve_dir: Path) -> int:
         """
@@ -795,6 +817,14 @@ class GenomeShader:
             print(f"Warning: Failed to load RepeatMasker data: {e}")
             repeats_data = []
 
+        # Load reference sequence data for the region
+        try:
+            reference_sequence = self.reference(ref_chr, ref_start, ref_end)
+        except Exception as e:
+            # If reference data retrieval fails, use empty string but don't crash
+            print(f"Warning: Failed to load reference sequence data: {e}")
+            reference_sequence = ""
+
         # Load template HTML
         template_html = self._load_template_html()
 
@@ -808,6 +838,7 @@ class GenomeShader:
             'ideogram_data': ideogram_data,
             'transcripts_data': transcripts_data,
             'repeats_data': repeats_data,
+            'reference_data': reference_sequence,
             'data_bounds': {
                 'start': data_start,
                 'end': data_end,
