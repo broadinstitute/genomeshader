@@ -56,8 +56,16 @@ export class InstancedRenderer {
         const vertexShader = `
             struct Uniforms {
                 projection: mat4x4<f32>,
+                screenSize: vec2<f32>,
             }
             @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(1) @interpolate(flat) instanceMin: vec2<f32>,
+                @location(2) @interpolate(flat) instanceMax: vec2<f32>,
+                @location(3) @interpolate(flat) color: vec4<f32>,
+            }
 
             @vertex
             fn vs_main(
@@ -66,7 +74,7 @@ export class InstancedRenderer {
                 @location(0) position: vec2<f32>,
                 @location(1) size: vec2<f32>,
                 @location(2) color: vec4<f32>
-            ) -> @builtin(position) vec4<f32> {
+            ) -> VertexOutput {
                 // Quad vertices: (-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)
                 var quadPos = vec2<f32>(0.0);
                 if (vertexIndex == 0u) {
@@ -80,16 +88,64 @@ export class InstancedRenderer {
                 }
                 
                 var worldPos = position + quadPos * size;
-                return uniforms.projection * vec4<f32>(worldPos, 0.0, 1.0);
+                var halfSize = size * 0.5;
+                var output: VertexOutput;
+                output.position = uniforms.projection * vec4<f32>(worldPos, 0.0, 1.0);
+                output.instanceMin = position - halfSize;
+                output.instanceMax = position + halfSize;
+                output.color = color;
+                return output;
             }
         `;
 
         const fragmentShader = `
+            struct Uniforms {
+                projection: mat4x4<f32>,
+                screenSize: vec2<f32>,
+            }
+            @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
             @fragment
             fn fs_main(
-                @location(2) @interpolate(flat) color: vec4<f32>
+                @builtin(position) fragCoord: vec4<f32>,
+                @location(1) @interpolate(flat) instanceMin: vec2<f32>,
+                @location(2) @interpolate(flat) instanceMax: vec2<f32>,
+                @location(3) @interpolate(flat) color: vec4<f32>
             ) -> @location(0) vec4<f32> {
-                return color;
+                // fragCoord.xy is in framebuffer pixel coordinates (not NDC)
+                // This directly matches our world coordinates since we use an orthographic projection
+                let worldPos = fragCoord.xy;
+                
+                // Get rectangle dimensions and center
+                let size = instanceMax - instanceMin;
+                let center = (instanceMin + instanceMax) * 0.5;
+                let halfSize = size * 0.5;
+                let minDim = min(size.x, size.y);
+                
+                // For very small rectangles (< 6px), don't apply rounding
+                if (minDim < 6.0) {
+                    // Still need premultiplied alpha for correct blending
+                    return vec4<f32>(color.rgb * color.a, color.a);
+                }
+                
+                // Apply rounded corners with radius 6 pixels
+                let radius = 6.0;
+                let actualRadius = min(radius, minDim * 0.5);
+                
+                // Proper rounded rectangle SDF
+                // Calculate position relative to center
+                let p = abs(worldPos - center);
+                // Shrink the half-size by radius to get the inner rectangle
+                let q = p - halfSize + actualRadius;
+                // Distance to rounded rectangle: negative inside, positive outside
+                let d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - actualRadius;
+                
+                // Smooth edge with anti-aliasing (d < 0 means inside)
+                let alpha = 1.0 - smoothstep(-0.5, 0.5, d);
+                
+                // Output premultiplied alpha for correct blending
+                let finalAlpha = color.a * alpha;
+                return vec4<f32>(color.rgb * finalAlpha, finalAlpha);
             }
         `;
 
@@ -116,7 +172,21 @@ export class InstancedRenderer {
             fragment: {
                 module: fragmentModule,
                 entryPoint: 'fs_main',
-                targets: [{ format: this.core.format }],
+                targets: [{
+                    format: this.core.format,
+                    blend: {
+                        color: {
+                            srcFactor: 'one',
+                            dstFactor: 'one-minus-src-alpha',
+                            operation: 'add',
+                        },
+                        alpha: {
+                            srcFactor: 'one',
+                            dstFactor: 'one-minus-src-alpha',
+                            operation: 'add',
+                        },
+                    },
+                }],
             },
             primitive: {
                 topology: 'triangle-strip',
