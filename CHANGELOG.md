@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.91](https://github.com/broadinstitute/genomeshader/compare/v0.1.90...v0.1.91) (2025-12-29)
+
+
+### Bug Fixes
+
+* refined release process ([430274e](https://github.com/broadinstitute/genomeshader/commit/430274ec45219a6b50903e8ae7dfe2d1acc3549b))
+* **ui:** add chromosome bounds checking and fix variant indexing ([98b4de9](https://github.com/broadinstitute/genomeshader/commit/98b4de94d3eb74f174199f2496bdfa2da3c9ed9a))
+* **ui:** add chromosome bounds checking and fix variant indexing ([55ee807](https://github.com/broadinstitute/genomeshader/commit/55ee807227940c2b3f3492bb0163d72002c12fd7))
+
 ## [0.1.90](https://github.com/broadinstitute/genomeshader/compare/0.1.89...v0.1.90) (2025-12-28)
 
 
