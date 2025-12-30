@@ -1663,6 +1663,13 @@
     }
   }
 
+  // Function to update document title with current locus
+  function updateDocumentTitle() {
+    const startFormatted = Math.floor(state.startBp).toLocaleString();
+    const endFormatted = Math.floor(state.endBp).toLocaleString();
+    document.title = `Genomeshader (${state.contig}:${startFormatted}-${endFormatted})`;
+  }
+
   // Initialize state from GENOMESHADER_CONFIG if available
   let dataBounds = null;
   if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
@@ -1682,6 +1689,9 @@
         end: window.GENOMESHADER_CONFIG.data_bounds.end
       };
     }
+    
+    // Update document title with initial locus
+    updateDocumentTitle();
   }
 
   const main = document.getElementById("main");
@@ -2178,41 +2188,10 @@
           }));
         };
         
-        // Helper function to draw in-bounds shading (lighter)
-        const drawInBoundsRect = (x, y, width, height) => {
-          tracksSvg.appendChild(el("rect", {
-            x: x,
-            y: y,
-            width: width,
-            height: height,
-            fill: "rgba(255,255,255,0.02)", // Very light for in-bounds
-            "pointer-events": "none",
-            "class": "data-bounds-overlay"
-          }));
-        };
-        
         if (isVertical) {
           // In vertical mode, Y axis is inverted: bottom (higher Y) = smaller bp, top (lower Y) = larger bp
           // dataStartPos = Y position of dataBounds.start (smaller bp → higher Y, near bottom)
           // dataEndPos = Y position of dataBounds.end (larger bp → lower Y, near top)
-          // In-bounds region is between dataEndPos (top) and dataStartPos (bottom)
-          const inBoundsY1 = Math.min(dataStartPos, dataEndPos);  // top of in-bounds (smaller Y)
-          const inBoundsY2 = Math.max(dataStartPos, dataEndPos);  // bottom of in-bounds (larger Y)
-          if (ideogramTrackEnd > 0) {
-            // Left side of ideogram track
-            if (ideogramTrackStart > 0 && inBoundsY2 > inBoundsY1) {
-              drawInBoundsRect(0, inBoundsY1, ideogramTrackStart, inBoundsY2 - inBoundsY1);
-            }
-            // Right side of ideogram track
-            if (ideogramTrackEnd < W && inBoundsY2 > inBoundsY1) {
-              drawInBoundsRect(ideogramTrackEnd, inBoundsY1, W - ideogramTrackEnd, inBoundsY2 - inBoundsY1);
-            }
-          } else {
-            // No ideogram track, draw full width
-            if (inBoundsY2 > inBoundsY1) {
-              drawInBoundsRect(0, inBoundsY1, W, inBoundsY2 - inBoundsY1);
-            }
-          }
           
           // Out-of-bounds region below data (smaller bp than dataBounds.start)
           // dataBounds.start > state.startBp means view extends to show bp < dataBounds.start
@@ -2263,25 +2242,6 @@
           }
         } else {
           // Horizontal mode - exclude ideogram track area
-          // In-bounds region - light shading
-          const inBoundsX1 = dataStartPos;
-          const inBoundsX2 = dataEndPos;
-          if (ideogramTrackEnd > 0) {
-            // Top side of ideogram track
-            if (ideogramTrackStart > 0 && inBoundsX2 > inBoundsX1) {
-              drawInBoundsRect(inBoundsX1, 0, inBoundsX2 - inBoundsX1, ideogramTrackStart);
-            }
-            // Bottom side of ideogram track
-            if (ideogramTrackEnd < H && inBoundsX2 > inBoundsX1) {
-              drawInBoundsRect(inBoundsX1, ideogramTrackEnd, inBoundsX2 - inBoundsX1, H - ideogramTrackEnd);
-            }
-          } else {
-            // No ideogram track, draw full height
-            if (inBoundsX2 > inBoundsX1) {
-              drawInBoundsRect(inBoundsX1, 0, inBoundsX2 - inBoundsX1, H);
-            }
-          }
-          
           // Region before data start (out-of-bounds, darker)
           if (dataBounds.start > state.startBp) {
             const overlayX1 = 0;
@@ -4237,7 +4197,13 @@
 
       const label = document.createElement("div");
       label.className = "track-label";
-      label.textContent = track.label;
+      // For the Locus track, append the extent in parentheses
+      if (track.id === "ruler") {
+        const extent = Math.floor(state.endBp) - Math.floor(state.startBp);
+        label.textContent = `${track.label} (${extent.toLocaleString()} bp)`;
+      } else {
+        label.textContent = track.label;
+      }
 
       // In vertical mode, reverse order: label on top, button on bottom
       if (isVertical) {
@@ -4316,6 +4282,7 @@
     renderHUD();
     updateTooltip();
     setupCanvasHover();
+    updateDocumentTitle();
   }
 
   // Hit testing for WebGPU-rendered repeats (only add listeners once)
