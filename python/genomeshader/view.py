@@ -905,9 +905,8 @@ window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
     // was revoked (e.g., after being idle) and the browser tried to reload it.
     window._genomeshaderBlobUrl = url;
     
-    // Format window name with locus range
-    const regionFormatted = {json.dumps(region_str_formatted)};
-    const windowName = "genomeshader_" + regionFormatted.replace(/[^a-zA-Z0-9]/g, "_");
+    // Use 'genomeshader' as window name
+    const windowName = "genomeshader";
     
     let win;
     try {{
