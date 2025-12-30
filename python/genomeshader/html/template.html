@@ -2747,8 +2747,10 @@
       if (width < minPixelWidth) continue;
       
       visibleRepeats.push({
-        start: rs,
-        end: re,
+        start: rs,  // Clamped start for rendering
+        end: re,   // Clamped end for rendering
+        originalStart: r.start,  // Original RepeatMasker start coordinate
+        originalEnd: r.end,     // Original RepeatMasker end coordinate
         cls: r.cls,
         pos1: pos1,
         pos2: pos2,
@@ -2769,6 +2771,7 @@
           r.start - currentCluster.end <= clusterThreshold) {
         // Merge into current cluster
         currentCluster.end = Math.max(currentCluster.end, r.end);
+        currentCluster.originalEnd = Math.max(currentCluster.originalEnd, r.originalEnd);
         currentCluster.pos2 = genomePos(currentCluster.end);
         currentCluster.width = Math.abs(currentCluster.pos2 - currentCluster.pos1);
       } else {
@@ -2779,6 +2782,8 @@
         currentCluster = {
           start: r.start,
           end: r.end,
+          originalStart: r.originalStart,
+          originalEnd: r.originalEnd,
           cls: r.cls,
           pos1: r.pos1,
           pos2: r.pos2,
@@ -2831,10 +2836,10 @@
         // Scale coordinates by DPR to match physical pixel canvas
         instancedRenderer.addRect(x * dpr, y * dpr, w * dpr, h * dpr, rgba);
         
-        // Store for hit testing (use original genomic coordinates)
+        // Store for hit testing (use original RepeatMasker coordinates, not clamped/clustered)
         repeatHitTestData.push({
-          start: r.start,
-          end: r.end,
+          start: r.originalStart,
+          end: r.originalEnd,
           cls: r.cls
         });
       }
@@ -2847,8 +2852,8 @@
         const pos2 = r.pos2;
         const isSmall = r.width < 3; // Don't add stroke for very small elements
         
-        // Format tooltip text with repeat class and coordinates
-        const tooltipText = `${r.cls} repeat\n${r.start.toLocaleString()} - ${r.end.toLocaleString()}`;
+        // Format tooltip text with repeat class and original coordinates
+        const tooltipText = `${r.cls} repeat\n${Math.floor(r.originalStart).toLocaleString()} - ${Math.floor(r.originalEnd).toLocaleString()}`;
         
         // Create rect element
         let rect;
@@ -2935,72 +2940,6 @@
           stroke: "rgba(127,127,127,0.70)",
           "stroke-width": 1.2
         }));
-      }
-
-      // Data bounds indicators - show where actual read data exists
-      if (dataBounds) {
-        const dataStartPos = genomePos(dataBounds.start);
-        const dataEndPos = genomePos(dataBounds.end);
-        
-        // Draw semi-transparent overlays for regions outside data bounds
-        if (isVertical) {
-          // Region before data start
-          if (dataBounds.start > state.startBp) {
-            const overlayY1 = 16;
-            const overlayY2 = dataStartPos;
-            tracksSvg.appendChild(el("rect", {
-              x: rulerX,
-              y: overlayY1,
-              width: rulerW,
-              height: overlayY2 - overlayY1,
-              fill: "rgba(127,127,127,0.08)",
-              "pointer-events": "none"
-            }));
-          }
-          
-          // Region after data end
-          if (dataBounds.end < state.endBp) {
-            const overlayY1 = dataEndPos;
-            const overlayY2 = H - 16;
-            tracksSvg.appendChild(el("rect", {
-              x: rulerX,
-              y: overlayY1,
-              width: rulerW,
-              height: overlayY2 - overlayY1,
-              fill: "rgba(127,127,127,0.08)",
-              "pointer-events": "none"
-            }));
-          }
-        } else {
-          // Horizontal mode
-          // Region before data start
-          if (dataBounds.start > state.startBp) {
-            const overlayX1 = 16;
-            const overlayX2 = dataStartPos;
-            tracksSvg.appendChild(el("rect", {
-              x: overlayX1,
-              y: rulerY,
-              width: overlayX2 - overlayX1,
-              height: rulerH,
-              fill: "rgba(127,127,127,0.08)",
-              "pointer-events": "none"
-            }));
-          }
-          
-          // Region after data end
-          if (dataBounds.end < state.endBp) {
-            const overlayX1 = dataEndPos;
-            const overlayX2 = W - 16;
-            tracksSvg.appendChild(el("rect", {
-              x: overlayX1,
-              y: rulerY,
-              width: overlayX2 - overlayX1,
-              height: rulerH,
-              fill: "rgba(127,127,127,0.08)",
-              "pointer-events": "none"
-            }));
-          }
-        }
       }
 
       const span = state.endBp - state.startBp;
@@ -4280,6 +4219,39 @@
       const y = e.clientY - rect.top;
       const isVertical = isVerticalMode();
       
+      // Get RepeatMasker track layout to restrict hit testing to track bounds
+      const layout = getTrackLayout();
+      const repeatsLayout = layout.find(l => l.track.id === "repeats");
+      if (!repeatsLayout || repeatsLayout.track.collapsed) return;
+      
+      let repeatsY, repeatsH;
+      if (isVertical) {
+        repeatsY = 16;
+        repeatsH = tracksWidthPx() - 32; // W - 32 in vertical mode
+      } else {
+        repeatsY = repeatsLayout.contentTop + 8;
+        repeatsH = 22;
+      }
+      
+      // Only do hit testing if mouse is within RepeatMasker track bounds
+      if (isVertical) {
+        // In vertical mode, check X coordinate (genomic axis is vertical)
+        const repeatsX = repeatsLayout.contentLeft + 8;
+        const repeatsW = 22;
+        if (x < repeatsX || x > repeatsX + repeatsW) {
+          state.hoveredRepeatTooltip = null;
+          updateTooltip();
+          return;
+        }
+      } else {
+        // In horizontal mode, check Y coordinate
+        if (y < repeatsY || y > repeatsY + repeatsH) {
+          state.hoveredRepeatTooltip = null;
+          updateTooltip();
+          return;
+        }
+      }
+      
       // Convert mouse coordinates to genome position
       let bp;
       if (isVertical) {
@@ -4290,14 +4262,14 @@
         bp = bpFromXGenome(x, W);
       }
       
-      // Find overlapping repeat
+      // Find overlapping repeat (check against original coordinates)
       const hitRepeat = repeatHitTestData.find(r => 
         bp >= r.start && bp <= r.end
       );
       
       if (hitRepeat) {
         state.hoveredRepeatTooltip = {
-          text: `${hitRepeat.cls} repeat\n${hitRepeat.start.toLocaleString()} - ${hitRepeat.end.toLocaleString()}`,
+          text: `${hitRepeat.cls} repeat\n${Math.floor(hitRepeat.start).toLocaleString()} - ${Math.floor(hitRepeat.end).toLocaleString()}`,
           x: e.clientX + 10,
           y: e.clientY + 10
         };
