@@ -750,6 +750,9 @@ class GenomeShader:
         data_start = int(ref_start)
         data_end = int(ref_end)
 
+        # Format region string with commas for thousands
+        region_str_formatted = f"{ref_chr}:{ref_start:,}-{ref_end:,}"
+
         # Compute stable run_id from region + genome_build
         region_str = f"{ref_chr}:{ref_start}-{ref_end}"
         hash_input = f"{region_str}:{self.genome_build}"
@@ -834,6 +837,7 @@ class GenomeShader:
         # Build config dict first, then JSON-encode it
         config = {
             'region': f"{ref_chr}:{ref_start}-{ref_end}",
+            'region_formatted': region_str_formatted,  # Formatted with commas for display
             'genome_build': self.genome_build,
             'ideogram_data': ideogram_data,
             'transcripts_data': transcripts_data,
@@ -896,15 +900,31 @@ window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
     const url = URL.createObjectURL(blob);
     
     // Store URL in a variable that won't be garbage collected
+    // Note: Blob URLs are ephemeral and become invalid when revoked or after browser cleanup.
+    // If you see "Not allowed to load local resource: blob:..." errors, it means the blob URL
+    // was revoked (e.g., after being idle) and the browser tried to reload it.
     window._genomeshaderBlobUrl = url;
     
-    const win = window.open(url, "genomeshader", 
-      "width=" + width + ",height=" + height + ",scrollbars=no,menubar=no,toolbar=no,status=no");
+    // Format window name with locus range
+    const regionFormatted = {json.dumps(region_str_formatted)};
+    const windowName = "genomeshader_" + regionFormatted.replace(/[^a-zA-Z0-9]/g, "_");
+    
+    let win;
+    try {{
+      win = window.open(url, windowName, 
+        "width=" + width + ",height=" + height + ",scrollbars=no,menubar=no,toolbar=no,status=no");
+    }} catch(e) {{
+      console.error("Error opening window with blob URL:", e);
+      URL.revokeObjectURL(url);
+      delete window._genomeshaderBlobUrl;
+      throw e;
+    }}
     
     if (!win) {{
       console.error("Failed to open popup window - may be blocked by browser");
       alert("Popup window was blocked. Please allow popups for this site.");
       URL.revokeObjectURL(url);
+      delete window._genomeshaderBlobUrl;
       return;
     }}
     
@@ -965,22 +985,49 @@ window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
     
     // Keep the blob URL alive - don't revoke immediately
     // The URL will be revoked when the window is closed
-    win.addEventListener('beforeunload', function() {{
-      URL.revokeObjectURL(url);
-      delete window._genomeshaderBlobUrl;
-    }});
+    // Use 'unload' instead of 'beforeunload' to ensure window is actually closing
+    let blobUrlRevoked = false;
+    function revokeBlobUrl() {{
+      if (!blobUrlRevoked) {{
+        try {{
+          URL.revokeObjectURL(url);
+          blobUrlRevoked = true;
+        }} catch(e) {{
+          // URL might already be revoked, ignore
+        }}
+        delete window._genomeshaderBlobUrl;
+      }}
+    }}
     
-    // Fallback: revoke after 10 minutes if window is still open (cleanup)
+    // Check if window is closed periodically and revoke blob URL when closed
+    // This is safer than using beforeunload which can fire prematurely
+    const checkWindowClosed = setInterval(function() {{
+      try {{
+        if (win.closed) {{
+          revokeBlobUrl();
+          clearInterval(checkWindowClosed);
+        }}
+      }} catch(e) {{
+        // Window might be from different origin, check failed
+        // Assume window is closed and clean up
+        revokeBlobUrl();
+        clearInterval(checkWindowClosed);
+      }}
+    }}, 1000); // Check every second
+    
+    // Fallback: revoke after 30 minutes if window is still open (cleanup)
+    // Increased from 10 minutes to give more time for user interaction
     setTimeout(function() {{
       try {{
         if (win.closed) {{
-          URL.revokeObjectURL(url);
-          delete window._genomeshaderBlobUrl;
+          revokeBlobUrl();
         }}
+        clearInterval(checkWindowClosed);
       }} catch(e) {{
         // Window might be from different origin, ignore
+        clearInterval(checkWindowClosed);
       }}
-    }}, 600000);
+    }}, 1800000); // 30 minutes
     
     // Focus the window to bring it to front
     setTimeout(function() {{
