@@ -2126,7 +2126,33 @@
       ? (bp) => yGenomeCanonical(bp, H)
       : (bp) => xGenomeCanonical(bp, W);
     
-    // Draw data bounds overlays across all tracks (if data bounds exist and differ from view)
+    // Find track positions (needed to exclude ideogram from shading)
+    const ideogramLayout = layout.find(l => l.track.id === "ideogram");
+    const genesLayout = layout.find(l => l.track.id === "genes");
+    const repeatsLayout = layout.find(l => l.track.id === "repeats");
+    const rulerLayout = layout.find(l => l.track.id === "ruler");
+    const referenceLayout = layout.find(l => l.track.id === "reference");
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    const readsLayout = layout.find(l => l.track.id === "reads");
+    
+    // Calculate ideogram track bounds to exclude from shading (including track controls header)
+    let ideogramTrackStart = 0;
+    let ideogramTrackEnd = 0;
+    if (ideogramLayout && !ideogramLayout.track.collapsed) {
+      if (isVertical) {
+        // In vertical mode, ideogram is on the left side (x-axis)
+        // Use left/width to include the track controls header area
+        ideogramTrackStart = ideogramLayout.left;
+        ideogramTrackEnd = ideogramLayout.left + ideogramLayout.width;
+      } else {
+        // In horizontal mode, ideogram is at the top (y-axis)
+        // Use top/height to include the track controls header area
+        ideogramTrackStart = ideogramLayout.top;
+        ideogramTrackEnd = ideogramLayout.top + ideogramLayout.height;
+      }
+    }
+    
+    // Draw data bounds overlays across all tracks except ideogram (if data bounds exist and differ from view)
     if (dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
       const dataStartPos = genomePos(dataBounds.start);
       const dataEndPos = genomePos(dataBounds.end);
@@ -2137,79 +2163,163 @@
         const containerRect = tracksContainer.getBoundingClientRect();
         const svgRect = tracksSvg.getBoundingClientRect();
         
+        // Helper function to draw out-of-bounds shading (darker)
+        const drawOutOfBoundsRect = (x, y, width, height) => {
+          tracksSvg.appendChild(el("rect", {
+            x: x,
+            y: y,
+            width: width,
+            height: height,
+            fill: "rgba(127,127,127,0.15)", // Darker for out-of-bounds
+            "pointer-events": "none",
+            "class": "data-bounds-overlay"
+          }));
+        };
+        
+        // Helper function to draw in-bounds shading (lighter)
+        const drawInBoundsRect = (x, y, width, height) => {
+          tracksSvg.appendChild(el("rect", {
+            x: x,
+            y: y,
+            width: width,
+            height: height,
+            fill: "rgba(255,255,255,0.02)", // Very light for in-bounds
+            "pointer-events": "none",
+            "class": "data-bounds-overlay"
+          }));
+        };
+        
         if (isVertical) {
-          // Region before data start
-          if (dataBounds.start > state.startBp) {
-            const overlayY1 = 0;
-            const overlayY2 = dataStartPos;
-            tracksSvg.appendChild(el("rect", {
-              x: 0,
-              y: overlayY1,
-              width: W,
-              height: overlayY2 - overlayY1,
-              fill: "rgba(127,127,127,0.05)",
-              "pointer-events": "none",
-              "class": "data-bounds-overlay"
-            }));
+          // In vertical mode, Y axis is inverted: bottom (higher Y) = smaller bp, top (lower Y) = larger bp
+          // dataStartPos = Y position of dataBounds.start (smaller bp → higher Y, near bottom)
+          // dataEndPos = Y position of dataBounds.end (larger bp → lower Y, near top)
+          // In-bounds region is between dataEndPos (top) and dataStartPos (bottom)
+          const inBoundsY1 = Math.min(dataStartPos, dataEndPos);  // top of in-bounds (smaller Y)
+          const inBoundsY2 = Math.max(dataStartPos, dataEndPos);  // bottom of in-bounds (larger Y)
+          if (ideogramTrackEnd > 0) {
+            // Left side of ideogram track
+            if (ideogramTrackStart > 0 && inBoundsY2 > inBoundsY1) {
+              drawInBoundsRect(0, inBoundsY1, ideogramTrackStart, inBoundsY2 - inBoundsY1);
+            }
+            // Right side of ideogram track
+            if (ideogramTrackEnd < W && inBoundsY2 > inBoundsY1) {
+              drawInBoundsRect(ideogramTrackEnd, inBoundsY1, W - ideogramTrackEnd, inBoundsY2 - inBoundsY1);
+            }
+          } else {
+            // No ideogram track, draw full width
+            if (inBoundsY2 > inBoundsY1) {
+              drawInBoundsRect(0, inBoundsY1, W, inBoundsY2 - inBoundsY1);
+            }
           }
           
-          // Region after data end
-          if (dataBounds.end < state.endBp) {
-            const overlayY1 = dataEndPos;
+          // Out-of-bounds region below data (smaller bp than dataBounds.start)
+          // dataBounds.start > state.startBp means view extends to show bp < dataBounds.start
+          // In vertical mode: smaller bp → higher Y → bottom of screen
+          // So out-of-bounds is from dataStartPos to H (bottom)
+          if (dataBounds.start > state.startBp) {
+            const overlayY1 = Math.max(dataStartPos, 0);
             const overlayY2 = H;
-            tracksSvg.appendChild(el("rect", {
-              x: 0,
-              y: overlayY1,
-              width: W,
-              height: overlayY2 - overlayY1,
-              fill: "rgba(127,127,127,0.05)",
-              "pointer-events": "none",
-              "class": "data-bounds-overlay"
-            }));
+            if (overlayY2 > overlayY1) {
+              if (ideogramTrackEnd > 0) {
+                // Left side of ideogram track
+                if (ideogramTrackStart > 0) {
+                  drawOutOfBoundsRect(0, overlayY1, ideogramTrackStart, overlayY2 - overlayY1);
+                }
+                // Right side of ideogram track
+                if (ideogramTrackEnd < W) {
+                  drawOutOfBoundsRect(ideogramTrackEnd, overlayY1, W - ideogramTrackEnd, overlayY2 - overlayY1);
+                }
+              } else {
+                // No ideogram track, draw full width
+                drawOutOfBoundsRect(0, overlayY1, W, overlayY2 - overlayY1);
+              }
+            }
+          }
+          
+          // Out-of-bounds region above data (larger bp than dataBounds.end)
+          // dataBounds.end < state.endBp means view extends to show bp > dataBounds.end
+          // In vertical mode: larger bp → lower Y → top of screen
+          // So out-of-bounds is from 0 to dataEndPos (top)
+          if (dataBounds.end < state.endBp) {
+            const overlayY1 = 0;
+            const overlayY2 = Math.min(dataEndPos, H);
+            if (overlayY2 > overlayY1) {
+              if (ideogramTrackEnd > 0) {
+                // Left side of ideogram track
+                if (ideogramTrackStart > 0) {
+                  drawOutOfBoundsRect(0, overlayY1, ideogramTrackStart, overlayY2 - overlayY1);
+                }
+                // Right side of ideogram track
+                if (ideogramTrackEnd < W) {
+                  drawOutOfBoundsRect(ideogramTrackEnd, overlayY1, W - ideogramTrackEnd, overlayY2 - overlayY1);
+                }
+              } else {
+                // No ideogram track, draw full width
+                drawOutOfBoundsRect(0, overlayY1, W, overlayY2 - overlayY1);
+              }
+            }
           }
         } else {
-          // Horizontal mode
-          // Region before data start
+          // Horizontal mode - exclude ideogram track area
+          // In-bounds region - light shading
+          const inBoundsX1 = dataStartPos;
+          const inBoundsX2 = dataEndPos;
+          if (ideogramTrackEnd > 0) {
+            // Top side of ideogram track
+            if (ideogramTrackStart > 0 && inBoundsX2 > inBoundsX1) {
+              drawInBoundsRect(inBoundsX1, 0, inBoundsX2 - inBoundsX1, ideogramTrackStart);
+            }
+            // Bottom side of ideogram track
+            if (ideogramTrackEnd < H && inBoundsX2 > inBoundsX1) {
+              drawInBoundsRect(inBoundsX1, ideogramTrackEnd, inBoundsX2 - inBoundsX1, H - ideogramTrackEnd);
+            }
+          } else {
+            // No ideogram track, draw full height
+            if (inBoundsX2 > inBoundsX1) {
+              drawInBoundsRect(inBoundsX1, 0, inBoundsX2 - inBoundsX1, H);
+            }
+          }
+          
+          // Region before data start (out-of-bounds, darker)
           if (dataBounds.start > state.startBp) {
             const overlayX1 = 0;
             const overlayX2 = dataStartPos;
-            tracksSvg.appendChild(el("rect", {
-              x: overlayX1,
-              y: 0,
-              width: overlayX2 - overlayX1,
-              height: H,
-              fill: "rgba(127,127,127,0.05)",
-              "pointer-events": "none",
-              "class": "data-bounds-overlay"
-            }));
+            if (ideogramTrackEnd > 0) {
+              // Top side of ideogram track
+              if (ideogramTrackStart > 0) {
+                drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, ideogramTrackStart);
+              }
+              // Bottom side of ideogram track
+              if (ideogramTrackEnd < H) {
+                drawOutOfBoundsRect(overlayX1, ideogramTrackEnd, overlayX2 - overlayX1, H - ideogramTrackEnd);
+              }
+            } else {
+              // No ideogram track, draw full height
+              drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, H);
+            }
           }
           
-          // Region after data end
+          // Region after data end (out-of-bounds, darker)
           if (dataBounds.end < state.endBp) {
             const overlayX1 = dataEndPos;
             const overlayX2 = W;
-            tracksSvg.appendChild(el("rect", {
-              x: overlayX1,
-              y: 0,
-              width: overlayX2 - overlayX1,
-              height: H,
-              fill: "rgba(127,127,127,0.05)",
-              "pointer-events": "none",
-              "class": "data-bounds-overlay"
-            }));
+            if (ideogramTrackEnd > 0) {
+              // Top side of ideogram track
+              if (ideogramTrackStart > 0) {
+                drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, ideogramTrackStart);
+              }
+              // Bottom side of ideogram track
+              if (ideogramTrackEnd < H) {
+                drawOutOfBoundsRect(overlayX1, ideogramTrackEnd, overlayX2 - overlayX1, H - ideogramTrackEnd);
+              }
+            } else {
+              // No ideogram track, draw full height
+              drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, H);
+            }
           }
         }
       }
     }
-
-    // Find track positions
-    const ideogramLayout = layout.find(l => l.track.id === "ideogram");
-    const genesLayout = layout.find(l => l.track.id === "genes");
-    const repeatsLayout = layout.find(l => l.track.id === "repeats");
-    const rulerLayout = layout.find(l => l.track.id === "ruler");
-    const referenceLayout = layout.find(l => l.track.id === "reference");
-    const flowLayout = layout.find(l => l.track.id === "flow");
-    const readsLayout = layout.find(l => l.track.id === "reads");
 
     if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout || !readsLayout) return;
 
