@@ -1963,6 +1963,21 @@
     console.warn("No repeats_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
   }
 
+  // Reference sequence: load from config or use empty string as fallback
+  let referenceSequence = "";
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.reference_data) {
+    const data = window.GENOMESHADER_CONFIG.reference_data;
+    // Data should be a string containing the DNA sequence
+    if (typeof data === 'string') {
+      referenceSequence = data;
+      console.log(`Loaded reference sequence of length ${referenceSequence.length} bases`);
+    } else {
+      console.warn("Reference data is not in expected string format:", data);
+    }
+  } else {
+    console.warn("No reference_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
+  }
+
   // -----------------------------
   // SVG helpers
   // -----------------------------
@@ -2113,7 +2128,33 @@
       ? (bp) => yGenomeCanonical(bp, H)
       : (bp) => xGenomeCanonical(bp, W);
     
-    // Draw data bounds overlays across all tracks (if data bounds exist and differ from view)
+    // Find track positions (needed to exclude ideogram from shading)
+    const ideogramLayout = layout.find(l => l.track.id === "ideogram");
+    const genesLayout = layout.find(l => l.track.id === "genes");
+    const repeatsLayout = layout.find(l => l.track.id === "repeats");
+    const rulerLayout = layout.find(l => l.track.id === "ruler");
+    const referenceLayout = layout.find(l => l.track.id === "reference");
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    const readsLayout = layout.find(l => l.track.id === "reads");
+    
+    // Calculate ideogram track bounds to exclude from shading (including track controls header)
+    let ideogramTrackStart = 0;
+    let ideogramTrackEnd = 0;
+    if (ideogramLayout && !ideogramLayout.track.collapsed) {
+      if (isVertical) {
+        // In vertical mode, ideogram is on the left side (x-axis)
+        // Use left/width to include the track controls header area
+        ideogramTrackStart = ideogramLayout.left;
+        ideogramTrackEnd = ideogramLayout.left + ideogramLayout.width;
+      } else {
+        // In horizontal mode, ideogram is at the top (y-axis)
+        // Use top/height to include the track controls header area
+        ideogramTrackStart = ideogramLayout.top;
+        ideogramTrackEnd = ideogramLayout.top + ideogramLayout.height;
+      }
+    }
+    
+    // Draw data bounds overlays across all tracks except ideogram (if data bounds exist and differ from view)
     if (dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
       const dataStartPos = genomePos(dataBounds.start);
       const dataEndPos = genomePos(dataBounds.end);
@@ -2124,79 +2165,163 @@
         const containerRect = tracksContainer.getBoundingClientRect();
         const svgRect = tracksSvg.getBoundingClientRect();
         
+        // Helper function to draw out-of-bounds shading (darker)
+        const drawOutOfBoundsRect = (x, y, width, height) => {
+          tracksSvg.appendChild(el("rect", {
+            x: x,
+            y: y,
+            width: width,
+            height: height,
+            fill: "rgba(127,127,127,0.15)", // Darker for out-of-bounds
+            "pointer-events": "none",
+            "class": "data-bounds-overlay"
+          }));
+        };
+        
+        // Helper function to draw in-bounds shading (lighter)
+        const drawInBoundsRect = (x, y, width, height) => {
+          tracksSvg.appendChild(el("rect", {
+            x: x,
+            y: y,
+            width: width,
+            height: height,
+            fill: "rgba(255,255,255,0.02)", // Very light for in-bounds
+            "pointer-events": "none",
+            "class": "data-bounds-overlay"
+          }));
+        };
+        
         if (isVertical) {
-          // Region before data start
-          if (dataBounds.start > state.startBp) {
-            const overlayY1 = 0;
-            const overlayY2 = dataStartPos;
-            tracksSvg.appendChild(el("rect", {
-              x: 0,
-              y: overlayY1,
-              width: W,
-              height: overlayY2 - overlayY1,
-              fill: "rgba(127,127,127,0.05)",
-              "pointer-events": "none",
-              "class": "data-bounds-overlay"
-            }));
+          // In vertical mode, Y axis is inverted: bottom (higher Y) = smaller bp, top (lower Y) = larger bp
+          // dataStartPos = Y position of dataBounds.start (smaller bp → higher Y, near bottom)
+          // dataEndPos = Y position of dataBounds.end (larger bp → lower Y, near top)
+          // In-bounds region is between dataEndPos (top) and dataStartPos (bottom)
+          const inBoundsY1 = Math.min(dataStartPos, dataEndPos);  // top of in-bounds (smaller Y)
+          const inBoundsY2 = Math.max(dataStartPos, dataEndPos);  // bottom of in-bounds (larger Y)
+          if (ideogramTrackEnd > 0) {
+            // Left side of ideogram track
+            if (ideogramTrackStart > 0 && inBoundsY2 > inBoundsY1) {
+              drawInBoundsRect(0, inBoundsY1, ideogramTrackStart, inBoundsY2 - inBoundsY1);
+            }
+            // Right side of ideogram track
+            if (ideogramTrackEnd < W && inBoundsY2 > inBoundsY1) {
+              drawInBoundsRect(ideogramTrackEnd, inBoundsY1, W - ideogramTrackEnd, inBoundsY2 - inBoundsY1);
+            }
+          } else {
+            // No ideogram track, draw full width
+            if (inBoundsY2 > inBoundsY1) {
+              drawInBoundsRect(0, inBoundsY1, W, inBoundsY2 - inBoundsY1);
+            }
           }
           
-          // Region after data end
-          if (dataBounds.end < state.endBp) {
-            const overlayY1 = dataEndPos;
+          // Out-of-bounds region below data (smaller bp than dataBounds.start)
+          // dataBounds.start > state.startBp means view extends to show bp < dataBounds.start
+          // In vertical mode: smaller bp → higher Y → bottom of screen
+          // So out-of-bounds is from dataStartPos to H (bottom)
+          if (dataBounds.start > state.startBp) {
+            const overlayY1 = Math.max(dataStartPos, 0);
             const overlayY2 = H;
-            tracksSvg.appendChild(el("rect", {
-              x: 0,
-              y: overlayY1,
-              width: W,
-              height: overlayY2 - overlayY1,
-              fill: "rgba(127,127,127,0.05)",
-              "pointer-events": "none",
-              "class": "data-bounds-overlay"
-            }));
+            if (overlayY2 > overlayY1) {
+              if (ideogramTrackEnd > 0) {
+                // Left side of ideogram track
+                if (ideogramTrackStart > 0) {
+                  drawOutOfBoundsRect(0, overlayY1, ideogramTrackStart, overlayY2 - overlayY1);
+                }
+                // Right side of ideogram track
+                if (ideogramTrackEnd < W) {
+                  drawOutOfBoundsRect(ideogramTrackEnd, overlayY1, W - ideogramTrackEnd, overlayY2 - overlayY1);
+                }
+              } else {
+                // No ideogram track, draw full width
+                drawOutOfBoundsRect(0, overlayY1, W, overlayY2 - overlayY1);
+              }
+            }
+          }
+          
+          // Out-of-bounds region above data (larger bp than dataBounds.end)
+          // dataBounds.end < state.endBp means view extends to show bp > dataBounds.end
+          // In vertical mode: larger bp → lower Y → top of screen
+          // So out-of-bounds is from 0 to dataEndPos (top)
+          if (dataBounds.end < state.endBp) {
+            const overlayY1 = 0;
+            const overlayY2 = Math.min(dataEndPos, H);
+            if (overlayY2 > overlayY1) {
+              if (ideogramTrackEnd > 0) {
+                // Left side of ideogram track
+                if (ideogramTrackStart > 0) {
+                  drawOutOfBoundsRect(0, overlayY1, ideogramTrackStart, overlayY2 - overlayY1);
+                }
+                // Right side of ideogram track
+                if (ideogramTrackEnd < W) {
+                  drawOutOfBoundsRect(ideogramTrackEnd, overlayY1, W - ideogramTrackEnd, overlayY2 - overlayY1);
+                }
+              } else {
+                // No ideogram track, draw full width
+                drawOutOfBoundsRect(0, overlayY1, W, overlayY2 - overlayY1);
+              }
+            }
           }
         } else {
-          // Horizontal mode
-          // Region before data start
+          // Horizontal mode - exclude ideogram track area
+          // In-bounds region - light shading
+          const inBoundsX1 = dataStartPos;
+          const inBoundsX2 = dataEndPos;
+          if (ideogramTrackEnd > 0) {
+            // Top side of ideogram track
+            if (ideogramTrackStart > 0 && inBoundsX2 > inBoundsX1) {
+              drawInBoundsRect(inBoundsX1, 0, inBoundsX2 - inBoundsX1, ideogramTrackStart);
+            }
+            // Bottom side of ideogram track
+            if (ideogramTrackEnd < H && inBoundsX2 > inBoundsX1) {
+              drawInBoundsRect(inBoundsX1, ideogramTrackEnd, inBoundsX2 - inBoundsX1, H - ideogramTrackEnd);
+            }
+          } else {
+            // No ideogram track, draw full height
+            if (inBoundsX2 > inBoundsX1) {
+              drawInBoundsRect(inBoundsX1, 0, inBoundsX2 - inBoundsX1, H);
+            }
+          }
+          
+          // Region before data start (out-of-bounds, darker)
           if (dataBounds.start > state.startBp) {
             const overlayX1 = 0;
             const overlayX2 = dataStartPos;
-            tracksSvg.appendChild(el("rect", {
-              x: overlayX1,
-              y: 0,
-              width: overlayX2 - overlayX1,
-              height: H,
-              fill: "rgba(127,127,127,0.05)",
-              "pointer-events": "none",
-              "class": "data-bounds-overlay"
-            }));
+            if (ideogramTrackEnd > 0) {
+              // Top side of ideogram track
+              if (ideogramTrackStart > 0) {
+                drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, ideogramTrackStart);
+              }
+              // Bottom side of ideogram track
+              if (ideogramTrackEnd < H) {
+                drawOutOfBoundsRect(overlayX1, ideogramTrackEnd, overlayX2 - overlayX1, H - ideogramTrackEnd);
+              }
+            } else {
+              // No ideogram track, draw full height
+              drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, H);
+            }
           }
           
-          // Region after data end
+          // Region after data end (out-of-bounds, darker)
           if (dataBounds.end < state.endBp) {
             const overlayX1 = dataEndPos;
             const overlayX2 = W;
-            tracksSvg.appendChild(el("rect", {
-              x: overlayX1,
-              y: 0,
-              width: overlayX2 - overlayX1,
-              height: H,
-              fill: "rgba(127,127,127,0.05)",
-              "pointer-events": "none",
-              "class": "data-bounds-overlay"
-            }));
+            if (ideogramTrackEnd > 0) {
+              // Top side of ideogram track
+              if (ideogramTrackStart > 0) {
+                drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, ideogramTrackStart);
+              }
+              // Bottom side of ideogram track
+              if (ideogramTrackEnd < H) {
+                drawOutOfBoundsRect(overlayX1, ideogramTrackEnd, overlayX2 - overlayX1, H - ideogramTrackEnd);
+              }
+            } else {
+              // No ideogram track, draw full height
+              drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, H);
+            }
           }
         }
       }
     }
-
-    // Find track positions
-    const ideogramLayout = layout.find(l => l.track.id === "ideogram");
-    const genesLayout = layout.find(l => l.track.id === "genes");
-    const repeatsLayout = layout.find(l => l.track.id === "repeats");
-    const rulerLayout = layout.find(l => l.track.id === "ruler");
-    const referenceLayout = layout.find(l => l.track.id === "reference");
-    const flowLayout = layout.find(l => l.track.id === "flow");
-    const readsLayout = layout.find(l => l.track.id === "reads");
 
     if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout || !readsLayout) return;
 
@@ -2732,8 +2857,10 @@
       if (width < minPixelWidth) continue;
       
       visibleRepeats.push({
-        start: rs,
-        end: re,
+        start: rs,  // Clamped start for rendering
+        end: re,   // Clamped end for rendering
+        originalStart: r.start,  // Original RepeatMasker start coordinate
+        originalEnd: r.end,     // Original RepeatMasker end coordinate
         cls: r.cls,
         pos1: pos1,
         pos2: pos2,
@@ -2754,6 +2881,7 @@
           r.start - currentCluster.end <= clusterThreshold) {
         // Merge into current cluster
         currentCluster.end = Math.max(currentCluster.end, r.end);
+        currentCluster.originalEnd = Math.max(currentCluster.originalEnd, r.originalEnd);
         currentCluster.pos2 = genomePos(currentCluster.end);
         currentCluster.width = Math.abs(currentCluster.pos2 - currentCluster.pos1);
       } else {
@@ -2764,6 +2892,8 @@
         currentCluster = {
           start: r.start,
           end: r.end,
+          originalStart: r.originalStart,
+          originalEnd: r.originalEnd,
           cls: r.cls,
           pos1: r.pos1,
           pos2: r.pos2,
@@ -2816,10 +2946,10 @@
         // Scale coordinates by DPR to match physical pixel canvas
         instancedRenderer.addRect(x * dpr, y * dpr, w * dpr, h * dpr, rgba);
         
-        // Store for hit testing (use original genomic coordinates)
+        // Store for hit testing (use original RepeatMasker coordinates, not clamped/clustered)
         repeatHitTestData.push({
-          start: r.start,
-          end: r.end,
+          start: r.originalStart,
+          end: r.originalEnd,
           cls: r.cls
         });
       }
@@ -2832,8 +2962,8 @@
         const pos2 = r.pos2;
         const isSmall = r.width < 3; // Don't add stroke for very small elements
         
-        // Format tooltip text with repeat class and coordinates
-        const tooltipText = `${r.cls} repeat\n${r.start.toLocaleString()} - ${r.end.toLocaleString()}`;
+        // Format tooltip text with repeat class and original coordinates
+        const tooltipText = `${r.cls} repeat\n${Math.floor(r.originalStart).toLocaleString()} - ${Math.floor(r.originalEnd).toLocaleString()}`;
         
         // Create rect element
         let rect;
@@ -2920,72 +3050,6 @@
           stroke: "rgba(127,127,127,0.70)",
           "stroke-width": 1.2
         }));
-      }
-
-      // Data bounds indicators - show where actual read data exists
-      if (dataBounds) {
-        const dataStartPos = genomePos(dataBounds.start);
-        const dataEndPos = genomePos(dataBounds.end);
-        
-        // Draw semi-transparent overlays for regions outside data bounds
-        if (isVertical) {
-          // Region before data start
-          if (dataBounds.start > state.startBp) {
-            const overlayY1 = 16;
-            const overlayY2 = dataStartPos;
-            tracksSvg.appendChild(el("rect", {
-              x: rulerX,
-              y: overlayY1,
-              width: rulerW,
-              height: overlayY2 - overlayY1,
-              fill: "rgba(127,127,127,0.08)",
-              "pointer-events": "none"
-            }));
-          }
-          
-          // Region after data end
-          if (dataBounds.end < state.endBp) {
-            const overlayY1 = dataEndPos;
-            const overlayY2 = H - 16;
-            tracksSvg.appendChild(el("rect", {
-              x: rulerX,
-              y: overlayY1,
-              width: rulerW,
-              height: overlayY2 - overlayY1,
-              fill: "rgba(127,127,127,0.08)",
-              "pointer-events": "none"
-            }));
-          }
-        } else {
-          // Horizontal mode
-          // Region before data start
-          if (dataBounds.start > state.startBp) {
-            const overlayX1 = 16;
-            const overlayX2 = dataStartPos;
-            tracksSvg.appendChild(el("rect", {
-              x: overlayX1,
-              y: rulerY,
-              width: overlayX2 - overlayX1,
-              height: rulerH,
-              fill: "rgba(127,127,127,0.08)",
-              "pointer-events": "none"
-            }));
-          }
-          
-          // Region after data end
-          if (dataBounds.end < state.endBp) {
-            const overlayX1 = dataEndPos;
-            const overlayX2 = W - 16;
-            tracksSvg.appendChild(el("rect", {
-              x: overlayX1,
-              y: rulerY,
-              width: overlayX2 - overlayX1,
-              height: rulerH,
-              fill: "rgba(127,127,127,0.08)",
-              "pointer-events": "none"
-            }));
-          }
-        }
       }
 
       const span = state.endBp - state.startBp;
@@ -3353,23 +3417,42 @@
         referenceW = W - 32;
       }
 
-      // Helper function to generate a demo reference sequence
-      function generateReferenceSequence(startBp, endBp) {
-        // Generate a simple repeating pattern for demo purposes
-        // In a real implementation, this would fetch from a reference genome
-        const bases = ['A', 'T', 'G', 'C'];
-        const seq = [];
-        for (let bp = Math.floor(startBp); bp <= Math.floor(endBp); bp++) {
-          // Use a deterministic pattern based on position
-          seq.push(bases[bp % 4]);
+      // Helper function to get reference sequence for a region
+      // Returns { sequence: array, startBp: number } where startBp is the genomic position of sequence[0]
+      function getReferenceSequence(startBp, endBp) {
+        // Use the real reference sequence from config if available
+        if (referenceSequence && referenceSequence.length > 0) {
+          // Calculate the offset into the sequence
+          // The reference sequence starts at data_bounds.start (0-based)
+          // UCSC returns sequence for [start, end), so sequence[i] corresponds to genomic position (dataStart + i)
+          const dataStart = window.GENOMESHADER_CONFIG?.data_bounds?.start || 0;
+          const viewStart = Math.floor(startBp);
+          const viewEnd = Math.floor(endBp);
+          
+          // Calculate sequence indices (0-based relative to sequence start)
+          // seqStart: index in sequence string for viewStart genomic position
+          // seqEnd: index in sequence string for (viewEnd + 1) genomic position (exclusive end)
+          const seqStart = Math.max(0, viewStart - dataStart);
+          const seqEnd = Math.min(referenceSequence.length, viewEnd - dataStart + 1);
+          
+          // Only return sequence if we have valid indices within bounds
+          if (seqStart >= 0 && seqEnd > seqStart && seqStart < referenceSequence.length) {
+            const sequence = referenceSequence.slice(seqStart, seqEnd).split('');
+            // The actual genomic start position of the returned sequence
+            const actualStartBp = dataStart + seqStart;
+            return { sequence: sequence, startBp: actualStartBp };
+          }
         }
-        return seq;
+        // Fallback: return empty array if no sequence data
+        return { sequence: [], startBp: startBp };
       }
 
       const span = state.endBp - state.startBp;
       const startBpInt = Math.floor(state.startBp);
       const endBpInt = Math.floor(state.endBp);
-      const refSeq = generateReferenceSequence(startBpInt, endBpInt);
+      const refSeqData = getReferenceSequence(startBpInt, endBpInt);
+      const refSeq = refSeqData.sequence;
+      const refSeqStartBp = refSeqData.startBp;
 
       const nucleotideColors = {
         'A': 'rgba(0, 200, 0, 0.8)',      // green
@@ -3378,72 +3461,200 @@
         'T': 'rgba(255, 0, 0, 0.8)'       // red
       };
 
+      // Helper function to convert nucleotide color to RGBA array for WebGPU
+      function nucleotideColorToRgba(base) {
+        const rgbaStr = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+        const match = rgbaStr.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/);
+        if (match) {
+          return [
+            parseInt(match[1]) / 255,
+            parseInt(match[2]) / 255,
+            parseInt(match[3]) / 255,
+            parseFloat(match[4])
+          ];
+        }
+        return [0.5, 0.5, 0.5, 0.8]; // fallback
+      }
+
       // Calculate base size based on zoom level
       const minBaseSize = 2; // Minimum size per base in pixels
       const baseSize = Math.max(minBaseSize, state.pxPerBp);
 
-      // Only show individual bases if zoomed in enough
-      const showIndividualBases = baseSize >= 4;
+      // Only show individual bases if zoomed in enough (at least 2 actual pixels per base)
+      const showIndividualBases = state.pxPerBp >= 2;
 
-      if (showIndividualBases) {
-        // Render individual bases
+      // Performance limit: maximum number of bases to render
+      const maxBasesToRender = 10000;
+
+      if (showIndividualBases && refSeq.length > 0) {
+        // Filter and prepare visible bases
+        const visibleBases = [];
         for (let i = 0; i < refSeq.length; i++) {
-          const bp = startBpInt + i;
+          // Calculate the actual genomic position for this base
+          // refSeq[i] corresponds to genomic position refSeqStartBp + i
+          const bp = refSeqStartBp + i;
+          
+          // Only render bases that are within the visible view
           if (bp < state.startBp || bp > state.endBp) continue;
-
+          
           // Use genomePosCanonical to account for insertion gaps
           const pos = genomePosCanonical(bp);
-          const nextPos = i < refSeq.length - 1 ? genomePosCanonical(bp + 1) : genomePosCanonical(state.endBp);
+          const nextBp = bp + 1;
+          const nextPos = nextBp <= state.endBp ? genomePosCanonical(nextBp) : genomePosCanonical(state.endBp);
           const actualSize = Math.max(minBaseSize, Math.abs(nextPos - pos));
-
+          
+          // Skip bases that are too small to render
+          if (actualSize < minBaseSize) continue;
+          
           const base = refSeq[i].toUpperCase();
-          const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+          visibleBases.push({
+            bp: bp,
+            base: base,
+            pos: pos,
+            nextPos: nextPos,
+            actualSize: actualSize
+          });
+        }
 
-          if (isVertical) {
-            tracksSvg.appendChild(el("rect", {
-              x: referenceX,
-              y: pos,
-              width: referenceW,
-              height: actualSize - 0.5,
-              fill: color
-            }));
+        // Limit the number of bases to render
+        const basesToRender = visibleBases.slice(0, maxBasesToRender);
+        
+        if (visibleBases.length > maxBasesToRender) {
+          console.warn(`Too many bases (${visibleBases.length}), rendering only first ${maxBasesToRender}`);
+        }
 
-            // Draw base letter if space allows
-            if (actualSize >= 8) {
-              const textEl = el("text", {
-                x: referenceX + referenceW / 2,
-                y: pos + actualSize / 2,
-                class: "svg-small",
-                "text-anchor": "middle",
-                fill: "white",
-                "font-weight": "bold",
-                "dominant-baseline": "middle",
-                transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
-              }, base);
-              tracksSvg.appendChild(textEl);
+        // Use WebGPU if available, otherwise fall back to SVG
+        if (webgpuSupported && instancedRenderer) {
+          // Add rectangles to WebGPU renderer
+          // Scale by devicePixelRatio since WebGPU canvas uses physical pixels
+          const dpr = window.devicePixelRatio || 1;
+          
+          for (const b of basesToRender) {
+            const pos = b.pos;
+            const actualSize = b.actualSize;
+            const base = b.base;
+            const rgba = nucleotideColorToRgba(base);
+            
+            let x, y, w, h;
+            if (isVertical) {
+              x = referenceX;
+              y = pos;
+              w = referenceW;
+              h = actualSize - 0.5;
+            } else {
+              x = pos;
+              y = referenceY;
+              w = actualSize - 0.5;
+              h = referenceH;
             }
-          } else {
-            tracksSvg.appendChild(el("rect", {
-              x: pos,
-              y: referenceY,
-              width: actualSize - 0.5,
-              height: referenceH,
-              fill: color
-            }));
-
-            // Draw base letter if space allows
-            if (actualSize >= 8) {
-              tracksSvg.appendChild(el("text", {
-                x: pos + actualSize / 2,
-                y: referenceY + referenceH / 2,
-                class: "svg-small",
-                "text-anchor": "middle",
-                fill: "white",
-                "font-weight": "bold",
-                "dominant-baseline": "middle"
-              }, base));
+            
+            // Scale coordinates by DPR to match physical pixel canvas
+            instancedRenderer.addRect(x * dpr, y * dpr, w * dpr, h * dpr, rgba);
+          }
+          
+          // Draw base letters using SVG (text rendering can stay SVG-based)
+          const fragment = document.createDocumentFragment();
+          for (const b of basesToRender) {
+            if (b.actualSize >= 8) {
+              const base = b.base;
+              const pos = b.pos;
+              const actualSize = b.actualSize;
+              
+              if (isVertical) {
+                const textEl = el("text", {
+                  x: referenceX + referenceW / 2,
+                  y: pos + actualSize / 2,
+                  class: "svg-small",
+                  "text-anchor": "middle",
+                  fill: "#fff",
+                  stroke: "#000",
+                  "stroke-width": "0.5",
+                  "font-weight": "bold",
+                  "dominant-baseline": "middle",
+                  transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
+                }, base);
+                fragment.appendChild(textEl);
+              } else {
+                const textEl = el("text", {
+                  x: pos + actualSize / 2,
+                  y: referenceY + referenceH / 2,
+                  class: "svg-small",
+                  "text-anchor": "middle",
+                  fill: "#fff",
+                  stroke: "#000",
+                  "stroke-width": "0.5",
+                  "font-weight": "bold",
+                  "dominant-baseline": "middle"
+                }, base);
+                fragment.appendChild(textEl);
+              }
             }
           }
+          tracksSvg.appendChild(fragment);
+        } else {
+          // Fallback to SVG rendering
+          const fragment = document.createDocumentFragment();
+          
+          for (const b of basesToRender) {
+            const pos = b.pos;
+            const actualSize = b.actualSize;
+            const base = b.base;
+            const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+            
+            if (isVertical) {
+              fragment.appendChild(el("rect", {
+                x: referenceX,
+                y: pos,
+                width: referenceW,
+                height: actualSize - 0.5,
+                fill: color
+              }));
+
+              // Draw base letter if space allows
+              if (actualSize >= 8) {
+                const textEl = el("text", {
+                  x: referenceX + referenceW / 2,
+                  y: pos + actualSize / 2,
+                  class: "svg-small",
+                  "text-anchor": "middle",
+                  fill: "#fff",
+                  stroke: "#000",
+                  "stroke-width": "0.5",
+                  "font-weight": "bold",
+                  "dominant-baseline": "middle",
+                  transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
+                }, base);
+                fragment.appendChild(textEl);
+              }
+            } else {
+              fragment.appendChild(el("rect", {
+                x: pos,
+                y: referenceY,
+                width: actualSize - 0.5,
+                height: referenceH,
+                fill: color
+              }));
+
+              // Draw base letter if space allows
+              if (actualSize >= 8) {
+                const textEl = el("text", {
+                  x: pos + actualSize / 2,
+                  y: referenceY + referenceH / 2,
+                  class: "svg-small",
+                  "text-anchor": "middle",
+                  fill: "#fff",
+                  stroke: "#000",
+                  "stroke-width": "0.5",
+                  "font-weight": "bold",
+                  "dominant-baseline": "middle"
+                }, base);
+                fragment.appendChild(textEl);
+              }
+            }
+          }
+          
+          // Append all elements at once (single DOM operation)
+          tracksSvg.appendChild(fragment);
         }
       } else {
         // Zoomed out: show a continuous reference line with subtle pattern
@@ -4118,6 +4329,39 @@
       const y = e.clientY - rect.top;
       const isVertical = isVerticalMode();
       
+      // Get RepeatMasker track layout to restrict hit testing to track bounds
+      const layout = getTrackLayout();
+      const repeatsLayout = layout.find(l => l.track.id === "repeats");
+      if (!repeatsLayout || repeatsLayout.track.collapsed) return;
+      
+      let repeatsY, repeatsH;
+      if (isVertical) {
+        repeatsY = 16;
+        repeatsH = tracksWidthPx() - 32; // W - 32 in vertical mode
+      } else {
+        repeatsY = repeatsLayout.contentTop + 8;
+        repeatsH = 22;
+      }
+      
+      // Only do hit testing if mouse is within RepeatMasker track bounds
+      if (isVertical) {
+        // In vertical mode, check X coordinate (genomic axis is vertical)
+        const repeatsX = repeatsLayout.contentLeft + 8;
+        const repeatsW = 22;
+        if (x < repeatsX || x > repeatsX + repeatsW) {
+          state.hoveredRepeatTooltip = null;
+          updateTooltip();
+          return;
+        }
+      } else {
+        // In horizontal mode, check Y coordinate
+        if (y < repeatsY || y > repeatsY + repeatsH) {
+          state.hoveredRepeatTooltip = null;
+          updateTooltip();
+          return;
+        }
+      }
+      
       // Convert mouse coordinates to genome position
       let bp;
       if (isVertical) {
@@ -4128,14 +4372,14 @@
         bp = bpFromXGenome(x, W);
       }
       
-      // Find overlapping repeat
+      // Find overlapping repeat (check against original coordinates)
       const hitRepeat = repeatHitTestData.find(r => 
         bp >= r.start && bp <= r.end
       );
       
       if (hitRepeat) {
         state.hoveredRepeatTooltip = {
-          text: `${hitRepeat.cls} repeat\n${hitRepeat.start.toLocaleString()} - ${hitRepeat.end.toLocaleString()}`,
+          text: `${hitRepeat.cls} repeat\n${Math.floor(hitRepeat.start).toLocaleString()} - ${Math.floor(hitRepeat.end).toLocaleString()}`,
           x: e.clientX + 10,
           y: e.clientY + 10
         };
