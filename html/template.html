@@ -147,7 +147,8 @@
       width: 4px;
       cursor: pointer;
       transition: background-color 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
-      z-index: 10;
+      z-index: 2147483000;
+      pointer-events: auto;
     }
     .sidebar:hover::after {
       background: var(--blue);
@@ -1317,6 +1318,10 @@
     hudEl.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span>`;
   }
   
+  // Determine host mode (inline or popup)
+  const hostMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode) || 'inline';
+  console.log('Genomeshader: hostMode =', hostMode);
+  
   // True lazy loading via postMessage
   const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
   
@@ -1332,9 +1337,8 @@
     
     function requestData(url) {
       return new Promise((resolve, reject) => {
-        // Try direct fetch first (for inline mode)
-        if (!window.opener) {
-          // Inline mode: use direct fetch
+        // Inline mode: use direct fetch
+        if (hostMode === 'inline') {
           console.log('Genomeshader: Using direct fetch for inline mode:', url);
           fetch(url)
             .then(response => {
@@ -1376,26 +1380,28 @@
       });
     }
     
-    // Listen for responses from opener
-    window.addEventListener('message', function(event) {
-      // Only accept messages from opener
-      if (event.source !== window.opener) {
-        return;
-      }
-      
-      const data = event.data;
-      if (data && data.type === 'genomeshader_fetch_response') {
-        const request = pendingRequests.get(data.requestId);
-        if (request) {
-          pendingRequests.delete(data.requestId);
-          if (data.success) {
-            request.resolve(data.data);
-          } else {
-            request.reject(new Error(data.error || 'Fetch failed'));
+    // Listen for responses from opener (only in popup mode)
+    if (hostMode === 'popup') {
+      window.addEventListener('message', function(event) {
+        // Only accept messages from opener
+        if (event.source !== window.opener) {
+          return;
+        }
+        
+        const data = event.data;
+        if (data && data.type === 'genomeshader_fetch_response') {
+          const request = pendingRequests.get(data.requestId);
+          if (request) {
+            pendingRequests.delete(data.requestId);
+            if (data.success) {
+              request.resolve(data.data);
+            } else {
+              request.reject(new Error(data.error || 'Fetch failed'));
+            }
           }
         }
-      }
-    });
+      });
+    }
     
     // Request manifest
     requestData(manifestUrl)
@@ -1433,6 +1439,12 @@
   // -----------------------------
   // Theme + menu
   // -----------------------------
+  // Find root container for scoping event handlers in inline mode
+  const root = document.querySelector('[id^="genomeshader-root-"]') || 
+                (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
+                document.body; // Fallback to body if not found
+  console.log('Genomeshader: Root container found:', root?.id || root?.tagName);
+  
   const app = document.querySelector(".app");
   const sidebar = document.getElementById("sidebar");
   const menuBtn = document.getElementById("menuBtn");
@@ -1447,6 +1459,12 @@
   if (!sidebar) console.error('Genomeshader: #sidebar element not found');
   if (!menuBtn) console.error('Genomeshader: #menuBtn element not found');
   if (!ctxMenu) console.error('Genomeshader: #ctxMenu element not found');
+  
+  // Ensure menu is attached to root in inline mode
+  if (hostMode === 'inline' && root && ctxMenu && !root.contains(ctxMenu)) {
+    root.appendChild(ctxMenu);
+    console.log('Genomeshader: Moved menu to root container');
+  }
 
   // Sidebar collapse/expand
   function getSidebarCollapsed() {
@@ -1465,9 +1483,15 @@
     }
   }
   
-  // Make sidebar border clickable
+  // Make sidebar border clickable - always bind regardless of hostMode
   if (sidebar) {
-    sidebar.addEventListener("click", (e) => {
+    console.log('[gs] wiring UI events - Sidebar toggle');
+    // Use pointerup to avoid click-cancel patterns in notebook shells
+    sidebar.addEventListener("pointerup", (e) => {
+      console.log('[gs] sidebar toggle click');
+      e.preventDefault();
+      e.stopPropagation();
+      
       // Don't toggle if clicking on menu button or menu
       if ((menuBtn && menuBtn.contains(e.target)) || (ctxMenu && ctxMenu.contains(e.target))) {
         return;
@@ -1490,6 +1514,7 @@
         setSidebarCollapsed(true);
       }
     });
+    console.log('[gs] Sidebar toggle handler attached successfully');
   } else {
     console.error('Genomeshader: Cannot attach sidebar click handler - element not found');
   }
@@ -1574,6 +1599,7 @@
     ctxMenu.setAttribute("aria-hidden", "false");
     ctxMenu.style.display = 'block';
     ctxMenu.style.visibility = 'visible';
+    ctxMenu.style.pointerEvents = 'auto';
     console.log('Genomeshader: Menu opened at', { left, top });
     // Update variant layout mode label when menu opens
     updateVariantLayoutModeLabel();
@@ -1583,6 +1609,8 @@
     ctxMenu.setAttribute("aria-hidden", "true");
     ctxMenu.style.display = 'none';
     ctxMenu.style.visibility = 'hidden';
+    ctxMenu.style.pointerEvents = 'none';
+    console.log('Genomeshader: Menu closed');
   }
   function toggleMenu() {
     if (!ctxMenu) {
@@ -1593,18 +1621,39 @@
   }
 
   if (menuBtn && ctxMenu) {
+    console.log('[gs] wiring UI events - Settings menu button');
     menuBtn.addEventListener("click", (e) => { 
+      console.log('[gs] settings click');
       console.log('Genomeshader: Menu button clicked');
       e.stopPropagation(); 
       e.preventDefault();
       toggleMenu(); 
     });
+    
     // Close menu when clicking outside, but check if click is outside menu/button
-    document.addEventListener("click", (e) => {
-      if (!ctxMenu.contains(e.target) && !menuBtn.contains(e.target)) {
-        closeMenu();
-      }
-    });
+    // In inline mode, use root-scoped handler to avoid Jupyter wrapper interference
+    if (hostMode === 'inline' && root) {
+      // Use pointerdown with capturing to catch events before they bubble
+      const onPointerDown = (e) => {
+        // Only close if menu is open and click is outside menu/button
+        if (ctxMenu.classList.contains("open") && 
+            !ctxMenu.contains(e.target) && 
+            !menuBtn.contains(e.target)) {
+          closeMenu();
+        }
+      };
+      root.addEventListener("pointerdown", onPointerDown, true);
+      console.log('[gs] Root-scoped outside-click handler attached (inline mode)');
+    } else {
+      // Popup mode: use document-level handler
+      document.addEventListener("click", (e) => {
+        if (!ctxMenu.contains(e.target) && !menuBtn.contains(e.target)) {
+          closeMenu();
+        }
+      });
+      console.log('[gs] Document-level outside-click handler attached (popup mode)');
+    }
+    console.log('[gs] Settings menu handlers attached successfully');
   } else {
     console.error('Genomeshader: Cannot attach menu handlers - elements not found', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
   }

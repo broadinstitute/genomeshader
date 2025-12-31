@@ -1314,6 +1314,10 @@
     hudEl.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span>`;
   }
   
+  // Determine host mode (inline or popup)
+  const hostMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode) || 'inline';
+  console.log('Genomeshader: hostMode =', hostMode);
+  
   // True lazy loading via postMessage
   const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
   
@@ -1329,9 +1333,8 @@
     
     function requestData(url) {
       return new Promise((resolve, reject) => {
-        // Try direct fetch first (for inline mode)
-        if (!window.opener) {
-          // Inline mode: use direct fetch
+        // Inline mode: use direct fetch
+        if (hostMode === 'inline') {
           console.log('Genomeshader: Using direct fetch for inline mode:', url);
           fetch(url)
             .then(response => {
@@ -1373,26 +1376,28 @@
       });
     }
     
-    // Listen for responses from opener
-    window.addEventListener('message', function(event) {
-      // Only accept messages from opener
-      if (event.source !== window.opener) {
-        return;
-      }
-      
-      const data = event.data;
-      if (data && data.type === 'genomeshader_fetch_response') {
-        const request = pendingRequests.get(data.requestId);
-        if (request) {
-          pendingRequests.delete(data.requestId);
-          if (data.success) {
-            request.resolve(data.data);
-          } else {
-            request.reject(new Error(data.error || 'Fetch failed'));
+    // Listen for responses from opener (only in popup mode)
+    if (hostMode === 'popup') {
+      window.addEventListener('message', function(event) {
+        // Only accept messages from opener
+        if (event.source !== window.opener) {
+          return;
+        }
+        
+        const data = event.data;
+        if (data && data.type === 'genomeshader_fetch_response') {
+          const request = pendingRequests.get(data.requestId);
+          if (request) {
+            pendingRequests.delete(data.requestId);
+            if (data.success) {
+              request.resolve(data.data);
+            } else {
+              request.reject(new Error(data.error || 'Fetch failed'));
+            }
           }
         }
-      }
-    });
+      });
+    }
     
     // Request manifest
     requestData(manifestUrl)
@@ -1430,33 +1435,32 @@
   // -----------------------------
   // Theme + menu
   // -----------------------------
+  // Find root container for scoping event handlers in inline mode
+  const root = document.querySelector('[id^="genomeshader-root-"]') || 
+                (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
+                document.body; // Fallback to body if not found
+  console.log('Genomeshader: Root container found:', root?.id || root?.tagName);
+  
   const app = document.querySelector(".app");
   const sidebar = document.getElementById("sidebar");
   const menuBtn = document.getElementById("menuBtn");
   const ctxMenu = document.getElementById("ctxMenu");
-  const mainEl = document.getElementById("main");
-  
-  // Debug: Log element positions at startup
-  setTimeout(() => {
-    if (sidebar) {
-      const sidebarRect = sidebar.getBoundingClientRect();
-      console.log('Genomeshader: Sidebar rect:', sidebarRect);
-      console.log('Genomeshader: Sidebar computed style - position:', getComputedStyle(sidebar).position, 'z-index:', getComputedStyle(sidebar).zIndex);
-    }
-    if (mainEl) {
-      const mainRect = mainEl.getBoundingClientRect();
-      console.log('Genomeshader: Main rect:', mainRect);
-      console.log('Genomeshader: Main computed style - position:', getComputedStyle(mainEl).position, 'left:', getComputedStyle(mainEl).left, 'z-index:', getComputedStyle(mainEl).zIndex);
-    }
-    if (menuBtn) {
-      const btnRect = menuBtn.getBoundingClientRect();
-      console.log('Genomeshader: Menu button rect:', btnRect);
-    }
-  }, 500);
   const themeItem = document.getElementById("themeItem");
   const themeLabel = document.getElementById("themeLabel");
   const orientationItem = document.getElementById("orientationItem");
   const orientationLabel = document.getElementById("orientationLabel");
+  
+  // Debug: Check if elements are found
+  if (!app) console.error('Genomeshader: .app element not found');
+  if (!sidebar) console.error('Genomeshader: #sidebar element not found');
+  if (!menuBtn) console.error('Genomeshader: #menuBtn element not found');
+  if (!ctxMenu) console.error('Genomeshader: #ctxMenu element not found');
+  
+  // Ensure menu is attached to root in inline mode
+  if (hostMode === 'inline' && root && ctxMenu && !root.contains(ctxMenu)) {
+    root.appendChild(ctxMenu);
+    console.log('Genomeshader: Moved menu to root container');
+  }
 
   // Sidebar collapse/expand
   function getSidebarCollapsed() {
@@ -1475,31 +1479,41 @@
     }
   }
   
-  // Make sidebar border clickable
-  sidebar.addEventListener("click", (e) => {
-    // Don't toggle sidebar if clicking on menu button or menu
-    if (menuBtn && menuBtn.contains(e.target)) {
-      return;
-    }
-    if (ctxMenu && ctxMenu.contains(e.target)) {
-      return;
-    }
-    
-    const collapsed = getSidebarCollapsed();
-    const rect = sidebar.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    
-    // Check if click is within 12px of the right edge (or anywhere if collapsed)
-    if (collapsed) {
-      // When collapsed, the entire 12px strip is clickable
-      console.log('Genomeshader: Expanding sidebar');
-      setSidebarCollapsed(false);
-    } else if (clickX >= rect.width - 12) {
-      // When open, only the right 12px edge is clickable
-      console.log('Genomeshader: Collapsing sidebar');
-      setSidebarCollapsed(true);
-    }
-  });
+  // Make sidebar border clickable - always bind regardless of hostMode
+  if (sidebar) {
+    console.log('[gs] wiring UI events - Sidebar toggle');
+    // Use pointerup to avoid click-cancel patterns in notebook shells
+    sidebar.addEventListener("pointerup", (e) => {
+      console.log('[gs] sidebar toggle click');
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Don't toggle if clicking on menu button or menu
+      if ((menuBtn && menuBtn.contains(e.target)) || (ctxMenu && ctxMenu.contains(e.target))) {
+        return;
+      }
+      
+      const collapsed = getSidebarCollapsed();
+      const rect = sidebar.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      
+      console.log('Genomeshader: Sidebar clicked at x=' + clickX + ', width=' + rect.width + ', collapsed=' + collapsed);
+      
+      // Check if click is within 12px of the right edge (or anywhere if collapsed)
+      if (collapsed) {
+        // When collapsed, the entire 12px strip is clickable
+        console.log('Genomeshader: Expanding sidebar');
+        setSidebarCollapsed(false);
+      } else if (clickX >= rect.width - 12) {
+        // When open, only the right 12px edge is clickable
+        console.log('Genomeshader: Collapsing sidebar');
+        setSidebarCollapsed(true);
+      }
+    });
+    console.log('[gs] Sidebar toggle handler attached successfully');
+  } else {
+    console.error('Genomeshader: Cannot attach sidebar click handler - element not found');
+  }
   
   updateSidebarState();
 
@@ -1555,54 +1569,93 @@
   updateThemeLabel();
 
   function openMenu() {
-    // Use fixed positioning for menu (works in both standalone and inline Jupyter)
+    // Use fixed positioning so menu appears over everything (including Jupyter UI)
     const r = menuBtn.getBoundingClientRect();
-    console.log('Genomeshader: Opening menu, gear button rect:', r);
-    
-    // Position menu above the gear button, aligned to left edge
-    const menuHeight = 200; // Approximate menu height
-    let left = r.left;
+    // Position menu above the gear button, or below if not enough space above
+    const menuHeight = 220; // Approximate menu height
     let top = r.top - menuHeight - 8;
+    let left = r.left;
     
     // If not enough space above, position below
     if (top < 8) {
       top = r.bottom + 8;
     }
     
-    // Ensure menu stays within viewport
-    left = Math.max(8, Math.min(left, window.innerWidth - 250));
-    top = Math.max(8, top);
-    
-    console.log('Genomeshader: Menu position:', { left, top });
+    // Ensure menu doesn't go off right edge
+    const menuWidth = 220;
+    if (left + menuWidth > window.innerWidth - 8) {
+      left = window.innerWidth - menuWidth - 8;
+    }
     
     ctxMenu.style.position = 'fixed';
     ctxMenu.style.left = `${left}px`;
     ctxMenu.style.top = `${top}px`;
-    ctxMenu.style.zIndex = '2147483647'; // Ensure on top
+    ctxMenu.style.zIndex = '2147483647';
     ctxMenu.classList.add("open");
     ctxMenu.setAttribute("aria-hidden", "false");
+    ctxMenu.style.display = 'block';
+    ctxMenu.style.visibility = 'visible';
+    ctxMenu.style.pointerEvents = 'auto';
+    console.log('Genomeshader: Menu opened at', { left, top });
     // Update variant layout mode label when menu opens
     updateVariantLayoutModeLabel();
   }
   function closeMenu() {
     ctxMenu.classList.remove("open");
     ctxMenu.setAttribute("aria-hidden", "true");
+    ctxMenu.style.display = 'none';
+    ctxMenu.style.visibility = 'hidden';
+    ctxMenu.style.pointerEvents = 'none';
+    console.log('Genomeshader: Menu closed');
   }
   function toggleMenu() {
     ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
   }
 
-  menuBtn.addEventListener("click", (e) => { 
-    console.log('Genomeshader: Menu button clicked');
-    e.stopPropagation(); 
-    e.preventDefault();
-    toggleMenu(); 
-  });
-  document.addEventListener("click", (e) => {
-    // Debug: log what element was clicked
-    console.log('Genomeshader: Document click on:', e.target.tagName, e.target.className, e.target.id);
-    closeMenu();
-  });
+  if (menuBtn && ctxMenu) {
+    console.log('[gs] wiring UI events - Settings menu button');
+    menuBtn.addEventListener("click", (e) => { 
+      console.log('[gs] settings click');
+      console.log('Genomeshader: Menu button clicked');
+      e.stopPropagation(); 
+      e.preventDefault();
+      toggleMenu(); 
+    });
+    
+    // Close menu when clicking outside, but check if click is outside menu/button
+    // In inline mode, use root-scoped handler to avoid Jupyter wrapper interference
+    if (hostMode === 'inline' && root) {
+      // Use a click handler on root (not document) to avoid Jupyter interference
+      // Use non-capturing so menu button click fires first
+      const onRootClick = (e) => {
+        // Don't close if clicking on menu button or menu itself
+        if (menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) {
+          return; // Menu button click will handle opening/closing
+        }
+        if (ctxMenu && (ctxMenu === e.target || ctxMenu.contains(e.target))) {
+          return; // Click inside menu, don't close
+        }
+        // Only close if menu is actually open
+        if (ctxMenu && ctxMenu.classList.contains("open")) {
+          console.log('[gs] Closing menu - click outside (root-scoped)');
+          closeMenu();
+        }
+      };
+      root.addEventListener("click", onRootClick, false); // Non-capturing: fire after menu button handler
+      console.log('[gs] Root-scoped outside-click handler attached (inline mode)');
+    } else {
+      // Popup mode: use document-level handler
+      document.addEventListener("click", (e) => {
+        if (!ctxMenu.contains(e.target) && !menuBtn.contains(e.target)) {
+          closeMenu();
+        }
+      });
+      console.log('[gs] Document-level outside-click handler attached (popup mode)');
+    }
+    console.log('[gs] Settings menu handlers attached successfully');
+  } else {
+    console.error('Genomeshader: Cannot attach menu handlers - elements not found', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
+  }
   ctxMenu.addEventListener("click", (e) => e.stopPropagation());
 
   themeItem.addEventListener("click", () => {

@@ -835,6 +835,7 @@ class GenomeShader:
 
         # Build config dict first, then JSON-encode it
         config = {
+            'hostMode': 'inline',  # Explicitly set inline mode for notebook rendering
             'region': f"{ref_chr}:{ref_start}-{ref_end}",
             'region_formatted': region_str_formatted,  # Formatted with commas for display
             'genome_build': self.genome_build,
@@ -1013,7 +1014,7 @@ console.log('Genomeshader: Bootstrap variables set', {{
 }}
 /* Ensure sidebar toggle border is clickable */
 #{container_id} .sidebar::after {{
-  z-index: 110 !important;
+  z-index: 2147483000 !important;
   pointer-events: auto !important;
 }}
 /* Ensure gear button is clickable and above everything in sidebar */
@@ -1047,6 +1048,7 @@ console.log('Genomeshader: Bootstrap variables set', {{
   display: block !important;
   visibility: visible !important;
   position: fixed !important;
+  pointer-events: auto !important;
 }}
 /* Note: .main styles moved above with grid-column assignment */
 /* Ensure tracks have proper dimensions within main area */
