@@ -595,6 +595,11 @@
           <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
         </div>
 
+        <div class="menuItem" id="fullscreenItem" role="menuitem">
+          <span>Full screen</span>
+          <span class="menuRight" id="fullscreenLabel">Enter full screen</span>
+        </div>
+
         <div class="menuTitle">Grouping</div>
         <div class="menuItem" role="menuitem">
           <span>Variable</span>
@@ -1327,13 +1332,32 @@
     
     function requestData(url) {
       return new Promise((resolve, reject) => {
-        const id = `req_${Date.now()}_${++requestId}`;
-        pendingRequests.set(id, { resolve, reject });
-        
+        // Try direct fetch first (for inline mode)
         if (!window.opener) {
-          reject(new Error('No window.opener - cannot request data'));
+          // Inline mode: use direct fetch
+          console.log('Genomeshader: Using direct fetch for inline mode:', url);
+          fetch(url)
+            .then(response => {
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+              }
+              return response.json();
+            })
+            .then(data => {
+              console.log('Genomeshader: Direct fetch succeeded for:', url);
+              resolve(data);
+            })
+            .catch(error => {
+              console.error('Genomeshader: Direct fetch failed for:', url, error);
+              reject(error);
+            });
           return;
         }
+        
+        // Popup mode: use postMessage
+        console.log('Genomeshader: Using postMessage for popup mode:', url);
+        const id = `req_${Date.now()}_${++requestId}`;
+        pendingRequests.set(id, { resolve, reject });
         
         // Send request to opener
         window.opener.postMessage({
@@ -1417,6 +1441,12 @@
   const themeLabel = document.getElementById("themeLabel");
   const orientationItem = document.getElementById("orientationItem");
   const orientationLabel = document.getElementById("orientationLabel");
+  
+  // Debug: Check if elements are found
+  if (!app) console.error('Genomeshader: .app element not found');
+  if (!sidebar) console.error('Genomeshader: #sidebar element not found');
+  if (!menuBtn) console.error('Genomeshader: #menuBtn element not found');
+  if (!ctxMenu) console.error('Genomeshader: #ctxMenu element not found');
 
   // Sidebar collapse/expand
   function getSidebarCollapsed() {
@@ -1436,20 +1466,33 @@
   }
   
   // Make sidebar border clickable
-  sidebar.addEventListener("click", (e) => {
-    const collapsed = getSidebarCollapsed();
-    const rect = sidebar.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    
-    // Check if click is within 12px of the right edge (or anywhere if collapsed)
-    if (collapsed) {
-      // When collapsed, the entire 12px strip is clickable
-      setSidebarCollapsed(false);
-    } else if (clickX >= rect.width - 12) {
-      // When open, only the right 12px edge is clickable
-      setSidebarCollapsed(true);
-    }
-  });
+  if (sidebar) {
+    sidebar.addEventListener("click", (e) => {
+      // Don't toggle if clicking on menu button or menu
+      if ((menuBtn && menuBtn.contains(e.target)) || (ctxMenu && ctxMenu.contains(e.target))) {
+        return;
+      }
+      
+      const collapsed = getSidebarCollapsed();
+      const rect = sidebar.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      
+      console.log('Genomeshader: Sidebar clicked at x=' + clickX + ', width=' + rect.width + ', collapsed=' + collapsed);
+      
+      // Check if click is within 12px of the right edge (or anywhere if collapsed)
+      if (collapsed) {
+        // When collapsed, the entire 12px strip is clickable
+        console.log('Genomeshader: Expanding sidebar');
+        setSidebarCollapsed(false);
+      } else if (clickX >= rect.width - 12) {
+        // When open, only the right 12px edge is clickable
+        console.log('Genomeshader: Collapsing sidebar');
+        setSidebarCollapsed(true);
+      }
+    });
+  } else {
+    console.error('Genomeshader: Cannot attach sidebar click handler - element not found');
+  }
   
   updateSidebarState();
 
@@ -1505,28 +1548,66 @@
   updateThemeLabel();
 
   function openMenu() {
-    // Anchor menu above the gear in the sidebar (now bottom-left)
+    // Use fixed positioning so menu appears over everything (including Jupyter UI)
     const r = menuBtn.getBoundingClientRect();
-    const s = sidebar.getBoundingClientRect();
-    const left = Math.max(8, r.left - s.left);
-    const top  = Math.max(8, r.top  - s.top  - 160);
+    // Position menu above the gear button, or below if not enough space above
+    const menuHeight = 220; // Approximate menu height
+    let top = r.top - menuHeight - 8;
+    let left = r.left;
+    
+    // If not enough space above, position below
+    if (top < 8) {
+      top = r.bottom + 8;
+    }
+    
+    // Ensure menu doesn't go off right edge
+    const menuWidth = 220;
+    if (left + menuWidth > window.innerWidth - 8) {
+      left = window.innerWidth - menuWidth - 8;
+    }
+    
+    ctxMenu.style.position = 'fixed';
     ctxMenu.style.left = `${left}px`;
-    ctxMenu.style.top  = `${top}px`;
+    ctxMenu.style.top = `${top}px`;
+    ctxMenu.style.zIndex = '2147483647';
     ctxMenu.classList.add("open");
     ctxMenu.setAttribute("aria-hidden", "false");
+    ctxMenu.style.display = 'block';
+    ctxMenu.style.visibility = 'visible';
+    console.log('Genomeshader: Menu opened at', { left, top });
     // Update variant layout mode label when menu opens
     updateVariantLayoutModeLabel();
   }
   function closeMenu() {
     ctxMenu.classList.remove("open");
     ctxMenu.setAttribute("aria-hidden", "true");
+    ctxMenu.style.display = 'none';
+    ctxMenu.style.visibility = 'hidden';
   }
   function toggleMenu() {
+    if (!ctxMenu) {
+      console.error('Genomeshader: Cannot toggle menu - ctxMenu not found');
+      return;
+    }
     ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
   }
 
-  menuBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
-  document.addEventListener("click", () => closeMenu());
+  if (menuBtn && ctxMenu) {
+    menuBtn.addEventListener("click", (e) => { 
+      console.log('Genomeshader: Menu button clicked');
+      e.stopPropagation(); 
+      e.preventDefault();
+      toggleMenu(); 
+    });
+    // Close menu when clicking outside, but check if click is outside menu/button
+    document.addEventListener("click", (e) => {
+      if (!ctxMenu.contains(e.target) && !menuBtn.contains(e.target)) {
+        closeMenu();
+      }
+    });
+  } else {
+    console.error('Genomeshader: Cannot attach menu handlers - elements not found', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
+  }
   ctxMenu.addEventListener("click", (e) => e.stopPropagation());
 
   themeItem.addEventListener("click", () => {
@@ -1552,6 +1633,268 @@
     setVariantLayoutMode(next);
     renderAll();
   });
+
+  // Fullscreen mode setup
+  const fullscreenItem = document.getElementById("fullscreenItem");
+  const fullscreenLabel = document.getElementById("fullscreenLabel");
+  
+  // Resize callback for focus mode
+  function triggerResize() {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (webgpuCore && webgpuSupported) {
+          try {
+            webgpuCore.handleResize();
+          } catch (error) {
+            console.error("WebGPU resize error:", error);
+          }
+        }
+        renderAll();
+      });
+    });
+  }
+
+  // Focus mode implementation (inlined from focus_mode.js)
+  function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
+    if (!viewerEl || !toggleEl || !viewId) {
+      console.error('installFocusMode: missing required parameters');
+      return;
+    }
+
+    let isActive = false;
+    let overlay = null;
+    let modal = null;
+    let topbar = null;
+    let placeholder = null;
+    let originalParent = null;
+    let originalNextSibling = null;
+
+    const overlayId = `genomeshader-overlay-${viewId}`;
+    const modalId = `genomeshader-modal-${viewId}`;
+    const topbarId = `genomeshader-topbar-${viewId}`;
+    const placeholderId = `genomeshader-placeholder-${viewId}`;
+
+    function createOverlay() {
+      overlay = document.createElement('div');
+      overlay.id = overlayId;
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        background: rgba(0, 0, 0, 0.75);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+
+      modal = document.createElement('div');
+      modal.id = modalId;
+      modal.style.cssText = `
+        position: absolute;
+        inset: 24px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        background: var(--bg, #0b0d10);
+        border-radius: 12px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+      `;
+
+      topbar = document.createElement('div');
+      topbar.id = topbarId;
+      topbar.style.cssText = `
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border, rgba(255,255,255,0.10));
+        background: var(--panel, #11151b);
+        flex-shrink: 0;
+      `;
+
+      const title = document.createElement('div');
+      title.textContent = 'Genomeshader — Full screen';
+      title.style.cssText = `
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text, rgba(255,255,255,0.92));
+      `;
+
+      const closeBtn = document.createElement('button');
+      closeBtn.textContent = '✕';
+      closeBtn.setAttribute('aria-label', 'Close full screen');
+      closeBtn.style.cssText = `
+        width: 32px;
+        height: 32px;
+        border: 1px solid var(--border2, rgba(255,255,255,0.08));
+        background: var(--panel2, rgba(255,255,255,0.03));
+        color: var(--text, rgba(255,255,255,0.92));
+        border-radius: 8px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        line-height: 1;
+        transition: all 0.15s ease;
+      `;
+      closeBtn.addEventListener('mouseenter', () => {
+        closeBtn.style.filter = 'brightness(1.1)';
+      });
+      closeBtn.addEventListener('mouseleave', () => {
+        closeBtn.style.filter = '';
+      });
+      closeBtn.addEventListener('click', exit);
+
+      topbar.appendChild(title);
+      topbar.appendChild(closeBtn);
+
+      const modalBody = document.createElement('div');
+      modalBody.style.cssText = `
+        flex: 1;
+        overflow: hidden;
+        position: relative;
+      `;
+
+      modal.appendChild(topbar);
+      modal.appendChild(modalBody);
+      overlay.appendChild(modal);
+
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+          exit();
+        }
+      });
+
+      const handleEscape = (e) => {
+        if (e.key === 'Escape' && isActive) {
+          exit();
+        }
+      };
+      document.addEventListener('keydown', handleEscape);
+      overlay._escapeHandler = handleEscape;
+
+      return { overlay, modal, modalBody };
+    }
+
+    function enter() {
+      if (isActive) return;
+
+      const { overlay, modal, modalBody } = createOverlay();
+      
+      originalParent = viewerEl.parentNode;
+      originalNextSibling = viewerEl.nextSibling;
+
+      placeholder = document.createElement('div');
+      placeholder.id = placeholderId;
+      placeholder.style.cssText = `
+        width: ${viewerEl.offsetWidth}px;
+        height: ${viewerEl.offsetHeight}px;
+        min-height: 600px;
+      `;
+
+      if (originalNextSibling) {
+        originalParent.insertBefore(placeholder, originalNextSibling);
+      } else {
+        originalParent.appendChild(placeholder);
+      }
+
+      modalBody.appendChild(viewerEl);
+      document.body.appendChild(overlay);
+
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      overlay._originalOverflow = originalOverflow;
+
+      isActive = true;
+      updateToggleLabel();
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (onEnter) {
+            onEnter();
+          }
+        });
+      });
+    }
+
+    function exit() {
+      if (!isActive) return;
+
+      if (overlay && overlay._originalOverflow !== undefined) {
+        document.body.style.overflow = overlay._originalOverflow;
+      } else {
+        document.body.style.overflow = '';
+      }
+
+      if (overlay && overlay._escapeHandler) {
+        document.removeEventListener('keydown', overlay._escapeHandler);
+      }
+
+      if (placeholder && originalParent) {
+        if (originalNextSibling) {
+          originalParent.insertBefore(viewerEl, originalNextSibling);
+        } else {
+          originalParent.appendChild(viewerEl);
+        }
+        placeholder.remove();
+        placeholder = null;
+      }
+
+      if (overlay) {
+        overlay.remove();
+        overlay = null;
+        modal = null;
+        topbar = null;
+      }
+
+      isActive = false;
+      updateToggleLabel();
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (onExit) {
+            onExit();
+          }
+        });
+      });
+    }
+
+    function updateToggleLabel() {
+      if (fullscreenLabel) {
+        fullscreenLabel.textContent = isActive ? 'Exit full screen' : 'Enter full screen';
+      }
+    }
+
+    toggleEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isActive) {
+        exit();
+      } else {
+        enter();
+      }
+    });
+
+    updateToggleLabel();
+
+    return {
+      enter,
+      exit,
+      isActive: () => isActive
+    };
+  }
+
+  // Initialize focus mode after app is ready
+  const viewId = window.GENOMESHADER_VIEW_ID || document.querySelector('[data-view-id]')?.dataset.viewId || 'default';
+  if (fullscreenItem && app) {
+    installFocusMode({
+      viewerEl: app,
+      toggleEl: fullscreenItem,
+      viewId: viewId,
+      onEnter: triggerResize,
+      onExit: triggerResize
+    });
+  }
 
   const mq = window.matchMedia?.("(prefers-color-scheme: light)");
   mq?.addEventListener?.("change", () => {
@@ -1715,6 +2058,31 @@
       return false;
     }
 
+    // Wait for canvas to have dimensions
+    if (!tracksWebGPU) {
+      console.warn("WebGPU canvas element not found");
+      return false;
+    }
+    
+    const checkDimensions = () => {
+      const rect = tracksWebGPU.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    
+    // Wait up to 2 seconds for dimensions
+    for (let i = 0; i < 40; i++) {
+      if (checkDimensions()) {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    if (!checkDimensions()) {
+      console.warn("WebGPU canvas has zero dimensions, skipping initialization");
+      if (tracksWebGPU) tracksWebGPU.style.display = 'none';
+      return false;
+    }
+
     try {
       webgpuCore = new WebGPUCore();
       await webgpuCore.init(tracksWebGPU);
@@ -1729,18 +2097,32 @@
     }
   }
 
-  // Initialize WebGPU (async, but don't block rendering)
-  initWebGPU().catch(err => {
-    console.error("WebGPU initialization error:", err);
-  });
+  // Initialize WebGPU after a short delay to ensure DOM is ready
+  setTimeout(() => {
+    initWebGPU().catch(err => {
+      console.error("WebGPU initialization error:", err);
+    });
+  }, 100);
 
   // Initialize orientation state after DOM elements are available
   updateOrientationState();
 
-  function rectW(el) { return el.getBoundingClientRect().width; }
-  function rectH(el) { return el.getBoundingClientRect().height; }
+  function rectW(el) { 
+    if (!el) return 0;
+    const w = el.getBoundingClientRect().width;
+    return isNaN(w) || w <= 0 ? 0 : w;
+  }
+  function rectH(el) { 
+    if (!el) return 0;
+    const h = el.getBoundingClientRect().height;
+    return isNaN(h) || h <= 0 ? 0 : h;
+  }
 
-  function tracksWidthPx() { return tracksSvg.getBoundingClientRect().width; }
+  function tracksWidthPx() { 
+    if (!tracksSvg) return 0;
+    const w = tracksSvg.getBoundingClientRect().width;
+    return isNaN(w) || w <= 0 ? 0 : w;
+  }
   function flowWidthPx()   { return rectW(flow); }
   function flowHeightPx()  { return rectH(flow); }
   function readsWidthPx()  { return rectW(reads); }
@@ -1752,12 +2134,31 @@
 
   function updateDerived() {
     const span = state.endBp - state.startBp;
+    if (span <= 0 || isNaN(span)) {
+      // Invalid span, keep previous pxPerBp or use default
+      if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        state.pxPerBp = 1;
+      }
+      return;
+    }
     if (isVerticalMode()) {
       const h = tracksHeightPx();
-      state.pxPerBp = h / span;
+      if (h > 0 && !isNaN(h)) {
+        state.pxPerBp = h / span;
+      } else if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        state.pxPerBp = 1;
+      }
     } else {
       const w = tracksWidthPx();
-      state.pxPerBp = w / span;
+      if (w > 0 && !isNaN(w)) {
+        state.pxPerBp = w / span;
+      } else if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        state.pxPerBp = 1;
+      }
+    }
+    // Final guard
+    if (isNaN(state.pxPerBp) || state.pxPerBp <= 0) {
+      state.pxPerBp = 1;
     }
   }
 
@@ -1777,12 +2178,27 @@
   // IMPORTANT: canonical genome-x mapping for the right pane (tracks/canvases)
   // Accounts for expanded insertion gaps
   function xGenomeCanonical(bp, W) {
+    // Guard against invalid inputs
+    if (!W || W <= 0 || isNaN(W) || isNaN(bp)) {
+      return 0;
+    }
     const leftPad = 16, rightPad = 16;
-    const innerW = W - leftPad - rightPad;
+    const innerW = Math.max(0, W - leftPad - rightPad);
     const span = state.endBp - state.startBp;
+    if (span <= 0 || isNaN(span)) {
+      return leftPad;
+    }
+    // Guard against invalid pxPerBp
+    if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+      return leftPad;
+    }
+    
     const totalGapPx = getTotalInsertionGapWidth();
     const totalGapBp = totalGapPx / state.pxPerBp;
     const effectiveSpan = span + totalGapBp;
+    if (effectiveSpan <= 0 || isNaN(effectiveSpan)) {
+      return leftPad;
+    }
     
     // Calculate x position, accounting for insertion gaps before this position
     let accumulatedGapPx = 0;
@@ -1795,9 +2211,16 @@
     
     const bpOffset = bp - state.startBp;
     const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
+      return leftPad;
+    }
     const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+    if (isNaN(normalizedPos)) {
+      return leftPad;
+    }
     
-    return leftPad + normalizedPos * innerW;
+    const result = leftPad + normalizedPos * innerW;
+    return isNaN(result) ? leftPad : Math.max(leftPad, Math.min(leftPad + innerW, result));
   }
   
   function xGenome(bp) {
@@ -1832,12 +2255,26 @@
 
   // Vertical mode coordinate mapping (genomic axis vertical: bottom=start, top=end)
   function yGenomeCanonical(bp, H) {
+    // Guard against invalid inputs
+    if (!H || H <= 0 || isNaN(H) || isNaN(bp)) {
+      return 16;
+    }
     const topPad = 16, bottomPad = 16;
-    const innerH = H - topPad - bottomPad;
+    const innerH = Math.max(0, H - topPad - bottomPad);
     const span = state.endBp - state.startBp;
+    if (span <= 0 || isNaN(span)) {
+      return topPad;
+    }
+    // Guard against invalid pxPerBp
+    if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+      return topPad;
+    }
     const totalGapPx = getTotalInsertionGapWidth();
     const totalGapBp = totalGapPx / state.pxPerBp;
     const effectiveSpan = span + totalGapBp;
+    if (effectiveSpan <= 0 || isNaN(effectiveSpan)) {
+      return topPad;
+    }
     
     // Calculate y position, accounting for insertion gaps before this position
     let accumulatedGapPx = 0;
@@ -1850,10 +2287,17 @@
     
     const bpOffset = bp - state.startBp;
     const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
+      return topPad;
+    }
     const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+    if (isNaN(normalizedPos)) {
+      return topPad;
+    }
     
     // Invert: bottom (H - bottomPad) = start, top (topPad) = end
-    return H - bottomPad - normalizedPos * innerH;
+    const result = H - bottomPad - normalizedPos * innerH;
+    return isNaN(result) ? topPad : Math.max(topPad, Math.min(H - bottomPad, result));
   }
   
   function yGenome(bp) {
@@ -2128,6 +2572,13 @@
     const isVertical = isVerticalMode();
     const W = isVertical ? tracksHeightPx() : tracksWidthPx();
     const H = isVertical ? tracksWidthPx() : tracksHeightPx();
+    
+    // Guard against invalid dimensions
+    if (!W || W <= 0 || isNaN(W) || !H || H <= 0 || isNaN(H)) {
+      console.warn('Genomeshader: Invalid track dimensions, skipping render', { W, H });
+      return;
+    }
+    
     const layout = getTrackLayout();
     
     // Coordinate mapping functions based on orientation

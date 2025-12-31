@@ -564,8 +564,8 @@
 </head>
 
 <body>
-  <div class="app">
-    <div class="sidebar" id="sidebar">
+  <div class="app" style="position: relative; display: block;">
+    <div class="sidebar" id="sidebar" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
       <div class="sidebarHeader">
         <h3>Participant groups</h3>
       </div>
@@ -603,7 +603,7 @@
       </div>
     </div>
 
-    <div class="main" id="main">
+    <div class="main" id="main" style="position: absolute; left: 240px; top: 0; right: 0; bottom: 0; z-index: 1;">
       <div class="tracks" id="tracksContainer">
         <svg id="tracksSvg" width="100%" height="100%"></svg>
         <canvas id="tracksWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
@@ -1329,13 +1329,32 @@
     
     function requestData(url) {
       return new Promise((resolve, reject) => {
-        const id = `req_${Date.now()}_${++requestId}`;
-        pendingRequests.set(id, { resolve, reject });
-        
+        // Try direct fetch first (for inline mode)
         if (!window.opener) {
-          reject(new Error('No window.opener - cannot request data'));
+          // Inline mode: use direct fetch
+          console.log('Genomeshader: Using direct fetch for inline mode:', url);
+          fetch(url)
+            .then(response => {
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+              }
+              return response.json();
+            })
+            .then(data => {
+              console.log('Genomeshader: Direct fetch succeeded for:', url);
+              resolve(data);
+            })
+            .catch(error => {
+              console.error('Genomeshader: Direct fetch failed for:', url, error);
+              reject(error);
+            });
           return;
         }
+        
+        // Popup mode: use postMessage
+        console.log('Genomeshader: Using postMessage for popup mode:', url);
+        const id = `req_${Date.now()}_${++requestId}`;
+        pendingRequests.set(id, { resolve, reject });
         
         // Send request to opener
         window.opener.postMessage({
@@ -1415,6 +1434,25 @@
   const sidebar = document.getElementById("sidebar");
   const menuBtn = document.getElementById("menuBtn");
   const ctxMenu = document.getElementById("ctxMenu");
+  const mainEl = document.getElementById("main");
+  
+  // Debug: Log element positions at startup
+  setTimeout(() => {
+    if (sidebar) {
+      const sidebarRect = sidebar.getBoundingClientRect();
+      console.log('Genomeshader: Sidebar rect:', sidebarRect);
+      console.log('Genomeshader: Sidebar computed style - position:', getComputedStyle(sidebar).position, 'z-index:', getComputedStyle(sidebar).zIndex);
+    }
+    if (mainEl) {
+      const mainRect = mainEl.getBoundingClientRect();
+      console.log('Genomeshader: Main rect:', mainRect);
+      console.log('Genomeshader: Main computed style - position:', getComputedStyle(mainEl).position, 'left:', getComputedStyle(mainEl).left, 'z-index:', getComputedStyle(mainEl).zIndex);
+    }
+    if (menuBtn) {
+      const btnRect = menuBtn.getBoundingClientRect();
+      console.log('Genomeshader: Menu button rect:', btnRect);
+    }
+  }, 500);
   const themeItem = document.getElementById("themeItem");
   const themeLabel = document.getElementById("themeLabel");
   const orientationItem = document.getElementById("orientationItem");
@@ -1439,6 +1477,14 @@
   
   // Make sidebar border clickable
   sidebar.addEventListener("click", (e) => {
+    // Don't toggle sidebar if clicking on menu button or menu
+    if (menuBtn && menuBtn.contains(e.target)) {
+      return;
+    }
+    if (ctxMenu && ctxMenu.contains(e.target)) {
+      return;
+    }
+    
     const collapsed = getSidebarCollapsed();
     const rect = sidebar.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
@@ -1446,9 +1492,11 @@
     // Check if click is within 12px of the right edge (or anywhere if collapsed)
     if (collapsed) {
       // When collapsed, the entire 12px strip is clickable
+      console.log('Genomeshader: Expanding sidebar');
       setSidebarCollapsed(false);
     } else if (clickX >= rect.width - 12) {
       // When open, only the right 12px edge is clickable
+      console.log('Genomeshader: Collapsing sidebar');
       setSidebarCollapsed(true);
     }
   });
@@ -1507,13 +1555,30 @@
   updateThemeLabel();
 
   function openMenu() {
-    // Anchor menu above the gear in the sidebar (now bottom-left)
+    // Use fixed positioning for menu (works in both standalone and inline Jupyter)
     const r = menuBtn.getBoundingClientRect();
-    const s = sidebar.getBoundingClientRect();
-    const left = Math.max(8, r.left - s.left);
-    const top  = Math.max(8, r.top  - s.top  - 160);
+    console.log('Genomeshader: Opening menu, gear button rect:', r);
+    
+    // Position menu above the gear button, aligned to left edge
+    const menuHeight = 200; // Approximate menu height
+    let left = r.left;
+    let top = r.top - menuHeight - 8;
+    
+    // If not enough space above, position below
+    if (top < 8) {
+      top = r.bottom + 8;
+    }
+    
+    // Ensure menu stays within viewport
+    left = Math.max(8, Math.min(left, window.innerWidth - 250));
+    top = Math.max(8, top);
+    
+    console.log('Genomeshader: Menu position:', { left, top });
+    
+    ctxMenu.style.position = 'fixed';
     ctxMenu.style.left = `${left}px`;
-    ctxMenu.style.top  = `${top}px`;
+    ctxMenu.style.top = `${top}px`;
+    ctxMenu.style.zIndex = '2147483647'; // Ensure on top
     ctxMenu.classList.add("open");
     ctxMenu.setAttribute("aria-hidden", "false");
     // Update variant layout mode label when menu opens
@@ -1527,8 +1592,17 @@
     ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
   }
 
-  menuBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
-  document.addEventListener("click", () => closeMenu());
+  menuBtn.addEventListener("click", (e) => { 
+    console.log('Genomeshader: Menu button clicked');
+    e.stopPropagation(); 
+    e.preventDefault();
+    toggleMenu(); 
+  });
+  document.addEventListener("click", (e) => {
+    // Debug: log what element was clicked
+    console.log('Genomeshader: Document click on:', e.target.tagName, e.target.className, e.target.id);
+    closeMenu();
+  });
   ctxMenu.addEventListener("click", (e) => e.stopPropagation());
 
   themeItem.addEventListener("click", () => {
@@ -1717,6 +1791,31 @@
       return false;
     }
 
+    // Wait for canvas to have dimensions
+    if (!tracksWebGPU) {
+      console.warn("WebGPU canvas element not found");
+      return false;
+    }
+    
+    const checkDimensions = () => {
+      const rect = tracksWebGPU.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    
+    // Wait up to 2 seconds for dimensions
+    for (let i = 0; i < 40; i++) {
+      if (checkDimensions()) {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    if (!checkDimensions()) {
+      console.warn("WebGPU canvas has zero dimensions, skipping initialization");
+      if (tracksWebGPU) tracksWebGPU.style.display = 'none';
+      return false;
+    }
+
     try {
       webgpuCore = new WebGPUCore();
       await webgpuCore.init(tracksWebGPU);
@@ -1731,18 +1830,32 @@
     }
   }
 
-  // Initialize WebGPU (async, but don't block rendering)
-  initWebGPU().catch(err => {
-    console.error("WebGPU initialization error:", err);
-  });
+  // Initialize WebGPU after a short delay to ensure DOM is ready
+  setTimeout(() => {
+    initWebGPU().catch(err => {
+      console.error("WebGPU initialization error:", err);
+    });
+  }, 100);
 
   // Initialize orientation state after DOM elements are available
   updateOrientationState();
 
-  function rectW(el) { return el.getBoundingClientRect().width; }
-  function rectH(el) { return el.getBoundingClientRect().height; }
+  function rectW(el) { 
+    if (!el) return 0;
+    const w = el.getBoundingClientRect().width;
+    return isNaN(w) || w <= 0 ? 0 : w;
+  }
+  function rectH(el) { 
+    if (!el) return 0;
+    const h = el.getBoundingClientRect().height;
+    return isNaN(h) || h <= 0 ? 0 : h;
+  }
 
-  function tracksWidthPx() { return tracksSvg.getBoundingClientRect().width; }
+  function tracksWidthPx() { 
+    if (!tracksSvg) return 0;
+    const w = tracksSvg.getBoundingClientRect().width;
+    return isNaN(w) || w <= 0 ? 0 : w;
+  }
   function flowWidthPx()   { return rectW(flow); }
   function flowHeightPx()  { return rectH(flow); }
   function readsWidthPx()  { return rectW(reads); }
@@ -1754,12 +1867,31 @@
 
   function updateDerived() {
     const span = state.endBp - state.startBp;
+    if (span <= 0 || isNaN(span)) {
+      // Invalid span, keep previous pxPerBp or use default
+      if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        state.pxPerBp = 1;
+      }
+      return;
+    }
     if (isVerticalMode()) {
       const h = tracksHeightPx();
-      state.pxPerBp = h / span;
+      if (h > 0 && !isNaN(h)) {
+        state.pxPerBp = h / span;
+      } else if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        state.pxPerBp = 1;
+      }
     } else {
       const w = tracksWidthPx();
-      state.pxPerBp = w / span;
+      if (w > 0 && !isNaN(w)) {
+        state.pxPerBp = w / span;
+      } else if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        state.pxPerBp = 1;
+      }
+    }
+    // Final guard
+    if (isNaN(state.pxPerBp) || state.pxPerBp <= 0) {
+      state.pxPerBp = 1;
     }
   }
 
@@ -1779,12 +1911,32 @@
   // IMPORTANT: canonical genome-x mapping for the right pane (tracks/canvases)
   // Accounts for expanded insertion gaps
   function xGenomeCanonical(bp, W) {
+    // Guard against invalid inputs
+    if (!W || W <= 0 || isNaN(W) || isNaN(bp)) {
+      return 16; // Return leftPad as safe default
+    }
     const leftPad = 16, rightPad = 16;
-    const innerW = W - leftPad - rightPad;
+    const innerW = Math.max(0, W - leftPad - rightPad);
+    if (innerW <= 0) {
+      return leftPad;
+    }
     const span = state.endBp - state.startBp;
+    if (span <= 0 || isNaN(span)) {
+      return leftPad;
+    }
+    // Guard against invalid pxPerBp
+    if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+      return leftPad;
+    }
     const totalGapPx = getTotalInsertionGapWidth();
     const totalGapBp = totalGapPx / state.pxPerBp;
+    if (isNaN(totalGapBp)) {
+      return leftPad;
+    }
     const effectiveSpan = span + totalGapBp;
+    if (effectiveSpan <= 0 || isNaN(effectiveSpan)) {
+      return leftPad;
+    }
     
     // Calculate x position, accounting for insertion gaps before this position
     let accumulatedGapPx = 0;
@@ -1797,9 +1949,16 @@
     
     const bpOffset = bp - state.startBp;
     const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
+      return leftPad;
+    }
     const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+    if (isNaN(normalizedPos)) {
+      return leftPad;
+    }
     
-    return leftPad + normalizedPos * innerW;
+    const result = leftPad + normalizedPos * innerW;
+    return isNaN(result) ? leftPad : Math.max(leftPad, Math.min(leftPad + innerW, result));
   }
   
   function xGenome(bp) {
@@ -1834,12 +1993,32 @@
 
   // Vertical mode coordinate mapping (genomic axis vertical: bottom=start, top=end)
   function yGenomeCanonical(bp, H) {
+    // Guard against invalid inputs
+    if (!H || H <= 0 || isNaN(H) || isNaN(bp)) {
+      return 16; // Return topPad as safe default
+    }
     const topPad = 16, bottomPad = 16;
-    const innerH = H - topPad - bottomPad;
+    const innerH = Math.max(0, H - topPad - bottomPad);
+    if (innerH <= 0) {
+      return topPad;
+    }
     const span = state.endBp - state.startBp;
+    if (span <= 0 || isNaN(span)) {
+      return topPad;
+    }
+    // Guard against invalid pxPerBp
+    if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+      return topPad;
+    }
     const totalGapPx = getTotalInsertionGapWidth();
     const totalGapBp = totalGapPx / state.pxPerBp;
+    if (isNaN(totalGapBp)) {
+      return topPad;
+    }
     const effectiveSpan = span + totalGapBp;
+    if (effectiveSpan <= 0 || isNaN(effectiveSpan)) {
+      return topPad;
+    }
     
     // Calculate y position, accounting for insertion gaps before this position
     let accumulatedGapPx = 0;
@@ -1852,10 +2031,17 @@
     
     const bpOffset = bp - state.startBp;
     const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
+      return topPad;
+    }
     const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+    if (isNaN(normalizedPos)) {
+      return topPad;
+    }
     
     // Invert: bottom (H - bottomPad) = start, top (topPad) = end
-    return H - bottomPad - normalizedPos * innerH;
+    const result = H - bottomPad - normalizedPos * innerH;
+    return isNaN(result) ? topPad : Math.max(topPad, Math.min(H - bottomPad, result));
   }
   
   function yGenome(bp) {
@@ -1863,7 +2049,9 @@
   }
   
   function tracksHeightPx() {
-    return tracksSvg.getBoundingClientRect().height;
+    if (!tracksSvg) return 0;
+    const h = tracksSvg.getBoundingClientRect().height;
+    return isNaN(h) || h <= 0 ? 0 : h;
   }
   
   function bpFromYGenome(yPx, H) {
@@ -1897,21 +2085,29 @@
 
   function xColumn(i, totalColumns) {
     const W = flowWidthPx();
+    if (!W || W <= 0 || isNaN(W) || isNaN(i)) {
+      return 60;
+    }
     const margin = 60;
     const innerW = Math.max(10, W - 2*margin);
     const numCols = totalColumns !== undefined ? totalColumns : state.K;
     if (numCols <= 1) return margin;
-    return margin + (i / (numCols - 1)) * innerW;
+    const result = margin + (i / (numCols - 1)) * innerW;
+    return isNaN(result) ? margin : result;
   }
   function yColumn(i, totalColumns) {
     const H = flowHeightPx();
+    if (!H || H <= 0 || isNaN(H) || isNaN(i)) {
+      return 60;
+    }
     const margin = 60;
     const innerH = Math.max(10, H - 2*margin);
     const numCols = totalColumns !== undefined ? totalColumns : state.K;
     if (numCols <= 1) return margin;
     // Invert: index 0 (earliest variant) should be at bottom (higher Y), 
     // last index (latest variant) should be at top (lower Y)
-    return margin + innerH - (i / (numCols - 1)) * innerH;
+    const result = margin + innerH - (i / (numCols - 1)) * innerH;
+    return isNaN(result) ? margin : result;
   }
 
   // -----------------------------
@@ -1995,7 +2191,66 @@
   function clearSvg(svg) { while (svg.firstChild) svg.removeChild(svg.firstChild); }
   function el(tag, attrs = {}, text = null) {
     const n = document.createElementNS(SVGNS, tag);
-    for (const [k,v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    for (const [k,v] of Object.entries(attrs)) {
+      // Skip null/undefined values
+      if (v == null) {
+        continue;
+      }
+      
+      let value = v;
+      
+      // Check if value is already NaN (number or string "NaN")
+      if (typeof value === 'number' && isNaN(value)) {
+        console.warn(`Genomeshader: NaN value for ${k} in <${tag}>, using 0`);
+        value = 0;
+      } else if (typeof value === 'string' && (value === 'NaN' || value.toLowerCase() === 'nan')) {
+        console.warn(`Genomeshader: "NaN" string for ${k} in <${tag}>, using 0`);
+        value = 0;
+      } else {
+        // Validate numeric attributes that must be non-negative
+        if (['width', 'height', 'r', 'rx', 'ry'].includes(k)) {
+          // Handle both number and string inputs
+          let numVal;
+          if (typeof value === 'number') {
+            numVal = value;
+          } else {
+            numVal = parseFloat(value);
+          }
+          
+          // Check for NaN first
+          if (isNaN(numVal)) {
+            console.warn(`Genomeshader: Invalid ${k} value ${v} (NaN) for <${tag}>, using 0`);
+            value = 0;
+          } 
+          // Check for negative values - SVG doesn't allow negative width/height
+          else if (numVal < 0) {
+            console.warn(`Genomeshader: Invalid ${k} value ${v} (negative) for <${tag}>, using 0`);
+            value = 0;
+          } 
+          // Use the parsed/validated number
+          else {
+            value = numVal;
+          }
+        }
+        // Validate position attributes that must be valid numbers (can be negative for positioning)
+        else if (['x', 'y', 'x1', 'x2', 'y1', 'y2', 'cx', 'cy'].includes(k)) {
+          const numVal = parseFloat(value);
+          if (isNaN(numVal)) {
+            console.warn(`Genomeshader: Invalid ${k} value ${v} (NaN) for <${tag}>, using 0`);
+            value = 0;
+          } else {
+            value = numVal; // Use parsed number (can be negative for positioning)
+          }
+        }
+        // For any other numeric-looking attribute, validate it's not NaN
+        else if (typeof value === 'number' && isNaN(value)) {
+          console.warn(`Genomeshader: NaN value for ${k} in <${tag}>, using 0`);
+          value = 0;
+        }
+      }
+      
+      n.setAttribute(k, String(value));
+    }
     if (text !== null) n.textContent = text;
     return n;
   }
@@ -2055,40 +2310,63 @@
       // Vertical mode: tracks side-by-side (left/width based)
       let currentX = 0;
       const mainHeight = rectH(main);
+      // Ensure mainHeight is valid
+      const safeMainHeight = (isNaN(mainHeight) || mainHeight <= 0) ? 0 : mainHeight;
       
       for (const track of state.tracks) {
-        const effectiveWidth = track.collapsed ? headerH : (headerH + track.height);
+        const effectiveWidth = track.collapsed ? headerH : (headerH + (track.height || 0));
+        const safeContentLeft = currentX + headerH;
+        const safeContentWidth = track.collapsed ? 0 : (track.height || 0);
+        
+        // Validate all values are numbers
+        if (isNaN(currentX) || isNaN(effectiveWidth) || isNaN(safeContentLeft) || isNaN(safeContentWidth)) {
+          console.warn('Genomeshader: Invalid layout values in vertical mode', { currentX, effectiveWidth, safeContentLeft, safeContentWidth, track: track.id });
+          continue;
+        }
+        
         layout.push({
           track,
           left: currentX,
           width: effectiveWidth,
-          contentLeft: currentX + headerH,
-          contentWidth: track.collapsed ? 0 : track.height,
+          contentLeft: safeContentLeft,
+          contentWidth: safeContentWidth,
           // Also include top/height for compatibility
           top: 0,
-          height: mainHeight,
+          height: safeMainHeight,
           contentTop: 0,
-          contentHeight: mainHeight
+          contentHeight: safeMainHeight
         });
         currentX += effectiveWidth; // no gap between tracks
       }
     } else {
       // Horizontal mode: tracks stacked vertically (top/height based)
       let currentY = 0;
+      const mainWidth = rectW(main);
+      // Ensure mainWidth is valid
+      const safeMainWidth = (isNaN(mainWidth) || mainWidth <= 0) ? 0 : mainWidth;
       
       for (const track of state.tracks) {
-        const effectiveHeight = track.collapsed ? headerH : (headerH + track.height);
+        const effectiveHeight = track.collapsed ? headerH : (headerH + (track.height || 0));
+        const safeContentTop = currentY + headerH;
+        const safeContentHeight = track.collapsed ? 0 : (track.height || 0);
+        
+        // Validate all values are numbers
+        if (isNaN(currentY) || isNaN(effectiveHeight) || isNaN(safeContentTop) || isNaN(safeContentHeight)) {
+          console.warn('Genomeshader: Invalid layout values in horizontal mode', { currentY, effectiveHeight, safeContentTop, safeContentHeight, track: track.id });
+          continue;
+        }
+        
         layout.push({
           track,
           top: currentY,
           height: effectiveHeight,
-          contentTop: currentY + headerH,
-          contentHeight: track.collapsed ? 0 : track.height,
+          contentTop: safeContentTop,
+          contentHeight: safeContentHeight,
           // Also include left/width for compatibility
           left: 0,
-          width: rectW(main),
+          width: safeMainWidth,
           contentLeft: 0,
-          contentWidth: rectW(main)
+          contentWidth: safeMainWidth
         });
         currentY += effectiveHeight; // no gap between tracks
       }
@@ -2119,6 +2397,10 @@
   // -----------------------------
   // Tracks rendering (ideogram + genes + repeats + ruler)
   // -----------------------------
+  // Track retry attempts to avoid infinite loops
+  let renderTracksRetryCount = 0;
+  const MAX_RETRY_ATTEMPTS = 10;
+  
   function renderTracks() {
     clearSvg(tracksSvg);
     // Clear WebGPU renderer instances
@@ -2130,6 +2412,38 @@
     const isVertical = isVerticalMode();
     const W = isVertical ? tracksHeightPx() : tracksWidthPx();
     const H = isVertical ? tracksWidthPx() : tracksHeightPx();
+    
+    // Guard against invalid dimensions - retry if dimensions are not ready
+    if (!W || W <= 0 || isNaN(W) || !H || H <= 0 || isNaN(H)) {
+      if (renderTracksRetryCount < MAX_RETRY_ATTEMPTS) {
+        renderTracksRetryCount++;
+        // Schedule a retry after a short delay to allow layout to settle
+        setTimeout(() => {
+          renderTracks();
+        }, 50);
+        return;
+      } else {
+        console.warn('Genomeshader: renderTracks skipped - invalid dimensions after retries', { W, H, retries: renderTracksRetryCount });
+        renderTracksRetryCount = 0; // Reset counter
+        return;
+      }
+    }
+    
+    // Reset retry counter on successful render
+    renderTracksRetryCount = 0;
+    
+    // Ensure pxPerBp is valid before rendering
+    if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+      console.warn('Genomeshader: renderTracks skipped - invalid pxPerBp', { pxPerBp: state.pxPerBp });
+      // Try to update derived values
+      updateDerived();
+      // Check again
+      if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        console.warn('Genomeshader: renderTracks skipped - pxPerBp still invalid after updateDerived', { pxPerBp: state.pxPerBp });
+        return;
+      }
+    }
+    
     const layout = getTrackLayout();
     
     // Coordinate mapping functions based on orientation
@@ -2287,20 +2601,35 @@
 
     // Ideogram layout
     if (!ideogramLayout.track.collapsed) {
+      // Validate layout properties before using them
+      const contentLeft = ideogramLayout.contentLeft;
+      const contentTop = ideogramLayout.contentTop;
+      if (isNaN(contentLeft) || isNaN(contentTop)) {
+        console.warn('Genomeshader: Invalid ideogram layout values', { contentLeft, contentTop });
+        return;
+      }
+      
       let ideogramX, ideogramY, ideogramW, ideogramH;
       if (isVertical) {
-        ideogramX = ideogramLayout.contentLeft + 12;
+        ideogramX = (isNaN(contentLeft) ? 0 : contentLeft) + 12;
         ideogramW = 16;
         // Leave space at bottom for chromosome label, start ideogram higher
         ideogramY = 16;
         // In vertical mode, ideogram spans the genomic axis (W dimension, which is SVG height)
         // Leave space at bottom (about 40px) for the chromosome label
-        ideogramH = W - 32 - 40;
+        ideogramH = Math.max(0, W - 32 - 40);
       } else {
-        ideogramY = ideogramLayout.contentTop + 12;
+        ideogramY = (isNaN(contentTop) ? 0 : contentTop) + 12;
         ideogramH = 16;
         ideogramX = 16;
-        ideogramW = W - 32;
+        ideogramW = Math.max(0, W - 32);
+      }
+      
+      // Final validation of calculated values
+      if (isNaN(ideogramX) || isNaN(ideogramY) || isNaN(ideogramW) || isNaN(ideogramH) || 
+          ideogramW <= 0 || ideogramH <= 0) {
+        console.warn('Genomeshader: Invalid ideogram dimensions', { ideogramX, ideogramY, ideogramW, ideogramH });
+        return;
       }
 
       // --- Chromosome label
@@ -2327,9 +2656,16 @@
       // --- Ideogram (p/q arm rounded rects + cytobands clipped inside)
       const bandX = isVertical ? ideogramX : 70;
       const bandY = isVertical ? ideogramY : ideogramY;
-      const bandW = isVertical ? ideogramW : (W - bandX - 16);
+      const bandW = isVertical ? ideogramW : Math.max(0, W - bandX - 16);
       // In vertical mode, bandH should use the full available height
       const bandH = isVertical ? ideogramH : ideogramH;
+      
+      // Validate band dimensions before using them
+      if (isNaN(bandX) || isNaN(bandY) || isNaN(bandW) || isNaN(bandH) || 
+          bandW <= 0 || bandH <= 0) {
+        console.warn('Genomeshader: Invalid band dimensions', { bandX, bandY, bandW, bandH, ideogramX, ideogramY, ideogramW, ideogramH, W, H });
+        return;
+      }
 
       // Use global chromosome lengths for mapping cytoband positions
       const chrLength = getChromosomeLength();
@@ -2382,6 +2718,14 @@
         pX = bandX;
         qX = bandX + pW;
         pY = qY = bandY;
+      }
+      
+      // Validate all calculated arm positions and dimensions
+      if (isNaN(pX) || isNaN(pY) || isNaN(pW) || isNaN(pH) ||
+          isNaN(qX) || isNaN(qY) || isNaN(qW) || isNaN(qH) ||
+          pW <= 0 || pH <= 0 || qW <= 0 || qH <= 0) {
+        console.warn('Genomeshader: Invalid arm dimensions', { pX, pY, pW, pH, qX, qY, qW, qH });
+        return;
       }
 
       // defs + clipPath that matches both arms
