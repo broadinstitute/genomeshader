@@ -1626,20 +1626,23 @@
     // In inline mode, use root-scoped handler to avoid Jupyter wrapper interference
     if (hostMode === 'inline' && root) {
       // Use a click handler on root (not document) to avoid Jupyter interference
-      // Use non-capturing so menu button click fires first
+      // Use a small delay to ensure menu button click completes first
       const onRootClick = (e) => {
-        // Don't close if clicking on menu button or menu itself
-        if (menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) {
-          return; // Menu button click will handle opening/closing
-        }
-        if (ctxMenu && (ctxMenu === e.target || ctxMenu.contains(e.target))) {
-          return; // Click inside menu, don't close
-        }
-        // Only close if menu is actually open
-        if (ctxMenu && ctxMenu.classList.contains("open")) {
-          console.log('[gs] Closing menu - click outside (root-scoped)');
-          closeMenu();
-        }
+        // Use setTimeout to ensure menu state is updated before checking
+        setTimeout(() => {
+          // Don't close if clicking on menu button or menu itself
+          if (menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) {
+            return; // Menu button click will handle opening/closing
+          }
+          if (ctxMenu && (ctxMenu === e.target || ctxMenu.contains(e.target))) {
+            return; // Click inside menu, don't close
+          }
+          // Only close if menu is actually open
+          if (ctxMenu && ctxMenu.classList.contains("open")) {
+            console.log('[gs] Closing menu - click outside (root-scoped)');
+            closeMenu();
+          }
+        }, 0); // Use setTimeout(0) to defer until after current call stack
       };
       root.addEventListener("click", onRootClick, false); // Non-capturing: fire after menu button handler
       console.log('[gs] Root-scoped outside-click handler attached (inline mode)');
