@@ -1119,6 +1119,21 @@ console.log('Genomeshader: Bootstrap variables set', {{
   z-index: 100 !important;
   overflow: visible !important;
   pointer-events: auto !important;
+  transition: width 0.2s ease;
+}}
+/* Sidebar collapsed state */
+#{container_id} .app.sidebar-collapsed .sidebar {{
+  width: 12px !important;
+  padding: 0 !important;
+}}
+#{container_id} .app.sidebar-collapsed .sidebar > * {{
+  opacity: 0 !important;
+  pointer-events: none !important;
+}}
+#{container_id} .app.sidebar-collapsed .sidebar::after {{
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  width: 12px !important;
 }}
 /* Main: takes remaining space to the right of sidebar */
 #{container_id} .main {{
@@ -1129,6 +1144,11 @@ console.log('Genomeshader: Bootstrap variables set', {{
   bottom: 0 !important;
   z-index: 1 !important;
   overflow: hidden;
+  transition: left 0.2s ease;
+}}
+/* Main adjusted when sidebar is collapsed */
+#{container_id} .app.sidebar-collapsed .main {{
+  left: 12px !important;
 }}
 /* Ensure all sidebar children are clickable */
 #{container_id} .sidebar > * {{
@@ -1161,17 +1181,23 @@ console.log('Genomeshader: Bootstrap variables set', {{
 /* Ensure menu is above everything - use fixed positioning set by JS */
 #{container_id} .menu {{
   z-index: 2147483647 !important;
-  display: none;
-  visibility: hidden;
+  display: none !important;
+  visibility: hidden !important;
   background: var(--panel) !important;
   border: 1px solid var(--border) !important;
   box-shadow: var(--shadow) !important;
+  opacity: 1 !important;
 }}
 #{container_id} .menu.open {{
   display: block !important;
   visibility: visible !important;
   position: fixed !important;
   pointer-events: auto !important;
+  opacity: 1 !important;
+}}
+/* Ensure container doesn't clip the menu */
+#{container_id} {{
+  overflow: visible !important;
 }}
 /* Note: .main styles moved above with grid-column assignment */
 /* Ensure tracks have proper dimensions within main area */

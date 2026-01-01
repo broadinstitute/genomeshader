@@ -1445,14 +1445,28 @@
                 document.body; // Fallback to body if not found
   console.log('Genomeshader: Root container found:', root?.id || root?.tagName);
   
-  const app = document.querySelector(".app");
-  const sidebar = document.getElementById("sidebar");
-  const menuBtn = document.getElementById("menuBtn");
-  const ctxMenu = document.getElementById("ctxMenu");
-  const themeItem = document.getElementById("themeItem");
-  const themeLabel = document.getElementById("themeLabel");
-  const orientationItem = document.getElementById("orientationItem");
-  const orientationLabel = document.getElementById("orientationLabel");
+  // Use root-scoped queries in inline mode, document queries in popup mode
+  const querySelector = (selector) => {
+    if (hostMode === 'inline' && root && root !== document.body) {
+      return root.querySelector(selector) || document.querySelector(selector);
+    }
+    return document.querySelector(selector);
+  };
+  const getElementById = (id) => {
+    if (hostMode === 'inline' && root && root !== document.body) {
+      return root.getElementById ? root.getElementById(id) : root.querySelector(`#${id}`) || document.getElementById(id);
+    }
+    return document.getElementById(id);
+  };
+  
+  const app = querySelector(".app");
+  const sidebar = getElementById("sidebar");
+  const menuBtn = getElementById("menuBtn");
+  const ctxMenu = getElementById("ctxMenu");
+  const themeItem = getElementById("themeItem");
+  const themeLabel = getElementById("themeLabel");
+  const orientationItem = getElementById("orientationItem");
+  const orientationLabel = getElementById("orientationLabel");
   
   // Debug: Check if elements are found
   if (!app) console.error('Genomeshader: .app element not found');
@@ -1460,7 +1474,8 @@
   if (!menuBtn) console.error('Genomeshader: #menuBtn element not found');
   if (!ctxMenu) console.error('Genomeshader: #ctxMenu element not found');
   
-  // Ensure menu is attached to root in inline mode
+  // In inline mode, keep menu in root initially, but we'll move it to body when opening
+  // This ensures fixed positioning works relative to viewport, not container
   if (hostMode === 'inline' && root && ctxMenu && !root.contains(ctxMenu)) {
     root.appendChild(ctxMenu);
     console.log('Genomeshader: Moved menu to root container');
@@ -1476,26 +1491,35 @@
   }
   function updateSidebarState() {
     const collapsed = getSidebarCollapsed();
+    if (!app) {
+      console.error('Genomeshader: Cannot update sidebar state - app element not found');
+      return;
+    }
     if (collapsed) {
       app.classList.add("sidebar-collapsed");
+      console.log('Genomeshader: Sidebar state updated - collapsed (class added)');
     } else {
       app.classList.remove("sidebar-collapsed");
+      console.log('Genomeshader: Sidebar state updated - expanded (class removed)');
     }
   }
   
   // Make sidebar border clickable - always bind regardless of hostMode
   if (sidebar) {
     console.log('[gs] wiring UI events - Sidebar toggle');
-    // Use pointerup to avoid click-cancel patterns in notebook shells
-    sidebar.addEventListener("pointerup", (e) => {
-      console.log('[gs] sidebar toggle click');
+    
+    const handleSidebarToggle = (e) => {
+      console.log('[gs] sidebar toggle click', e.type, 'target:', e.target);
+      
+      // Don't toggle if clicking on menu button or menu - check this FIRST before stopping propagation
+      if ((menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) || 
+          (ctxMenu && (ctxMenu === e.target || ctxMenu.contains(e.target)))) {
+        console.log('[gs] Sidebar toggle: ignoring click on menu button/menu');
+        return; // Don't stop propagation - let menu button handler fire
+      }
+      
       e.preventDefault();
       e.stopPropagation();
-      
-      // Don't toggle if clicking on menu button or menu
-      if ((menuBtn && menuBtn.contains(e.target)) || (ctxMenu && ctxMenu.contains(e.target))) {
-        return;
-      }
       
       const collapsed = getSidebarCollapsed();
       const rect = sidebar.getBoundingClientRect();
@@ -1513,7 +1537,17 @@
         console.log('Genomeshader: Collapsing sidebar');
         setSidebarCollapsed(true);
       }
-    });
+    };
+    
+    // Use multiple event types with capturing phase (like debug buttons)
+    sidebar.addEventListener("click", handleSidebarToggle, true);
+    sidebar.addEventListener("pointerdown", handleSidebarToggle, true);
+    sidebar.addEventListener("pointerup", handleSidebarToggle, true);
+    sidebar.addEventListener("mousedown", handleSidebarToggle, true);
+    
+    // Ensure sidebar is clickable
+    sidebar.style.pointerEvents = "auto";
+    
     console.log('[gs] Sidebar toggle handler attached successfully');
   } else {
     console.error('Genomeshader: Cannot attach sidebar click handler - element not found');
@@ -1573,6 +1607,12 @@
   updateThemeLabel();
 
   function openMenu() {
+    // In inline mode, move menu to body so fixed positioning works relative to viewport
+    if (hostMode === 'inline' && ctxMenu.parentElement !== document.body) {
+      document.body.appendChild(ctxMenu);
+      console.log('Genomeshader: Moved menu to body for fixed positioning');
+    }
+    
     // Use fixed positioning so menu appears over everything (including Jupyter UI)
     const r = menuBtn.getBoundingClientRect();
     // Position menu above the gear button, or below if not enough space above
@@ -1591,6 +1631,11 @@
       left = window.innerWidth - menuWidth - 8;
     }
     
+    // Ensure menu doesn't go off bottom edge
+    if (top + menuHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - menuHeight - 8);
+    }
+    
     ctxMenu.style.position = 'fixed';
     ctxMenu.style.left = `${left}px`;
     ctxMenu.style.top = `${top}px`;
@@ -1600,7 +1645,25 @@
     ctxMenu.style.display = 'block';
     ctxMenu.style.visibility = 'visible';
     ctxMenu.style.pointerEvents = 'auto';
-    console.log('Genomeshader: Menu opened at', { left, top });
+    ctxMenu.style.opacity = '1';
+    
+    // Debug: Check computed styles
+    const computed = window.getComputedStyle(ctxMenu);
+    const rect = ctxMenu.getBoundingClientRect();
+    console.log('Genomeshader: Menu opened at', { 
+      left, top, 
+      buttonRect: r, 
+      windowHeight: window.innerHeight,
+      menuRect: rect,
+      computedDisplay: computed.display,
+      computedVisibility: computed.visibility,
+      computedPosition: computed.position,
+      computedZIndex: computed.zIndex,
+      computedOpacity: computed.opacity,
+      menuParent: ctxMenu.parentElement?.tagName,
+      menuInRoot: root?.contains(ctxMenu)
+    });
+    
     // Update variant layout mode label when menu opens
     updateVariantLayoutModeLabel();
   }
@@ -1610,6 +1673,13 @@
     ctxMenu.style.display = 'none';
     ctxMenu.style.visibility = 'hidden';
     ctxMenu.style.pointerEvents = 'none';
+    
+    // In inline mode, move menu back to root when closed
+    if (hostMode === 'inline' && root && ctxMenu.parentElement === document.body) {
+      root.appendChild(ctxMenu);
+      console.log('Genomeshader: Moved menu back to root container');
+    }
+    
     console.log('Genomeshader: Menu closed');
   }
   function toggleMenu() {
@@ -1621,20 +1691,71 @@
   }
 
   if (menuBtn && ctxMenu) {
-    console.log('[gs] wiring UI events - Settings menu button');
-    menuBtn.addEventListener("click", (e) => { 
-      console.log('[gs] settings click');
+    console.log('[gs] wiring UI events - Settings menu button', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
+    console.log('[gs] Menu button element:', menuBtn, 'ID:', menuBtn.id, 'Classes:', menuBtn.className);
+    
+    // Track if we've already handled this interaction to prevent double-toggle
+    let menuButtonHandled = false;
+    
+    const handleMenuButtonClick = (e) => {
+      // If we already handled this interaction (e.g., pointerdown), ignore subsequent events (click)
+      if (menuButtonHandled && e.type !== 'pointerdown') {
+        console.log('[gs] settings click ignored - already handled by pointerdown', e.type);
+        return;
+      }
+      
+      console.log('[gs] settings click', e.type, e.target);
       console.log('Genomeshader: Menu button clicked');
       e.stopPropagation(); 
       e.preventDefault();
+      
+      // Mark as handled and reset after a short delay
+      menuButtonHandled = true;
+      setTimeout(() => { menuButtonHandled = false; }, 300);
+      
       toggleMenu(); 
+    };
+    
+    // Use pointerdown as primary handler (fires first), click as fallback
+    menuBtn.addEventListener("pointerdown", handleMenuButtonClick, true);
+    menuBtn.addEventListener("click", handleMenuButtonClick, true);
+    menuBtn.addEventListener("mousedown", handleMenuButtonClick, true);
+    
+    // Ensure menu button is clickable
+    menuBtn.style.pointerEvents = "auto";
+    menuBtn.style.cursor = "pointer";
+    menuBtn.style.zIndex = "150";
+    menuBtn.style.position = "relative";
+    
+    // Also set onclick as fallback
+    menuBtn.onclick = handleMenuButtonClick;
+    
+    console.log('[gs] Menu button handlers attached', {
+      hasClick: true,
+      hasPointerDown: true,
+      hasMouseDown: true,
+      hasOnclick: !!menuBtn.onclick
     });
     
     // Close menu when clicking outside, but check if click is outside menu/button
     // In inline mode, use root-scoped handler to avoid Jupyter wrapper interference
     if (hostMode === 'inline' && root) {
+      // Track when menu was just opened to avoid immediate close
+      let menuJustOpened = false;
+      const originalToggleMenu = toggleMenu;
+      toggleMenu = function() {
+        menuJustOpened = true;
+        originalToggleMenu();
+        // Reset flag after a short delay
+        setTimeout(() => { menuJustOpened = false; }, 100);
+      };
+      
       // Use pointerdown with capturing to catch events before they bubble
       const onPointerDown = (e) => {
+        // Don't close if menu was just opened (same click event)
+        if (menuJustOpened) {
+          return;
+        }
         // Only close if menu is open and click is outside menu/button
         if (ctxMenu.classList.contains("open") && 
             !ctxMenu.contains(e.target) && 
