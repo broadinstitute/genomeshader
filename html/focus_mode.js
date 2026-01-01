@@ -111,6 +111,7 @@ export function installFocusMode({
       flex: 1;
       overflow: hidden;
       position: relative;
+      touch-action: none;
     `;
 
     modal.appendChild(topbar);

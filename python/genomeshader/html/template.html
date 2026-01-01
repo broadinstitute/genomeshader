@@ -1446,6 +1446,19 @@
                 document.body; // Fallback to body if not found
   console.log('Genomeshader: Root container found:', root?.id || root?.tagName);
   
+  // Root-scoped element lookup helpers
+  function byId(root, id) {
+    const el = root.querySelector(`#${CSS.escape(id)}`);
+    if (!el) console.warn("[gs] missing element", id, "under root", root.id);
+    return el;
+  }
+
+  function $(root, selector) {
+    const el = root.querySelector(selector);
+    if (!el) console.warn("[gs] missing element", selector, "under root", root.id);
+    return el;
+  }
+  
   // Use root-scoped queries in inline mode, document queries in popup mode
   const querySelector = (selector) => {
     if (hostMode === 'inline' && root && root !== document.body) {
@@ -1854,6 +1867,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
+        pointer-events: auto;
       `;
 
       modal = document.createElement('div');
@@ -1867,6 +1881,7 @@
         background: var(--bg, #0b0d10);
         border-radius: 12px;
         box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        pointer-events: auto;
       `;
 
       topbar = document.createElement('div');
@@ -1923,6 +1938,8 @@
         flex: 1;
         overflow: hidden;
         position: relative;
+        pointer-events: auto;
+        touch-action: none;
       `;
 
       modal.appendChild(topbar);
@@ -1980,6 +1997,17 @@
 
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
+          // Rebind interactions after DOM move
+          if (typeof interactionBinding !== 'undefined' && interactionBinding) {
+            interactionBinding.destroy();
+          }
+          // Re-find main element within the moved viewer element
+          const mainAfterMove = viewerEl.querySelector ? viewerEl.querySelector("#main") : byId(root, "main");
+          if (mainAfterMove && typeof bindInteractions !== 'undefined') {
+            // Use root to maintain scoping, but mainAfterMove is the actual element
+            interactionBinding = bindInteractions(root, state, mainAfterMove);
+            console.log("[gs] rebound interactions after overlay enter", mainAfterMove, "root", root.id);
+          }
           if (onEnter) {
             onEnter();
           }
@@ -2022,6 +2050,17 @@
 
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
+          // Rebind interactions after DOM move
+          if (typeof interactionBinding !== 'undefined' && interactionBinding) {
+            interactionBinding.destroy();
+          }
+          // Re-find main element within the moved viewer element
+          const mainAfterMove = viewerEl.querySelector ? viewerEl.querySelector("#main") : byId(root, "main");
+          if (mainAfterMove && typeof bindInteractions !== 'undefined') {
+            // Use root to maintain scoping, but mainAfterMove is the actual element
+            interactionBinding = bindInteractions(root, state, mainAfterMove);
+            console.log("[gs] rebound interactions after overlay exit", mainAfterMove, "root", root.id);
+          }
           if (onExit) {
             onExit();
           }
@@ -2054,6 +2093,9 @@
   }
 
   // Initialize focus mode after app is ready
+  // Declare interactionBinding early so it's accessible to overlay callbacks
+  let interactionBinding = null;
+  
   const viewId = window.GENOMESHADER_VIEW_ID || document.querySelector('[data-view-id]')?.dataset.viewId || 'default';
   if (fullscreenItem && app) {
     installFocusMode({
@@ -2204,15 +2246,15 @@
     updateDocumentTitle();
   }
 
-  const main = document.getElementById("main");
-  const tracksSvg = document.getElementById("tracksSvg");
-  const flow = document.getElementById("flow");
-  const reads = document.getElementById("reads");
-  const flowCanvas = document.getElementById("flowCanvas");
-  const readsCanvas = document.getElementById("readsCanvas");
-  const hud = document.getElementById("hud");
-  const tooltip = document.getElementById("tooltip");
-  const tracksWebGPU = document.getElementById("tracksWebGPU");
+  const main = byId(root, "main");
+  const tracksSvg = byId(root, "tracksSvg");
+  const flow = byId(root, "flow");
+  const reads = byId(root, "reads");
+  const flowCanvas = byId(root, "flowCanvas");
+  const readsCanvas = byId(root, "readsCanvas");
+  const hud = byId(root, "hud");
+  const tooltip = byId(root, "tooltip");
+  const tracksWebGPU = byId(root, "tracksWebGPU");
 
   // Initialize WebGPU infrastructure
   let webgpuCore = null;
@@ -5453,147 +5495,204 @@
   // -----------------------------
   // Interaction (right pane)
   // -----------------------------
-  main.addEventListener("pointerdown", (e) => {
-    // Don't start drag if clicking on a variant (for insertion expansion)
-    // Check if clicking on SVG elements that are variants
-    const target = e.target;
-    if (target && target.tagName && (target.tagName === "line" || target.tagName === "circle" || target.tagName === "rect")) {
-      // Check if this is a variant element (has blue stroke or is in the variant area)
-      const stroke = target.getAttribute ? target.getAttribute("stroke") : null;
-      if (stroke && (stroke === "var(--blue)" || stroke === cssVar("--blue") || stroke.includes("blue"))) {
-        // This might be a variant - don't start dragging, let click handler work
-        return;
-      }
-      // Also check if it's the invisible click area for insertions
-      if (target.getAttribute && target.getAttribute("fill") === "transparent" && target.getAttribute("width") === "10") {
-        return;
-      }
-    }
-    
-    state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    main.setPointerCapture(e.pointerId);
-
-    if (state.pointers.size === 1) {
-      state.dragging = true;
-      state.lastX = e.clientX;
-      state.lastY = e.clientY;
-    } else {
-      state.dragging = false;
-    }
-  });
-
-  main.addEventListener("pointermove", (e) => {
-    if (!state.pointers.has(e.pointerId)) return;
-    state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (state.pointers.size === 2) {
-      const pts = Array.from(state.pointers.values());
-      const dx = pts[0].x - pts[1].x;
-      const dy = pts[0].y - pts[1].y;
-      const dist = Math.hypot(dx, dy);
-
-      if (state.pinchStartDist == null) {
-        state.pinchStartDist = dist;
-        state.pinchStartSpan = (state.endBp - state.startBp);
-
-        const midX = (pts[0].x + pts[1].x) / 2;
-        const midY = (pts[0].y + pts[1].y) / 2;
-        state.pinchAnchorBp = anchorBpFromClient(midX, midY);
-      } else {
-        const scale = dist / state.pinchStartDist; // >1 apart => zoom in
-        const oldSpan = state.pinchStartSpan;
-        const newSpan = clampSpan(oldSpan / scale);
-
-        const anchorBp = state.pinchAnchorBp ?? (state.startBp + (state.endBp-state.startBp)/2);
-        const leftFrac = (anchorBp - state.startBp) / (state.endBp - state.startBp);
-        const newStart = anchorBp - leftFrac * newSpan;
-
-        state.startBp = newStart;
-        state.endBp = newStart + newSpan;
-
-        // Clamp to chromosome boundaries
-        clampToChromosomeBounds();
-
-        renderAll();
-      }
-      return;
+  
+  // Bind wheel, pointer, and dblclick events to main element
+  // Returns a destroy function to clean up listeners
+  function bindInteractions(root, state, main) {
+    if (!main) {
+      console.warn("[gs] bindInteractions: main element not found");
+      return { destroy() {} };
     }
 
-    if (state.dragging) {
+    // Wheel: pan/zoom gestures
+    // Use composedPath() as primary gate to ensure event is over viewport
+    function shouldHandleWheel(e) {
+      const path = e.composedPath ? e.composedPath() : [];
+      return path.includes(main); // main is the viewport element that should pan/zoom
+    }
+
+    const onWheel = (e) => {
+      // Extra safety: ignore wheel not originating inside this viewer
+      const path = e.composedPath ? e.composedPath() : [];
+      if (!path.includes(main)) return;
+
+      const isPinchZoom = e.ctrlKey === true || e.metaKey === true;
       const isVertical = isVerticalMode();
-      const dx = e.clientX - state.lastX;
-      const dy = e.clientY - state.lastY;
-      state.lastX = e.clientX;
-      state.lastY = e.clientY;
-      if (isVertical) {
-        panByPixels(0, -dy);
-      } else {
-        panByPixels(-dx, 0);
+      const dx = e.deltaX;
+      const dy = e.deltaY;
+
+      if (isPinchZoom) {
+        // Handle pinch-to-zoom (trackpad gesture with ctrl/meta)
+        e.preventDefault();
+        const zoomIntensity = 0.0018;
+        // Use vertical delta for pinch zoom (standard trackpad convention)
+        const factor = Math.exp(-dy * zoomIntensity);
+        const anchorBp = isVertical 
+          ? anchorBpFromClientY(e.clientY)
+          : anchorBpFromClientX(e.clientX);
+        zoomByFactor(factor, anchorBp);
+        return;
       }
-    }
-  });
-
-  function endPointer(e) {
-    state.pointers.delete(e.pointerId);
-    if (state.pointers.size < 2) {
-      state.pinchStartDist = null;
-      state.pinchStartSpan = null;
-      state.pinchAnchorBp = null;
-    }
-    if (state.pointers.size === 0) state.dragging = false;
-  }
-  main.addEventListener("pointerup", endPointer);
-  main.addEventListener("pointercancel", endPointer);
-
-  // Wheel: default zoom (no ctrl/meta), shift+wheel (or horizontal) pan
-  main.addEventListener("wheel", (e) => {
-    if (e.ctrlKey || e.metaKey) return;
-
-    const isVertical = isVerticalMode();
-    const dx = e.deltaX;
-    const dy = e.deltaY;
-    
-    if (isVertical) {
-      // In vertical mode: vertical wheel = pan, horizontal wheel = zoom
-      const wantPan = e.shiftKey || Math.abs(dy) > Math.abs(dx);
       
-      if (wantPan) {
+      if (isVertical) {
+        // In vertical mode: vertical wheel = pan, horizontal wheel = zoom
+        const wantPan = e.shiftKey || Math.abs(dy) > Math.abs(dx);
+        
+        if (wantPan) {
+          e.preventDefault();
+          const panDy = e.shiftKey ? dx : dy;
+          panByPixels(0, panDy);
+          return;
+        }
+
         e.preventDefault();
-        const panDy = e.shiftKey ? dx : dy;
-        panByPixels(0, panDy);
+        const zoomIntensity = 0.0018;
+        const factor = Math.exp(-dx * zoomIntensity);
+
+        const anchorBp = anchorBpFromClientY(e.clientY);
+        zoomByFactor(factor, anchorBp);
+      } else {
+        // In horizontal mode: horizontal wheel = pan, vertical wheel = zoom
+        const wantPan = e.shiftKey || Math.abs(dx) > Math.abs(dy);
+
+        if (wantPan) {
+          e.preventDefault();
+          const panDx = e.shiftKey ? dy : dx;
+          panByPixels(panDx, 0);
+          return;
+        }
+
+        e.preventDefault();
+        const zoomIntensity = 0.0018;
+        const factor = Math.exp(-dy * zoomIntensity);
+
+        const anchorBp = anchorBpFromClientX(e.clientX);
+        zoomByFactor(factor, anchorBp);
+      }
+    };
+
+    const onPointerDown = (e) => {
+      // Don't start drag if clicking on a variant (for insertion expansion)
+      // Check if clicking on SVG elements that are variants
+      const target = e.target;
+      if (target && target.tagName && (target.tagName === "line" || target.tagName === "circle" || target.tagName === "rect")) {
+        // Check if this is a variant element (has blue stroke or is in the variant area)
+        const stroke = target.getAttribute ? target.getAttribute("stroke") : null;
+        if (stroke && (stroke === "var(--blue)" || stroke === cssVar("--blue") || stroke.includes("blue"))) {
+          // This might be a variant - don't start dragging, let click handler work
+          return;
+        }
+        // Also check if it's the invisible click area for insertions
+        if (target.getAttribute && target.getAttribute("fill") === "transparent" && target.getAttribute("width") === "10") {
+          return;
+        }
+      }
+      
+      state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      main.setPointerCapture(e.pointerId);
+
+      if (state.pointers.size === 1) {
+        state.dragging = true;
+        state.lastX = e.clientX;
+        state.lastY = e.clientY;
+      } else {
+        state.dragging = false;
+      }
+    };
+
+    const onPointerMove = (e) => {
+      if (!state.pointers.has(e.pointerId)) return;
+      state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (state.pointers.size === 2) {
+        const pts = Array.from(state.pointers.values());
+        const dx = pts[0].x - pts[1].x;
+        const dy = pts[0].y - pts[1].y;
+        const dist = Math.hypot(dx, dy);
+
+        if (state.pinchStartDist == null) {
+          state.pinchStartDist = dist;
+          state.pinchStartSpan = (state.endBp - state.startBp);
+
+          const midX = (pts[0].x + pts[1].x) / 2;
+          const midY = (pts[0].y + pts[1].y) / 2;
+          state.pinchAnchorBp = anchorBpFromClient(midX, midY);
+        } else {
+          const scale = dist / state.pinchStartDist; // >1 apart => zoom in
+          const oldSpan = state.pinchStartSpan;
+          const newSpan = clampSpan(oldSpan / scale);
+
+          const anchorBp = state.pinchAnchorBp ?? (state.startBp + (state.endBp-state.startBp)/2);
+          const leftFrac = (anchorBp - state.startBp) / (state.endBp - state.startBp);
+          const newStart = anchorBp - leftFrac * newSpan;
+
+          state.startBp = newStart;
+          state.endBp = newStart + newSpan;
+
+          // Clamp to chromosome boundaries
+          clampToChromosomeBounds();
+
+          renderAll();
+        }
         return;
       }
 
-      e.preventDefault();
-      const zoomIntensity = 0.0018;
-      const factor = Math.exp(-dx * zoomIntensity);
-
-      const anchorBp = anchorBpFromClientY(e.clientY);
-      zoomByFactor(factor, anchorBp);
-    } else {
-      // In horizontal mode: horizontal wheel = pan, vertical wheel = zoom
-      const wantPan = e.shiftKey || Math.abs(dx) > Math.abs(dy);
-
-      if (wantPan) {
-        e.preventDefault();
-        const panDx = e.shiftKey ? dy : dx;
-        panByPixels(panDx, 0);
-        return;
+      if (state.dragging) {
+        const isVertical = isVerticalMode();
+        const dx = e.clientX - state.lastX;
+        const dy = e.clientY - state.lastY;
+        state.lastX = e.clientX;
+        state.lastY = e.clientY;
+        if (isVertical) {
+          panByPixels(0, -dy);
+        } else {
+          panByPixels(-dx, 0);
+        }
       }
+    };
 
-      e.preventDefault();
-      const zoomIntensity = 0.0018;
-      const factor = Math.exp(-dy * zoomIntensity);
-
-      const anchorBp = anchorBpFromClientX(e.clientX);
-      zoomByFactor(factor, anchorBp);
+    function endPointer(e) {
+      state.pointers.delete(e.pointerId);
+      if (state.pointers.size < 2) {
+        state.pinchStartDist = null;
+        state.pinchStartSpan = null;
+        state.pinchAnchorBp = null;
+      }
+      if (state.pointers.size === 0) state.dragging = false;
     }
-  }, { passive: false });
 
-  main.addEventListener("dblclick", (e) => {
-    const anchorBp = anchorBpFromClient(e.clientX, e.clientY);
-    zoomByFactor(1.6, anchorBp);
-  });
+    const onPointerUp = endPointer;
+    const onPointerCancel = endPointer;
+
+    const onDblClick = (e) => {
+      const anchorBp = anchorBpFromClient(e.clientX, e.clientY);
+      zoomByFactor(1.6, anchorBp);
+    };
+
+    // Attach event listeners
+    main.addEventListener("wheel", onWheel, { passive: false });
+    main.addEventListener("pointerdown", onPointerDown);
+    main.addEventListener("pointermove", onPointerMove);
+    main.addEventListener("pointerup", onPointerUp);
+    main.addEventListener("pointercancel", onPointerCancel);
+    main.addEventListener("dblclick", onDblClick);
+
+    // Return destroy function
+    return {
+      destroy() {
+        main.removeEventListener("wheel", onWheel, { passive: false });
+        main.removeEventListener("pointerdown", onPointerDown);
+        main.removeEventListener("pointermove", onPointerMove);
+        main.removeEventListener("pointerup", onPointerUp);
+        main.removeEventListener("pointercancel", onPointerCancel);
+        main.removeEventListener("dblclick", onDblClick);
+      }
+    };
+  }
+
+  // Bind interactions and store destroy function
+  interactionBinding = bindInteractions(root, state, main);
+  console.log("[gs] bound interactions to", main, "root", root.id);
 
   // -----------------------------
   // Track interactions (drag, resize)
