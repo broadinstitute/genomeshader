@@ -910,15 +910,6 @@ console.log('Genomeshader: Bootstrap variables set', {{
 }});
 </script>"""
         
-        # Debug toolbar HTML
-        debug_toolbar = """
-<div class="gs-debug-toolbar">
-  <button class="gs-debug-settings">Settings</button>
-  <button class="gs-debug-sidebar">Toggle sidebar</button>
-  <span class="gs-debug-status"></span>
-</div>
-"""
-
         # Mount script that initializes container after DOM is ready
         mount_script = f"""
 <script type="text/javascript">
@@ -943,120 +934,6 @@ console.log('Genomeshader: Bootstrap variables set', {{
     
     // Store run_id in container dataset for easy access
     root.dataset.viewId = {json.dumps(run_id)};
-    
-    // Wire up debug toolbar buttons
-    const viewId = {json.dumps(run_id)};
-    
-    // Test: Add a click listener to root to see if ANY clicks work
-    root.addEventListener("click", (e) => {{
-      console.log("[gs] DEBUG: Root click detected", e.target, e.target.className);
-    }}, true);
-    
-    const wireDebugButtons = () => {{
-      console.log("[gs] DEBUG: Looking for toolbar elements in root:", root.id);
-      console.log("[gs] DEBUG: Root innerHTML length:", root.innerHTML.length);
-      
-      const settingsBtn = root.querySelector(".gs-debug-settings");
-      const sidebarBtn  = root.querySelector(".gs-debug-sidebar");
-      const statusEl    = root.querySelector(".gs-debug-status");
-      
-      // Also try document.querySelector as fallback
-      const settingsBtnDoc = document.querySelector(".gs-debug-settings");
-      const sidebarBtnDoc  = document.querySelector(".gs-debug-sidebar");
-      const statusElDoc    = document.querySelector(".gs-debug-status");
-      
-      console.log("[gs] DEBUG: Elements found (root query):", {{
-        settingsBtn: !!settingsBtn,
-        sidebarBtn: !!sidebarBtn,
-        statusEl: !!statusEl
-      }});
-      console.log("[gs] DEBUG: Elements found (document query):", {{
-        settingsBtn: !!settingsBtnDoc,
-        sidebarBtn: !!sidebarBtnDoc,
-        statusEl: !!statusElDoc
-      }});
-      
-      // Use document query results if root query failed
-      const finalSettingsBtn = settingsBtn || settingsBtnDoc;
-      const finalSidebarBtn = sidebarBtn || sidebarBtnDoc;
-      const finalStatusEl = statusEl || statusElDoc;
-      
-      if (finalSettingsBtn && finalSidebarBtn && finalStatusEl) {{
-        finalStatusEl.textContent = "wired";
-        console.log("[gs] DEBUG: All toolbar elements found, wiring events...");
-        console.log("[gs] DEBUG: Button elements:", {{
-          settings: finalSettingsBtn,
-          sidebar: finalSidebarBtn,
-          status: finalStatusEl
-        }});
-        
-        // Try both click and pointerdown events
-        const handleSettingsClick = (e) => {{
-          e.preventDefault(); 
-          e.stopPropagation();
-          console.log("[gs] DEBUG settings click", viewId, root.id, e.type, e.target);
-          finalStatusEl.textContent = "settings clicked (" + e.type + ")";
-        }};
-        
-        const handleSidebarClick = (e) => {{
-          e.preventDefault(); 
-          e.stopPropagation();
-          console.log("[gs] DEBUG sidebar click", viewId, root.id, e.type, e.target);
-          finalStatusEl.textContent = "sidebar clicked (" + e.type + ")";
-        }};
-        
-        // Add both click and pointerdown handlers with capturing phase
-        finalSettingsBtn.addEventListener("click", handleSettingsClick, true);
-        finalSettingsBtn.addEventListener("pointerdown", handleSettingsClick, true);
-        finalSettingsBtn.addEventListener("mousedown", handleSettingsClick, true);
-        
-        finalSidebarBtn.addEventListener("click", handleSidebarClick, true);
-        finalSidebarBtn.addEventListener("pointerdown", handleSidebarClick, true);
-        finalSidebarBtn.addEventListener("mousedown", handleSidebarClick, true);
-        
-        // Ensure buttons are clickable
-        finalSettingsBtn.style.pointerEvents = "auto";
-        finalSidebarBtn.style.pointerEvents = "auto";
-        finalSettingsBtn.style.cursor = "pointer";
-        finalSidebarBtn.style.cursor = "pointer";
-        finalSettingsBtn.style.zIndex = "9999999";
-        finalSidebarBtn.style.zIndex = "9999999";
-        finalSettingsBtn.style.position = "relative";
-        finalSidebarBtn.style.position = "relative";
-        
-        // Test direct onclick as fallback
-        finalSettingsBtn.onclick = handleSettingsClick;
-        finalSidebarBtn.onclick = handleSidebarClick;
-        
-        console.log("[gs] DEBUG: Event handlers attached to buttons");
-        return true;
-      }} else {{
-        console.error("[gs] DEBUG toolbar elements not found", {{
-          settingsBtn: finalSettingsBtn,
-          sidebarBtn: finalSidebarBtn,
-          statusEl: finalStatusEl,
-          rootChildren: root.children.length,
-          rootFirstChild: root.firstElementChild?.className,
-          rootHTMLPreview: root.innerHTML.substring(0, 500)
-        }});
-        return false;
-      }}
-    }};
-    
-    // Try to wire immediately
-    if (!wireDebugButtons()) {{
-      // Retry after a short delay in case DOM isn't ready
-      setTimeout(() => {{
-        console.log("[gs] DEBUG: Retrying to wire debug buttons...");
-        wireDebugButtons();
-      }}, 100);
-      
-      // Also retry after longer delay
-      setTimeout(() => {{
-        console.log("[gs] DEBUG: Final retry to wire debug buttons...");
-        wireDebugButtons();
-      }}, 500);
-    }}
     
     // Ensure container has dimensions before rendering
     const checkDimensions = () => {{
@@ -1220,17 +1097,8 @@ console.log('Genomeshader: Bootstrap variables set', {{
   width: 100% !important;
   height: 100% !important;
 }}
-/* Debug toolbar styles */
-.gs-debug-toolbar{{
-  position:absolute; top:8px; right:8px;
-  z-index: 999999;
-  display:flex; gap:8px; align-items:center;
-}}
-.gs-debug-toolbar button{{ padding:6px 10px; cursor:pointer; }}
-.gs-debug-status{{ opacity:0.7; font-size:12px; }}
 </style>
 {bootstrap_script}
-{debug_toolbar}
 {body_content}
 {mount_script}
 </div>"""
