@@ -595,6 +595,11 @@
           <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
         </div>
 
+        <div class="menuItem" id="fullscreenItem" role="menuitem">
+          <span>Full screen</span>
+          <span class="menuRight" id="fullscreenLabel">Enter full screen</span>
+        </div>
+
         <div class="menuTitle">Grouping</div>
         <div class="menuItem" role="menuitem">
           <span>Variable</span>
@@ -1787,14 +1792,278 @@
   });
 
   // Variant layout mode toggle in settings menu
-  const variantLayoutModeItem = document.getElementById("variantLayoutModeItem");
+  const variantLayoutModeItem = getElementById("variantLayoutModeItem");
   
-  variantLayoutModeItem.addEventListener("click", () => {
-    const cur = getVariantLayoutMode();
-    const next = (cur === "equidistant") ? "genomic" : "equidistant";
-    setVariantLayoutMode(next);
-    renderAll();
-  });
+  if (variantLayoutModeItem) {
+    variantLayoutModeItem.addEventListener("click", () => {
+      const cur = getVariantLayoutMode();
+      const next = (cur === "equidistant") ? "genomic" : "equidistant";
+      setVariantLayoutMode(next);
+      renderAll();
+    });
+  }
+
+  // Fullscreen mode setup
+  const fullscreenItem = getElementById("fullscreenItem");
+  const fullscreenLabel = getElementById("fullscreenLabel");
+  
+  // Resize callback for focus mode
+  function triggerResize() {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (webgpuCore && webgpuSupported) {
+          try {
+            webgpuCore.handleResize();
+          } catch (error) {
+            console.error("WebGPU resize error:", error);
+          }
+        }
+        renderAll();
+      });
+    });
+  }
+
+  // Focus mode implementation (inlined from focus_mode.js)
+  function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
+    if (!viewerEl || !toggleEl || !viewId) {
+      console.error('installFocusMode: missing required parameters');
+      return;
+    }
+
+    let isActive = false;
+    let overlay = null;
+    let modal = null;
+    let topbar = null;
+    let placeholder = null;
+    let originalParent = null;
+    let originalNextSibling = null;
+
+    const overlayId = `genomeshader-overlay-${viewId}`;
+    const modalId = `genomeshader-modal-${viewId}`;
+    const topbarId = `genomeshader-topbar-${viewId}`;
+    const placeholderId = `genomeshader-placeholder-${viewId}`;
+
+    function createOverlay() {
+      overlay = document.createElement('div');
+      overlay.id = overlayId;
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        background: rgba(0, 0, 0, 0.75);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+
+      modal = document.createElement('div');
+      modal.id = modalId;
+      modal.style.cssText = `
+        position: absolute;
+        inset: 24px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        background: var(--bg, #0b0d10);
+        border-radius: 12px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+      `;
+
+      topbar = document.createElement('div');
+      topbar.id = topbarId;
+      topbar.style.cssText = `
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border, rgba(255,255,255,0.10));
+        background: var(--panel, #11151b);
+        flex-shrink: 0;
+      `;
+
+      const title = document.createElement('div');
+      title.textContent = 'Genomeshader — Full screen';
+      title.style.cssText = `
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text, rgba(255,255,255,0.92));
+      `;
+
+      const closeBtn = document.createElement('button');
+      closeBtn.textContent = '✕';
+      closeBtn.setAttribute('aria-label', 'Close full screen');
+      closeBtn.style.cssText = `
+        width: 32px;
+        height: 32px;
+        border: 1px solid var(--border2, rgba(255,255,255,0.08));
+        background: var(--panel2, rgba(255,255,255,0.03));
+        color: var(--text, rgba(255,255,255,0.92));
+        border-radius: 8px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        line-height: 1;
+        transition: all 0.15s ease;
+      `;
+      closeBtn.addEventListener('mouseenter', () => {
+        closeBtn.style.filter = 'brightness(1.1)';
+      });
+      closeBtn.addEventListener('mouseleave', () => {
+        closeBtn.style.filter = '';
+      });
+      closeBtn.addEventListener('click', exit);
+
+      topbar.appendChild(title);
+      topbar.appendChild(closeBtn);
+
+      const modalBody = document.createElement('div');
+      modalBody.style.cssText = `
+        flex: 1;
+        overflow: hidden;
+        position: relative;
+      `;
+
+      modal.appendChild(topbar);
+      modal.appendChild(modalBody);
+      overlay.appendChild(modal);
+
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+          exit();
+        }
+      });
+
+      const handleEscape = (e) => {
+        if (e.key === 'Escape' && isActive) {
+          exit();
+        }
+      };
+      document.addEventListener('keydown', handleEscape);
+      overlay._escapeHandler = handleEscape;
+
+      return { overlay, modal, modalBody };
+    }
+
+    function enter() {
+      if (isActive) return;
+
+      const { overlay, modal, modalBody } = createOverlay();
+      
+      originalParent = viewerEl.parentNode;
+      originalNextSibling = viewerEl.nextSibling;
+
+      placeholder = document.createElement('div');
+      placeholder.id = placeholderId;
+      placeholder.style.cssText = `
+        width: ${viewerEl.offsetWidth}px;
+        height: ${viewerEl.offsetHeight}px;
+        min-height: 600px;
+      `;
+
+      if (originalNextSibling) {
+        originalParent.insertBefore(placeholder, originalNextSibling);
+      } else {
+        originalParent.appendChild(placeholder);
+      }
+
+      modalBody.appendChild(viewerEl);
+      document.body.appendChild(overlay);
+
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      overlay._originalOverflow = originalOverflow;
+
+      isActive = true;
+      updateToggleLabel();
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (onEnter) {
+            onEnter();
+          }
+        });
+      });
+    }
+
+    function exit() {
+      if (!isActive) return;
+
+      if (overlay && overlay._originalOverflow !== undefined) {
+        document.body.style.overflow = overlay._originalOverflow;
+      } else {
+        document.body.style.overflow = '';
+      }
+
+      if (overlay && overlay._escapeHandler) {
+        document.removeEventListener('keydown', overlay._escapeHandler);
+      }
+
+      if (placeholder && originalParent) {
+        if (originalNextSibling) {
+          originalParent.insertBefore(viewerEl, originalNextSibling);
+        } else {
+          originalParent.appendChild(viewerEl);
+        }
+        placeholder.remove();
+        placeholder = null;
+      }
+
+      if (overlay) {
+        overlay.remove();
+        overlay = null;
+        modal = null;
+        topbar = null;
+      }
+
+      isActive = false;
+      updateToggleLabel();
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (onExit) {
+            onExit();
+          }
+        });
+      });
+    }
+
+    function updateToggleLabel() {
+      if (fullscreenLabel) {
+        fullscreenLabel.textContent = isActive ? 'Exit full screen' : 'Enter full screen';
+      }
+    }
+
+    toggleEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isActive) {
+        exit();
+      } else {
+        enter();
+      }
+    });
+
+    updateToggleLabel();
+
+    return {
+      enter,
+      exit,
+      isActive: () => isActive
+    };
+  }
+
+  // Initialize focus mode after app is ready
+  const viewId = window.GENOMESHADER_VIEW_ID || document.querySelector('[data-view-id]')?.dataset.viewId || 'default';
+  if (fullscreenItem && app) {
+    installFocusMode({
+      viewerEl: app,
+      toggleEl: fullscreenItem,
+      viewId: viewId,
+      onEnter: triggerResize,
+      onExit: triggerResize
+    });
+  }
 
   const mq = window.matchMedia?.("(prefers-color-scheme: light)");
   mq?.addEventListener?.("change", () => {
