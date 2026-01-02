@@ -2164,7 +2164,7 @@
     variantAlleleOrder: new Map(),
     
     // drag state for allele reordering
-    alleleDragState: null // { variantId, alleleIndex, startX, startY, offsetX, offsetY }
+    alleleDragState: null // { variantId, alleleIndex, label, startX, startY, offsetX, offsetY, dropIndex }
   };
 
   // Initialize variant layout mode
@@ -4907,6 +4907,28 @@
             h: nodeH
           });
         }
+        
+        // Draw drop indicator if dragging this variant
+        if (state.alleleDragState && state.alleleDragState.variantId === v.id && 
+            state.alleleDragState.dropIndex !== null && state.alleleDragState.dropIndex !== undefined) {
+          const dropIdx = state.alleleDragState.dropIndex;
+          const currentIdx = order.indexOf(state.alleleDragState.label);
+          
+          // Only show indicator if dropping at a different position
+          if (dropIdx !== currentIdx) {
+            // Draw a vertical line at the drop position (alleles are arranged horizontally in vertical mode)
+            // For the last position, draw after the last node; otherwise draw at the node position
+            const indicatorX = dropIdx === order.length - 1 
+              ? left + dropIdx * (nodeW + gap) + nodeW
+              : left + dropIdx * (nodeW + gap);
+            ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(indicatorX, cy - nodeH/2 - 4);
+            ctx.lineTo(indicatorX, cy + nodeH/2 + 4);
+            ctx.stroke();
+          }
+        }
       }
     } else {
       for (let i=0;i<win.length;i++){
@@ -4973,6 +4995,28 @@
             w: nodeW,
             h: nodeH
           });
+        }
+        
+        // Draw drop indicator if dragging this variant
+        if (state.alleleDragState && state.alleleDragState.variantId === v.id && 
+            state.alleleDragState.dropIndex !== null && state.alleleDragState.dropIndex !== undefined) {
+          const dropIdx = state.alleleDragState.dropIndex;
+          const currentIdx = order.indexOf(state.alleleDragState.label);
+          
+          // Only show indicator if dropping at a different position
+          if (dropIdx !== currentIdx) {
+            // Draw a horizontal line at the drop position (alleles are arranged vertically in horizontal mode)
+            // For the last position, draw after the last node; otherwise draw at the node position
+            const indicatorY = dropIdx === order.length - 1
+              ? top + dropIdx * (nodeH + gap) + nodeH
+              : top + dropIdx * (nodeH + gap);
+            ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(cx - nodeW/2 - 4, indicatorY);
+            ctx.lineTo(cx + nodeW/2 + 4, indicatorY);
+            ctx.stroke();
+          }
         }
       }
     }
@@ -5667,6 +5711,79 @@
         state.alleleDragState.offsetX = x - state.alleleDragState.startX;
         state.alleleDragState.offsetY = y - state.alleleDragState.startY;
         
+        // Calculate drop position to show indicator
+        const dragState = state.alleleDragState;
+        const order = state.variantAlleleOrder.get(dragState.variantId);
+        if (order) {
+          const isVertical = isVerticalMode();
+          const variantMode = getVariantLayoutMode();
+          const win = visibleVariantWindow();
+          const nodeW = 16, nodeH = 18, gap = 8;
+          
+          let newIndex = -1;
+          if (isVertical) {
+            const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
+            const v = sortedWin.find(v => v.id === dragState.variantId);
+            if (v) {
+              const left = 70;
+              const cy = variantMode === "genomic"
+                ? yGenomeCanonical(v.pos, flowHeightPx())
+                : yColumn(sortedWin.findIndex(v2 => v2.id === v.id), sortedWin.length);
+              
+              // Check if dropped near a node position
+              for (let j = 0; j < order.length; j++) {
+                const nodeX = left + j * (nodeW + gap);
+                if (Math.abs(x - nodeX) < (nodeW + gap) / 2 && 
+                    Math.abs(y - cy) < nodeH / 2) {
+                  newIndex = j;
+                  break;
+                }
+              }
+              
+              // If no match found, check if mouse is beyond the last node (for dropping at last position)
+              if (newIndex === -1 && Math.abs(y - cy) < nodeH / 2) {
+                const lastNodeX = left + (order.length - 1) * (nodeW + gap);
+                // Check if mouse is to the right of the last node (within reasonable distance)
+                if (x > lastNodeX - (nodeW + gap) / 2 && x < lastNodeX + nodeW + gap + (nodeW + gap) / 2) {
+                  newIndex = order.length - 1;
+                }
+              }
+            }
+          } else {
+            const v = win.find(v => v.id === dragState.variantId);
+            if (v) {
+              const cx = variantMode === "genomic"
+                ? xGenomeCanonical(v.pos, flowWidthPx())
+                : xColumn(win.findIndex(v2 => v2.id === v.id), win.length);
+              const top = 70;
+              
+              // Check if dropped near a node position
+              for (let j = 0; j < order.length; j++) {
+                const nodeY = top + j * (nodeH + gap);
+                if (Math.abs(x - cx) < nodeW / 2 && 
+                    Math.abs(y - nodeY) < (nodeH + gap) / 2) {
+                  newIndex = j;
+                  break;
+                }
+              }
+              
+              // If no match found, check if mouse is below the last node (for dropping at last position)
+              if (newIndex === -1 && Math.abs(x - cx) < nodeW / 2) {
+                const lastNodeY = top + (order.length - 1) * (nodeH + gap);
+                // Check if mouse is below the last node (within reasonable distance)
+                if (y > lastNodeY - (nodeH + gap) / 2 && y < lastNodeY + nodeH + gap + (nodeH + gap) / 2) {
+                  newIndex = order.length - 1;
+                }
+              }
+            }
+          }
+          
+          // Store drop index for rendering indicator
+          state.alleleDragState.dropIndex = newIndex >= 0 ? newIndex : null;
+        } else {
+          state.alleleDragState.dropIndex = null;
+        }
+        
         renderFlowCanvas();
       };
       
@@ -5718,6 +5835,15 @@
               break;
             }
           }
+          
+          // If no match found, check if mouse is beyond the last node (for dropping at last position)
+          if (newIndex === -1 && Math.abs(y - cy) < nodeH / 2) {
+            const lastNodeX = left + (order.length - 1) * (nodeW + gap);
+            // Check if mouse is to the right of the last node (within reasonable distance)
+            if (x > lastNodeX - (nodeW + gap) / 2 && x < lastNodeX + nodeW + gap + (nodeW + gap) / 2) {
+              newIndex = order.length - 1;
+            }
+          }
         } else {
           const v = win.find(v => v.id === dragState.variantId);
           if (!v) {
@@ -5739,6 +5865,15 @@
                 Math.abs(y - nodeY) < (nodeH + gap) / 2) {
               newIndex = j;
               break;
+            }
+          }
+          
+          // If no match found, check if mouse is below the last node (for dropping at last position)
+          if (newIndex === -1 && Math.abs(x - cx) < nodeW / 2) {
+            const lastNodeY = top + (order.length - 1) * (nodeH + gap);
+            // Check if mouse is below the last node (within reasonable distance)
+            if (y > lastNodeY - (nodeH + gap) / 2 && y < lastNodeY + nodeH + gap + (nodeH + gap) / 2) {
+              newIndex = order.length - 1;
             }
           }
         }
