@@ -2160,11 +2160,17 @@
     // variant layout mode: "equidistant" or "genomic"
     variantLayoutMode: null, // will be initialized from localStorage
     
-    // allele order for each variant: Map<variantId, string[]> where array is ['./.', 'ref', 'a1', 'a2', ...]
+    // allele order for each variant: Map<variantId, string[]> where array is ['.', '(N bp) refAllele', '(N bp) altAllele1', ...]
     variantAlleleOrder: new Map(),
     
     // drag state for allele reordering
-    alleleDragState: null // { variantId, alleleIndex, label, startX, startY, offsetX, offsetY, dropIndex }
+    alleleDragState: null, // { variantId, alleleIndex, label, startX, startY, offsetX, offsetY, dropIndex }
+    
+    // hovered allele node: { variantId, alleleIndex } or null
+    hoveredAlleleNode: null,
+    
+    // pinned allele labels: Set of strings like "variantId:alleleIndex"
+    pinnedAlleleLabels: new Set()
   };
 
   // Initialize variant layout mode
@@ -4831,6 +4837,51 @@
       }
     }
 
+    // Helper function to format allele with length prefix
+    function formatAlleleLabel(allele) {
+      if (!allele || allele === ".") {
+        return "(no-call) .";
+      }
+      const length = allele.length;
+      const lengthLabel = length === 1 ? "1 bp" : `${length} bp`;
+      return `(${lengthLabel}) ${allele}`;
+    }
+    
+    // Helper function to get node colors based on allele type
+    function getAlleleNodeColors(label, variant, isDragging) {
+      const noCallLabel = formatAlleleLabel(".");
+      const refLabel = variant.refAllele ? formatAlleleLabel(variant.refAllele) : null;
+      
+      let fillColor, strokeColor;
+      
+      if (label === noCallLabel) {
+        // No-call allele: gray
+        fillColor = isDragging ? "rgba(127,127,127,0.25)" : "rgba(127,127,127,0.15)";
+        strokeColor = isDragging ? "rgba(127,127,127,0.5)" : "rgba(127,127,127,0.3)";
+      } else if (label === refLabel) {
+        // Reference allele: blue
+        fillColor = isDragging ? "rgba(100,150,255,0.25)" : "rgba(100,150,255,0.15)";
+        strokeColor = isDragging ? "rgba(100,150,255,0.5)" : "rgba(100,150,255,0.3)";
+      } else {
+        // Alternate allele: red to magenta
+        // Use a gradient from red to magenta based on position in alt alleles
+        let altIndex = -1;
+        if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+          altIndex = variant.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
+        }
+        // If not found, default to 0
+        if (altIndex === -1) altIndex = 0;
+        const totalAlts = variant.altAlleles && Array.isArray(variant.altAlleles) ? variant.altAlleles.length : 1;
+        // Hue from 0 (red) to 300 (magenta), distributed across alt alleles
+        // First alt = red (0), last alt = magenta (300)
+        const hue = totalAlts > 1 ? (altIndex / (totalAlts - 1)) * 300 : 0;
+        fillColor = isDragging ? `hsla(${hue}, 70%, 60%, 0.25)` : `hsla(${hue}, 70%, 60%, 0.15)`;
+        strokeColor = isDragging ? `hsla(${hue}, 70%, 60%, 0.5)` : `hsla(${hue}, 70%, 60%, 0.3)`;
+      }
+      
+      return { fillColor, strokeColor };
+    }
+    
     // Allele nodes with drag-and-drop support
     const nodeW = 16, nodeH = 18, gap = 8;
     const nodePositions = []; // Store positions for hit testing: [{ variantId, alleleIndex, x, y, w, h }]
@@ -4843,14 +4894,15 @@
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         
-        // Get allele labels: ['./.', 'ref', 'a1', 'a2', ...]
-        let labels = ["./.", "ref"];
+        // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
+        let labels = [formatAlleleLabel(".")]; // no-call allele
+        if (v.refAllele) {
+          labels.push(formatAlleleLabel(v.refAllele));
+        }
         if (v.altAlleles && Array.isArray(v.altAlleles)) {
           for (let k = 0; k < v.altAlleles.length; k++) {
-            labels.push(`a${k + 1}`);
+            labels.push(formatAlleleLabel(v.altAlleles[k]));
           }
-        } else {
-          labels.push("a1"); // fallback
         }
         
         // Get order from state, or use default
@@ -4880,21 +4932,32 @@
           const nodeX = x + dragOffsetX;
           const nodeY = cy - nodeH/2 + dragOffsetY;
 
-          ctx.fillStyle = isDragging ? "rgba(127,127,127,0.15)" : "rgba(127,127,127,0.08)";
-          ctx.strokeStyle = isDragging ? "rgba(127,127,127,0.35)" : "rgba(127,127,127,0.18)";
+          // Get colors based on allele type
+          const colors = getAlleleNodeColors(label, v, isDragging);
+          ctx.fillStyle = colors.fillColor;
+          ctx.strokeStyle = colors.strokeColor;
           ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.fill();
           ctx.stroke();
 
-          ctx.fillStyle = colText;
-          ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.save();
-          ctx.translate(nodeX + nodeW/2 - gap - 5 + 12, nodeY - 12);
-          ctx.rotate(-Math.PI/2);
-          ctx.fillText(label, 0, 4);
-          ctx.restore();
+          // Show label only if hovered or pinned
+          const labelKey = `${v.id}:${order.indexOf(label)}`;
+          const isHovered = state.hoveredAlleleNode && 
+            state.hoveredAlleleNode.variantId === v.id && 
+            state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
+          const isPinned = state.pinnedAlleleLabels.has(labelKey);
+          
+          if (isHovered || isPinned) {
+            ctx.fillStyle = colText;
+            ctx.font = "11px ui-sans-serif, system-ui";
+            ctx.save();
+            ctx.translate(nodeX + nodeW/2 - gap - 5 + 12, nodeY - 12);
+            ctx.rotate(-Math.PI/2);
+            ctx.fillText(label, 0, 4);
+            ctx.restore();
+          }
           
           // Store position for hit testing
           nodePositions.push({
@@ -4935,14 +4998,15 @@
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         
-        // Get allele labels: ['./.', 'ref', 'a1', 'a2', ...]
-        let labels = ["./.", "ref"];
+        // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
+        let labels = [formatAlleleLabel(".")]; // no-call allele
+        if (v.refAllele) {
+          labels.push(formatAlleleLabel(v.refAllele));
+        }
         if (v.altAlleles && Array.isArray(v.altAlleles)) {
           for (let k = 0; k < v.altAlleles.length; k++) {
-            labels.push(`a${k + 1}`);
+            labels.push(formatAlleleLabel(v.altAlleles[k]));
           }
-        } else {
-          labels.push("a1"); // fallback
         }
         
         // Get order from state, or use default
@@ -4973,17 +5037,28 @@
           const nodeX = cx - nodeW/2 + dragOffsetX;
           const nodeY = y + dragOffsetY;
 
-          ctx.fillStyle = isDragging ? "rgba(127,127,127,0.15)" : "rgba(127,127,127,0.08)";
-          ctx.strokeStyle = isDragging ? "rgba(127,127,127,0.35)" : "rgba(127,127,127,0.18)";
+          // Get colors based on allele type
+          const colors = getAlleleNodeColors(label, v, isDragging);
+          ctx.fillStyle = colors.fillColor;
+          ctx.strokeStyle = colors.strokeColor;
           ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.fill();
           ctx.stroke();
 
-          ctx.fillStyle = colText;
-          ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.fillText(label, nodeX + 12, nodeY + 13);
+          // Show label only if hovered or pinned
+          const labelKey = `${v.id}:${order.indexOf(label)}`;
+          const isHovered = state.hoveredAlleleNode && 
+            state.hoveredAlleleNode.variantId === v.id && 
+            state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
+          const isPinned = state.pinnedAlleleLabels.has(labelKey);
+          
+          if (isHovered || isPinned) {
+            ctx.fillStyle = colText;
+            ctx.font = "11px ui-sans-serif, system-ui";
+            ctx.fillText(label, nodeX + 12, nodeY + 13);
+          }
           
           // Store position for hit testing
           nodePositions.push({
@@ -5648,8 +5723,9 @@
     };
     
     flowLeaveHandler = () => {
-      if (state.hoveredVariantIndex !== null) {
+      if (state.hoveredVariantIndex !== null || state.hoveredAlleleNode !== null) {
         state.hoveredVariantIndex = null;
+        state.hoveredAlleleNode = null;
         renderAll();
       }
     };
@@ -5692,7 +5768,8 @@
               startX: x,
               startY: y,
               offsetX: 0,
-              offsetY: 0
+              offsetY: 0,
+              isClick: true // Track if this might be a click (not a drag)
             };
             flowCanvas.style.cursor = "grabbing";
             if (flowWebGPU) flowWebGPU.style.cursor = "grabbing";
@@ -5702,14 +5779,23 @@
       };
       
       alleleMouseMoveHandler = (e) => {
-        if (!state.alleleDragState) return;
-        
         const rect = flow.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
         
-        state.alleleDragState.offsetX = x - state.alleleDragState.startX;
-        state.alleleDragState.offsetY = y - state.alleleDragState.startY;
+        if (state.alleleDragState) {
+          // Handle drag
+          state.alleleDragState.offsetX = x - state.alleleDragState.startX;
+          state.alleleDragState.offsetY = y - state.alleleDragState.startY;
+          
+          // If moved more than 5 pixels, it's a drag, not a click
+          const dragDistance = Math.sqrt(
+            Math.pow(state.alleleDragState.offsetX, 2) + 
+            Math.pow(state.alleleDragState.offsetY, 2)
+          );
+          if (dragDistance > 5) {
+            state.alleleDragState.isClick = false;
+          }
         
         // Calculate drop position to show indicator
         const dragState = state.alleleDragState;
@@ -5785,6 +5871,34 @@
         }
         
         renderFlowCanvas();
+        } else {
+          // Handle hover detection when not dragging
+          if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) {
+            if (state.hoveredAlleleNode) {
+              state.hoveredAlleleNode = null;
+              renderFlowCanvas();
+            }
+            return;
+          }
+          
+          // Find which node is hovered
+          let hoveredNode = null;
+          for (const node of window._alleleNodePositions) {
+            if (x >= node.x && x <= node.x + node.w && 
+                y >= node.y && y <= node.y + node.h) {
+              hoveredNode = { variantId: node.variantId, alleleIndex: node.alleleIndex };
+              break;
+            }
+          }
+          
+          // Update hover state if changed
+          const currentHover = state.hoveredAlleleNode;
+          if ((hoveredNode && (!currentHover || currentHover.variantId !== hoveredNode.variantId || currentHover.alleleIndex !== hoveredNode.alleleIndex)) ||
+              (!hoveredNode && currentHover)) {
+            state.hoveredAlleleNode = hoveredNode;
+            renderFlowCanvas();
+          }
+        }
       };
       
       alleleMouseUpHandler = (e) => {
@@ -5794,8 +5908,25 @@
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
         
-        // Find which position the node was dropped at
         const dragState = state.alleleDragState;
+        
+        // Check if this was a click (not a drag)
+        if (dragState.isClick) {
+          // Toggle pinned state for this label
+          const labelKey = `${dragState.variantId}:${dragState.alleleIndex}`;
+          if (state.pinnedAlleleLabels.has(labelKey)) {
+            state.pinnedAlleleLabels.delete(labelKey);
+          } else {
+            state.pinnedAlleleLabels.add(labelKey);
+          }
+          state.alleleDragState = null;
+          flowCanvas.style.cursor = "";
+          if (flowWebGPU) flowWebGPU.style.cursor = "";
+          renderFlowCanvas();
+          return;
+        }
+        
+        // Otherwise, handle as a drag/drop
         const order = state.variantAlleleOrder.get(dragState.variantId);
         if (!order) {
           state.alleleDragState = null;
