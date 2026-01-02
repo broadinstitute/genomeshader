@@ -5538,6 +5538,226 @@
     // Store node positions globally for hit testing
     window._alleleNodePositions = nodePositions;
     
+    // Draw edges (ribbons) connecting alleles between adjacent variants
+    // For now, use the first sample in the VCF/BCF
+    function drawEdges() {
+      if (win.length < 2) return; // Need at least 2 variants to draw edges
+      
+      // Get the first sample name from any variant's sampleGenotypes
+      let firstSampleName = null;
+      for (const v of win) {
+        const variant = variants.find(v2 => v2.id === v.id);
+        if (variant && variant.sampleGenotypes && Object.keys(variant.sampleGenotypes).length > 0) {
+          firstSampleName = Object.keys(variant.sampleGenotypes)[0];
+          break;
+        }
+      }
+      
+      if (!firstSampleName) return; // No sample data available
+      
+      // Sort variants by position
+      const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
+      
+      // Draw edges between each pair of adjacent variants
+      for (let i = 0; i < sortedWin.length - 1; i++) {
+        const v1 = sortedWin[i];
+        const v2 = sortedWin[i + 1];
+        
+        const variant1 = variants.find(v => v.id === v1.id);
+        const variant2 = variants.find(v => v.id === v2.id);
+        
+        if (!variant1 || !variant2) continue;
+        
+        // Get genotypes for the first sample
+        const gt1 = variant1.sampleGenotypes?.[firstSampleName];
+        const gt2 = variant2.sampleGenotypes?.[firstSampleName];
+        
+        if (!gt1 || !gt2) continue;
+        
+        // Parse genotypes (e.g., "0/1", "1|0", "0|1")
+        // Handle both phased (|) and unphased (/) genotypes
+        const parseGenotype = (gt) => {
+          const parts = gt.replace("|", "/").split("/");
+          if (parts.length >= 2) {
+            return [parts[0].trim(), parts[1].trim()];
+          } else if (parts.length === 1) {
+            return [parts[0].trim(), parts[0].trim()]; // Assume homozygous if single value
+          }
+          return [".", "."]; // Missing
+        };
+        
+        const [allele1_1, allele1_2] = parseGenotype(gt1);
+        const [allele2_1, allele2_2] = parseGenotype(gt2);
+        
+        // Map allele indices to allele keys (0 = ref, 1+ = alt alleles)
+        const getAlleleKey = (alleleIdx, variant) => {
+          if (alleleIdx === "." || alleleIdx === "") return ".";
+          try {
+            const idx = parseInt(alleleIdx);
+            if (idx === 0) return "ref";
+            if (idx > 0 && variant.altAlleles && idx <= variant.altAlleles.length) {
+              return `a${idx}`;
+            }
+          } catch (e) {
+            // Invalid allele index
+          }
+          return ".";
+        };
+        
+        const key1_1 = getAlleleKey(allele1_1, variant1);
+        const key1_2 = getAlleleKey(allele1_2, variant1);
+        const key2_1 = getAlleleKey(allele2_1, variant2);
+        const key2_2 = getAlleleKey(allele2_2, variant2);
+        
+        // Find node positions for each allele
+        const findNodePosition = (variantId, alleleKey) => {
+          return nodePositions.find(np => {
+            if (np.variantId !== variantId) return false;
+            const variant = variants.find(v => v.id === variantId);
+            if (!variant) return false;
+            
+            // Use the global formatAlleleLabel function
+            const formatAlleleLabel = window.formatAlleleLabel || function(allele) {
+              if (allele === ".") return ".";
+              if (allele.length <= 8) return allele;
+              return allele.substring(0, 5) + "...";
+            };
+            
+            let targetLabel = null;
+            if (alleleKey === ".") {
+              targetLabel = formatAlleleLabel(".");
+            } else if (alleleKey === "ref") {
+              targetLabel = formatAlleleLabel(variant.refAllele || "ref");
+            } else if (alleleKey.startsWith("a")) {
+              const altIdx = parseInt(alleleKey.substring(1)) - 1;
+              if (variant.altAlleles && altIdx >= 0 && altIdx < variant.altAlleles.length) {
+                targetLabel = formatAlleleLabel(variant.altAlleles[altIdx]);
+              }
+            }
+            
+            if (!targetLabel) return false;
+            return np.label === targetLabel;
+          });
+        };
+        
+        // Draw two edges (one for each haplotype)
+        const drawEdge = (pos1, pos2, color, alpha) => {
+          if (!pos1 || !pos2) return;
+          
+          // Calculate control points for bezier curve
+          const dx = pos2.x - pos1.x;
+          const dy = pos2.y - pos1.y;
+          const midX = (pos1.x + pos2.x) / 2;
+          const midY = (pos1.y + pos2.y) / 2;
+          
+          // Control points offset perpendicular to the line
+          const perpOffset = 20;
+          const perpX = -dy / Math.sqrt(dx * dx + dy * dy) * perpOffset;
+          const perpY = dx / Math.sqrt(dx * dx + dy * dy) * perpOffset;
+          
+          const control1X = pos1.x + dx * 0.3 + perpX;
+          const control1Y = pos1.y + dy * 0.3 + perpY;
+          const control2X = pos2.x - dx * 0.3 + perpX;
+          const control2Y = pos2.y - dy * 0.3 + perpY;
+          
+          // Draw bezier curve as a ribbon (filled path)
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          ctx.strokeStyle = color;
+          ctx.fillStyle = color;
+          ctx.lineWidth = 2;
+          
+          // Create a path for the ribbon (wider than a line)
+          const ribbonWidth = 3;
+          ctx.beginPath();
+          
+          // Draw bezier curve with width
+          const steps = 20;
+          const points = [];
+          for (let t = 0; t <= 1; t += 1 / steps) {
+            const x = (1 - t) * (1 - t) * (1 - t) * pos1.x +
+                      3 * (1 - t) * (1 - t) * t * control1X +
+                      3 * (1 - t) * t * t * control2X +
+                      t * t * t * pos2.x;
+            const y = (1 - t) * (1 - t) * (1 - t) * pos1.y +
+                      3 * (1 - t) * (1 - t) * t * control1Y +
+                      3 * (1 - t) * t * t * control2Y +
+                      t * t * t * pos2.y;
+            points.push({ x, y });
+          }
+          
+          // Draw ribbon by creating a path with width
+          ctx.beginPath();
+          for (let i = 0; i < points.length - 1; i++) {
+            const p1 = points[i];
+            const p2 = points[i + 1];
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            const perpX = -dy / len * ribbonWidth;
+            const perpY = dx / len * ribbonWidth;
+            
+            if (i === 0) {
+              ctx.moveTo(p1.x + perpX, p1.y + perpY);
+            }
+            ctx.lineTo(p2.x + perpX, p2.y + perpY);
+          }
+          for (let i = points.length - 2; i >= 0; i--) {
+            const p1 = points[i];
+            const p2 = points[i + 1];
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            const perpX = -dy / len * ribbonWidth;
+            const perpY = dx / len * ribbonWidth;
+            ctx.lineTo(p2.x - perpX, p2.y - perpY);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          
+          ctx.restore();
+        };
+        
+        // Get center positions of nodes
+        const getNodeCenter = (pos) => {
+          if (!pos) return null;
+          return {
+            x: pos.x + pos.w / 2,
+            y: pos.y + pos.h / 2
+          };
+        };
+        
+        const pos1_1 = findNodePosition(v1.id, key1_1);
+        const pos1_2 = findNodePosition(v1.id, key1_2);
+        const pos2_1 = findNodePosition(v2.id, key2_1);
+        const pos2_2 = findNodePosition(v2.id, key2_2);
+        
+        // Draw two edges (one for each haplotype)
+        // Use different colors for the two haplotypes
+        const color1 = "rgba(120, 180, 255, 0.6)"; // Blue for first haplotype
+        const color2 = "rgba(255, 120, 180, 0.6)"; // Pink for second haplotype
+        
+        const center1_1 = getNodeCenter(pos1_1);
+        const center1_2 = getNodeCenter(pos1_2);
+        const center2_1 = getNodeCenter(pos2_1);
+        const center2_2 = getNodeCenter(pos2_2);
+        
+        // Draw edge for first haplotype
+        if (center1_1 && center2_1) {
+          drawEdge(center1_1, center2_1, color1, 0.6);
+        }
+        
+        // Draw edge for second haplotype
+        if (center1_2 && center2_2) {
+          drawEdge(center1_2, center2_2, color2, 0.6);
+        }
+      }
+    }
+    
+    // Draw edges after nodes are drawn
+    drawEdges();
+    
     // Draw all labels at the very end with tooltip-style rounded rectangles (to bring them to foreground)
     ctx.font = "11px ui-monospace, 'SF Mono', Monaco, 'Consolas', 'Courier New', monospace";
     const labelPadding = 6;

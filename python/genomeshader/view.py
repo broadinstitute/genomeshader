@@ -1013,6 +1013,25 @@ class GenomeShader:
                         allele_frequencies[f"a{i+1}"] = 1.0 / num_alleles
                     variant_info["alleleFrequencies"] = allele_frequencies
             
+            # Collect sample genotypes for each variant
+            # Group genotypes by sample and variant position
+            sample_genotypes = {}  # {sample_name: {position: genotype_string}}
+            if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
+                for row in variants_df.iter_rows(named=True):
+                    sample_name = row.get("sample_name")
+                    pos = row.get("position")
+                    genotype = row.get("genotype", "./.")
+                    ref_allele = row.get("ref_allele")
+                    
+                    if sample_name not in sample_genotypes:
+                        sample_genotypes[sample_name] = {}
+                    
+                    # Store genotype for this position and ref_allele combination
+                    # Use (pos, ref_allele) as key since we group by position
+                    key = (pos, ref_allele)
+                    if key not in sample_genotypes[sample_name]:
+                        sample_genotypes[sample_name][key] = genotype
+            
             # Convert to frontend format
             for idx, (pos, variant_info) in enumerate(sorted(variant_groups.items())):
                 # Use VCF ID if available (numeric IDs like "59434" are valid), otherwise use variant_id index
@@ -1022,6 +1041,13 @@ class GenomeShader:
                 else:
                     variant_display_id = str(variant_info['variant_id'])
                 
+                # Get genotypes for this variant from all samples
+                variant_genotypes = {}  # {sample_name: genotype_string}
+                key = (pos, variant_info["refAllele"])
+                for sample_name, sample_data in sample_genotypes.items():
+                    if key in sample_data:
+                        variant_genotypes[sample_name] = sample_data[key]
+                
                 variants_data.append({
                     "id": variant_display_id,
                     "pos": variant_info["pos"],
@@ -1029,6 +1055,7 @@ class GenomeShader:
                     "altAlleles": variant_info["altAlleles"],
                     "alleles": ["ref"] + [f"a{i+1}" for i in range(len(variant_info["altAlleles"]))],
                     "alleleFrequencies": variant_info.get("alleleFrequencies", {}),
+                    "sampleGenotypes": variant_genotypes,  # Add genotype data per sample
                 })
 
         # Load template HTML
