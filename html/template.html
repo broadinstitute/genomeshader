@@ -5359,6 +5359,7 @@
       if (isPinchZoom) {
         // Handle pinch-to-zoom (trackpad gesture with ctrl/meta)
         e.preventDefault();
+        e.stopPropagation(); // Prevent bubbling to window/document
         const zoomIntensity = 0.0018;
         // Use vertical delta for pinch zoom (standard trackpad convention)
         const factor = Math.exp(-dy * zoomIntensity);
@@ -5375,12 +5376,14 @@
         
         if (wantPan) {
           e.preventDefault();
+          e.stopPropagation(); // Prevent bubbling to window/document
           const panDy = e.shiftKey ? dx : dy;
           panByPixels(0, panDy);
           return;
         }
 
         e.preventDefault();
+        e.stopPropagation(); // Prevent bubbling to window/document
         const zoomIntensity = 0.0018;
         const factor = Math.exp(-dx * zoomIntensity);
 
@@ -5392,12 +5395,14 @@
 
         if (wantPan) {
           e.preventDefault();
+          e.stopPropagation(); // Prevent bubbling to window/document
           const panDx = e.shiftKey ? dy : dx;
           panByPixels(panDx, 0);
           return;
         }
 
         e.preventDefault();
+        e.stopPropagation(); // Prevent bubbling to window/document
         const zoomIntensity = 0.0018;
         const factor = Math.exp(-dy * zoomIntensity);
 
@@ -5524,6 +5529,47 @@
       }
     };
   }
+
+  // Remove any wheel listeners on window/document that could cause global behavior
+  // Note: getEventListeners is a DevTools-only function, so this only works when DevTools is open
+  function removeGlobalWheelListeners() {
+    if (typeof getEventListeners === 'function') {
+      try {
+        const windowWheel = getEventListeners(window).wheel;
+        const docWheel = getEventListeners(document).wheel;
+        if (windowWheel && windowWheel.length > 0) {
+          console.warn("[gs] Found", windowWheel.length, "wheel listener(s) on window, removing...");
+          windowWheel.forEach(listener => {
+            try {
+              window.removeEventListener("wheel", listener.listener, listener.useCapture);
+            } catch (e) {
+              console.warn("[gs] Failed to remove window wheel listener:", e);
+            }
+          });
+        }
+        if (docWheel && docWheel.length > 0) {
+          console.warn("[gs] Found", docWheel.length, "wheel listener(s) on document, removing...");
+          docWheel.forEach(listener => {
+            try {
+              document.removeEventListener("wheel", listener.listener, listener.useCapture);
+            } catch (e) {
+              console.warn("[gs] Failed to remove document wheel listener:", e);
+            }
+          });
+        }
+        console.log("[gs] Removed global wheel listeners");
+      } catch (e) {
+        console.warn("[gs] Error checking for global wheel listeners:", e);
+      }
+    } else {
+      console.log("[gs] getEventListeners not available (DevTools not open). To check manually, run in console:");
+      console.log("[gs]   getEventListeners(window).wheel");
+      console.log("[gs]   getEventListeners(document).wheel");
+    }
+  }
+  
+  // Remove global wheel listeners before binding our scoped ones
+  removeGlobalWheelListeners();
 
   // Bind interactions and store destroy function
   interactionBinding = bindInteractions(root, state, main);
