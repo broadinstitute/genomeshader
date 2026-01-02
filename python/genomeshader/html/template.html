@@ -2170,7 +2170,10 @@
     hoveredAlleleNode: null,
     
     // pinned allele labels: Set of strings like "variantId:alleleIndex"
-    pinnedAlleleLabels: new Set()
+    pinnedAlleleLabels: new Set(),
+    
+    // pinned variant labels: Set of variant IDs (strings)
+    pinnedVariantLabels: new Set()
   };
 
   // Initialize variant layout mode
@@ -4696,20 +4699,75 @@
       }
 
       // Text labels (still use Canvas 2D for text)
-      ctx.fillStyle = colText;
+      // Calculate if we have enough space to show all labels
+      // In vertical mode, labels are rotated 90 degrees, so text width becomes vertical height
       ctx.font = "12px ui-sans-serif, system-ui";
+      const maxLabelWidth = Math.max(...sortedWin.map(v => ctx.measureText(v.id).width), 30);
+      // When rotated, the label takes up maxLabelWidth pixels vertically
+      // We need spacing between labels, so add some padding
+      const minSpacing = maxLabelWidth + 10; // minimum pixels between label centers
+      
+      // Check spacing between consecutive variants
+      // For genomic mode, check actual Y positions; for equidistant, use calculated spacing
+      let hasEnoughSpace = sortedWin.length === 0;
+      if (sortedWin.length > 0) {
+        if (variantMode === "genomic") {
+          // In genomic mode, check minimum spacing between actual positions
+          const positions = sortedWin.map(v => yGenomeCanonical(v.pos, H)).sort((a, b) => a - b);
+          let minActualSpacing = Infinity;
+          for (let i = 1; i < positions.length; i++) {
+            const spacing = positions[i] - positions[i - 1];
+            if (spacing < minActualSpacing) {
+              minActualSpacing = spacing;
+            }
+          }
+          hasEnoughSpace = minActualSpacing >= minSpacing;
+        } else {
+          // In equidistant mode, calculate spacing
+          const avgSpacing = H / sortedWin.length;
+          hasEnoughSpace = avgSpacing >= minSpacing;
+        }
+      }
+      
+      // Store variant label positions for hit testing
+      const variantLabelPositions = [];
+      
+      ctx.fillStyle = colText;
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const y = variantMode === "genomic" 
           ? yGenomeCanonical(v.pos, H)
           : yColumn(i, sortedWin.length);
-        ctx.save();
-        ctx.translate(14, y + 6);
-        ctx.rotate(-Math.PI/2);
-        ctx.fillText(`v${variantIdx + 1}`, 0, 0);
-        ctx.restore();
+        
+        // Determine if we should show this label
+        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isPinned = state.pinnedVariantLabels.has(v.id);
+        const shouldShow = isHovered || isPinned || hasEnoughSpace;
+        
+        if (shouldShow) {
+          ctx.save();
+          ctx.translate(14, y + 6);
+          ctx.rotate(-Math.PI/2);
+          // Use the variant ID (VCF ID or variant_id index) directly
+          ctx.fillText(v.id, 0, 0);
+          ctx.restore();
+        }
+        
+        // Store position for hit testing (for click-to-pin)
+        const labelWidth = ctx.measureText(v.id).width;
+        variantLabelPositions.push({
+          variantId: v.id,
+          variantIdx: variantIdx,
+          x: 14,
+          y: y,
+          width: labelWidth, // When rotated, this is the vertical extent
+          height: labelWidth  // Same as width when rotated
+        });
       }
+      
+      // Store positions globally for click detection
+      window._variantLabelPositions = variantLabelPositions;
 
       // Connector lines from ruler to columns
       const x0 = 6;
@@ -4787,16 +4845,48 @@
       }
 
       // Text labels (still use Canvas 2D for text)
-      ctx.fillStyle = colText;
+      // Calculate if we have enough space to show all labels
+      // Estimate label width (measure text to be more accurate)
       ctx.font = "12px ui-sans-serif, system-ui";
+      const maxLabelWidth = Math.max(...win.map(v => ctx.measureText(v.id).width), 50);
+      const minSpacing = maxLabelWidth + 20; // minimum pixels between labels
+      const hasEnoughSpace = win.length === 0 || (W / win.length) >= minSpacing;
+      
+      // Store variant label positions for hit testing
+      const variantLabelPositions = [];
+      
+      ctx.fillStyle = colText;
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const x = variantMode === "genomic"
           ? xGenomeCanonical(v.pos, W)
           : xColumn(i, win.length);
-        ctx.fillText(`v${variantIdx + 1}`, x - 10, 14);
+        
+        // Determine if we should show this label
+        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isPinned = state.pinnedVariantLabels.has(v.id);
+        const shouldShow = isHovered || isPinned || hasEnoughSpace;
+        
+        if (shouldShow) {
+          // Use the variant ID (VCF ID or variant_id index) directly
+          ctx.fillText(v.id, x - 10, 14);
+        }
+        
+        // Store position for hit testing (for click-to-pin)
+        const labelWidth = ctx.measureText(v.id).width;
+        variantLabelPositions.push({
+          variantId: v.id,
+          variantIdx: variantIdx,
+          x: x - 10,
+          y: 2, // Text baseline is at y=14, but text extends upward, so hit box starts at y=2
+          width: labelWidth,
+          height: 14 // Text height
+        });
       }
+      
+      // Store positions globally for click detection
+      window._variantLabelPositions = variantLabelPositions;
 
       // Connector lines from ruler to columns
       const y0 = 6;
@@ -5732,6 +5822,65 @@
     
     flow.addEventListener("mousemove", flowHoverHandler);
     flow.addEventListener("mouseleave", flowLeaveHandler);
+    
+    // Variant label click-to-pin handler
+    let variantLabelClickHandler = null;
+    function setupVariantLabelClick() {
+      if (variantLabelClickHandler) {
+        flow.removeEventListener("click", variantLabelClickHandler);
+        if (flowWebGPU) flowWebGPU.removeEventListener("click", variantLabelClickHandler);
+      }
+      
+      variantLabelClickHandler = (e) => {
+        // Only handle clicks if not dragging alleles
+        if (state.alleleDragState) return;
+        
+        const rect = flow.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        // Check if we clicked on a variant label
+        if (!window._variantLabelPositions || window._variantLabelPositions.length === 0) return;
+        
+        const isVertical = isVerticalMode();
+        
+        for (const labelPos of window._variantLabelPositions) {
+          let clicked = false;
+          if (isVertical) {
+            // In vertical mode, labels are rotated 90 degrees at x=14
+            // Check if click is near the label position (y coordinate) and in the label area (x < 30)
+            const labelY = labelPos.y;
+            const labelHeight = labelPos.height; // This is the font size (12px)
+            if (Math.abs(y - labelY) < labelHeight && x >= 0 && x <= 30) {
+              clicked = true;
+            }
+          } else {
+            // In horizontal mode, labels are at the top (y=14)
+            if (x >= labelPos.x && x <= labelPos.x + labelPos.width &&
+                y >= labelPos.y && y <= labelPos.y + labelPos.height) {
+              clicked = true;
+            }
+          }
+          
+          if (clicked) {
+            // Toggle pinned state
+            if (state.pinnedVariantLabels.has(labelPos.variantId)) {
+              state.pinnedVariantLabels.delete(labelPos.variantId);
+            } else {
+              state.pinnedVariantLabels.add(labelPos.variantId);
+            }
+            renderFlowCanvas();
+            e.stopPropagation();
+            return;
+          }
+        }
+      };
+      
+      flow.addEventListener("click", variantLabelClickHandler);
+      if (flowWebGPU) flowWebGPU.addEventListener("click", variantLabelClickHandler);
+    }
+    
+    setupVariantLabelClick();
     
     // Allele node drag-and-drop handlers
     let alleleMouseDownHandler = null;

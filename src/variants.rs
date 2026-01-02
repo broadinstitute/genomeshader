@@ -31,6 +31,7 @@ pub fn extract_variants(
     let mut sample_names_vec = Vec::new();
     let mut genotypes = Vec::new();
     let mut variant_ids = Vec::new();
+    let mut vcf_ids = Vec::new();
     
     // Track unique variants (position + allele combination)
     let mut variant_map: HashMap<(u64, String, String), u32> = HashMap::new();
@@ -46,6 +47,14 @@ pub fn extract_variants(
             continue;
         }
         
+        // Get VCF ID from record (ID field)
+        let vcf_id_bytes = record.id();
+        let vcf_id_str = if vcf_id_bytes.is_empty() || (vcf_id_bytes.len() == 1 && vcf_id_bytes[0] == b'.') {
+            None // No ID or just "." means missing
+        } else {
+            Some(String::from_utf8_lossy(&vcf_id_bytes).to_string())
+        };
+        
         // Get reference and alternate alleles
         let alleles = record.alleles();
         let ref_allele: String = String::from_utf8_lossy(alleles[0]).to_string();
@@ -55,8 +64,7 @@ pub fn extract_variants(
             .collect();
         
         // Process each alternate allele as a separate variant
-        for (alt_idx, alt_allele) in alt_alleles_list.iter().enumerate() {
-            let alt_idx_1based = (alt_idx + 1) as i32; // 1-based index for alt alleles
+        for (_alt_idx, alt_allele) in alt_alleles_list.iter().enumerate() {
             let alt_allele_str: String = alt_allele.clone();
             
             // Get or create variant ID
@@ -104,6 +112,7 @@ pub fn extract_variants(
                 sample_names_vec.push(sample_name.clone());
                 genotypes.push(gt_str);
                 variant_ids.push(variant_id);
+                vcf_ids.push(vcf_id_str.clone());
             }
         }
     }
@@ -117,6 +126,7 @@ pub fn extract_variants(
             Series::new("sample_name", sample_names_vec),
             Series::new("genotype", genotypes),
             Series::new("variant_id", variant_ids),
+            Series::new("vcf_id", vcf_ids),
         ]
     )?;
     

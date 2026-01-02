@@ -245,7 +245,8 @@ class GenomeShader:
                 - alt_allele: Alternate allele
                 - sample_name: Sample name
                 - genotype: Genotype string (e.g., "0/1", "1/1", "./.")
-                - variant_id: Unique variant identifier
+                - variant_id: Unique variant identifier (internal index)
+                - vcf_id: VCF/BCF ID field from the variant record (None if not present)
         """
         return self._session.get_locus_variants(locus)
 
@@ -888,9 +889,14 @@ class GenomeShader:
         variants_data = []
         if variants_df is not None and len(variants_df) > 0:
             # Get unique variant positions and their alleles
+            # Include vcf_id if available, otherwise it will be None
+            select_cols = ["position", "ref_allele", "alt_allele", "variant_id"]
+            if "vcf_id" in variants_df.columns:
+                select_cols.append("vcf_id")
+            
             unique_variants = (
                 variants_df
-                .select(["position", "ref_allele", "alt_allele", "variant_id"])
+                .select(select_cols)
                 .unique(subset=["position", "ref_allele", "alt_allele"])
                 .sort("position")
             )
@@ -902,6 +908,16 @@ class GenomeShader:
                 ref_allele = row["ref_allele"]
                 alt_allele = row["alt_allele"]
                 variant_id = row["variant_id"]
+                # Extract vcf_id - handle both None and Polars null values
+                vcf_id = None
+                if "vcf_id" in row:
+                    vcf_id_val = row["vcf_id"]
+                    # Polars nulls can be None, or sometimes need special handling
+                    if vcf_id_val is not None:
+                        vcf_id_str = str(vcf_id_val).strip()
+                        # Accept any non-empty string that's not "." or "null" or "None"
+                        if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
+                            vcf_id = vcf_id_str
                 
                 if pos not in variant_groups:
                     variant_groups[pos] = {
@@ -909,6 +925,7 @@ class GenomeShader:
                         "refAllele": ref_allele,
                         "altAlleles": [],
                         "variant_id": variant_id,
+                        "vcf_id": vcf_id,
                     }
                 
                 if alt_allele not in variant_groups[pos]["altAlleles"]:
@@ -916,8 +933,15 @@ class GenomeShader:
             
             # Convert to frontend format
             for idx, (pos, variant_info) in enumerate(sorted(variant_groups.items())):
+                # Use VCF ID if available (numeric IDs like "59434" are valid), otherwise use variant_id index
+                vcf_id = variant_info.get("vcf_id")
+                if vcf_id:
+                    variant_display_id = str(vcf_id)
+                else:
+                    variant_display_id = str(variant_info['variant_id'])
+                
                 variants_data.append({
-                    "id": f"v{variant_info['variant_id'] + 1}",
+                    "id": variant_display_id,
                     "pos": variant_info["pos"],
                     "refAllele": variant_info["refAllele"],
                     "altAlleles": variant_info["altAlleles"],
