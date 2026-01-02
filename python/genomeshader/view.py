@@ -931,6 +931,88 @@ class GenomeShader:
                 if alt_allele not in variant_groups[pos]["altAlleles"]:
                     variant_groups[pos]["altAlleles"].append(alt_allele)
             
+            # Calculate allele frequencies for each variant
+            # Filter variants_df to get genotype data for frequency calculation
+            if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
+                # Group by position to calculate frequencies per variant
+                for pos, variant_info in variant_groups.items():
+                    # Filter variants_df for this specific position and alleles
+                    pos_df = variants_df.filter(
+                        (pl.col("position") == pos) &
+                        (pl.col("ref_allele") == variant_info["refAllele"])
+                    )
+                    
+                    # Count allele occurrences
+                    allele_counts = {
+                        ".": 0,  # no-call
+                        "ref": 0,  # reference (index 0)
+                    }
+                    # Initialize alt allele counts
+                    for i in range(len(variant_info["altAlleles"])):
+                        allele_counts[f"a{i+1}"] = 0
+                    
+                    total_alleles = 0
+                    
+                    # Parse genotypes and count alleles
+                    for row in pos_df.iter_rows(named=True):
+                        gt_str = row.get("genotype", "./.")
+                        if not gt_str or gt_str == "./.":
+                            allele_counts["."] += 2  # Assume diploid missing
+                            total_alleles += 2
+                        else:
+                            # Parse genotype string (e.g., "0/1", "1/1", "0|1", "1")
+                            parts = gt_str.replace("|", "/").split("/")
+                            for part in parts:
+                                part = part.strip()
+                                if part == "." or part == "":
+                                    allele_counts["."] += 1
+                                    total_alleles += 1
+                                else:
+                                    try:
+                                        allele_idx = int(part)
+                                        total_alleles += 1
+                                        if allele_idx == 0:
+                                            allele_counts["ref"] += 1
+                                        elif allele_idx <= len(variant_info["altAlleles"]):
+                                            allele_counts[f"a{allele_idx}"] += 1
+                                        else:
+                                            # Out of range allele index, count as no-call
+                                            allele_counts["."] += 1
+                                    except ValueError:
+                                        # Invalid allele index, count as no-call
+                                        allele_counts["."] += 1
+                                        total_alleles += 1
+                    
+                    # Calculate frequencies
+                    allele_frequencies = {}
+                    if total_alleles > 0:
+                        for allele, count in allele_counts.items():
+                            allele_frequencies[allele] = count / total_alleles
+                    else:
+                        # Fallback: equal frequencies if no data
+                        num_alleles = 1 + len(variant_info["altAlleles"]) + 1  # ref + alts + no-call
+                        for allele in allele_counts.keys():
+                            allele_frequencies[allele] = 1.0 / num_alleles
+                    
+                    # Normalize frequencies to sum to 1.0
+                    total_freq = sum(allele_frequencies.values())
+                    if total_freq > 0:
+                        for allele in allele_frequencies:
+                            allele_frequencies[allele] /= total_freq
+                    
+                    variant_info["alleleFrequencies"] = allele_frequencies
+            else:
+                # No genotype data available, set equal frequencies as fallback
+                for pos, variant_info in variant_groups.items():
+                    num_alleles = 1 + len(variant_info["altAlleles"]) + 1  # ref + alts + no-call
+                    allele_frequencies = {
+                        ".": 1.0 / num_alleles,
+                        "ref": 1.0 / num_alleles,
+                    }
+                    for i in range(len(variant_info["altAlleles"])):
+                        allele_frequencies[f"a{i+1}"] = 1.0 / num_alleles
+                    variant_info["alleleFrequencies"] = allele_frequencies
+            
             # Convert to frontend format
             for idx, (pos, variant_info) in enumerate(sorted(variant_groups.items())):
                 # Use VCF ID if available (numeric IDs like "59434" are valid), otherwise use variant_id index
@@ -946,6 +1028,7 @@ class GenomeShader:
                     "refAllele": variant_info["refAllele"],
                     "altAlleles": variant_info["altAlleles"],
                     "alleles": ["ref"] + [f"a{i+1}" for i in range(len(variant_info["altAlleles"]))],
+                    "alleleFrequencies": variant_info.get("alleleFrequencies", {}),
                 })
 
         # Load template HTML

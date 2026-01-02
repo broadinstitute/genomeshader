@@ -3984,11 +3984,12 @@
       const isIns = isInsertion(v);
 
       let lineEl;
+      const strokeColor = isHovered ? "var(--blue)" : "rgba(127,127,127,0.5)";
       if (isVertical) {
         lineEl = el("line", {
           x1: baseX - 18, x2: baseX + 18,
           y1: pos, y2: pos,
-          stroke: "var(--blue)",
+          stroke: strokeColor,
           "stroke-width": strokeWidth,
           style: "cursor: pointer;"
         });
@@ -3996,7 +3997,7 @@
         lineEl = el("line", {
           x1: pos, x2: pos,
           y1: baseY - 18, y2: baseY + 18,
-          stroke: "var(--blue)",
+          stroke: strokeColor,
           "stroke-width": strokeWidth,
           style: "cursor: pointer;"
         });
@@ -4063,11 +4064,12 @@
       }
 
       let circleEl;
+      const circleStrokeColor = isHovered ? "var(--blue)" : "rgba(127,127,127,0.5)";
       if (isVertical) {
         circleEl = el("circle", {
           cx: baseX - 18, cy: pos, r: 3.4,
           fill: "none",
-          stroke: "var(--blue)",
+          stroke: circleStrokeColor,
           "stroke-width": circleStrokeWidth,
           style: "cursor: pointer;"
         });
@@ -4075,7 +4077,7 @@
         circleEl = el("circle", {
           cx: pos, cy: baseY - 18, r: 3.4,
           fill: "none",
-          stroke: "var(--blue)",
+          stroke: circleStrokeColor,
           "stroke-width": circleStrokeWidth,
           style: "cursor: pointer;"
         });
@@ -4630,6 +4632,7 @@
     const colGrid  = cssVar("--grid2");
     const colText  = cssVar("--muted");
     const colBlue  = cssVar("--blue");
+    const colGray  = "rgba(127,127,127,0.5)"; // Gray for non-hovered lines
 
     // Helper function to parse rgba string and convert to hex for WebGPU
     function rgbaToHex(rgbaStr) {
@@ -4656,18 +4659,33 @@
     const useWebGPU = webgpuSupported && flowInstancedRenderer;
     const devicePixelRatio = window.devicePixelRatio || 1;
     const blueHex = rgbaToHex(colBlue);
+    const grayHex = rgbaToHex(colGray);
     
     if (isVertical) {
       // In vertical mode, sort variants by position for consistent ordering
       const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
       
-      // columns (horizontal lines in vertical mode)
+      // columns (horizontal lines in vertical mode) - shortened to end near where allele nodes start
+      // Calculate where allele nodes start (left + margin + horizontal offset)
+      const left = 70;
+      const marginPercent = 0.1;
+      const minMargin = 10;
+      const flowLayoutForStems = layout.find(l => l.track.id === "flow");
+      const trackWidth = flowLayoutForStems ? flowLayoutForStems.contentWidth : 300;
+      const margin = Math.max(minMargin, trackWidth * marginPercent);
+      // Estimate where nodes start - use a reasonable default if we can't calculate exactly
+      const nodeStartX = left + margin + 20; // Add some buffer for centering offset
+      const stemEndXFull = Math.min(nodeStartX + 30, W - 18); // End stem 30px after nodes start, but don't go past right edge
+      // Reduce stem length by half
+      const stemEndX = junctionX + (stemEndXFull - junctionX) / 2;
+      
       if (useWebGPU) {
         for (let i=0;i<sortedWin.length;i++) {
           const v = sortedWin[i];
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           const isHovered = state.hoveredVariantIndex === variantIdx;
-          const alpha = isHovered ? 0.7 : 0.6;
+          const color = isHovered ? blueHex : grayHex;
+          const alpha = isHovered ? 0.7 : 0.5;
           // Position column based on mode
           const y = variantMode === "genomic" 
             ? yGenomeCanonical(v.pos, H)
@@ -4675,17 +4693,17 @@
           const yScaled = y * devicePixelRatio;
           flowInstancedRenderer.addLine(
             junctionX * devicePixelRatio, yScaled,
-            (W - 18) * devicePixelRatio, yScaled,
-            blueHex, alpha
+            stemEndX * devicePixelRatio, yScaled,
+            color, alpha
           );
         }
       } else {
-        ctx.strokeStyle = colBlue;
-        ctx.globalAlpha = 0.6;
         for (let i=0;i<sortedWin.length;i++) {
           const v = sortedWin[i];
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.strokeStyle = isHovered ? colBlue : colGray;
+          ctx.globalAlpha = isHovered ? 0.7 : 0.5;
           ctx.lineWidth = isHovered ? 2.5 : 1;
           // Position column based on mode
           const y = variantMode === "genomic" 
@@ -4693,9 +4711,10 @@
             : yColumn(i, sortedWin.length);
           ctx.beginPath();
           ctx.moveTo(junctionX, y);
-          ctx.lineTo(W-18, y);
+          ctx.lineTo(stemEndX, y);
           ctx.stroke();
         }
+        ctx.globalAlpha = 1.0;
       }
 
       // Text labels (still use Canvas 2D for text)
@@ -4776,6 +4795,7 @@
           const v = sortedWin[i];
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           const isHovered = state.hoveredVariantIndex === variantIdx;
+          const color = isHovered ? blueHex : grayHex;
           const alpha = isHovered ? 0.7 : 0.5;
           const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
           const cy = variantMode === "genomic"
@@ -4784,16 +4804,16 @@
           flowInstancedRenderer.addLine(
             x0 * devicePixelRatio, vy * devicePixelRatio,
             junctionX * devicePixelRatio, cy * devicePixelRatio,
-            blueHex, alpha
+            color, alpha
           );
         }
       } else {
-        ctx.strokeStyle = colBlue;
-        ctx.globalAlpha = 0.5;
         for (let i=0; i<sortedWin.length; i++) {
           const v = sortedWin[i];
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.strokeStyle = isHovered ? colBlue : colGray;
+          ctx.globalAlpha = isHovered ? 0.7 : 0.5;
           ctx.lineWidth = isHovered ? 2.5 : 1;
           const vy = yGenomeCanonical(v.pos, H);
           const cy = variantMode === "genomic"
@@ -4807,13 +4827,27 @@
         ctx.globalAlpha = 1.0;
       }
     } else {
-      // columns (vertical lines)
+      // columns (vertical lines) - shortened to end near where allele nodes start
+      // Calculate where allele nodes start (top + margin + vertical offset)
+      const top = 0;
+      const marginPercent = 0.1;
+      const minMargin = 10;
+      const flowLayoutForStems = layout.find(l => l.track.id === "flow");
+      const trackHeight = flowLayoutForStems ? flowLayoutForStems.contentHeight : 300;
+      const margin = Math.max(minMargin, trackHeight * marginPercent);
+      // Estimate where nodes start - use a reasonable default if we can't calculate exactly
+      const nodeStartY = top + margin + 20; // Add some buffer for centering offset
+      const stemEndYFull = Math.min(nodeStartY + 30, H - 18); // End stem 30px after nodes start, but don't go past bottom
+      // Reduce stem length by half
+      const stemEndY = junctionY + (stemEndYFull - junctionY) / 2;
+      
       if (useWebGPU) {
         for (let i=0;i<win.length;i++) {
           const v = win[i];
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           const isHovered = state.hoveredVariantIndex === variantIdx;
-          const alpha = isHovered ? 0.7 : 0.6;
+          const color = isHovered ? blueHex : grayHex;
+          const alpha = isHovered ? 0.7 : 0.5;
           // Position column based on mode
           const x = variantMode === "genomic"
             ? xGenomeCanonical(v.pos, W)
@@ -4821,17 +4855,17 @@
           const xScaled = x * devicePixelRatio;
           flowInstancedRenderer.addLine(
             xScaled, junctionY * devicePixelRatio,
-            xScaled, (H - 18) * devicePixelRatio,
-            blueHex, alpha
+            xScaled, stemEndY * devicePixelRatio,
+            color, alpha
           );
         }
       } else {
-        ctx.strokeStyle = colBlue;
-        ctx.globalAlpha = 0.6;
         for (let i=0;i<win.length;i++) {
           const v = win[i];
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.strokeStyle = isHovered ? colBlue : colGray;
+          ctx.globalAlpha = isHovered ? 0.7 : 0.5;
           ctx.lineWidth = isHovered ? 2.5 : 1;
           // Position column based on mode
           const x = variantMode === "genomic"
@@ -4839,9 +4873,10 @@
             : xColumn(i, win.length);
           ctx.beginPath();
           ctx.moveTo(x, junctionY);
-          ctx.lineTo(x, H-18);
+          ctx.lineTo(x, stemEndY);
           ctx.stroke();
         }
+        ctx.globalAlpha = 1.0;
       }
 
       // Text labels (still use Canvas 2D for text)
@@ -4895,6 +4930,7 @@
           const v = win[i];
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           const isHovered = state.hoveredVariantIndex === variantIdx;
+          const color = isHovered ? blueHex : grayHex;
           const alpha = isHovered ? 0.7 : 0.5;
           const vx = xGenomeCanonical(v.pos, W);
           const cx = variantMode === "genomic"
@@ -4903,16 +4939,16 @@
           flowInstancedRenderer.addLine(
             vx * devicePixelRatio, y0 * devicePixelRatio,
             cx * devicePixelRatio, junctionY * devicePixelRatio,
-            blueHex, alpha
+            color, alpha
           );
         }
       } else {
-        ctx.strokeStyle = colBlue;
-        ctx.globalAlpha = 0.5;
         for (let i=0; i<win.length; i++) {
           const v = win[i];
           const variantIdx = variants.findIndex(v2 => v2.id === v.id);
           const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.strokeStyle = isHovered ? colBlue : colGray;
+          ctx.globalAlpha = isHovered ? 0.7 : 0.5;
           ctx.lineWidth = isHovered ? 2.5 : 1;
           const vx = xGenomeCanonical(v.pos, W);
           const cx = variantMode === "genomic"
@@ -4927,14 +4963,23 @@
       }
     }
 
-    // Helper function to format allele with length prefix
-    function formatAlleleLabel(allele) {
+    // Helper function to format allele with length suffix
+    // Make it globally accessible for drag handlers
+    window.formatAlleleLabel = function formatAlleleLabel(allele) {
       if (!allele || allele === ".") {
-        return "(no-call) .";
+        return ". (no-call)";
       }
       const length = allele.length;
       const lengthLabel = length === 1 ? "1 bp" : `${length} bp`;
-      return `(${lengthLabel}) ${allele}`;
+      return `${allele} (${lengthLabel})`;
+    };
+    
+    // Helper function to extract allele string from formatted label
+    function extractAlleleFromLabel(label) {
+      // Label format is "ALLELE (X bp)" or ". (no-call)"
+      if (label.startsWith(". (no-call)")) return ".";
+      const match = label.match(/^(.+?)\s*\([^)]+\)$/);
+      return match ? match[1] : label;
     }
     
     // Helper function to get node colors based on allele type
@@ -4945,40 +4990,145 @@
       let fillColor, strokeColor;
       
       if (label === noCallLabel) {
-        // No-call allele: gray
-        fillColor = isDragging ? "rgba(127,127,127,0.25)" : "rgba(127,127,127,0.15)";
-        strokeColor = isDragging ? "rgba(127,127,127,0.5)" : "rgba(127,127,127,0.3)";
+        // No-call allele: light gray
+        fillColor = isDragging ? "rgba(200,200,200,1.0)" : "rgba(200,200,200,1.0)";
+        strokeColor = isDragging ? "rgba(200,200,200,1.0)" : "rgba(200,200,200,1.0)";
       } else if (label === refLabel) {
         // Reference allele: blue
-        fillColor = isDragging ? "rgba(100,150,255,0.25)" : "rgba(100,150,255,0.15)";
-        strokeColor = isDragging ? "rgba(100,150,255,0.5)" : "rgba(100,150,255,0.3)";
+        fillColor = isDragging ? "rgba(100,150,255,1.0)" : "rgba(100,150,255,1.0)";
+        strokeColor = isDragging ? "rgba(100,150,255,1.0)" : "rgba(100,150,255,1.0)";
       } else {
-        // Alternate allele: red to magenta
-        // Use a gradient from red to magenta based on position in alt alleles
-        let altIndex = -1;
-        if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
-          altIndex = variant.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
+        // Alternate allele: determine if insertion or deletion
+        const allele = extractAlleleFromLabel(label);
+        const refLen = variant.refAllele ? variant.refAllele.length : 0;
+        const altLen = allele.length;
+        const lengthDiff = altLen - refLen;
+        
+        if (lengthDiff > 0) {
+          // Insertion: purple, longer = darker
+          // Purple hue is around 270-300, use 280 as base
+          // Lightness: start at 70% for smallest, go down to 30% for very long insertions
+          // Cap the length difference for color calculation (e.g., max 100bp difference)
+          const maxDiff = 100;
+          const normalizedDiff = Math.min(lengthDiff / maxDiff, 1.0);
+          const lightness = 70 - (normalizedDiff * 40); // 70% to 30%
+          fillColor = `hsla(280, 70%, ${lightness}%, 1.0)`;
+          strokeColor = `hsla(280, 70%, ${lightness}%, 1.0)`;
+        } else if (lengthDiff < 0) {
+          // Deletion: yellow, longer = darker
+          // Yellow hue is around 60
+          // Lightness: start at 70% for smallest, go down to 30% for very long deletions
+          const maxDiff = 100;
+          const normalizedDiff = Math.min(Math.abs(lengthDiff) / maxDiff, 1.0);
+          const lightness = 70 - (normalizedDiff * 40); // 70% to 30%
+          fillColor = `hsla(60, 80%, ${lightness}%, 1.0)`;
+          strokeColor = `hsla(60, 80%, ${lightness}%, 1.0)`;
+        } else {
+          // Same length as ref (SNV or substitution): keep original blue-ish color
+          fillColor = "rgba(100,150,255,1.0)";
+          strokeColor = "rgba(100,150,255,1.0)";
         }
-        // If not found, default to 0
-        if (altIndex === -1) altIndex = 0;
-        const totalAlts = variant.altAlleles && Array.isArray(variant.altAlleles) ? variant.altAlleles.length : 1;
-        // Hue from 0 (red) to 300 (magenta), distributed across alt alleles
-        // First alt = red (0), last alt = magenta (300)
-        const hue = totalAlts > 1 ? (altIndex / (totalAlts - 1)) * 300 : 0;
-        fillColor = isDragging ? `hsla(${hue}, 70%, 60%, 0.25)` : `hsla(${hue}, 70%, 60%, 0.15)`;
-        strokeColor = isDragging ? `hsla(${hue}, 70%, 60%, 0.5)` : `hsla(${hue}, 70%, 60%, 0.3)`;
       }
       
       return { fillColor, strokeColor };
     }
     
+    // Helper function to calculate allele node sizes based on frequencies
+    // Make it globally accessible for drag handlers
+    window.calculateAlleleSizes = function calculateAlleleSizes(variant, totalSpace, minSize, gap, numAlleles) {
+      const alleleFrequencies = variant.alleleFrequencies || {};
+      
+      // Add margins to make the display more comfortable
+      // Use 10% margin on each side (20% total), with a minimum of 20 pixels total
+      const marginPercent = 0.1;
+      const minMargin = 10;
+      const margin = Math.max(minMargin, totalSpace * marginPercent);
+      const availableSpace = totalSpace - (2 * margin);
+      
+      // If no frequencies available, return equal sizes
+      if (!alleleFrequencies || Object.keys(alleleFrequencies).length === 0) {
+        const equalSize = Math.max(minSize, (availableSpace - (numAlleles - 1) * gap) / numAlleles);
+        const sizes = {};
+        const labels = [formatAlleleLabel(".")];
+        if (variant.refAllele) {
+          labels.push(formatAlleleLabel(variant.refAllele));
+        }
+        if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+          for (let k = 0; k < variant.altAlleles.length; k++) {
+            labels.push(formatAlleleLabel(variant.altAlleles[k]));
+          }
+        }
+        for (const label of labels) {
+          // Map label to allele key
+          const noCallLabel = formatAlleleLabel(".");
+          const refLabel = variant.refAllele ? formatAlleleLabel(variant.refAllele) : null;
+          let key = ".";
+          if (label === noCallLabel) {
+            key = ".";
+          } else if (label === refLabel) {
+            key = "ref";
+          } else {
+            // Find which alt allele this is
+            if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+              const altIndex = variant.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
+              if (altIndex >= 0) {
+                key = `a${altIndex + 1}`;
+              }
+            }
+          }
+          sizes[key] = equalSize;
+        }
+        return sizes;
+      }
+      
+      // Calculate total minimum size needed
+      const totalMinSize = numAlleles * minSize;
+      const totalGapSize = (numAlleles - 1) * gap;
+      const remainingSpace = availableSpace - totalMinSize - totalGapSize;
+      
+      if (remainingSpace < 0) {
+        // Edge case: minimum sizes exceed available space
+        // Just use minimum sizes
+        const sizes = {};
+        for (const key of Object.keys(alleleFrequencies)) {
+          sizes[key] = minSize;
+        }
+        return sizes;
+      }
+      
+      // Redistribute remaining space proportionally
+      const finalSizes = {};
+      for (const [allele, freq] of Object.entries(alleleFrequencies)) {
+        const proportional = freq * remainingSpace;
+        finalSizes[allele] = minSize + proportional;
+      }
+      
+      return finalSizes;
+    }
+    
+    // Get track dimensions for sizing (reuse flowLayout from earlier in function)
+    const flowLayoutForSizing = layout.find(l => l.track.id === "flow");
+    const trackDimension = isVertical 
+      ? (flowLayoutForSizing ? flowLayoutForSizing.contentWidth : 300)
+      : (flowLayoutForSizing ? flowLayoutForSizing.contentHeight : 300);
+    
     // Allele nodes with drag-and-drop support
-    const nodeW = 16, nodeH = 18, gap = 8;
+    // Define constants at function scope so they're accessible in nested functions
+    const baseNodeW = 4, baseNodeH = 14, gap = 8;
+    const MIN_NODE_SIZE = 4;
+    
+    // Make constants available globally for drag handlers
+    window._alleleNodeConstants = { baseNodeW, baseNodeH, gap, MIN_NODE_SIZE };
     const nodePositions = []; // Store positions for hit testing: [{ variantId, alleleIndex, x, y, w, h }]
     
     if (isVertical) {
       const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
       const left = 70;
+      
+      // Calculate margin for allele nodes (same as in calculateAlleleSizes)
+      const marginPercent = 0.1;
+      const minMargin = 10;
+      const margin = Math.max(minMargin, trackDimension * marginPercent);
       
       for (let i=0;i<sortedWin.length;i++){
         const v = sortedWin[i];
@@ -5002,15 +5152,63 @@
           state.variantAlleleOrder.set(v.id, order);
         }
         
+        // Calculate allele sizes based on frequencies
+        const alleleSizes = calculateAlleleSizes(v, trackDimension, MIN_NODE_SIZE, gap, order.length);
+        
+        // Map labels to allele keys for size lookup
+        const noCallLabel = formatAlleleLabel(".");
+        const refLabel = v.refAllele ? formatAlleleLabel(v.refAllele) : null;
+        function getAlleleKey(label) {
+          if (label === noCallLabel) return ".";
+          if (label === refLabel) return "ref";
+          if (v.altAlleles && Array.isArray(v.altAlleles)) {
+            const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
+            if (altIndex >= 0) return `a${altIndex + 1}`;
+          }
+          return "."; // fallback
+        }
+        
         // Position based on variant layout mode
         const cy = variantMode === "genomic"
           ? yGenomeCanonical(v.pos, H)
           : yColumn(i, sortedWin.length);
         
+        // Calculate total width of all nodes plus gaps
+        let totalNodesWidth = 0;
+        for (let j = 0; j < order.length; j++) {
+          const label = order[j];
+          const alleleKey = getAlleleKey(label);
+          const nodeW = alleleSizes[alleleKey] || baseNodeW;
+          totalNodesWidth += nodeW;
+          if (j < order.length - 1) {
+            totalNodesWidth += gap;
+          }
+        }
+        
+        // Center the nodes horizontally within the actual available space
+        // Account for left offset and right margin to ensure nodes don't extend beyond track boundaries
+        const availableWidth = W - left - margin;
+        const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
+        
+        // Calculate cumulative positions for variable-width nodes, starting with left + horizontal offset
+        let currentX = left + horizontalOffset;
+        
+        // Check if this variant column is hovered
+        const isVariantHovered = state.hoveredVariantIndex === variantIdx;
+        
         // Draw nodes in current order
         for (let j=0;j<order.length;j++){
           const label = order[j];
-          const x = left + j*(nodeW+gap);
+          const alleleKey = getAlleleKey(label);
+          let nodeW = alleleSizes[alleleKey] || baseNodeW;
+          let nodeH = baseNodeW;
+          
+          // Increase width when variant is hovered (vertical mode = horizontal nodes)
+          if (isVariantHovered) {
+            nodeH += 2;
+          }
+          
+          const x = currentX;
           
           // Check if this node is being dragged
           const isDragging = state.alleleDragState && 
@@ -5041,7 +5239,7 @@
           
           if (isHovered || isPinned) {
             ctx.fillStyle = colText;
-            ctx.font = "11px ui-sans-serif, system-ui";
+            ctx.font = "11px ui-monospace, 'SF Mono', Monaco, 'Consolas', 'Courier New', monospace";
             ctx.save();
             ctx.translate(nodeX + nodeW/2 - gap - 5 + 12, nodeY - 12);
             ctx.rotate(-Math.PI/2);
@@ -5059,6 +5257,9 @@
             w: nodeW,
             h: nodeH
           });
+          
+          // Update position for next node
+          currentX += nodeW + gap;
         }
         
         // Draw drop indicator if dragging this variant
@@ -5069,16 +5270,40 @@
           
           // Only show indicator if dropping at a different position
           if (dropIdx !== currentIdx) {
-            // Draw a vertical line at the drop position (alleles are arranged horizontally in vertical mode)
-            // For the last position, draw after the last node; otherwise draw at the node position
-            const indicatorX = dropIdx === order.length - 1 
-              ? left + dropIdx * (nodeW + gap) + nodeW
-              : left + dropIdx * (nodeW + gap);
+            // Calculate drop position accounting for variable node widths, margin, and centering
+            // Recalculate total width and horizontal offset (same as above)
+            let totalNodesWidth = 0;
+            for (let k = 0; k < order.length; k++) {
+              const label = order[k];
+              const alleleKey = getAlleleKey(label);
+              const nodeW = alleleSizes[alleleKey] || baseNodeW;
+              totalNodesWidth += nodeW;
+              if (k < order.length - 1) {
+                totalNodesWidth += gap;
+              }
+            }
+            const availableWidth = W - left - margin;
+            const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
+            
+            let indicatorX = left + horizontalOffset;
+            for (let k = 0; k < dropIdx; k++) {
+              const label = order[k];
+              const alleleKey = getAlleleKey(label);
+              const nodeW = alleleSizes[alleleKey] || baseNodeW;
+              indicatorX += nodeW + gap;
+            }
+            // For the last position, draw after the last node
+            if (dropIdx === order.length - 1) {
+              const label = order[dropIdx];
+              const alleleKey = getAlleleKey(label);
+              const nodeW = alleleSizes[alleleKey] || baseNodeW;
+              indicatorX += nodeW;
+            }
             ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.moveTo(indicatorX, cy - nodeH/2 - 4);
-            ctx.lineTo(indicatorX, cy + nodeH/2 + 4);
+            ctx.moveTo(indicatorX, cy - baseNodeH/2 - 4);
+            ctx.lineTo(indicatorX, cy + baseNodeH/2 + 4);
             ctx.stroke();
           }
         }
@@ -5106,16 +5331,69 @@
           state.variantAlleleOrder.set(v.id, order);
         }
         
+        // Calculate allele sizes based on frequencies
+        const alleleSizes = calculateAlleleSizes(v, trackDimension, MIN_NODE_SIZE, gap, order.length);
+        
+        // Map labels to allele keys for size lookup
+        const noCallLabel = formatAlleleLabel(".");
+        const refLabel = v.refAllele ? formatAlleleLabel(v.refAllele) : null;
+        function getAlleleKey(label) {
+          if (label === noCallLabel) return ".";
+          if (label === refLabel) return "ref";
+          if (v.altAlleles && Array.isArray(v.altAlleles)) {
+            const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
+            if (altIndex >= 0) return `a${altIndex + 1}`;
+          }
+          return "."; // fallback
+        }
+        
         // Position based on variant layout mode
         const cx = variantMode === "genomic"
           ? xGenomeCanonical(win[i].pos, W)
           : xColumn(i, win.length);
-        const top = 70;
+        const top = 20;
 
+        // Calculate margin for allele nodes (same as in calculateAlleleSizes)
+        const marginPercent = 0.1;
+        const minMargin = 10;
+        const margin = Math.max(minMargin, trackDimension * marginPercent);
+        
+        // Calculate total height of all nodes plus gaps
+        let totalNodesHeight = 0;
+        for (let j = 0; j < order.length; j++) {
+          const label = order[j];
+          const alleleKey = getAlleleKey(label);
+          const nodeH = alleleSizes[alleleKey] || baseNodeH;
+          totalNodesHeight += nodeH;
+          if (j < order.length - 1) {
+            totalNodesHeight += gap;
+          }
+        }
+        
+        // Center the nodes vertically within the actual available space
+        // Account for top offset and bottom margin to ensure nodes don't extend beyond track boundaries
+        const availableHeight = H - top - margin;
+        const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
+
+        // Calculate cumulative positions for variable-height nodes, starting with top + vertical offset
+        let currentY = top + verticalOffset;
+
+        // Check if this variant column is hovered
+        const isVariantHovered = state.hoveredVariantIndex === variantIdx;
+        
         // Draw nodes in current order
         for (let j=0;j<order.length;j++){
           const label = order[j];
-          const y = top + j*(nodeH+gap);
+          const alleleKey = getAlleleKey(label);
+          let nodeW = baseNodeW;
+          let nodeH = alleleSizes[alleleKey] || baseNodeH;
+          
+          // Increase height when variant is hovered (horizontal mode = vertical nodes)
+          if (isVariantHovered) {
+            nodeW += 2;
+          }
+          
+          const y = currentY;
           
           // Check if this node is being dragged
           const isDragging = state.alleleDragState && 
@@ -5146,7 +5424,7 @@
           
           if (isHovered || isPinned) {
             ctx.fillStyle = colText;
-            ctx.font = "11px ui-sans-serif, system-ui";
+            ctx.font = "11px ui-monospace, 'SF Mono', Monaco, 'Consolas', 'Courier New', monospace";
             ctx.fillText(label, nodeX + 12, nodeY + 13);
           }
           
@@ -5160,6 +5438,9 @@
             w: nodeW,
             h: nodeH
           });
+          
+          // Update position for next node
+          currentY += nodeH + gap;
         }
         
         // Draw drop indicator if dragging this variant
@@ -5170,16 +5451,40 @@
           
           // Only show indicator if dropping at a different position
           if (dropIdx !== currentIdx) {
-            // Draw a horizontal line at the drop position (alleles are arranged vertically in horizontal mode)
-            // For the last position, draw after the last node; otherwise draw at the node position
-            const indicatorY = dropIdx === order.length - 1
-              ? top + dropIdx * (nodeH + gap) + nodeH
-              : top + dropIdx * (nodeH + gap);
+            // Calculate drop position accounting for variable node heights, margin, and centering
+            // Recalculate total height and vertical offset (same as above)
+            let totalNodesHeight = 0;
+            for (let k = 0; k < order.length; k++) {
+              const label = order[k];
+              const alleleKey = getAlleleKey(label);
+              const nodeH = alleleSizes[alleleKey] || baseNodeH;
+              totalNodesHeight += nodeH;
+              if (k < order.length - 1) {
+                totalNodesHeight += gap;
+              }
+            }
+            const availableHeight = H - top - margin;
+            const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
+            
+            let indicatorY = top + verticalOffset;
+            for (let k = 0; k < dropIdx; k++) {
+              const label = order[k];
+              const alleleKey = getAlleleKey(label);
+              const nodeH = alleleSizes[alleleKey] || baseNodeH;
+              indicatorY += nodeH + gap;
+            }
+            // For the last position, draw after the last node
+            if (dropIdx === order.length - 1) {
+              const label = order[dropIdx];
+              const alleleKey = getAlleleKey(label);
+              const nodeH = alleleSizes[alleleKey] || baseNodeH;
+              indicatorY += nodeH;
+            }
             ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.moveTo(cx - nodeW/2 - 4, indicatorY);
-            ctx.lineTo(cx + nodeW/2 + 4, indicatorY);
+            ctx.moveTo(cx - baseNodeW/2 - 4, indicatorY);
+            ctx.lineTo(cx + baseNodeW/2 + 4, indicatorY);
             ctx.stroke();
           }
         }
@@ -5309,13 +5614,13 @@
       drawRead(100_590, 100_820, 5, 0.10);
       drawRead(100_700, 100_900, 6, 0.11);
 
-      // variant guide lines (bright blue)
-      ctx.strokeStyle = cssVar("--blue");
+      // variant guide lines (gray, blue when hovered)
       for (let idx = 0; idx < variants.length; idx++) {
         const v = variants[idx];
         if (v.pos < state.startBp || v.pos > state.endBp) continue;
         const isHovered = state.hoveredVariantIndex === idx;
-        ctx.globalAlpha = isHovered ? 0.7 : 0.4;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.5)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
         const y = yGenomeCanonical(v.pos, H);
         ctx.beginPath();
@@ -5362,13 +5667,13 @@
       drawRead(100_590, 100_820, 5, 0.10);
       drawRead(100_700, 100_900, 6, 0.11);
 
-      // variant guide lines (bright blue)
-      ctx.strokeStyle = cssVar("--blue");
+      // variant guide lines (gray, blue when hovered)
       for (let idx = 0; idx < variants.length; idx++) {
         const v = variants[idx];
         if (v.pos < state.startBp || v.pos > state.endBp) continue;
         const isHovered = state.hoveredVariantIndex === idx;
-        ctx.globalAlpha = isHovered ? 0.7 : 0.4;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.5)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
         const x = xGenomeCanonical(v.pos, W);
         ctx.beginPath();
@@ -5953,60 +6258,153 @@
           const isVertical = isVerticalMode();
           const variantMode = getVariantLayoutMode();
           const win = visibleVariantWindow();
-          const nodeW = 16, nodeH = 18, gap = 8;
+          const constants = window._alleleNodeConstants || { baseNodeW: 4, baseNodeH: 14, gap: 8, MIN_NODE_SIZE: 4 };
+          const gap = constants.gap;
+          const MIN_NODE_SIZE = constants.MIN_NODE_SIZE;
+          const baseNodeW = constants.baseNodeW;
+          const baseNodeH = constants.baseNodeH;
           
-          let newIndex = -1;
-          if (isVertical) {
-            const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
-            const v = sortedWin.find(v => v.id === dragState.variantId);
-            if (v) {
+          // Find the variant to get its allele frequencies
+          const v = isVertical 
+            ? [...win].sort((a, b) => a.pos - b.pos).find(v => v.id === dragState.variantId)
+            : win.find(v => v.id === dragState.variantId);
+          
+          if (v) {
+            // Get track dimension for size calculation
+            const layout = getTrackLayout();
+            const flowLayout = layout.find(l => l.track.id === "flow");
+            const trackDimension = isVertical 
+              ? (flowLayout ? flowLayout.contentWidth : 300)
+              : (flowLayout ? flowLayout.contentHeight : 300);
+            
+            // Calculate allele sizes for this variant
+            const calculateAlleleSizesFn = window.calculateAlleleSizes;
+            const alleleSizes = calculateAlleleSizesFn 
+              ? calculateAlleleSizesFn(v, trackDimension, MIN_NODE_SIZE, gap, order.length)
+              : {}; // Fallback to empty if function not available
+            
+            // Map labels to allele keys
+            const formatAlleleLabelFn = window.formatAlleleLabel || function(allele) {
+              if (!allele || allele === ".") return ". (no-call)";
+              const length = allele.length;
+              const lengthLabel = length === 1 ? "1 bp" : `${length} bp`;
+              return `${allele} (${lengthLabel})`;
+            };
+            const noCallLabel = formatAlleleLabelFn(".");
+            const refLabel = v.refAllele ? formatAlleleLabelFn(v.refAllele) : null;
+            function getAlleleKey(label) {
+              if (label === noCallLabel) return ".";
+              if (label === refLabel) return "ref";
+              if (v.altAlleles && Array.isArray(v.altAlleles)) {
+                const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabelFn(alt) === label);
+                if (altIndex >= 0) return `a${altIndex + 1}`;
+              }
+              return ".";
+            }
+            
+            // Calculate margin (same as in calculateAlleleSizes)
+            const marginPercent = 0.1;
+            const minMargin = 10;
+            const margin = Math.max(minMargin, trackDimension * marginPercent);
+            
+            let newIndex = -1;
+            if (isVertical) {
               const left = 70;
+              const W = flowWidthPx();
               const cy = variantMode === "genomic"
                 ? yGenomeCanonical(v.pos, flowHeightPx())
-                : yColumn(sortedWin.findIndex(v2 => v2.id === v.id), sortedWin.length);
+                : yColumn(isVertical ? [...win].sort((a, b) => a.pos - b.pos).findIndex(v2 => v2.id === v.id) : win.findIndex(v2 => v2.id === v.id), isVertical ? [...win].sort((a, b) => a.pos - b.pos).length : win.length);
               
-              // Check if dropped near a node position
+              // Calculate total width and horizontal offset for centering
+              let totalNodesWidth = 0;
               for (let j = 0; j < order.length; j++) {
-                const nodeX = left + j * (nodeW + gap);
-                if (Math.abs(x - nodeX) < (nodeW + gap) / 2 && 
-                    Math.abs(y - cy) < nodeH / 2) {
+                const label = order[j];
+                const alleleKey = getAlleleKey(label);
+                const nodeW = alleleSizes[alleleKey] || baseNodeW;
+                totalNodesWidth += nodeW;
+                if (j < order.length - 1) {
+                  totalNodesWidth += gap;
+                }
+              }
+              const availableWidth = W - left - margin;
+              const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
+              
+              // Calculate cumulative positions for variable-width nodes, starting with left + horizontal offset
+              let currentX = left + horizontalOffset;
+              for (let j = 0; j < order.length; j++) {
+                const label = order[j];
+                const alleleKey = getAlleleKey(label);
+                const nodeW = alleleSizes[alleleKey] || baseNodeW;
+                const nodeCenterX = currentX + nodeW / 2;
+                
+                if (Math.abs(x - nodeCenterX) < (nodeW + gap) / 2 && 
+                    Math.abs(y - cy) < baseNodeH / 2) {
                   newIndex = j;
                   break;
                 }
+                currentX += nodeW + gap;
               }
               
-              // If no match found, check if mouse is beyond the last node (for dropping at last position)
-              if (newIndex === -1 && Math.abs(y - cy) < nodeH / 2) {
-                const lastNodeX = left + (order.length - 1) * (nodeW + gap);
-                // Check if mouse is to the right of the last node (within reasonable distance)
-                if (x > lastNodeX - (nodeW + gap) / 2 && x < lastNodeX + nodeW + gap + (nodeW + gap) / 2) {
+              // If no match found, check if mouse is beyond the last node
+              if (newIndex === -1 && Math.abs(y - cy) < baseNodeH / 2) {
+                let lastX = left + horizontalOffset;
+                for (let j = 0; j < order.length; j++) {
+                  const label = order[j];
+                  const alleleKey = getAlleleKey(label);
+                  const nodeW = alleleSizes[alleleKey] || baseNodeW;
+                  lastX += nodeW + (j < order.length - 1 ? gap : 0);
+                }
+                if (x > lastX - (baseNodeW + gap) / 2 && x < lastX + baseNodeW + gap) {
                   newIndex = order.length - 1;
                 }
               }
-            }
-          } else {
-            const v = win.find(v => v.id === dragState.variantId);
-            if (v) {
+            } else {
               const cx = variantMode === "genomic"
                 ? xGenomeCanonical(v.pos, flowWidthPx())
                 : xColumn(win.findIndex(v2 => v2.id === v.id), win.length);
-              const top = 70;
+              const top = 20;
+              const H = flowHeightPx();
               
-              // Check if dropped near a node position
+              // Calculate total height and vertical offset for centering
+              let totalNodesHeight = 0;
               for (let j = 0; j < order.length; j++) {
-                const nodeY = top + j * (nodeH + gap);
-                if (Math.abs(x - cx) < nodeW / 2 && 
-                    Math.abs(y - nodeY) < (nodeH + gap) / 2) {
+                const label = order[j];
+                const alleleKey = getAlleleKey(label);
+                const nodeH = alleleSizes[alleleKey] || baseNodeH;
+                totalNodesHeight += nodeH;
+                if (j < order.length - 1) {
+                  totalNodesHeight += gap;
+                }
+              }
+              const availableHeight = H - top - margin;
+              const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
+              
+              // Calculate cumulative positions for variable-height nodes, starting with top + vertical offset
+              let currentY = top + verticalOffset;
+              for (let j = 0; j < order.length; j++) {
+                const label = order[j];
+                const alleleKey = getAlleleKey(label);
+                const nodeH = alleleSizes[alleleKey] || baseNodeH;
+                const nodeCenterY = currentY + nodeH / 2;
+                
+                if (Math.abs(x - cx) < baseNodeW / 2 && 
+                    Math.abs(y - nodeCenterY) < (nodeH + gap) / 2) {
                   newIndex = j;
                   break;
                 }
+                currentY += nodeH + gap;
               }
               
-              // If no match found, check if mouse is below the last node (for dropping at last position)
-              if (newIndex === -1 && Math.abs(x - cx) < nodeW / 2) {
-                const lastNodeY = top + (order.length - 1) * (nodeH + gap);
-                // Check if mouse is below the last node (within reasonable distance)
-                if (y > lastNodeY - (nodeH + gap) / 2 && y < lastNodeY + nodeH + gap + (nodeH + gap) / 2) {
+              // If no match found, check if mouse is below the last node
+              if (newIndex === -1 && Math.abs(x - cx) < baseNodeW / 2) {
+                let lastY = top + verticalOffset;
+                for (let j = 0; j < order.length; j++) {
+                  const label = order[j];
+                  const alleleKey = getAlleleKey(label);
+                  const nodeH = alleleSizes[alleleKey] || baseNodeH;
+                  lastY += nodeH + (j < order.length - 1 ? gap : 0);
+                }
+                if (y > lastY - (baseNodeH + gap) / 2 && y < lastY + baseNodeH + gap) {
                   newIndex = order.length - 1;
                 }
               }
@@ -6088,7 +6486,10 @@
         const isVertical = isVerticalMode();
         const variantMode = getVariantLayoutMode();
         const win = visibleVariantWindow();
-        const nodeW = 16, nodeH = 18, gap = 8;
+        const constants = window._alleleNodeConstants || { baseNodeW: 4, baseNodeH: 14, gap: 8, MIN_NODE_SIZE: 4 };
+        const nodeW = constants.baseNodeW;
+        const nodeH = constants.baseNodeH;
+        const gap = constants.gap;
         
         let newIndex = -1;
         if (isVertical) {
@@ -6136,7 +6537,7 @@
           const cx = variantMode === "genomic"
             ? xGenomeCanonical(v.pos, flowWidthPx())
             : xColumn(win.findIndex(v2 => v2.id === v.id), win.length);
-          const top = 70;
+          const top = 20;
           
           // Check if dropped near a node position
           for (let j = 0; j < order.length; j++) {
