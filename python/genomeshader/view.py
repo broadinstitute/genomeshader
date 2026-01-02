@@ -14,7 +14,6 @@ import polars as pl
 
 from IPython.display import display, HTML
 import json
-import base64
 
 import genomeshader.genomeshader as gs
 from . import staging
@@ -836,6 +835,7 @@ class GenomeShader:
 
         # Build config dict first, then JSON-encode it
         config = {
+            'hostMode': 'inline',  # Explicitly set inline mode for notebook rendering
             'region': f"{ref_chr}:{ref_start}-{ref_end}",
             'region_formatted': region_str_formatted,  # Formatted with commas for display
             'genome_build': self.genome_build,
@@ -863,189 +863,260 @@ class GenomeShader:
                 # Default to localhost:8888 (common Jupyter port)
                 jupyter_origin = "http://localhost:8888"
         
-        # Build bootstrap snippet with manifest URL and config
+        # Build bootstrap snippet with manifest URL, config, and view ID
         # Data will be fetched lazily via postMessage (not embedded)
         bootstrap = f"""<script>
 window.GENOMESHADER_MANIFEST_URL = {json.dumps(manifest_url)};
 window.GENOMESHADER_CONFIG = {json.dumps(config)};
 window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
+window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
 </script>"""
 
         # Inject bootstrap into template
         final_html = template_html.replace("<!--__GENOMESHADER_BOOTSTRAP__-->", bootstrap)
 
-        # Create popup script using blob URL
-        # Base64 encode the HTML to avoid Jupyter trying to render it as HTML
-        html_encoded = base64.b64encode(final_html.encode('utf-8')).decode('utf-8')
+        # Extract styles and body content from template HTML for inline rendering
+        # The template is a full HTML document, we need to extract styles and body content
+        import re
         
-        html_script = f"""
+        # Extract styles from <head>
+        style_match = re.search(r'<style[^>]*>(.*?)</style>', final_html, re.DOTALL)
+        styles = style_match.group(1) if style_match else ""
+        
+        # Extract body content
+        body_match = re.search(r'<body[^>]*>(.*?)</body>', final_html, re.DOTALL)
+        if body_match:
+            body_content = body_match.group(1)
+        else:
+            # Fallback: if no body tag found, use entire template
+            body_content = final_html
+
+        # Generate inline HTML with container div, styles, and bootstrap script
+        container_id = f"genomeshader-root-{run_id}"
+        
+        # Bootstrap script must run FIRST to set window variables before template scripts execute
+        # The bootstrap is already injected into final_html, but we need to include it in inline output
+        bootstrap_script = f"""
+<script type="text/javascript">
+// Bootstrap: Set window variables before template scripts run
+window.GENOMESHADER_MANIFEST_URL = {json.dumps(manifest_url)};
+window.GENOMESHADER_CONFIG = {json.dumps(config)};
+window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
+window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
+console.log('Genomeshader: Bootstrap variables set', {{
+  manifestUrl: window.GENOMESHADER_MANIFEST_URL,
+  hasConfig: !!window.GENOMESHADER_CONFIG,
+  viewId: window.GENOMESHADER_VIEW_ID
+}});
+</script>"""
+        
+        # Mount script that initializes container after DOM is ready
+        mount_script = f"""
 <script type="text/javascript">
 (function() {{
-  try {{
-    const width = 0.8 * window.screen.width;
-    const height = 0.65 * window.screen.height;
-    
-    // Decode base64 HTML to avoid Jupyter rendering issues
-    const htmlBase64 = {json.dumps(html_encoded)};
-    // atob() returns binary string, need to decode UTF-8 properly
-    const binaryString = atob(htmlBase64);
-    // Convert binary string to Uint8Array, then decode as UTF-8
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {{
-      bytes[i] = binaryString.charCodeAt(i);
-    }}
-    const html = new TextDecoder('utf-8').decode(bytes);
-    
-    const blob = new Blob([html], {{ type: "text/html;charset=utf-8" }});
-    const url = URL.createObjectURL(blob);
-    
-    // Store URL in a variable that won't be garbage collected
-    // Note: Blob URLs are ephemeral and become invalid when revoked or after browser cleanup.
-    // If you see "Not allowed to load local resource: blob:..." errors, it means the blob URL
-    // was revoked (e.g., after being idle) and the browser tried to reload it.
-    window._genomeshaderBlobUrl = url;
-    
-    // Use 'genomeshader' as window name
-    const windowName = "genomeshader";
-    
-    let win;
-    try {{
-      win = window.open(url, windowName, 
-        "width=" + width + ",height=" + height + ",scrollbars=no,menubar=no,toolbar=no,status=no");
-    }} catch(e) {{
-      console.error("Error opening window with blob URL:", e);
-      URL.revokeObjectURL(url);
-      delete window._genomeshaderBlobUrl;
-      throw e;
-    }}
-    
-    if (!win) {{
-      console.error("Failed to open popup window - may be blocked by browser");
-      alert("Popup window was blocked. Please allow popups for this site.");
-      URL.revokeObjectURL(url);
-      delete window._genomeshaderBlobUrl;
+  // Wait for DOM to be ready
+  if (document.readyState === 'loading') {{
+    document.addEventListener('DOMContentLoaded', init);
+  }} else {{
+    // Use requestAnimationFrame to ensure layout has happened
+    requestAnimationFrame(() => {{
+      requestAnimationFrame(init);
+    }});
+  }}
+  
+  function init() {{
+    const containerId = {json.dumps(container_id)};
+    const root = document.getElementById(containerId);
+    if (!root) {{
+      console.error('Genomeshader: Container element not found:', containerId);
       return;
     }}
     
-    // Set up postMessage handler for lazy loading data requests
-    // The popup window will request data via postMessage, and we'll fetch it from localhost
-    window.addEventListener('message', function(event) {{
-      // Only accept messages from the popup window we just opened
-      if (event.source !== win) {{
+    // Store run_id in container dataset for easy access
+    root.dataset.viewId = {json.dumps(run_id)};
+    
+    // Ensure container has dimensions before rendering
+    const checkDimensions = () => {{
+      const rect = root.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) {{
+        console.warn('Genomeshader: Container has zero dimensions, retrying...');
+        // Wait a bit for layout to settle
+        setTimeout(checkDimensions, 50);
         return;
       }}
+      console.log('Genomeshader: Container dimensions:', rect.width, 'x', rect.height);
       
-      const data = event.data;
-      
-      // Handle data fetch requests from popup
-      if (data && data.type === 'genomeshader_fetch') {{
-        const url = data.url;
-        console.log('Genomeshader: Fetching data from popup request:', url);
-        
-        // Fetch the data from localhost (we can do this from Jupyter notebook context)
-        fetch(url)
-          .then(response => {{
-            if (!response.ok) {{
-              throw new Error(`HTTP ${{response.status}}: ${{response.statusText}}`);
-            }}
-            return response.json();
-          }})
-          .then(jsonData => {{
-            // Send data back to popup
-            win.postMessage({{
-              type: 'genomeshader_fetch_response',
-              requestId: data.requestId,
-              url: url,
-              data: jsonData,
-              success: true
-            }}, '*');
-            console.log('Genomeshader: Sent data to popup for:', url);
-          }})
-          .catch(error => {{
-            // Send error back to popup
-            win.postMessage({{
-              type: 'genomeshader_fetch_response',
-              requestId: data.requestId,
-              url: url,
-              error: error.message,
-              success: false
-            }}, '*');
-            console.error('Genomeshader: Error fetching data:', error);
-          }});
+      // Trigger a resize event to ensure renderAll() runs with correct dimensions
+      // This is especially important for WebGPU canvas initialization
+      if (window.dispatchEvent) {{
+        window.dispatchEvent(new Event('resize'));
       }}
-    }});
+    }};
     
-    // Wait for window to load before setting up cleanup
-    win.addEventListener('load', function() {{
-      console.log("Genomeshader window loaded successfully");
-      // Notify popup that we're ready to handle fetch requests
-      win.postMessage({{ type: 'genomeshader_ready' }}, '*');
-    }});
-    
-    // Keep the blob URL alive - don't revoke immediately
-    // The URL will be revoked when the window is closed
-    // Use 'unload' instead of 'beforeunload' to ensure window is actually closing
-    let blobUrlRevoked = false;
-    function revokeBlobUrl() {{
-      if (!blobUrlRevoked) {{
-        try {{
-          URL.revokeObjectURL(url);
-          blobUrlRevoked = true;
-        }} catch(e) {{
-          // URL might already be revoked, ignore
-        }}
-        delete window._genomeshaderBlobUrl;
-      }}
-    }}
-    
-    // Check if window is closed periodically and revoke blob URL when closed
-    // This is safer than using beforeunload which can fire prematurely
-    const checkWindowClosed = setInterval(function() {{
-      try {{
-        if (win.closed) {{
-          revokeBlobUrl();
-          clearInterval(checkWindowClosed);
-        }}
-      }} catch(e) {{
-        // Window might be from different origin, check failed
-        // Assume window is closed and clean up
-        revokeBlobUrl();
-        clearInterval(checkWindowClosed);
-      }}
-    }}, 1000); // Check every second
-    
-    // Fallback: revoke after 30 minutes if window is still open (cleanup)
-    // Increased from 10 minutes to give more time for user interaction
-    setTimeout(function() {{
-      try {{
-        if (win.closed) {{
-          revokeBlobUrl();
-        }}
-        clearInterval(checkWindowClosed);
-      }} catch(e) {{
-        // Window might be from different origin, ignore
-        clearInterval(checkWindowClosed);
-      }}
-    }}, 1800000); // 30 minutes
-    
-    // Focus the window to bring it to front
-    setTimeout(function() {{
-      try {{
-        win.focus();
-      }} catch(e) {{
-        // May fail if window is from different origin
-      }}
-    }}, 100);
-    
-  }} catch(error) {{
-    console.error("Error opening genomeshader window:", error);
-    alert("Error opening visualization: " + error.message);
+    checkDimensions();
   }}
 }})();
-</script>
-        """
+</script>"""
 
-        return html_script
+        # Wrap everything in container div with styles
+        # The container needs to have a defined height for the app to render correctly
+        # Override html/body height rules to work within container
+        inline_html = f"""
+<div id="{container_id}" style="width: 100%; height: 600px; position: relative; overflow: visible; background: var(--bg, #0b0d10); font-family: ui-sans-serif, system-ui; isolation: isolate;">
+<style>
+{styles}
+/* Override html/body height rules for container embedding */
+#{container_id} {{
+  height: 600px;
+  display: block;
+  position: relative;
+}}
+/* Reset html/body styles within container - use :root for CSS variables */
+#{container_id} {{
+  --sidebar-w: 240px;
+  --tracks-h: 280px;
+  --flow-h: 500px;
+  --reads-h: 220px;
+}}
+/* Use explicit positioning instead of grid for better Jupyter compatibility */
+#{container_id} .app {{
+  height: 100% !important;
+  width: 100% !important;
+  display: block !important; /* Override grid */
+  position: relative !important;
+  overflow: hidden;
+}}
+/* Sidebar: fixed width on the left */
+#{container_id} .sidebar {{
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  width: var(--sidebar-w, 240px) !important;
+  z-index: 100 !important;
+  overflow: visible !important;
+  pointer-events: auto !important;
+  transition: width 0.2s ease;
+}}
+/* Sidebar collapsed state */
+#{container_id} .app.sidebar-collapsed .sidebar {{
+  width: 12px !important;
+  padding: 0 !important;
+}}
+#{container_id} .app.sidebar-collapsed .sidebar > * {{
+  opacity: 0 !important;
+  pointer-events: none !important;
+}}
+#{container_id} .app.sidebar-collapsed .sidebar::after {{
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  width: 12px !important;
+}}
+/* Main: takes remaining space to the right of sidebar */
+#{container_id} .main {{
+  position: absolute !important;
+  left: var(--sidebar-w, 240px) !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  z-index: 1 !important;
+  overflow: hidden;
+  transition: left 0.2s ease;
+}}
+/* Main adjusted when sidebar is collapsed */
+#{container_id} .app.sidebar-collapsed .main {{
+  left: 12px !important;
+}}
+/* Ensure all sidebar children are clickable */
+#{container_id} .sidebar > * {{
+  pointer-events: auto !important;
+  opacity: 1 !important;
+}}
+/* Ensure sidebar toggle border is clickable */
+#{container_id} .sidebar::after {{
+  z-index: 2147483000 !important;
+  pointer-events: auto !important;
+}}
+/* Ensure gear button is clickable and above everything in sidebar */
+#{container_id} .gearBtn {{
+  z-index: 150 !important;
+  position: absolute !important;
+  left: 12px !important;
+  bottom: 12px !important;
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  opacity: 1 !important;
+}}
+/* Ensure sidebar header is visible and clickable */
+#{container_id} .sidebarHeader {{
+  pointer-events: auto !important;
+  opacity: 1 !important;
+}}
+/* Ensure participant groups are visible and clickable */
+#{container_id} .group {{
+  pointer-events: auto !important;
+  opacity: 1 !important;
+}}
+/* Ensure menu is above everything - use fixed positioning set by JS */
+#{container_id} .menu {{
+  z-index: 2147483647 !important;
+  display: none !important;
+  visibility: hidden !important;
+  background: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow) !important;
+  opacity: 1 !important;
+}}
+#{container_id} .menu.open {{
+  display: block !important;
+  visibility: visible !important;
+  position: fixed !important;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+}}
+/* Ensure container doesn't clip the menu */
+#{container_id} {{
+  overflow: visible !important;
+}}
+/* Note: .main styles moved above with grid-column assignment */
+/* Ensure tracks have proper dimensions within main area */
+#{container_id} .tracks {{
+  position: absolute !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: 0 !important;
+  height: var(--tracks-h, 280px) !important;
+  width: 100% !important;
+}}
+/* Ensure tracksContainer is positioned relatively for absolute children */
+#{container_id} #tracksContainer {{
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+}}
+/* Ensure SVG fills tracks container */
+#{container_id} #tracksSvg {{
+  width: 100% !important;
+  height: 100% !important;
+  display: block !important;
+}}
+/* Ensure WebGPU canvas fills tracks container */
+#{container_id} #tracksWebGPU {{
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: block !important;
+  pointer-events: auto !important;
+  z-index: 1 !important;
+}}
+</style>
+{bootstrap_script}
+{body_content}
+{mount_script}
+</div>"""
+
+        return inline_html
 
 
     def show(

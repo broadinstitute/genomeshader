@@ -147,7 +147,8 @@
       width: 4px;
       cursor: pointer;
       transition: background-color 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
-      z-index: 10;
+      z-index: 2147483000;
+      pointer-events: auto;
     }
     .sidebar:hover::after {
       background: var(--blue);
@@ -238,6 +239,8 @@
       position: absolute;
       left: 12px;
       bottom: 12px;
+      top: auto;
+      right: auto;
       border: 1px solid var(--border2);
       background: var(--panel2);
       color: var(--text);
@@ -593,6 +596,11 @@
         <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
           <span>Variant Layout</span>
           <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
+        </div>
+
+        <div class="menuItem" id="fullscreenItem" role="menuitem">
+          <span>Full screen</span>
+          <span class="menuRight" id="fullscreenLabel">Enter full screen</span>
         </div>
 
         <div class="menuTitle">Grouping</div>
@@ -1312,6 +1320,10 @@
     hudEl.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span>`;
   }
   
+  // Determine host mode (inline or popup)
+  const hostMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode) || 'inline';
+  console.log('Genomeshader: hostMode =', hostMode);
+  
   // True lazy loading via postMessage
   const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
   
@@ -1327,13 +1339,31 @@
     
     function requestData(url) {
       return new Promise((resolve, reject) => {
-        const id = `req_${Date.now()}_${++requestId}`;
-        pendingRequests.set(id, { resolve, reject });
-        
-        if (!window.opener) {
-          reject(new Error('No window.opener - cannot request data'));
+        // Inline mode: use direct fetch
+        if (hostMode === 'inline') {
+          console.log('Genomeshader: Using direct fetch for inline mode:', url);
+          fetch(url)
+            .then(response => {
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+              }
+              return response.json();
+            })
+            .then(data => {
+              console.log('Genomeshader: Direct fetch succeeded for:', url);
+              resolve(data);
+            })
+            .catch(error => {
+              console.error('Genomeshader: Direct fetch failed for:', url, error);
+              reject(error);
+            });
           return;
         }
+        
+        // Popup mode: use postMessage
+        console.log('Genomeshader: Using postMessage for popup mode:', url);
+        const id = `req_${Date.now()}_${++requestId}`;
+        pendingRequests.set(id, { resolve, reject });
         
         // Send request to opener
         window.opener.postMessage({
@@ -1352,26 +1382,28 @@
       });
     }
     
-    // Listen for responses from opener
-    window.addEventListener('message', function(event) {
-      // Only accept messages from opener
-      if (event.source !== window.opener) {
-        return;
-      }
-      
-      const data = event.data;
-      if (data && data.type === 'genomeshader_fetch_response') {
-        const request = pendingRequests.get(data.requestId);
-        if (request) {
-          pendingRequests.delete(data.requestId);
-          if (data.success) {
-            request.resolve(data.data);
-          } else {
-            request.reject(new Error(data.error || 'Fetch failed'));
+    // Listen for responses from opener (only in popup mode)
+    if (hostMode === 'popup') {
+      window.addEventListener('message', function(event) {
+        // Only accept messages from opener
+        if (event.source !== window.opener) {
+          return;
+        }
+        
+        const data = event.data;
+        if (data && data.type === 'genomeshader_fetch_response') {
+          const request = pendingRequests.get(data.requestId);
+          if (request) {
+            pendingRequests.delete(data.requestId);
+            if (data.success) {
+              request.resolve(data.data);
+            } else {
+              request.reject(new Error(data.error || 'Fetch failed'));
+            }
           }
         }
-      }
-    });
+      });
+    }
     
     // Request manifest
     requestData(manifestUrl)
@@ -1409,14 +1441,60 @@
   // -----------------------------
   // Theme + menu
   // -----------------------------
-  const app = document.querySelector(".app");
-  const sidebar = document.getElementById("sidebar");
-  const menuBtn = document.getElementById("menuBtn");
-  const ctxMenu = document.getElementById("ctxMenu");
-  const themeItem = document.getElementById("themeItem");
-  const themeLabel = document.getElementById("themeLabel");
-  const orientationItem = document.getElementById("orientationItem");
-  const orientationLabel = document.getElementById("orientationLabel");
+  // Find root container for scoping event handlers in inline mode
+  const root = document.querySelector('[id^="genomeshader-root-"]') || 
+                (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
+                document.body; // Fallback to body if not found
+  console.log('Genomeshader: Root container found:', root?.id || root?.tagName);
+  
+  // Root-scoped element lookup helpers
+  function byId(root, id) {
+    const el = root.querySelector(`#${CSS.escape(id)}`);
+    if (!el) console.warn("[gs] missing element", id, "under root", root.id);
+    return el;
+  }
+
+  function $(root, selector) {
+    const el = root.querySelector(selector);
+    if (!el) console.warn("[gs] missing element", selector, "under root", root.id);
+    return el;
+  }
+  
+  // Use root-scoped queries in inline mode, document queries in popup mode
+  const querySelector = (selector) => {
+    if (hostMode === 'inline' && root && root !== document.body) {
+      return root.querySelector(selector) || document.querySelector(selector);
+    }
+    return document.querySelector(selector);
+  };
+  const getElementById = (id) => {
+    if (hostMode === 'inline' && root && root !== document.body) {
+      return root.getElementById ? root.getElementById(id) : root.querySelector(`#${id}`) || document.getElementById(id);
+    }
+    return document.getElementById(id);
+  };
+  
+  const app = querySelector(".app");
+  const sidebar = getElementById("sidebar");
+  const menuBtn = getElementById("menuBtn");
+  const ctxMenu = getElementById("ctxMenu");
+  const themeItem = getElementById("themeItem");
+  const themeLabel = getElementById("themeLabel");
+  const orientationItem = getElementById("orientationItem");
+  const orientationLabel = getElementById("orientationLabel");
+  
+  // Debug: Check if elements are found
+  if (!app) console.error('Genomeshader: .app element not found');
+  if (!sidebar) console.error('Genomeshader: #sidebar element not found');
+  if (!menuBtn) console.error('Genomeshader: #menuBtn element not found');
+  if (!ctxMenu) console.error('Genomeshader: #ctxMenu element not found');
+  
+  // In inline mode, keep menu in root initially, but we'll move it to body when opening
+  // This ensures fixed positioning works relative to viewport, not container
+  if (hostMode === 'inline' && root && ctxMenu && !root.contains(ctxMenu)) {
+    root.appendChild(ctxMenu);
+    console.log('Genomeshader: Moved menu to root container');
+  }
 
   // Sidebar collapse/expand
   function getSidebarCollapsed() {
@@ -1428,28 +1506,67 @@
   }
   function updateSidebarState() {
     const collapsed = getSidebarCollapsed();
+    if (!app) {
+      console.error('Genomeshader: Cannot update sidebar state - app element not found');
+      return;
+    }
     if (collapsed) {
       app.classList.add("sidebar-collapsed");
+      console.log('Genomeshader: Sidebar state updated - collapsed (class added)');
     } else {
       app.classList.remove("sidebar-collapsed");
+      console.log('Genomeshader: Sidebar state updated - expanded (class removed)');
     }
   }
   
-  // Make sidebar border clickable
-  sidebar.addEventListener("click", (e) => {
-    const collapsed = getSidebarCollapsed();
-    const rect = sidebar.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
+  // Make sidebar border clickable - always bind regardless of hostMode
+  if (sidebar) {
+    console.log('[gs] wiring UI events - Sidebar toggle');
     
-    // Check if click is within 12px of the right edge (or anywhere if collapsed)
-    if (collapsed) {
-      // When collapsed, the entire 12px strip is clickable
-      setSidebarCollapsed(false);
-    } else if (clickX >= rect.width - 12) {
-      // When open, only the right 12px edge is clickable
-      setSidebarCollapsed(true);
-    }
-  });
+    const handleSidebarToggle = (e) => {
+      console.log('[gs] sidebar toggle click', e.type, 'target:', e.target);
+      
+      // Don't toggle if clicking on menu button or menu - check this FIRST before stopping propagation
+      if ((menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) || 
+          (ctxMenu && (ctxMenu === e.target || ctxMenu.contains(e.target)))) {
+        console.log('[gs] Sidebar toggle: ignoring click on menu button/menu');
+        return; // Don't stop propagation - let menu button handler fire
+      }
+      
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const collapsed = getSidebarCollapsed();
+      const rect = sidebar.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      
+      console.log('Genomeshader: Sidebar clicked at x=' + clickX + ', width=' + rect.width + ', collapsed=' + collapsed);
+      
+      // Check if click is within 12px of the right edge (or anywhere if collapsed)
+      if (collapsed) {
+        // When collapsed, the entire 12px strip is clickable
+        console.log('Genomeshader: Expanding sidebar');
+        setSidebarCollapsed(false);
+      } else if (clickX >= rect.width - 12) {
+        // When open, only the right 12px edge is clickable
+        console.log('Genomeshader: Collapsing sidebar');
+        setSidebarCollapsed(true);
+      }
+    };
+    
+    // Use multiple event types with capturing phase (like debug buttons)
+    sidebar.addEventListener("click", handleSidebarToggle, true);
+    sidebar.addEventListener("pointerdown", handleSidebarToggle, true);
+    sidebar.addEventListener("pointerup", handleSidebarToggle, true);
+    sidebar.addEventListener("mousedown", handleSidebarToggle, true);
+    
+    // Ensure sidebar is clickable
+    sidebar.style.pointerEvents = "auto";
+    
+    console.log('[gs] Sidebar toggle handler attached successfully');
+  } else {
+    console.error('Genomeshader: Cannot attach sidebar click handler - element not found');
+  }
   
   updateSidebarState();
 
@@ -1505,28 +1622,177 @@
   updateThemeLabel();
 
   function openMenu() {
-    // Anchor menu above the gear in the sidebar (now bottom-left)
+    // In inline mode, move menu to body so fixed positioning works relative to viewport
+    if (hostMode === 'inline' && ctxMenu.parentElement !== document.body) {
+      document.body.appendChild(ctxMenu);
+      console.log('Genomeshader: Moved menu to body for fixed positioning');
+    }
+    
+    // Use fixed positioning so menu appears over everything (including Jupyter UI)
     const r = menuBtn.getBoundingClientRect();
-    const s = sidebar.getBoundingClientRect();
-    const left = Math.max(8, r.left - s.left);
-    const top  = Math.max(8, r.top  - s.top  - 160);
+    // Position menu above the gear button, or below if not enough space above
+    const menuHeight = 220; // Approximate menu height
+    let top = r.top - menuHeight - 8;
+    let left = r.left;
+    
+    // If not enough space above, position below
+    if (top < 8) {
+      top = r.bottom + 8;
+    }
+    
+    // Ensure menu doesn't go off right edge
+    const menuWidth = 220;
+    if (left + menuWidth > window.innerWidth - 8) {
+      left = window.innerWidth - menuWidth - 8;
+    }
+    
+    // Ensure menu doesn't go off bottom edge
+    if (top + menuHeight > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - menuHeight - 8);
+    }
+    
+    ctxMenu.style.position = 'fixed';
     ctxMenu.style.left = `${left}px`;
-    ctxMenu.style.top  = `${top}px`;
+    ctxMenu.style.top = `${top}px`;
+    ctxMenu.style.zIndex = '2147483647';
     ctxMenu.classList.add("open");
     ctxMenu.setAttribute("aria-hidden", "false");
+    ctxMenu.style.display = 'block';
+    ctxMenu.style.visibility = 'visible';
+    ctxMenu.style.pointerEvents = 'auto';
+    ctxMenu.style.opacity = '1';
+    
+    // Debug: Check computed styles
+    const computed = window.getComputedStyle(ctxMenu);
+    const rect = ctxMenu.getBoundingClientRect();
+    console.log('Genomeshader: Menu opened at', { 
+      left, top, 
+      buttonRect: r, 
+      windowHeight: window.innerHeight,
+      menuRect: rect,
+      computedDisplay: computed.display,
+      computedVisibility: computed.visibility,
+      computedPosition: computed.position,
+      computedZIndex: computed.zIndex,
+      computedOpacity: computed.opacity,
+      menuParent: ctxMenu.parentElement?.tagName,
+      menuInRoot: root?.contains(ctxMenu)
+    });
+    
     // Update variant layout mode label when menu opens
     updateVariantLayoutModeLabel();
   }
   function closeMenu() {
     ctxMenu.classList.remove("open");
     ctxMenu.setAttribute("aria-hidden", "true");
+    ctxMenu.style.display = 'none';
+    ctxMenu.style.visibility = 'hidden';
+    ctxMenu.style.pointerEvents = 'none';
+    
+    // In inline mode, move menu back to root when closed
+    if (hostMode === 'inline' && root && ctxMenu.parentElement === document.body) {
+      root.appendChild(ctxMenu);
+      console.log('Genomeshader: Moved menu back to root container');
+    }
+    
+    console.log('Genomeshader: Menu closed');
   }
   function toggleMenu() {
+    if (!ctxMenu) {
+      console.error('Genomeshader: Cannot toggle menu - ctxMenu not found');
+      return;
+    }
     ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
   }
 
-  menuBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
-  document.addEventListener("click", () => closeMenu());
+  if (menuBtn && ctxMenu) {
+    console.log('[gs] wiring UI events - Settings menu button', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
+    console.log('[gs] Menu button element:', menuBtn, 'ID:', menuBtn.id, 'Classes:', menuBtn.className);
+    
+    // Track if we've already handled this interaction to prevent double-toggle
+    let menuButtonHandled = false;
+    
+    const handleMenuButtonClick = (e) => {
+      // If we already handled this interaction (e.g., pointerdown), ignore subsequent events (click)
+      if (menuButtonHandled && e.type !== 'pointerdown') {
+        console.log('[gs] settings click ignored - already handled by pointerdown', e.type);
+        return;
+      }
+      
+      console.log('[gs] settings click', e.type, e.target);
+      console.log('Genomeshader: Menu button clicked');
+      e.stopPropagation(); 
+      e.preventDefault();
+      
+      // Mark as handled and reset after a short delay
+      menuButtonHandled = true;
+      setTimeout(() => { menuButtonHandled = false; }, 300);
+      
+      toggleMenu(); 
+    };
+    
+    // Use pointerdown as primary handler (fires first), click as fallback
+    menuBtn.addEventListener("pointerdown", handleMenuButtonClick, true);
+    menuBtn.addEventListener("click", handleMenuButtonClick, true);
+    menuBtn.addEventListener("mousedown", handleMenuButtonClick, true);
+    
+    // Ensure menu button is clickable
+    menuBtn.style.pointerEvents = "auto";
+    menuBtn.style.cursor = "pointer";
+    menuBtn.style.zIndex = "150";
+    menuBtn.style.position = "relative";
+    
+    // Also set onclick as fallback
+    menuBtn.onclick = handleMenuButtonClick;
+    
+    console.log('[gs] Menu button handlers attached', {
+      hasClick: true,
+      hasPointerDown: true,
+      hasMouseDown: true,
+      hasOnclick: !!menuBtn.onclick
+    });
+    
+    // Close menu when clicking outside, but check if click is outside menu/button
+    // In inline mode, use root-scoped handler to avoid Jupyter wrapper interference
+    if (hostMode === 'inline' && root) {
+      // Track when menu was just opened to avoid immediate close
+      let menuJustOpened = false;
+      const originalToggleMenu = toggleMenu;
+      toggleMenu = function() {
+        menuJustOpened = true;
+        originalToggleMenu();
+        // Reset flag after a short delay
+        setTimeout(() => { menuJustOpened = false; }, 100);
+      };
+      
+      // Use pointerdown with capturing to catch events before they bubble
+      const onPointerDown = (e) => {
+        // Don't close if menu was just opened (same click event)
+        if (menuJustOpened) {
+          return;
+        }
+        // Only close if menu is open and click is outside menu/button
+        if (ctxMenu.classList.contains("open") && 
+            !ctxMenu.contains(e.target) && 
+            !menuBtn.contains(e.target)) {
+          closeMenu();
+        }
+      };
+      root.addEventListener("pointerdown", onPointerDown, true);
+      console.log('[gs] Root-scoped outside-click handler attached (inline mode)');
+    } else {
+      // Popup mode: use document-level handler
+      document.addEventListener("click", (e) => {
+        if (!ctxMenu.contains(e.target) && !menuBtn.contains(e.target)) {
+          closeMenu();
+        }
+      });
+      console.log('[gs] Document-level outside-click handler attached (popup mode)');
+    }
+    console.log('[gs] Settings menu handlers attached successfully');
+  } else {
+    console.error('Genomeshader: Cannot attach menu handlers - elements not found', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
+  }
   ctxMenu.addEventListener("click", (e) => e.stopPropagation());
 
   themeItem.addEventListener("click", () => {
@@ -1552,6 +1818,297 @@
     setVariantLayoutMode(next);
     renderAll();
   });
+
+  // Fullscreen mode setup
+  const fullscreenItem = getElementById("fullscreenItem");
+  const fullscreenLabel = getElementById("fullscreenLabel");
+  
+  // Resize callback for focus mode
+  function triggerResize() {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (webgpuCore && webgpuSupported) {
+          try {
+            webgpuCore.handleResize();
+          } catch (error) {
+            console.error("WebGPU resize error:", error);
+          }
+        }
+        renderAll();
+      });
+    });
+  }
+
+  // Focus mode implementation (inlined from focus_mode.js)
+  function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
+    if (!viewerEl || !toggleEl || !viewId) {
+      console.error('installFocusMode: missing required parameters');
+      return;
+    }
+
+    let isActive = false;
+    let overlay = null;
+    let modal = null;
+    let topbar = null;
+    let placeholder = null;
+    let originalParent = null;
+    let originalNextSibling = null;
+
+    const overlayId = `genomeshader-overlay-${viewId}`;
+    const modalId = `genomeshader-modal-${viewId}`;
+    const topbarId = `genomeshader-topbar-${viewId}`;
+    const placeholderId = `genomeshader-placeholder-${viewId}`;
+
+    function createOverlay() {
+      overlay = document.createElement('div');
+      overlay.id = overlayId;
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        background: rgba(0, 0, 0, 0.75);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: auto;
+      `;
+
+      modal = document.createElement('div');
+      modal.id = modalId;
+      modal.style.cssText = `
+        position: absolute;
+        inset: 24px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        background: var(--bg, #0b0d10);
+        border-radius: 12px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        pointer-events: auto;
+      `;
+
+      topbar = document.createElement('div');
+      topbar.id = topbarId;
+      topbar.style.cssText = `
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border, rgba(255,255,255,0.10));
+        background: var(--panel, #11151b);
+        flex-shrink: 0;
+      `;
+
+      const title = document.createElement('div');
+      title.textContent = 'Genomeshader — Full screen';
+      title.style.cssText = `
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text, rgba(255,255,255,0.92));
+      `;
+
+      const closeBtn = document.createElement('button');
+      closeBtn.textContent = '✕';
+      closeBtn.setAttribute('aria-label', 'Close full screen');
+      closeBtn.style.cssText = `
+        width: 32px;
+        height: 32px;
+        border: 1px solid var(--border2, rgba(255,255,255,0.08));
+        background: var(--panel2, rgba(255,255,255,0.03));
+        color: var(--text, rgba(255,255,255,0.92));
+        border-radius: 8px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        line-height: 1;
+        transition: all 0.15s ease;
+      `;
+      closeBtn.addEventListener('mouseenter', () => {
+        closeBtn.style.filter = 'brightness(1.1)';
+      });
+      closeBtn.addEventListener('mouseleave', () => {
+        closeBtn.style.filter = '';
+      });
+      closeBtn.addEventListener('click', exit);
+
+      topbar.appendChild(title);
+      topbar.appendChild(closeBtn);
+
+      const modalBody = document.createElement('div');
+      modalBody.style.cssText = `
+        flex: 1;
+        overflow: hidden;
+        position: relative;
+        pointer-events: auto;
+        touch-action: none;
+      `;
+
+      modal.appendChild(topbar);
+      modal.appendChild(modalBody);
+      overlay.appendChild(modal);
+
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+          exit();
+        }
+      });
+
+      const handleEscape = (e) => {
+        if (e.key === 'Escape' && isActive) {
+          exit();
+        }
+      };
+      document.addEventListener('keydown', handleEscape);
+      overlay._escapeHandler = handleEscape;
+
+      return { overlay, modal, modalBody };
+    }
+
+    function enter() {
+      if (isActive) return;
+
+      const { overlay, modal, modalBody } = createOverlay();
+      
+      originalParent = viewerEl.parentNode;
+      originalNextSibling = viewerEl.nextSibling;
+
+      placeholder = document.createElement('div');
+      placeholder.id = placeholderId;
+      placeholder.style.cssText = `
+        width: ${viewerEl.offsetWidth}px;
+        height: ${viewerEl.offsetHeight}px;
+        min-height: 600px;
+      `;
+
+      if (originalNextSibling) {
+        originalParent.insertBefore(placeholder, originalNextSibling);
+      } else {
+        originalParent.appendChild(placeholder);
+      }
+
+      modalBody.appendChild(viewerEl);
+      document.body.appendChild(overlay);
+
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      overlay._originalOverflow = originalOverflow;
+
+      isActive = true;
+      updateToggleLabel();
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          // Rebind interactions after DOM move
+          if (typeof interactionBinding !== 'undefined' && interactionBinding) {
+            interactionBinding.destroy();
+          }
+          // Re-find main element within the moved viewer element
+          const mainAfterMove = viewerEl.querySelector ? viewerEl.querySelector("#main") : byId(root, "main");
+          if (mainAfterMove && typeof bindInteractions !== 'undefined') {
+            // Use root to maintain scoping, but mainAfterMove is the actual element
+            interactionBinding = bindInteractions(root, state, mainAfterMove);
+            console.log("[gs] rebound interactions after overlay enter", mainAfterMove, "root", root.id);
+          }
+          if (onEnter) {
+            onEnter();
+          }
+        });
+      });
+    }
+
+    function exit() {
+      if (!isActive) return;
+
+      if (overlay && overlay._originalOverflow !== undefined) {
+        document.body.style.overflow = overlay._originalOverflow;
+      } else {
+        document.body.style.overflow = '';
+      }
+
+      if (overlay && overlay._escapeHandler) {
+        document.removeEventListener('keydown', overlay._escapeHandler);
+      }
+
+      if (placeholder && originalParent) {
+        if (originalNextSibling) {
+          originalParent.insertBefore(viewerEl, originalNextSibling);
+        } else {
+          originalParent.appendChild(viewerEl);
+        }
+        placeholder.remove();
+        placeholder = null;
+      }
+
+      if (overlay) {
+        overlay.remove();
+        overlay = null;
+        modal = null;
+        topbar = null;
+      }
+
+      isActive = false;
+      updateToggleLabel();
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          // Rebind interactions after DOM move
+          if (typeof interactionBinding !== 'undefined' && interactionBinding) {
+            interactionBinding.destroy();
+          }
+          // Re-find main element within the moved viewer element
+          const mainAfterMove = viewerEl.querySelector ? viewerEl.querySelector("#main") : byId(root, "main");
+          if (mainAfterMove && typeof bindInteractions !== 'undefined') {
+            // Use root to maintain scoping, but mainAfterMove is the actual element
+            interactionBinding = bindInteractions(root, state, mainAfterMove);
+            console.log("[gs] rebound interactions after overlay exit", mainAfterMove, "root", root.id);
+          }
+          if (onExit) {
+            onExit();
+          }
+        });
+      });
+    }
+
+    function updateToggleLabel() {
+      if (fullscreenLabel) {
+        fullscreenLabel.textContent = isActive ? 'Exit full screen' : 'Enter full screen';
+      }
+    }
+
+    toggleEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isActive) {
+        exit();
+      } else {
+        enter();
+      }
+    });
+
+    updateToggleLabel();
+
+    return {
+      enter,
+      exit,
+      isActive: () => isActive
+    };
+  }
+
+  // Initialize focus mode after app is ready
+  // Declare interactionBinding early so it's accessible to overlay callbacks
+  let interactionBinding = null;
+  
+  const viewId = window.GENOMESHADER_VIEW_ID || document.querySelector('[data-view-id]')?.dataset.viewId || 'default';
+  if (fullscreenItem && app) {
+    installFocusMode({
+      viewerEl: app,
+      toggleEl: fullscreenItem,
+      viewId: viewId,
+      onEnter: triggerResize,
+      onExit: triggerResize
+    });
+  }
 
   const mq = window.matchMedia?.("(prefers-color-scheme: light)");
   mq?.addEventListener?.("change", () => {
@@ -1692,15 +2249,15 @@
     updateDocumentTitle();
   }
 
-  const main = document.getElementById("main");
-  const tracksSvg = document.getElementById("tracksSvg");
-  const flow = document.getElementById("flow");
-  const reads = document.getElementById("reads");
-  const flowCanvas = document.getElementById("flowCanvas");
-  const readsCanvas = document.getElementById("readsCanvas");
-  const hud = document.getElementById("hud");
-  const tooltip = document.getElementById("tooltip");
-  const tracksWebGPU = document.getElementById("tracksWebGPU");
+  const main = byId(root, "main");
+  const tracksSvg = byId(root, "tracksSvg");
+  const flow = byId(root, "flow");
+  const reads = byId(root, "reads");
+  const flowCanvas = byId(root, "flowCanvas");
+  const readsCanvas = byId(root, "readsCanvas");
+  const hud = byId(root, "hud");
+  const tooltip = byId(root, "tooltip");
+  const tracksWebGPU = byId(root, "tracksWebGPU");
 
   // Initialize WebGPU infrastructure
   let webgpuCore = null;
@@ -1711,6 +2268,31 @@
   async function initWebGPU() {
     if (!navigator.gpu) {
       console.warn("WebGPU not supported, falling back to SVG rendering");
+      if (tracksWebGPU) tracksWebGPU.style.display = 'none';
+      return false;
+    }
+
+    // Wait for canvas to have dimensions
+    if (!tracksWebGPU) {
+      console.warn("WebGPU canvas element not found");
+      return false;
+    }
+    
+    const checkDimensions = () => {
+      const rect = tracksWebGPU.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    
+    // Wait up to 2 seconds for dimensions
+    for (let i = 0; i < 40; i++) {
+      if (checkDimensions()) {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    if (!checkDimensions()) {
+      console.warn("WebGPU canvas has zero dimensions, skipping initialization");
       if (tracksWebGPU) tracksWebGPU.style.display = 'none';
       return false;
     }
@@ -1729,18 +2311,42 @@
     }
   }
 
-  // Initialize WebGPU (async, but don't block rendering)
-  initWebGPU().catch(err => {
-    console.error("WebGPU initialization error:", err);
-  });
+  // Initialize WebGPU after a short delay to ensure DOM is ready
+  setTimeout(() => {
+    initWebGPU().catch(err => {
+      console.error("WebGPU initialization error:", err);
+    });
+  }, 100);
 
   // Initialize orientation state after DOM elements are available
   updateOrientationState();
 
-  function rectW(el) { return el.getBoundingClientRect().width; }
-  function rectH(el) { return el.getBoundingClientRect().height; }
+  function rectW(el) { 
+    if (!el) return 0;
+    const w = el.getBoundingClientRect().width;
+    return isNaN(w) || w <= 0 ? 0 : w;
+  }
+  function rectH(el) { 
+    if (!el) return 0;
+    const h = el.getBoundingClientRect().height;
+    return isNaN(h) || h <= 0 ? 0 : h;
+  }
 
-  function tracksWidthPx() { return tracksSvg.getBoundingClientRect().width; }
+  function tracksWidthPx() { 
+    // In inline mode, re-lookup tracksSvg if it's null (element might not be ready yet)
+    let svgEl = tracksSvg;
+    if (!svgEl && hostMode === 'inline') {
+      const currentRoot = document.querySelector('[id^="genomeshader-root-"]') || 
+                          (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
+                          document.body;
+      if (currentRoot) {
+        svgEl = currentRoot.querySelector('#tracksSvg');
+      }
+    }
+    if (!svgEl) return 0;
+    const w = svgEl.getBoundingClientRect().width;
+    return isNaN(w) || w <= 0 ? 0 : w;
+  }
   function flowWidthPx()   { return rectW(flow); }
   function flowHeightPx()  { return rectH(flow); }
   function readsWidthPx()  { return rectW(reads); }
@@ -1752,12 +2358,31 @@
 
   function updateDerived() {
     const span = state.endBp - state.startBp;
+    if (span <= 0 || isNaN(span)) {
+      // Invalid span, keep previous pxPerBp or use default
+      if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        state.pxPerBp = 1;
+      }
+      return;
+    }
     if (isVerticalMode()) {
       const h = tracksHeightPx();
-      state.pxPerBp = h / span;
+      if (h > 0 && !isNaN(h)) {
+        state.pxPerBp = h / span;
+      } else if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        state.pxPerBp = 1;
+      }
     } else {
       const w = tracksWidthPx();
-      state.pxPerBp = w / span;
+      if (w > 0 && !isNaN(w)) {
+        state.pxPerBp = w / span;
+      } else if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+        state.pxPerBp = 1;
+      }
+    }
+    // Final guard
+    if (isNaN(state.pxPerBp) || state.pxPerBp <= 0) {
+      state.pxPerBp = 1;
     }
   }
 
@@ -1777,12 +2402,27 @@
   // IMPORTANT: canonical genome-x mapping for the right pane (tracks/canvases)
   // Accounts for expanded insertion gaps
   function xGenomeCanonical(bp, W) {
+    // Guard against invalid inputs
+    if (!W || W <= 0 || isNaN(W) || isNaN(bp)) {
+      return 0;
+    }
     const leftPad = 16, rightPad = 16;
-    const innerW = W - leftPad - rightPad;
+    const innerW = Math.max(0, W - leftPad - rightPad);
     const span = state.endBp - state.startBp;
+    if (span <= 0 || isNaN(span)) {
+      return leftPad;
+    }
+    // Guard against invalid pxPerBp
+    if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+      return leftPad;
+    }
+    
     const totalGapPx = getTotalInsertionGapWidth();
     const totalGapBp = totalGapPx / state.pxPerBp;
     const effectiveSpan = span + totalGapBp;
+    if (effectiveSpan <= 0 || isNaN(effectiveSpan)) {
+      return leftPad;
+    }
     
     // Calculate x position, accounting for insertion gaps before this position
     let accumulatedGapPx = 0;
@@ -1795,9 +2435,16 @@
     
     const bpOffset = bp - state.startBp;
     const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
+      return leftPad;
+    }
     const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+    if (isNaN(normalizedPos)) {
+      return leftPad;
+    }
     
-    return leftPad + normalizedPos * innerW;
+    const result = leftPad + normalizedPos * innerW;
+    return isNaN(result) ? leftPad : Math.max(leftPad, Math.min(leftPad + innerW, result));
   }
   
   function xGenome(bp) {
@@ -1832,12 +2479,26 @@
 
   // Vertical mode coordinate mapping (genomic axis vertical: bottom=start, top=end)
   function yGenomeCanonical(bp, H) {
+    // Guard against invalid inputs
+    if (!H || H <= 0 || isNaN(H) || isNaN(bp)) {
+      return 16;
+    }
     const topPad = 16, bottomPad = 16;
-    const innerH = H - topPad - bottomPad;
+    const innerH = Math.max(0, H - topPad - bottomPad);
     const span = state.endBp - state.startBp;
+    if (span <= 0 || isNaN(span)) {
+      return topPad;
+    }
+    // Guard against invalid pxPerBp
+    if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
+      return topPad;
+    }
     const totalGapPx = getTotalInsertionGapWidth();
     const totalGapBp = totalGapPx / state.pxPerBp;
     const effectiveSpan = span + totalGapBp;
+    if (effectiveSpan <= 0 || isNaN(effectiveSpan)) {
+      return topPad;
+    }
     
     // Calculate y position, accounting for insertion gaps before this position
     let accumulatedGapPx = 0;
@@ -1850,10 +2511,17 @@
     
     const bpOffset = bp - state.startBp;
     const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
+      return topPad;
+    }
     const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+    if (isNaN(normalizedPos)) {
+      return topPad;
+    }
     
     // Invert: bottom (H - bottomPad) = start, top (topPad) = end
-    return H - bottomPad - normalizedPos * innerH;
+    const result = H - bottomPad - normalizedPos * innerH;
+    return isNaN(result) ? topPad : Math.max(topPad, Math.min(H - bottomPad, result));
   }
   
   function yGenome(bp) {
@@ -1861,7 +2529,19 @@
   }
   
   function tracksHeightPx() {
-    return tracksSvg.getBoundingClientRect().height;
+    // In inline mode, re-lookup tracksSvg if it's null (element might not be ready yet)
+    let svgEl = tracksSvg;
+    if (!svgEl && hostMode === 'inline') {
+      const currentRoot = document.querySelector('[id^="genomeshader-root-"]') || 
+                          (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
+                          document.body;
+      if (currentRoot) {
+        svgEl = currentRoot.querySelector('#tracksSvg');
+      }
+    }
+    if (!svgEl) return 0;
+    const h = svgEl.getBoundingClientRect().height;
+    return isNaN(h) || h <= 0 ? 0 : h;
   }
   
   function bpFromYGenome(yPx, H) {
@@ -1990,7 +2670,7 @@
   // SVG helpers
   // -----------------------------
   const SVGNS = "http://www.w3.org/2000/svg";
-  function clearSvg(svg) { while (svg.firstChild) svg.removeChild(svg.firstChild); }
+  function clearSvg(svg) { if (!svg) return; while (svg.firstChild) svg.removeChild(svg.firstChild); }
   function el(tag, attrs = {}, text = null) {
     const n = document.createElementNS(SVGNS, tag);
     for (const [k,v] of Object.entries(attrs)) n.setAttribute(k, String(v));
@@ -2110,15 +2790,54 @@
       const totalH = tracksLayout.length > 0 
         ? tracksLayout[tracksLayout.length - 1].top + tracksLayout[tracksLayout.length - 1].height
         : 0;
-      document.documentElement.style.setProperty('--tracks-h', `${totalH}px`);
+      // Use default height if calculation fails or returns 0
+      const finalHeight = totalH > 0 ? totalH : 280; // Default to 280px if calculation fails
+      document.documentElement.style.setProperty('--tracks-h', `${finalHeight}px`);
     }
   }
 
   // -----------------------------
   // Tracks rendering (ideogram + genes + repeats + ruler)
   // -----------------------------
+  // Track retry attempts to avoid infinite loops
+  let renderTracksRetryCount = 0;
+  const MAX_RETRY_ATTEMPTS = 10;
+  
+  // Helper function to get current tracksSvg element, re-looking it up in inline mode if needed
+  function getTracksSvg() {
+    let svgEl = tracksSvg;
+    if (!svgEl && hostMode === 'inline') {
+      const currentRoot = document.querySelector('[id^="genomeshader-root-"]') || 
+                          (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
+                          document.body;
+      if (currentRoot) {
+        svgEl = currentRoot.querySelector('#tracksSvg');
+      }
+    }
+    return svgEl;
+  }
+  
   function renderTracks() {
-    clearSvg(tracksSvg);
+    // Get current tracksSvg element (re-lookup in inline mode if needed)
+    const svgEl = getTracksSvg();
+    
+    // If tracksSvg is still not found, retry or skip
+    if (!svgEl) {
+      if (renderTracksRetryCount < MAX_RETRY_ATTEMPTS) {
+        renderTracksRetryCount++;
+        // Schedule a retry after a short delay to allow DOM to be ready
+        setTimeout(() => {
+          renderTracks();
+        }, 50);
+        return;
+      } else {
+        console.warn('Genomeshader: renderTracks skipped - tracksSvg not found after retries', { retries: renderTracksRetryCount });
+        renderTracksRetryCount = 0; // Reset counter
+        return;
+      }
+    }
+    
+    clearSvg(svgEl);
     // Clear WebGPU renderer instances
     if (instancedRenderer) {
       instancedRenderer.clear();
@@ -2128,6 +2847,28 @@
     const isVertical = isVerticalMode();
     const W = isVertical ? tracksHeightPx() : tracksWidthPx();
     const H = isVertical ? tracksWidthPx() : tracksHeightPx();
+    
+    // Guard against invalid dimensions - retry if dimensions are not ready
+    if (!W || W <= 0 || isNaN(W) || !H || H <= 0 || isNaN(H)) {
+      if (renderTracksRetryCount < MAX_RETRY_ATTEMPTS) {
+        renderTracksRetryCount++;
+        // Try to update tracks height before retrying (might fix the dimension issue)
+        updateTracksHeight();
+        // Schedule a retry after a short delay to allow layout to settle
+        setTimeout(() => {
+          renderTracks();
+        }, 50);
+        return;
+      } else {
+        console.warn('Genomeshader: renderTracks skipped - invalid dimensions after retries', { W, H, retries: renderTracksRetryCount });
+        renderTracksRetryCount = 0; // Reset counter
+        return;
+      }
+    }
+    
+    // Reset retry counter on successful render
+    renderTracksRetryCount = 0;
+    
     const layout = getTrackLayout();
     
     // Coordinate mapping functions based on orientation
@@ -2171,11 +2912,11 @@
       const tracksContainer = document.getElementById("tracksContainer");
       if (tracksContainer) {
         const containerRect = tracksContainer.getBoundingClientRect();
-        const svgRect = tracksSvg.getBoundingClientRect();
+        const svgRect = svgEl.getBoundingClientRect();
         
         // Helper function to draw out-of-bounds shading (darker)
         const drawOutOfBoundsRect = (x, y, width, height) => {
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: x,
             y: y,
             width: width,
@@ -2305,7 +3046,7 @@
       if (isVertical) {
         // Position chromosome label at the bottom
         const labelY = W - 16;
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: ideogramX + ideogramW/2 + 1,
           y: labelY,
           class: "svg-chr",
@@ -2314,7 +3055,7 @@
           transform: "rotate(-90 " + (ideogramX + ideogramW/2) + " " + labelY + ")"
         }, state.contig));
       } else {
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: 16,
           y: ideogramY + ideogramH/2 + 1,
           class: "svg-chr",
@@ -2397,10 +3138,10 @@
       clip.appendChild(el("rect", { x: qX, y: qY, width: qW, height: qH, rx: 9 }));
 
       defs.appendChild(clip);
-      tracksSvg.appendChild(defs);
+      svgEl.appendChild(defs);
 
-      tracksSvg.appendChild(pArm);
-      tracksSvg.appendChild(qArm);
+      svgEl.appendChild(pArm);
+      svgEl.appendChild(qArm);
       
       // Calculate p-arm and q-arm lengths in base pairs
       const pArmLength = centromerePos;
@@ -2473,7 +3214,7 @@
         }
         
         if (isVertical) {
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: bandInnerX,
             y: bandPos,
             width: bandInnerW,
@@ -2484,7 +3225,7 @@
             "clip-path": `url(#${clipId})`
           }));
         } else {
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: bandPos,
             y: bandInnerY,
             width: Math.max(1, bandSize),
@@ -2523,7 +3264,7 @@
           )
         );
         
-        tracksSvg.appendChild(el("rect", {
+        svgEl.appendChild(el("rect", {
           x: (isLocusPArm ? pX : qX) - 1,
           y: locusHighlightY,
           width: (isLocusPArm ? pW : qW) + 2,
@@ -2551,7 +3292,7 @@
           )
         );
         
-        tracksSvg.appendChild(el("rect", {
+        svgEl.appendChild(el("rect", {
           x: locusHighlightX,
           y: (isLocusPArm ? pY : qY) - 1,
           width: locusHighlightWidth,
@@ -2583,13 +3324,13 @@
       for (let lane=0; lane<lanes; lane++) {
         if (isVertical) {
           const x = geneStartX + lane*laneDim + laneDim/2;
-          tracksSvg.appendChild(el("line", {
+          svgEl.appendChild(el("line", {
             x1: x, x2: x, y1: 16, y2: H-16,
             stroke: "rgba(127,127,127,0.14)"
           }));
         } else {
           const y = geneStartY + lane*laneDim + laneDim/2;
-          tracksSvg.appendChild(el("line", {
+          svgEl.appendChild(el("line", {
             x1: 16, x2: W-16, y1: y, y2: y,
             stroke: "rgba(127,127,127,0.14)"
           }));
@@ -2607,7 +3348,7 @@
             const p1 = `${perpPos},${cy}`;
             const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
             const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
-            tracksSvg.appendChild(el("polygon", {
+            svgEl.appendChild(el("polygon", {
               points: `${p1} ${p2} ${p3}`,
               fill: "rgba(127,127,127,0.45)"
             }));
@@ -2616,7 +3357,7 @@
             const p1 = `${cx},${perpPos}`;
             const p2 = `${cx - dir*size},${perpPos - size*0.8}`;
             const p3 = `${cx - dir*size},${perpPos + size*0.8}`;
-            tracksSvg.appendChild(el("polygon", {
+            svgEl.appendChild(el("polygon", {
               points: `${p1} ${p2} ${p3}`,
               fill: "rgba(127,127,127,0.45)"
             }));
@@ -2641,14 +3382,14 @@
       const pos2 = genomePos(e);
       
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: perpPos, x2: perpPos, y1: pos1, y2: pos2,
           stroke: "rgba(127,127,127,0.40)",
           "stroke-width": 1
         }));
         drawStrandArrows(pos1, pos2, perpPos, t.strand, true);
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: pos1, x2: pos2, y1: perpPos, y2: perpPos,
           stroke: "rgba(127,127,127,0.40)",
           "stroke-width": 1
@@ -2677,7 +3418,7 @@
           if (firstExonY === null || yMax > firstExonY) {
             firstExonY = yMax;
           }
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: perpPos - 6, y: yMin,
             width: 12, height: Math.max(2, yMax - yMin),
             rx: 4,
@@ -2690,7 +3431,7 @@
           if (firstExonX === null) {
             firstExonX = exPos1;
           }
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: exPos1, y: perpPos - 6,
             width: Math.max(2, exPos2 - exPos1), height: 12,
             rx: 4,
@@ -2706,7 +3447,7 @@
         // Gene name to the left of the gene track
         // Y position should match the bottom of the bottom-most exon
         const geneNameY = firstExonY !== null ? firstExonY : pos1;
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: perpPos - 8,
           y: geneNameY,
           class:"svg-geneName",
@@ -2715,7 +3456,7 @@
           transform: "rotate(-90 " + (perpPos - 8) + " " + geneNameY + ")"
         }, `${t.name}`));
         // Strand indicator to the right of the gene track (just a bit to the right)
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: perpPos + 8,
           y: pos1,
           class:"svg-small",
@@ -2725,12 +3466,12 @@
       } else {
         // In horizontal mode, X position should match the first exon's X position
         const geneNameX = firstExonX !== null ? firstExonX : pos1;
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: geneNameX,
           y: perpPos - 12,
           class:"svg-geneName"
         }, `${t.name}`));
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: pos1 + 2,
           y: perpPos + 16,
           class:"svg-small"
@@ -2757,12 +3498,12 @@
 
       // background guide line
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: repeatsX + repeatsW/2, x2: repeatsX + repeatsW/2, y1: 16, y2: W-16,
           stroke: "rgba(127,127,127,0.16)"
         }));
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: 16, x2: W-16, y1: repeatsY + repeatsH/2, y2: repeatsY + repeatsH/2,
           stroke: "rgba(127,127,127,0.16)"
         }));
@@ -2974,7 +3715,7 @@
       }
       
       // Append all elements at once (single DOM operation)
-      tracksSvg.appendChild(fragment);
+      svgEl.appendChild(fragment);
     }
     }
 
@@ -2997,13 +3738,13 @@
 
       // Base line
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: baseX, x2: baseX, y1: 16, y2: H-16,
           stroke: "rgba(127,127,127,0.70)",
           "stroke-width": 1.2
         }));
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: 16, x2: W-16, y1: baseY, y2: baseY,
           stroke: "rgba(127,127,127,0.70)",
           "stroke-width": 1.2
@@ -3029,7 +3770,7 @@
       const isMajor = (Math.round(bp / minorBp) % 5) === 0;
 
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: baseX - (isMajor ? 9 : 5), x2: baseX + (isMajor ? 9 : 5),
           y1: pos, y2: pos,
           stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
@@ -3045,11 +3786,11 @@
             "dominant-baseline": "middle",
             transform: "rotate(-90 " + (baseX + 26) + " " + pos + ")"
           }, formatBp(Math.round(bp), span));
-          tracksSvg.appendChild(textEl);
+          svgEl.appendChild(textEl);
           majorTickLabelPositions.push(pos);
         }
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: pos, x2: pos,
           y1: baseY - (isMajor ? 9 : 5), y2: baseY + (isMajor ? 9 : 5),
           stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
@@ -3057,7 +3798,7 @@
         }));
 
         if (isMajor && showLabels) {
-          tracksSvg.appendChild(el("text", {
+          svgEl.appendChild(el("text", {
             x: pos,
             y: baseY + 26,
             class: "svg-small",
@@ -3081,14 +3822,14 @@
           x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
           transform: "rotate(-90 " + (baseX + 26) + " " + bottomEdgeY + ")"
         }, formatBp(Math.round(state.startBp), span));
-        tracksSvg.appendChild(textEl);
+        svgEl.appendChild(textEl);
       }
       if (!hasNearbyTopTick) {
         const textEl = el("text", {
           x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
           transform: "rotate(-90 " + (baseX + 26) + " " + topEdgeY + ")"
         }, formatBp(Math.round(state.endBp), span));
-        tracksSvg.appendChild(textEl);
+        svgEl.appendChild(textEl);
       }
     } else {
       const leftEdgeX = 16;
@@ -3097,12 +3838,12 @@
       const hasNearbyRightTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - rightEdgeX) < edgeThreshold);
 
       if (!hasNearbyLeftTick) {
-        tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
+        svgEl.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
           formatBp(Math.round(state.startBp), span)
         ));
       }
       if (!hasNearbyRightTick) {
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
         }, formatBp(Math.round(state.endBp), span)));
       }
@@ -3159,7 +3900,7 @@
           renderAll();
         });
       }
-      tracksSvg.appendChild(lineEl);
+      svgEl.appendChild(lineEl);
       
       // For insertions, add a larger invisible clickable area AFTER the line (so it's on top)
       if (isInsertion(v)) {
@@ -3194,7 +3935,7 @@
           }
           renderAll();
         });
-        tracksSvg.appendChild(clickArea);
+        svgEl.appendChild(clickArea);
       }
 
       let circleEl;
@@ -3237,7 +3978,7 @@
           renderAll();
         });
       }
-      tracksSvg.appendChild(circleEl);
+      svgEl.appendChild(circleEl);
       
       // Draw expanded insertion sequence if expanded
       if (state.expandedInsertions.has(v.id) && isInsertion(v)) {
@@ -3261,7 +4002,7 @@
           const gapEndY = gapStartY - gapSize; // going up (toward start)
           
           // Draw gap background
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: baseX - 18,
             y: gapEndY,
             width: 36,
@@ -3277,7 +4018,7 @@
             const baseY = gapStartY - (i + 1) * baseSize;
             const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
             
-            tracksSvg.appendChild(el("rect", {
+            svgEl.appendChild(el("rect", {
               x: baseX - 16,
               y: baseY,
               width: 32,
@@ -3297,7 +4038,7 @@
                 "dominant-baseline": "middle",
                 transform: "rotate(-90 " + baseX + " " + (baseY + baseSize / 2) + ")"
               }, base);
-              tracksSvg.appendChild(textEl);
+              svgEl.appendChild(textEl);
             }
           }
         } else {
@@ -3305,7 +4046,7 @@
           const gapEndX = gapStartX + gapSize;
           
           // Draw gap background
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: gapStartX,
             y: baseY - 18,
             width: gapSize,
@@ -3321,7 +4062,7 @@
             const baseX = gapStartX + i * baseSize;
             const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
             
-            tracksSvg.appendChild(el("rect", {
+            svgEl.appendChild(el("rect", {
               x: baseX,
               y: baseY - 16,
               width: baseSize - 1,
@@ -3331,7 +4072,7 @@
             
             // Draw base letter if space allows
             if (baseSize >= 8) {
-              tracksSvg.appendChild(el("text", {
+              svgEl.appendChild(el("text", {
                 x: baseX + baseSize / 2,
                 y: baseY,
                 class: "svg-small",
@@ -3348,12 +4089,12 @@
 
       // separator
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: rulerX + rulerW, x2: rulerX + rulerW, y1: 0, y2: H,
           stroke: "rgba(127,127,127,0.12)"
         }));
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: 0, x2: W, y1: rulerY + rulerH, y2: rulerY + rulerH,
           stroke: "rgba(127,127,127,0.12)"
         }));
@@ -3548,7 +4289,7 @@
               }
             }
           }
-          tracksSvg.appendChild(fragment);
+          svgEl.appendChild(fragment);
         } else {
           // Fallback to SVG rendering
           const fragment = document.createDocumentFragment();
@@ -3608,7 +4349,7 @@
           }
           
           // Append all elements at once (single DOM operation)
-          tracksSvg.appendChild(fragment);
+          svgEl.appendChild(fragment);
         }
       } else {
         // Zoomed out: show a continuous reference line with subtle pattern
@@ -3620,7 +4361,7 @@
           const effectiveSpan = span + totalGapBp;
 
           // Draw background
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: referenceX,
             y: topPad,
             width: referenceW,
@@ -3632,7 +4373,7 @@
           // Draw a subtle pattern indicating reference sequence
           const patternHeight = 20;
           for (let y = topPad; y < topPad + innerH; y += patternHeight * 2) {
-            tracksSvg.appendChild(el("rect", {
+            svgEl.appendChild(el("rect", {
               x: referenceX,
               y: y,
               width: referenceW,
@@ -3648,7 +4389,7 @@
           const effectiveSpan = span + totalGapBp;
 
           // Draw background
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: leftPad,
             y: referenceY,
             width: innerW,
@@ -3660,7 +4401,7 @@
           // Draw a subtle pattern indicating reference sequence
           const patternWidth = 20;
           for (let x = leftPad; x < leftPad + innerW; x += patternWidth * 2) {
-            tracksSvg.appendChild(el("rect", {
+            svgEl.appendChild(el("rect", {
               x: x,
               y: referenceY,
               width: Math.min(patternWidth, leftPad + innerW - x),
@@ -3673,12 +4414,12 @@
 
       // Separator
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: referenceX + referenceW, x2: referenceX + referenceW, y1: 0, y2: H,
           stroke: "rgba(127,127,127,0.12)"
         }));
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: 0, x2: W, y1: referenceY - 4, y2: referenceY - 4,
           stroke: "rgba(127,127,127,0.12)"
         }));
@@ -4667,147 +5408,250 @@
   // -----------------------------
   // Interaction (right pane)
   // -----------------------------
-  main.addEventListener("pointerdown", (e) => {
-    // Don't start drag if clicking on a variant (for insertion expansion)
-    // Check if clicking on SVG elements that are variants
-    const target = e.target;
-    if (target && target.tagName && (target.tagName === "line" || target.tagName === "circle" || target.tagName === "rect")) {
-      // Check if this is a variant element (has blue stroke or is in the variant area)
-      const stroke = target.getAttribute ? target.getAttribute("stroke") : null;
-      if (stroke && (stroke === "var(--blue)" || stroke === cssVar("--blue") || stroke.includes("blue"))) {
-        // This might be a variant - don't start dragging, let click handler work
-        return;
-      }
-      // Also check if it's the invisible click area for insertions
-      if (target.getAttribute && target.getAttribute("fill") === "transparent" && target.getAttribute("width") === "10") {
-        return;
-      }
-    }
-    
-    state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    main.setPointerCapture(e.pointerId);
-
-    if (state.pointers.size === 1) {
-      state.dragging = true;
-      state.lastX = e.clientX;
-      state.lastY = e.clientY;
-    } else {
-      state.dragging = false;
-    }
-  });
-
-  main.addEventListener("pointermove", (e) => {
-    if (!state.pointers.has(e.pointerId)) return;
-    state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (state.pointers.size === 2) {
-      const pts = Array.from(state.pointers.values());
-      const dx = pts[0].x - pts[1].x;
-      const dy = pts[0].y - pts[1].y;
-      const dist = Math.hypot(dx, dy);
-
-      if (state.pinchStartDist == null) {
-        state.pinchStartDist = dist;
-        state.pinchStartSpan = (state.endBp - state.startBp);
-
-        const midX = (pts[0].x + pts[1].x) / 2;
-        const midY = (pts[0].y + pts[1].y) / 2;
-        state.pinchAnchorBp = anchorBpFromClient(midX, midY);
-      } else {
-        const scale = dist / state.pinchStartDist; // >1 apart => zoom in
-        const oldSpan = state.pinchStartSpan;
-        const newSpan = clampSpan(oldSpan / scale);
-
-        const anchorBp = state.pinchAnchorBp ?? (state.startBp + (state.endBp-state.startBp)/2);
-        const leftFrac = (anchorBp - state.startBp) / (state.endBp - state.startBp);
-        const newStart = anchorBp - leftFrac * newSpan;
-
-        state.startBp = newStart;
-        state.endBp = newStart + newSpan;
-
-        // Clamp to chromosome boundaries
-        clampToChromosomeBounds();
-
-        renderAll();
-      }
-      return;
+  
+  // Bind wheel, pointer, and dblclick events to main element
+  // Returns a destroy function to clean up listeners
+  function bindInteractions(root, state, main) {
+    if (!main) {
+      console.warn("[gs] bindInteractions: main element not found");
+      return { destroy() {} };
     }
 
-    if (state.dragging) {
+    // Wheel: pan/zoom gestures
+    // Use composedPath() as primary gate to ensure event is over viewport
+    function shouldHandleWheel(e) {
+      const path = e.composedPath ? e.composedPath() : [];
+      return path.includes(main); // main is the viewport element that should pan/zoom
+    }
+
+    const onWheel = (e) => {
+      // Extra safety: ignore wheel not originating inside this viewer
+      const path = e.composedPath ? e.composedPath() : [];
+      if (!path.includes(main)) return;
+
+      const isPinchZoom = e.ctrlKey === true || e.metaKey === true;
       const isVertical = isVerticalMode();
-      const dx = e.clientX - state.lastX;
-      const dy = e.clientY - state.lastY;
-      state.lastX = e.clientX;
-      state.lastY = e.clientY;
-      if (isVertical) {
-        panByPixels(0, -dy);
-      } else {
-        panByPixels(-dx, 0);
+      const dx = e.deltaX;
+      const dy = e.deltaY;
+
+      if (isPinchZoom) {
+        // Handle pinch-to-zoom (trackpad gesture with ctrl/meta)
+        e.preventDefault();
+        e.stopPropagation(); // Prevent bubbling to window/document
+        const zoomIntensity = 0.0018;
+        // Use vertical delta for pinch zoom (standard trackpad convention)
+        const factor = Math.exp(-dy * zoomIntensity);
+        const anchorBp = isVertical 
+          ? anchorBpFromClientY(e.clientY)
+          : anchorBpFromClientX(e.clientX);
+        zoomByFactor(factor, anchorBp);
+        return;
       }
-    }
-  });
-
-  function endPointer(e) {
-    state.pointers.delete(e.pointerId);
-    if (state.pointers.size < 2) {
-      state.pinchStartDist = null;
-      state.pinchStartSpan = null;
-      state.pinchAnchorBp = null;
-    }
-    if (state.pointers.size === 0) state.dragging = false;
-  }
-  main.addEventListener("pointerup", endPointer);
-  main.addEventListener("pointercancel", endPointer);
-
-  // Wheel: default zoom (no ctrl/meta), shift+wheel (or horizontal) pan
-  main.addEventListener("wheel", (e) => {
-    if (e.ctrlKey || e.metaKey) return;
-
-    const isVertical = isVerticalMode();
-    const dx = e.deltaX;
-    const dy = e.deltaY;
-    
-    if (isVertical) {
-      // In vertical mode: vertical wheel = pan, horizontal wheel = zoom
-      const wantPan = e.shiftKey || Math.abs(dy) > Math.abs(dx);
       
-      if (wantPan) {
+      if (isVertical) {
+        // In vertical mode: vertical wheel = pan, horizontal wheel = zoom
+        const wantPan = e.shiftKey || Math.abs(dy) > Math.abs(dx);
+        
+        if (wantPan) {
+          e.preventDefault();
+          e.stopPropagation(); // Prevent bubbling to window/document
+          const panDy = e.shiftKey ? dx : dy;
+          panByPixels(0, panDy);
+          return;
+        }
+
         e.preventDefault();
-        const panDy = e.shiftKey ? dx : dy;
-        panByPixels(0, panDy);
+        e.stopPropagation(); // Prevent bubbling to window/document
+        const zoomIntensity = 0.0018;
+        const factor = Math.exp(-dx * zoomIntensity);
+
+        const anchorBp = anchorBpFromClientY(e.clientY);
+        zoomByFactor(factor, anchorBp);
+      } else {
+        // In horizontal mode: horizontal wheel = pan, vertical wheel = zoom
+        const wantPan = e.shiftKey || Math.abs(dx) > Math.abs(dy);
+
+        if (wantPan) {
+          e.preventDefault();
+          e.stopPropagation(); // Prevent bubbling to window/document
+          const panDx = e.shiftKey ? dy : dx;
+          panByPixels(panDx, 0);
+          return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation(); // Prevent bubbling to window/document
+        const zoomIntensity = 0.0018;
+        const factor = Math.exp(-dy * zoomIntensity);
+
+        const anchorBp = anchorBpFromClientX(e.clientX);
+        zoomByFactor(factor, anchorBp);
+      }
+    };
+
+    const onPointerDown = (e) => {
+      // Don't start drag if clicking on a variant (for insertion expansion)
+      // Check if clicking on SVG elements that are variants
+      const target = e.target;
+      if (target && target.tagName && (target.tagName === "line" || target.tagName === "circle" || target.tagName === "rect")) {
+        // Check if this is a variant element (has blue stroke or is in the variant area)
+        const stroke = target.getAttribute ? target.getAttribute("stroke") : null;
+        if (stroke && (stroke === "var(--blue)" || stroke === cssVar("--blue") || stroke.includes("blue"))) {
+          // This might be a variant - don't start dragging, let click handler work
+          return;
+        }
+        // Also check if it's the invisible click area for insertions
+        if (target.getAttribute && target.getAttribute("fill") === "transparent" && target.getAttribute("width") === "10") {
+          return;
+        }
+      }
+      
+      state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      main.setPointerCapture(e.pointerId);
+
+      if (state.pointers.size === 1) {
+        state.dragging = true;
+        state.lastX = e.clientX;
+        state.lastY = e.clientY;
+      } else {
+        state.dragging = false;
+      }
+    };
+
+    const onPointerMove = (e) => {
+      if (!state.pointers.has(e.pointerId)) return;
+      state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (state.pointers.size === 2) {
+        const pts = Array.from(state.pointers.values());
+        const dx = pts[0].x - pts[1].x;
+        const dy = pts[0].y - pts[1].y;
+        const dist = Math.hypot(dx, dy);
+
+        if (state.pinchStartDist == null) {
+          state.pinchStartDist = dist;
+          state.pinchStartSpan = (state.endBp - state.startBp);
+
+          const midX = (pts[0].x + pts[1].x) / 2;
+          const midY = (pts[0].y + pts[1].y) / 2;
+          state.pinchAnchorBp = anchorBpFromClient(midX, midY);
+        } else {
+          const scale = dist / state.pinchStartDist; // >1 apart => zoom in
+          const oldSpan = state.pinchStartSpan;
+          const newSpan = clampSpan(oldSpan / scale);
+
+          const anchorBp = state.pinchAnchorBp ?? (state.startBp + (state.endBp-state.startBp)/2);
+          const leftFrac = (anchorBp - state.startBp) / (state.endBp - state.startBp);
+          const newStart = anchorBp - leftFrac * newSpan;
+
+          state.startBp = newStart;
+          state.endBp = newStart + newSpan;
+
+          // Clamp to chromosome boundaries
+          clampToChromosomeBounds();
+
+          renderAll();
+        }
         return;
       }
 
-      e.preventDefault();
-      const zoomIntensity = 0.0018;
-      const factor = Math.exp(-dx * zoomIntensity);
-
-      const anchorBp = anchorBpFromClientY(e.clientY);
-      zoomByFactor(factor, anchorBp);
-    } else {
-      // In horizontal mode: horizontal wheel = pan, vertical wheel = zoom
-      const wantPan = e.shiftKey || Math.abs(dx) > Math.abs(dy);
-
-      if (wantPan) {
-        e.preventDefault();
-        const panDx = e.shiftKey ? dy : dx;
-        panByPixels(panDx, 0);
-        return;
+      if (state.dragging) {
+        const isVertical = isVerticalMode();
+        const dx = e.clientX - state.lastX;
+        const dy = e.clientY - state.lastY;
+        state.lastX = e.clientX;
+        state.lastY = e.clientY;
+        if (isVertical) {
+          panByPixels(0, -dy);
+        } else {
+          panByPixels(-dx, 0);
+        }
       }
+    };
 
-      e.preventDefault();
-      const zoomIntensity = 0.0018;
-      const factor = Math.exp(-dy * zoomIntensity);
-
-      const anchorBp = anchorBpFromClientX(e.clientX);
-      zoomByFactor(factor, anchorBp);
+    function endPointer(e) {
+      state.pointers.delete(e.pointerId);
+      if (state.pointers.size < 2) {
+        state.pinchStartDist = null;
+        state.pinchStartSpan = null;
+        state.pinchAnchorBp = null;
+      }
+      if (state.pointers.size === 0) state.dragging = false;
     }
-  }, { passive: false });
 
-  main.addEventListener("dblclick", (e) => {
-    const anchorBp = anchorBpFromClient(e.clientX, e.clientY);
-    zoomByFactor(1.6, anchorBp);
-  });
+    const onPointerUp = endPointer;
+    const onPointerCancel = endPointer;
+
+    const onDblClick = (e) => {
+      const anchorBp = anchorBpFromClient(e.clientX, e.clientY);
+      zoomByFactor(1.6, anchorBp);
+    };
+
+    // Attach event listeners
+    main.addEventListener("wheel", onWheel, { passive: false });
+    main.addEventListener("pointerdown", onPointerDown);
+    main.addEventListener("pointermove", onPointerMove);
+    main.addEventListener("pointerup", onPointerUp);
+    main.addEventListener("pointercancel", onPointerCancel);
+    main.addEventListener("dblclick", onDblClick);
+
+    // Return destroy function
+    return {
+      destroy() {
+        main.removeEventListener("wheel", onWheel, { passive: false });
+        main.removeEventListener("pointerdown", onPointerDown);
+        main.removeEventListener("pointermove", onPointerMove);
+        main.removeEventListener("pointerup", onPointerUp);
+        main.removeEventListener("pointercancel", onPointerCancel);
+        main.removeEventListener("dblclick", onDblClick);
+      }
+    };
+  }
+
+  // Remove any wheel listeners on window/document that could cause global behavior
+  // Note: getEventListeners is a DevTools-only function, so this only works when DevTools is open
+  function removeGlobalWheelListeners() {
+    if (typeof getEventListeners === 'function') {
+      try {
+        const windowWheel = getEventListeners(window).wheel;
+        const docWheel = getEventListeners(document).wheel;
+        if (windowWheel && windowWheel.length > 0) {
+          console.warn("[gs] Found", windowWheel.length, "wheel listener(s) on window, removing...");
+          windowWheel.forEach(listener => {
+            try {
+              window.removeEventListener("wheel", listener.listener, listener.useCapture);
+            } catch (e) {
+              console.warn("[gs] Failed to remove window wheel listener:", e);
+            }
+          });
+        }
+        if (docWheel && docWheel.length > 0) {
+          console.warn("[gs] Found", docWheel.length, "wheel listener(s) on document, removing...");
+          docWheel.forEach(listener => {
+            try {
+              document.removeEventListener("wheel", listener.listener, listener.useCapture);
+            } catch (e) {
+              console.warn("[gs] Failed to remove document wheel listener:", e);
+            }
+          });
+        }
+        console.log("[gs] Removed global wheel listeners");
+      } catch (e) {
+        console.warn("[gs] Error checking for global wheel listeners:", e);
+      }
+    } else {
+      console.log("[gs] getEventListeners not available (DevTools not open). To check manually, run in console:");
+      console.log("[gs]   getEventListeners(window).wheel");
+      console.log("[gs]   getEventListeners(document).wheel");
+    }
+  }
+  
+  // Remove global wheel listeners before binding our scoped ones
+  removeGlobalWheelListeners();
+
+  // Bind interactions and store destroy function
+  interactionBinding = bindInteractions(root, state, main);
+  console.log("[gs] bound interactions to", main, "root", root.id);
 
   // -----------------------------
   // Track interactions (drag, resize)
