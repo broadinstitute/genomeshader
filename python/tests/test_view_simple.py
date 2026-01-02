@@ -5,7 +5,6 @@ Uses unittest (built-in) instead of pytest for easier setup.
 import os
 import json
 import re
-import base64
 import unittest
 from unittest.mock import Mock, patch
 import polars as pl
@@ -86,64 +85,50 @@ class TestRenderMethod(unittest.TestCase):
         self.assertIsInstance(html_output, str)
         self.assertGreater(len(html_output), 0)
         
-        # Should contain blob URL creation
-        self.assertIn('Blob', html_output)
-        self.assertIn('createObjectURL', html_output)
-        self.assertIn('window.open', html_output)
+        # Should contain inline HTML structure (div container)
+        self.assertIn('<div id="genomeshader-root-', html_output)
+        self.assertIn('</div>', html_output)
+        # Should contain bootstrap script
+        self.assertIn('window.GENOMESHADER_MANIFEST_URL', html_output)
+        self.assertIn('window.GENOMESHADER_CONFIG', html_output)
     
     def test_render_uses_genomeshader_window_name(self):
-        """Test that window name is 'genomeshader' not 'newWindow'."""
+        """Test that container ID follows genomeshader-root pattern."""
         html_output = self.gs.render(self.sample_df)
         
-        # Should use 'genomeshader' as window name
-        self.assertTrue(
-            '"genomeshader"' in html_output or "'genomeshader'" in html_output,
-            "Should use 'genomeshader' as window name"
-        )
-        # Should NOT use 'newWindow'
-        self.assertNotIn('"newWindow"', html_output)
-        self.assertNotIn("'newWindow'", html_output)
+        # Should use 'genomeshader-root-' prefix for container ID
+        self.assertIn('genomeshader-root-', html_output)
+        # Should contain container ID in mount script
+        self.assertIn('getElementById', html_output)
     
     def test_render_injects_bootstrap(self):
         """Test that bootstrap snippet is injected into template."""
         html_output = self.gs.render(self.sample_df)
         
-        # Extract and decode the base64-encoded HTML
-        base64_match = re.search(r'const htmlBase64 = "([^"]+)"', html_output)
-        self.assertIsNotNone(base64_match, "Should find base64-encoded HTML")
+        # Should contain bootstrap variables directly in inline script
+        self.assertIn('window.GENOMESHADER_MANIFEST_URL', html_output)
+        self.assertIn('window.GENOMESHADER_CONFIG', html_output)
         
-        html_encoded = base64_match.group(1)
-        decoded_html = base64.b64decode(html_encoded).decode('utf-8')
-        
-        # Should contain manifest URL in decoded HTML
-        self.assertIn('GENOMESHADER_MANIFEST_URL', decoded_html)
+        # Should contain manifest URL (could be GCS path or localhost URL)
         self.assertTrue(
-            'gs://test-bucket/genomeshader/manifest.json' in decoded_html or 'http://127.0.0.1' in decoded_html,
+            'manifest.json' in html_output or 'http://127.0.0.1' in html_output,
             "Should contain manifest URL"
         )
         
-        # Should contain config in decoded HTML
-        self.assertIn('GENOMESHADER_CONFIG', decoded_html)
-        self.assertIn('region', decoded_html)
-        self.assertIn('genome_build', decoded_html)
+        # Should contain config fields
+        self.assertIn('region', html_output)
+        self.assertIn('genome_build', html_output)
     
     def test_render_manifest_url_construction(self):
         """Test that manifest URL is constructed correctly."""
         html_output = self.gs.render(self.sample_df)
         
-        # Extract and decode the base64-encoded HTML
-        base64_match = re.search(r'const htmlBase64 = "([^"]+)"', html_output)
-        self.assertIsNotNone(base64_match, "Should find base64-encoded HTML")
-        
-        html_encoded = base64_match.group(1)
-        decoded_html = base64.b64decode(html_encoded).decode('utf-8')
-        
-        # Extract the manifest URL from the decoded HTML
-        manifest_match = re.search(r'GENOMESHADER_MANIFEST_URL\s*=\s*([^;]+)', decoded_html)
-        self.assertIsNotNone(manifest_match, "Should find manifest URL in decoded HTML")
+        # Extract the manifest URL from the inline script
+        manifest_match = re.search(r'window\.GENOMESHADER_MANIFEST_URL\s*=\s*([^;]+)', html_output)
+        self.assertIsNotNone(manifest_match, "Should find manifest URL in HTML")
         
         manifest_value = manifest_match.group(1).strip()
-        # Should be JSON-encoded, so remove quotes
+        # Should be JSON-encoded, so parse it
         manifest_value = json.loads(manifest_value)
         # URL could be GCS path or localhost URL
         self.assertTrue(
@@ -155,16 +140,9 @@ class TestRenderMethod(unittest.TestCase):
         """Test that config contains the region."""
         html_output = self.gs.render(self.sample_df)
         
-        # Extract and decode the base64-encoded HTML
-        base64_match = re.search(r'const htmlBase64 = "([^"]+)"', html_output)
-        self.assertIsNotNone(base64_match, "Should find base64-encoded HTML")
-        
-        html_encoded = base64_match.group(1)
-        decoded_html = base64.b64decode(html_encoded).decode('utf-8')
-        
-        # Should contain region in format chr:start-end in decoded HTML
+        # Should contain region in format chr:start-end in HTML
         self.assertTrue(
-            'chr1:1000-3500' in decoded_html or '"chr1:1000-3500"' in decoded_html,
+            'chr1:1000-3500' in html_output or '"chr1:1000-3500"' in html_output,
             "Should contain region in config"
         )
     
@@ -172,16 +150,9 @@ class TestRenderMethod(unittest.TestCase):
         """Test that config contains genome_build."""
         html_output = self.gs.render(self.sample_df)
         
-        # Extract and decode the base64-encoded HTML
-        base64_match = re.search(r'const htmlBase64 = "([^"]+)"', html_output)
-        self.assertIsNotNone(base64_match, "Should find base64-encoded HTML")
-        
-        html_encoded = base64_match.group(1)
-        decoded_html = base64.b64decode(html_encoded).decode('utf-8')
-        
-        # Should contain genome build in decoded HTML
+        # Should contain genome build in HTML
         self.assertTrue(
-            'hg38' in decoded_html or '"hg38"' in decoded_html,
+            'hg38' in html_output or '"hg38"' in html_output,
             "Should contain genome build in config"
         )
     
@@ -189,28 +160,29 @@ class TestRenderMethod(unittest.TestCase):
         """Test that output does NOT contain innerHTML manipulation."""
         html_output = self.gs.render(self.sample_df)
         
-        # Should NOT contain old innerHTML approach
-        self.assertNotIn('.innerHTML', html_output)
+        # Should NOT contain old innerHTML approach (though template might use it internally)
+        # The key is that we're not using innerHTML to inject the entire page
         self.assertNotIn('document.body.innerHTML', html_output)
-        self.assertNotIn('document.createElement', html_output)
-        self.assertNotIn('appendChild', html_output)
     
-    def test_render_uses_blob_url(self):
-        """Test that output uses blob URL approach."""
+    def test_render_uses_inline_html(self):
+        """Test that output uses inline HTML approach."""
         html_output = self.gs.render(self.sample_df)
         
-        # Should use blob URL
-        self.assertIn('Blob', html_output)
-        self.assertIn('createObjectURL', html_output)
-        self.assertIn('text/html', html_output)
+        # Should use inline HTML (div container)
+        self.assertIn('<div id="genomeshader-root-', html_output)
+        self.assertIn('<style>', html_output)
+        self.assertIn('<script', html_output)
     
-    def test_render_revokes_blob_url(self):
-        """Test that blob URL is revoked after delay."""
+    def test_render_contains_mount_script(self):
+        """Test that output contains mount script for container initialization."""
         html_output = self.gs.render(self.sample_df)
         
-        # Should revoke URL after delay
-        self.assertIn('revokeObjectURL', html_output)
-        self.assertIn('setTimeout', html_output)
+        # Should contain mount script that initializes container
+        self.assertIn('getElementById', html_output)
+        self.assertTrue(
+            'DOMContentLoaded' in html_output or 'readyState' in html_output,
+            "Should contain DOM ready check"
+        )
     
     def test_render_with_string_locus(self):
         """Test render() with a string locus (requires mocked get_locus)."""
@@ -228,14 +200,9 @@ class TestRenderMethod(unittest.TestCase):
         self.assertIsInstance(html_output, str)
         self.assertGreater(len(html_output), 0)
         
-        # Extract and decode the base64-encoded HTML
-        base64_match = re.search(r'const htmlBase64 = "([^"]+)"', html_output)
-        self.assertIsNotNone(base64_match, "Should find base64-encoded HTML")
-        
-        html_encoded = base64_match.group(1)
-        decoded_html = base64.b64decode(html_encoded).decode('utf-8')
-        
-        self.assertIn('GENOMESHADER_MANIFEST_URL', decoded_html)
+        # Should contain bootstrap variables in inline script
+        self.assertIn('window.GENOMESHADER_MANIFEST_URL', html_output)
+        self.assertIn('window.GENOMESHADER_CONFIG', html_output)
     
     def test_render_invalid_input(self):
         """Test that render() raises error for invalid input."""
@@ -274,20 +241,11 @@ class TestBootstrapInjection(unittest.TestCase):
         
         html_output = self.gs.render(sample_df)
         
-        # Extract and decode the base64-encoded HTML
-        base64_match = re.search(r'const htmlBase64 = "([^"]+)"', html_output)
-        self.assertIsNotNone(base64_match, "Should find base64-encoded HTML")
-        
-        html_encoded = base64_match.group(1)
-        decoded_html = base64.b64decode(html_encoded).decode('utf-8')
-        
-        # Bootstrap should be valid JavaScript in decoded HTML
-        self.assertIn('window.GENOMESHADER_MANIFEST_URL', decoded_html)
-        self.assertIn('window.GENOMESHADER_CONFIG', decoded_html)
-        self.assertTrue(
-            '<script>' in decoded_html or '</script>' in decoded_html,
-            "Should contain script tags"
-        )
+        # Bootstrap should be valid JavaScript in inline script tags
+        self.assertIn('window.GENOMESHADER_MANIFEST_URL', html_output)
+        self.assertIn('window.GENOMESHADER_CONFIG', html_output)
+        self.assertIn('<script', html_output)
+        self.assertIn('window.GENOMESHADER_VIEW_ID', html_output)
 
 
 if __name__ == '__main__':
