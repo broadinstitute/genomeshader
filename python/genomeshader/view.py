@@ -1041,6 +1041,8 @@ console.log('Genomeshader: Bootstrap variables set', {{
 #{container_id} .gearBtn {{
   z-index: 150 !important;
   position: absolute !important;
+  left: 12px !important;
+  bottom: 12px !important;
   pointer-events: auto !important;
   cursor: pointer !important;
   opacity: 1 !important;
@@ -1086,6 +1088,12 @@ console.log('Genomeshader: Bootstrap variables set', {{
   height: var(--tracks-h, 280px) !important;
   width: 100% !important;
 }}
+/* Ensure tracksContainer is positioned relatively for absolute children */
+#{container_id} #tracksContainer {{
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+}}
 /* Ensure SVG fills tracks container */
 #{container_id} #tracksSvg {{
   width: 100% !important;
@@ -1094,8 +1102,13 @@ console.log('Genomeshader: Bootstrap variables set', {{
 }}
 /* Ensure WebGPU canvas fills tracks container */
 #{container_id} #tracksWebGPU {{
+  position: absolute !important;
+  inset: 0 !important;
   width: 100% !important;
   height: 100% !important;
+  display: block !important;
+  pointer-events: auto !important;
+  z-index: 1 !important;
 }}
 </style>
 {bootstrap_script}

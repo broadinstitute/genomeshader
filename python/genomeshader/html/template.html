@@ -235,9 +235,11 @@
 
     /* Gear button bottom-left (requested) */
     .gearBtn {
-      position: absolute;
-      left: 12px;
-      bottom: 12px;
+      position: absolute !important;
+      left: 12px !important;
+      bottom: 12px !important;
+      top: auto !important;
+      right: auto !important;
       border: 1px solid var(--border2);
       background: var(--panel2);
       color: var(--text);
@@ -2868,7 +2870,9 @@
       const totalH = tracksLayout.length > 0 
         ? tracksLayout[tracksLayout.length - 1].top + tracksLayout[tracksLayout.length - 1].height
         : 0;
-      document.documentElement.style.setProperty('--tracks-h', `${totalH}px`);
+      // Use default height if calculation fails or returns 0
+      const finalHeight = totalH > 0 ? totalH : 280; // Default to 280px if calculation fails
+      document.documentElement.style.setProperty('--tracks-h', `${finalHeight}px`);
     }
   }
 
@@ -2895,6 +2899,8 @@
     if (!W || W <= 0 || isNaN(W) || !H || H <= 0 || isNaN(H)) {
       if (renderTracksRetryCount < MAX_RETRY_ATTEMPTS) {
         renderTracksRetryCount++;
+        // Try to update tracks height before retrying (might fix the dimension issue)
+        updateTracksHeight();
         // Schedule a retry after a short delay to allow layout to settle
         setTimeout(() => {
           renderTracks();

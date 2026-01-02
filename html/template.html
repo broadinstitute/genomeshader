@@ -239,6 +239,8 @@
       position: absolute;
       left: 12px;
       bottom: 12px;
+      top: auto;
+      right: auto;
       border: 1px solid var(--border2);
       background: var(--panel2);
       color: var(--text);
@@ -2331,8 +2333,18 @@
   }
 
   function tracksWidthPx() { 
-    if (!tracksSvg) return 0;
-    const w = tracksSvg.getBoundingClientRect().width;
+    // In inline mode, re-lookup tracksSvg if it's null (element might not be ready yet)
+    let svgEl = tracksSvg;
+    if (!svgEl && hostMode === 'inline') {
+      const currentRoot = document.querySelector('[id^="genomeshader-root-"]') || 
+                          (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
+                          document.body;
+      if (currentRoot) {
+        svgEl = currentRoot.querySelector('#tracksSvg');
+      }
+    }
+    if (!svgEl) return 0;
+    const w = svgEl.getBoundingClientRect().width;
     return isNaN(w) || w <= 0 ? 0 : w;
   }
   function flowWidthPx()   { return rectW(flow); }
@@ -2517,7 +2529,19 @@
   }
   
   function tracksHeightPx() {
-    return tracksSvg.getBoundingClientRect().height;
+    // In inline mode, re-lookup tracksSvg if it's null (element might not be ready yet)
+    let svgEl = tracksSvg;
+    if (!svgEl && hostMode === 'inline') {
+      const currentRoot = document.querySelector('[id^="genomeshader-root-"]') || 
+                          (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
+                          document.body;
+      if (currentRoot) {
+        svgEl = currentRoot.querySelector('#tracksSvg');
+      }
+    }
+    if (!svgEl) return 0;
+    const h = svgEl.getBoundingClientRect().height;
+    return isNaN(h) || h <= 0 ? 0 : h;
   }
   
   function bpFromYGenome(yPx, H) {
@@ -2646,7 +2670,7 @@
   // SVG helpers
   // -----------------------------
   const SVGNS = "http://www.w3.org/2000/svg";
-  function clearSvg(svg) { while (svg.firstChild) svg.removeChild(svg.firstChild); }
+  function clearSvg(svg) { if (!svg) return; while (svg.firstChild) svg.removeChild(svg.firstChild); }
   function el(tag, attrs = {}, text = null) {
     const n = document.createElementNS(SVGNS, tag);
     for (const [k,v] of Object.entries(attrs)) n.setAttribute(k, String(v));
@@ -2766,15 +2790,54 @@
       const totalH = tracksLayout.length > 0 
         ? tracksLayout[tracksLayout.length - 1].top + tracksLayout[tracksLayout.length - 1].height
         : 0;
-      document.documentElement.style.setProperty('--tracks-h', `${totalH}px`);
+      // Use default height if calculation fails or returns 0
+      const finalHeight = totalH > 0 ? totalH : 280; // Default to 280px if calculation fails
+      document.documentElement.style.setProperty('--tracks-h', `${finalHeight}px`);
     }
   }
 
   // -----------------------------
   // Tracks rendering (ideogram + genes + repeats + ruler)
   // -----------------------------
+  // Track retry attempts to avoid infinite loops
+  let renderTracksRetryCount = 0;
+  const MAX_RETRY_ATTEMPTS = 10;
+  
+  // Helper function to get current tracksSvg element, re-looking it up in inline mode if needed
+  function getTracksSvg() {
+    let svgEl = tracksSvg;
+    if (!svgEl && hostMode === 'inline') {
+      const currentRoot = document.querySelector('[id^="genomeshader-root-"]') || 
+                          (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
+                          document.body;
+      if (currentRoot) {
+        svgEl = currentRoot.querySelector('#tracksSvg');
+      }
+    }
+    return svgEl;
+  }
+  
   function renderTracks() {
-    clearSvg(tracksSvg);
+    // Get current tracksSvg element (re-lookup in inline mode if needed)
+    const svgEl = getTracksSvg();
+    
+    // If tracksSvg is still not found, retry or skip
+    if (!svgEl) {
+      if (renderTracksRetryCount < MAX_RETRY_ATTEMPTS) {
+        renderTracksRetryCount++;
+        // Schedule a retry after a short delay to allow DOM to be ready
+        setTimeout(() => {
+          renderTracks();
+        }, 50);
+        return;
+      } else {
+        console.warn('Genomeshader: renderTracks skipped - tracksSvg not found after retries', { retries: renderTracksRetryCount });
+        renderTracksRetryCount = 0; // Reset counter
+        return;
+      }
+    }
+    
+    clearSvg(svgEl);
     // Clear WebGPU renderer instances
     if (instancedRenderer) {
       instancedRenderer.clear();
@@ -2785,11 +2848,26 @@
     const W = isVertical ? tracksHeightPx() : tracksWidthPx();
     const H = isVertical ? tracksWidthPx() : tracksHeightPx();
     
-    // Guard against invalid dimensions
+    // Guard against invalid dimensions - retry if dimensions are not ready
     if (!W || W <= 0 || isNaN(W) || !H || H <= 0 || isNaN(H)) {
-      console.warn('Genomeshader: Invalid track dimensions, skipping render', { W, H });
-      return;
+      if (renderTracksRetryCount < MAX_RETRY_ATTEMPTS) {
+        renderTracksRetryCount++;
+        // Try to update tracks height before retrying (might fix the dimension issue)
+        updateTracksHeight();
+        // Schedule a retry after a short delay to allow layout to settle
+        setTimeout(() => {
+          renderTracks();
+        }, 50);
+        return;
+      } else {
+        console.warn('Genomeshader: renderTracks skipped - invalid dimensions after retries', { W, H, retries: renderTracksRetryCount });
+        renderTracksRetryCount = 0; // Reset counter
+        return;
+      }
     }
+    
+    // Reset retry counter on successful render
+    renderTracksRetryCount = 0;
     
     const layout = getTrackLayout();
     
@@ -2834,11 +2912,11 @@
       const tracksContainer = document.getElementById("tracksContainer");
       if (tracksContainer) {
         const containerRect = tracksContainer.getBoundingClientRect();
-        const svgRect = tracksSvg.getBoundingClientRect();
+        const svgRect = svgEl.getBoundingClientRect();
         
         // Helper function to draw out-of-bounds shading (darker)
         const drawOutOfBoundsRect = (x, y, width, height) => {
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: x,
             y: y,
             width: width,
@@ -2968,7 +3046,7 @@
       if (isVertical) {
         // Position chromosome label at the bottom
         const labelY = W - 16;
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: ideogramX + ideogramW/2 + 1,
           y: labelY,
           class: "svg-chr",
@@ -2977,7 +3055,7 @@
           transform: "rotate(-90 " + (ideogramX + ideogramW/2) + " " + labelY + ")"
         }, state.contig));
       } else {
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: 16,
           y: ideogramY + ideogramH/2 + 1,
           class: "svg-chr",
@@ -3060,10 +3138,10 @@
       clip.appendChild(el("rect", { x: qX, y: qY, width: qW, height: qH, rx: 9 }));
 
       defs.appendChild(clip);
-      tracksSvg.appendChild(defs);
+      svgEl.appendChild(defs);
 
-      tracksSvg.appendChild(pArm);
-      tracksSvg.appendChild(qArm);
+      svgEl.appendChild(pArm);
+      svgEl.appendChild(qArm);
       
       // Calculate p-arm and q-arm lengths in base pairs
       const pArmLength = centromerePos;
@@ -3136,7 +3214,7 @@
         }
         
         if (isVertical) {
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: bandInnerX,
             y: bandPos,
             width: bandInnerW,
@@ -3147,7 +3225,7 @@
             "clip-path": `url(#${clipId})`
           }));
         } else {
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: bandPos,
             y: bandInnerY,
             width: Math.max(1, bandSize),
@@ -3186,7 +3264,7 @@
           )
         );
         
-        tracksSvg.appendChild(el("rect", {
+        svgEl.appendChild(el("rect", {
           x: (isLocusPArm ? pX : qX) - 1,
           y: locusHighlightY,
           width: (isLocusPArm ? pW : qW) + 2,
@@ -3214,7 +3292,7 @@
           )
         );
         
-        tracksSvg.appendChild(el("rect", {
+        svgEl.appendChild(el("rect", {
           x: locusHighlightX,
           y: (isLocusPArm ? pY : qY) - 1,
           width: locusHighlightWidth,
@@ -3246,13 +3324,13 @@
       for (let lane=0; lane<lanes; lane++) {
         if (isVertical) {
           const x = geneStartX + lane*laneDim + laneDim/2;
-          tracksSvg.appendChild(el("line", {
+          svgEl.appendChild(el("line", {
             x1: x, x2: x, y1: 16, y2: H-16,
             stroke: "rgba(127,127,127,0.14)"
           }));
         } else {
           const y = geneStartY + lane*laneDim + laneDim/2;
-          tracksSvg.appendChild(el("line", {
+          svgEl.appendChild(el("line", {
             x1: 16, x2: W-16, y1: y, y2: y,
             stroke: "rgba(127,127,127,0.14)"
           }));
@@ -3270,7 +3348,7 @@
             const p1 = `${perpPos},${cy}`;
             const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
             const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
-            tracksSvg.appendChild(el("polygon", {
+            svgEl.appendChild(el("polygon", {
               points: `${p1} ${p2} ${p3}`,
               fill: "rgba(127,127,127,0.45)"
             }));
@@ -3279,7 +3357,7 @@
             const p1 = `${cx},${perpPos}`;
             const p2 = `${cx - dir*size},${perpPos - size*0.8}`;
             const p3 = `${cx - dir*size},${perpPos + size*0.8}`;
-            tracksSvg.appendChild(el("polygon", {
+            svgEl.appendChild(el("polygon", {
               points: `${p1} ${p2} ${p3}`,
               fill: "rgba(127,127,127,0.45)"
             }));
@@ -3304,14 +3382,14 @@
       const pos2 = genomePos(e);
       
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: perpPos, x2: perpPos, y1: pos1, y2: pos2,
           stroke: "rgba(127,127,127,0.40)",
           "stroke-width": 1
         }));
         drawStrandArrows(pos1, pos2, perpPos, t.strand, true);
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: pos1, x2: pos2, y1: perpPos, y2: perpPos,
           stroke: "rgba(127,127,127,0.40)",
           "stroke-width": 1
@@ -3340,7 +3418,7 @@
           if (firstExonY === null || yMax > firstExonY) {
             firstExonY = yMax;
           }
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: perpPos - 6, y: yMin,
             width: 12, height: Math.max(2, yMax - yMin),
             rx: 4,
@@ -3353,7 +3431,7 @@
           if (firstExonX === null) {
             firstExonX = exPos1;
           }
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: exPos1, y: perpPos - 6,
             width: Math.max(2, exPos2 - exPos1), height: 12,
             rx: 4,
@@ -3369,7 +3447,7 @@
         // Gene name to the left of the gene track
         // Y position should match the bottom of the bottom-most exon
         const geneNameY = firstExonY !== null ? firstExonY : pos1;
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: perpPos - 8,
           y: geneNameY,
           class:"svg-geneName",
@@ -3378,7 +3456,7 @@
           transform: "rotate(-90 " + (perpPos - 8) + " " + geneNameY + ")"
         }, `${t.name}`));
         // Strand indicator to the right of the gene track (just a bit to the right)
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: perpPos + 8,
           y: pos1,
           class:"svg-small",
@@ -3388,12 +3466,12 @@
       } else {
         // In horizontal mode, X position should match the first exon's X position
         const geneNameX = firstExonX !== null ? firstExonX : pos1;
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: geneNameX,
           y: perpPos - 12,
           class:"svg-geneName"
         }, `${t.name}`));
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: pos1 + 2,
           y: perpPos + 16,
           class:"svg-small"
@@ -3420,12 +3498,12 @@
 
       // background guide line
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: repeatsX + repeatsW/2, x2: repeatsX + repeatsW/2, y1: 16, y2: W-16,
           stroke: "rgba(127,127,127,0.16)"
         }));
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: 16, x2: W-16, y1: repeatsY + repeatsH/2, y2: repeatsY + repeatsH/2,
           stroke: "rgba(127,127,127,0.16)"
         }));
@@ -3637,7 +3715,7 @@
       }
       
       // Append all elements at once (single DOM operation)
-      tracksSvg.appendChild(fragment);
+      svgEl.appendChild(fragment);
     }
     }
 
@@ -3660,13 +3738,13 @@
 
       // Base line
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: baseX, x2: baseX, y1: 16, y2: H-16,
           stroke: "rgba(127,127,127,0.70)",
           "stroke-width": 1.2
         }));
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: 16, x2: W-16, y1: baseY, y2: baseY,
           stroke: "rgba(127,127,127,0.70)",
           "stroke-width": 1.2
@@ -3692,7 +3770,7 @@
       const isMajor = (Math.round(bp / minorBp) % 5) === 0;
 
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: baseX - (isMajor ? 9 : 5), x2: baseX + (isMajor ? 9 : 5),
           y1: pos, y2: pos,
           stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
@@ -3708,11 +3786,11 @@
             "dominant-baseline": "middle",
             transform: "rotate(-90 " + (baseX + 26) + " " + pos + ")"
           }, formatBp(Math.round(bp), span));
-          tracksSvg.appendChild(textEl);
+          svgEl.appendChild(textEl);
           majorTickLabelPositions.push(pos);
         }
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: pos, x2: pos,
           y1: baseY - (isMajor ? 9 : 5), y2: baseY + (isMajor ? 9 : 5),
           stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
@@ -3720,7 +3798,7 @@
         }));
 
         if (isMajor && showLabels) {
-          tracksSvg.appendChild(el("text", {
+          svgEl.appendChild(el("text", {
             x: pos,
             y: baseY + 26,
             class: "svg-small",
@@ -3744,14 +3822,14 @@
           x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
           transform: "rotate(-90 " + (baseX + 26) + " " + bottomEdgeY + ")"
         }, formatBp(Math.round(state.startBp), span));
-        tracksSvg.appendChild(textEl);
+        svgEl.appendChild(textEl);
       }
       if (!hasNearbyTopTick) {
         const textEl = el("text", {
           x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
           transform: "rotate(-90 " + (baseX + 26) + " " + topEdgeY + ")"
         }, formatBp(Math.round(state.endBp), span));
-        tracksSvg.appendChild(textEl);
+        svgEl.appendChild(textEl);
       }
     } else {
       const leftEdgeX = 16;
@@ -3760,12 +3838,12 @@
       const hasNearbyRightTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - rightEdgeX) < edgeThreshold);
 
       if (!hasNearbyLeftTick) {
-        tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
+        svgEl.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
           formatBp(Math.round(state.startBp), span)
         ));
       }
       if (!hasNearbyRightTick) {
-        tracksSvg.appendChild(el("text", {
+        svgEl.appendChild(el("text", {
           x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
         }, formatBp(Math.round(state.endBp), span)));
       }
@@ -3822,7 +3900,7 @@
           renderAll();
         });
       }
-      tracksSvg.appendChild(lineEl);
+      svgEl.appendChild(lineEl);
       
       // For insertions, add a larger invisible clickable area AFTER the line (so it's on top)
       if (isInsertion(v)) {
@@ -3857,7 +3935,7 @@
           }
           renderAll();
         });
-        tracksSvg.appendChild(clickArea);
+        svgEl.appendChild(clickArea);
       }
 
       let circleEl;
@@ -3900,7 +3978,7 @@
           renderAll();
         });
       }
-      tracksSvg.appendChild(circleEl);
+      svgEl.appendChild(circleEl);
       
       // Draw expanded insertion sequence if expanded
       if (state.expandedInsertions.has(v.id) && isInsertion(v)) {
@@ -3924,7 +4002,7 @@
           const gapEndY = gapStartY - gapSize; // going up (toward start)
           
           // Draw gap background
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: baseX - 18,
             y: gapEndY,
             width: 36,
@@ -3940,7 +4018,7 @@
             const baseY = gapStartY - (i + 1) * baseSize;
             const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
             
-            tracksSvg.appendChild(el("rect", {
+            svgEl.appendChild(el("rect", {
               x: baseX - 16,
               y: baseY,
               width: 32,
@@ -3960,7 +4038,7 @@
                 "dominant-baseline": "middle",
                 transform: "rotate(-90 " + baseX + " " + (baseY + baseSize / 2) + ")"
               }, base);
-              tracksSvg.appendChild(textEl);
+              svgEl.appendChild(textEl);
             }
           }
         } else {
@@ -3968,7 +4046,7 @@
           const gapEndX = gapStartX + gapSize;
           
           // Draw gap background
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: gapStartX,
             y: baseY - 18,
             width: gapSize,
@@ -3984,7 +4062,7 @@
             const baseX = gapStartX + i * baseSize;
             const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
             
-            tracksSvg.appendChild(el("rect", {
+            svgEl.appendChild(el("rect", {
               x: baseX,
               y: baseY - 16,
               width: baseSize - 1,
@@ -3994,7 +4072,7 @@
             
             // Draw base letter if space allows
             if (baseSize >= 8) {
-              tracksSvg.appendChild(el("text", {
+              svgEl.appendChild(el("text", {
                 x: baseX + baseSize / 2,
                 y: baseY,
                 class: "svg-small",
@@ -4011,12 +4089,12 @@
 
       // separator
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: rulerX + rulerW, x2: rulerX + rulerW, y1: 0, y2: H,
           stroke: "rgba(127,127,127,0.12)"
         }));
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: 0, x2: W, y1: rulerY + rulerH, y2: rulerY + rulerH,
           stroke: "rgba(127,127,127,0.12)"
         }));
@@ -4211,7 +4289,7 @@
               }
             }
           }
-          tracksSvg.appendChild(fragment);
+          svgEl.appendChild(fragment);
         } else {
           // Fallback to SVG rendering
           const fragment = document.createDocumentFragment();
@@ -4271,7 +4349,7 @@
           }
           
           // Append all elements at once (single DOM operation)
-          tracksSvg.appendChild(fragment);
+          svgEl.appendChild(fragment);
         }
       } else {
         // Zoomed out: show a continuous reference line with subtle pattern
@@ -4283,7 +4361,7 @@
           const effectiveSpan = span + totalGapBp;
 
           // Draw background
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: referenceX,
             y: topPad,
             width: referenceW,
@@ -4295,7 +4373,7 @@
           // Draw a subtle pattern indicating reference sequence
           const patternHeight = 20;
           for (let y = topPad; y < topPad + innerH; y += patternHeight * 2) {
-            tracksSvg.appendChild(el("rect", {
+            svgEl.appendChild(el("rect", {
               x: referenceX,
               y: y,
               width: referenceW,
@@ -4311,7 +4389,7 @@
           const effectiveSpan = span + totalGapBp;
 
           // Draw background
-          tracksSvg.appendChild(el("rect", {
+          svgEl.appendChild(el("rect", {
             x: leftPad,
             y: referenceY,
             width: innerW,
@@ -4323,7 +4401,7 @@
           // Draw a subtle pattern indicating reference sequence
           const patternWidth = 20;
           for (let x = leftPad; x < leftPad + innerW; x += patternWidth * 2) {
-            tracksSvg.appendChild(el("rect", {
+            svgEl.appendChild(el("rect", {
               x: x,
               y: referenceY,
               width: Math.min(patternWidth, leftPad + innerW - x),
@@ -4336,12 +4414,12 @@
 
       // Separator
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: referenceX + referenceW, x2: referenceX + referenceW, y1: 0, y2: H,
           stroke: "rgba(127,127,127,0.12)"
         }));
       } else {
-        tracksSvg.appendChild(el("line", {
+        svgEl.appendChild(el("line", {
           x1: 0, x2: W, y1: referenceY - 4, y2: referenceY - 4,
           stroke: "rgba(127,127,127,0.12)"
         }));
