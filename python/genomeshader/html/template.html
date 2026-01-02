@@ -2158,7 +2158,13 @@
     trackResizeState: null, // { trackId, startX, startY, startHeight }
     
     // variant layout mode: "equidistant" or "genomic"
-    variantLayoutMode: null // will be initialized from localStorage
+    variantLayoutMode: null, // will be initialized from localStorage
+    
+    // allele order for each variant: Map<variantId, string[]> where array is ['./.', 'ref', 'a1', 'a2', ...]
+    variantAlleleOrder: new Map(),
+    
+    // drag state for allele reordering
+    alleleDragState: null // { variantId, alleleIndex, startX, startY, offsetX, offsetY }
   };
 
   // Initialize variant layout mode
@@ -4825,9 +4831,9 @@
       }
     }
 
-    // placeholder nodes
-    const labels = ["./.","ref","a1"];
+    // Allele nodes with drag-and-drop support
     const nodeW = 16, nodeH = 18, gap = 8;
+    const nodePositions = []; // Store positions for hit testing: [{ variantId, alleleIndex, x, y, w, h }]
     
     if (isVertical) {
       const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
@@ -4835,55 +4841,144 @@
       
       for (let i=0;i<sortedWin.length;i++){
         const v = sortedWin[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        
+        // Get allele labels: ['./.', 'ref', 'a1', 'a2', ...]
+        let labels = ["./.", "ref"];
+        if (v.altAlleles && Array.isArray(v.altAlleles)) {
+          for (let k = 0; k < v.altAlleles.length; k++) {
+            labels.push(`a${k + 1}`);
+          }
+        } else {
+          labels.push("a1"); // fallback
+        }
+        
+        // Get order from state, or use default
+        let order = state.variantAlleleOrder.get(v.id);
+        if (!order || order.length !== labels.length) {
+          order = [...labels];
+          state.variantAlleleOrder.set(v.id, order);
+        }
+        
         // Position based on variant layout mode
         const cy = variantMode === "genomic"
           ? yGenomeCanonical(v.pos, H)
           : yColumn(i, sortedWin.length);
         
-        for (let j=0;j<labels.length;j++){
+        // Draw nodes in current order
+        for (let j=0;j<order.length;j++){
+          const label = order[j];
           const x = left + j*(nodeW+gap);
+          
+          // Check if this node is being dragged
+          const isDragging = state.alleleDragState && 
+            state.alleleDragState.variantId === v.id && 
+            state.alleleDragState.alleleIndex === order.indexOf(label);
+          const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
+          const dragOffsetY = isDragging ? state.alleleDragState.offsetY : 0;
+          
+          const nodeX = x + dragOffsetX;
+          const nodeY = cy - nodeH/2 + dragOffsetY;
 
-          ctx.fillStyle = "rgba(127,127,127,0.08)";
-          ctx.strokeStyle = "rgba(127,127,127,0.18)";
+          ctx.fillStyle = isDragging ? "rgba(127,127,127,0.15)" : "rgba(127,127,127,0.08)";
+          ctx.strokeStyle = isDragging ? "rgba(127,127,127,0.35)" : "rgba(127,127,127,0.18)";
+          ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
-          roundRect(ctx, x, cy - nodeH/2, nodeW, nodeH, 5);
+          roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.fill();
           ctx.stroke();
 
           ctx.fillStyle = colText;
           ctx.font = "11px ui-sans-serif, system-ui";
           ctx.save();
-          // Position label above the node (shift left for better alignment)
-          ctx.translate(x + nodeW/2 - gap - 5 + 12, cy - 12); // Center on node, shift left by gap + 5px, move up by 12px total
+          ctx.translate(nodeX + nodeW/2 - gap - 5 + 12, nodeY - 12);
           ctx.rotate(-Math.PI/2);
-          ctx.fillText(labels[j], 0, 4);
+          ctx.fillText(label, 0, 4);
           ctx.restore();
+          
+          // Store position for hit testing
+          nodePositions.push({
+            variantId: v.id,
+            alleleIndex: order.indexOf(label),
+            label: label,
+            x: nodeX,
+            y: nodeY,
+            w: nodeW,
+            h: nodeH
+          });
         }
       }
     } else {
       for (let i=0;i<win.length;i++){
+        const v = win[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        
+        // Get allele labels: ['./.', 'ref', 'a1', 'a2', ...]
+        let labels = ["./.", "ref"];
+        if (v.altAlleles && Array.isArray(v.altAlleles)) {
+          for (let k = 0; k < v.altAlleles.length; k++) {
+            labels.push(`a${k + 1}`);
+          }
+        } else {
+          labels.push("a1"); // fallback
+        }
+        
+        // Get order from state, or use default
+        let order = state.variantAlleleOrder.get(v.id);
+        if (!order || order.length !== labels.length) {
+          order = [...labels];
+          state.variantAlleleOrder.set(v.id, order);
+        }
+        
         // Position based on variant layout mode
         const cx = variantMode === "genomic"
           ? xGenomeCanonical(win[i].pos, W)
           : xColumn(i, win.length);
         const top = 70;
 
-        for (let j=0;j<labels.length;j++){
+        // Draw nodes in current order
+        for (let j=0;j<order.length;j++){
+          const label = order[j];
           const y = top + j*(nodeH+gap);
+          
+          // Check if this node is being dragged
+          const isDragging = state.alleleDragState && 
+            state.alleleDragState.variantId === v.id && 
+            state.alleleDragState.alleleIndex === order.indexOf(label);
+          const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
+          const dragOffsetY = isDragging ? state.alleleDragState.offsetY : 0;
+          
+          const nodeX = cx - nodeW/2 + dragOffsetX;
+          const nodeY = y + dragOffsetY;
 
-          ctx.fillStyle = "rgba(127,127,127,0.08)";
-          ctx.strokeStyle = "rgba(127,127,127,0.18)";
+          ctx.fillStyle = isDragging ? "rgba(127,127,127,0.15)" : "rgba(127,127,127,0.08)";
+          ctx.strokeStyle = isDragging ? "rgba(127,127,127,0.35)" : "rgba(127,127,127,0.18)";
+          ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
-          roundRect(ctx, cx - nodeW/2, y, nodeW, nodeH, 5);
+          roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.fill();
           ctx.stroke();
 
           ctx.fillStyle = colText;
           ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.fillText(labels[j], cx + 12, y + 13);
+          ctx.fillText(label, nodeX + 12, nodeY + 13);
+          
+          // Store position for hit testing
+          nodePositions.push({
+            variantId: v.id,
+            alleleIndex: order.indexOf(label),
+            label: label,
+            x: nodeX,
+            y: nodeY,
+            w: nodeW,
+            h: nodeH
+          });
         }
       }
     }
+    
+    // Store node positions globally for hit testing
+    window._alleleNodePositions = nodePositions;
 
     // Execute WebGPU render pass after variant columns are added
     // Render to flowWebGPU canvas (separate from tracksWebGPU)
@@ -5517,6 +5612,160 @@
     
     flow.addEventListener("mousemove", flowHoverHandler);
     flow.addEventListener("mouseleave", flowLeaveHandler);
+    
+    // Allele node drag-and-drop handlers
+    let alleleMouseDownHandler = null;
+    let alleleMouseMoveHandler = null;
+    let alleleMouseUpHandler = null;
+    
+    function setupAlleleDragDrop() {
+      // Remove existing listeners
+      if (alleleMouseDownHandler) {
+        const oldTarget = flowWebGPU || flow;
+        oldTarget.removeEventListener("mousedown", alleleMouseDownHandler);
+        document.removeEventListener("mousemove", alleleMouseMoveHandler);
+        document.removeEventListener("mouseup", alleleMouseUpHandler);
+      }
+      
+      alleleMouseDownHandler = (e) => {
+        if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) return;
+        
+        // Use flow container for coordinates (same coordinate system as flowCanvas)
+        const rect = flow.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        // Find which node was clicked
+        for (const node of window._alleleNodePositions) {
+          if (x >= node.x && x <= node.x + node.w && 
+              y >= node.y && y <= node.y + node.h) {
+            e.preventDefault();
+            e.stopPropagation();
+            state.alleleDragState = {
+              variantId: node.variantId,
+              alleleIndex: node.alleleIndex,
+              label: node.label,
+              startX: x,
+              startY: y,
+              offsetX: 0,
+              offsetY: 0
+            };
+            flowCanvas.style.cursor = "grabbing";
+            if (flowWebGPU) flowWebGPU.style.cursor = "grabbing";
+            return;
+          }
+        }
+      };
+      
+      alleleMouseMoveHandler = (e) => {
+        if (!state.alleleDragState) return;
+        
+        const rect = flow.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        state.alleleDragState.offsetX = x - state.alleleDragState.startX;
+        state.alleleDragState.offsetY = y - state.alleleDragState.startY;
+        
+        renderFlowCanvas();
+      };
+      
+      alleleMouseUpHandler = (e) => {
+        if (!state.alleleDragState) return;
+        
+        const rect = flow.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        // Find which position the node was dropped at
+        const dragState = state.alleleDragState;
+        const order = state.variantAlleleOrder.get(dragState.variantId);
+        if (!order) {
+          state.alleleDragState = null;
+          flowCanvas.style.cursor = "";
+          if (flowWebGPU) flowWebGPU.style.cursor = "";
+          renderFlowCanvas();
+          return;
+        }
+        
+        const isVertical = isVerticalMode();
+        const variantMode = getVariantLayoutMode();
+        const win = visibleVariantWindow();
+        const nodeW = 16, nodeH = 18, gap = 8;
+        
+        let newIndex = -1;
+        if (isVertical) {
+          const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
+          const v = sortedWin.find(v => v.id === dragState.variantId);
+          if (!v) {
+            state.alleleDragState = null;
+            flowCanvas.style.cursor = "";
+            if (flowWebGPU) flowWebGPU.style.cursor = "";
+            renderFlowCanvas();
+            return;
+          }
+          const left = 70;
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, flowHeightPx())
+            : yColumn(sortedWin.findIndex(v2 => v2.id === v.id), sortedWin.length);
+          
+          // Check if dropped near a node position
+          for (let j = 0; j < order.length; j++) {
+            const nodeX = left + j * (nodeW + gap);
+            if (Math.abs(x - nodeX) < (nodeW + gap) / 2 && 
+                Math.abs(y - cy) < nodeH / 2) {
+              newIndex = j;
+              break;
+            }
+          }
+        } else {
+          const v = win.find(v => v.id === dragState.variantId);
+          if (!v) {
+            state.alleleDragState = null;
+            flowCanvas.style.cursor = "";
+            if (flowWebGPU) flowWebGPU.style.cursor = "";
+            renderFlowCanvas();
+            return;
+          }
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, flowWidthPx())
+            : xColumn(win.findIndex(v2 => v2.id === v.id), win.length);
+          const top = 70;
+          
+          // Check if dropped near a node position
+          for (let j = 0; j < order.length; j++) {
+            const nodeY = top + j * (nodeH + gap);
+            if (Math.abs(x - cx) < nodeW / 2 && 
+                Math.abs(y - nodeY) < (nodeH + gap) / 2) {
+              newIndex = j;
+              break;
+            }
+          }
+        }
+        
+        // Reorder if dropped at a valid position
+        if (newIndex >= 0 && newIndex !== order.indexOf(dragState.label)) {
+          const currentIndex = order.indexOf(dragState.label);
+          order.splice(currentIndex, 1);
+          order.splice(newIndex, 0, dragState.label);
+          state.variantAlleleOrder.set(dragState.variantId, order);
+        }
+        
+        state.alleleDragState = null;
+        flowCanvas.style.cursor = "";
+        if (flowWebGPU) flowWebGPU.style.cursor = "";
+        renderFlowCanvas();
+      };
+      
+      // Attach to flowWebGPU canvas (which is on top) or flow container
+      // Both flowCanvas and flowWebGPU are inside flow, so coordinates are relative to flow
+      const targetElement = flowWebGPU || flow;
+      targetElement.addEventListener("mousedown", alleleMouseDownHandler, { passive: false });
+      document.addEventListener("mousemove", alleleMouseMoveHandler);
+      document.addEventListener("mouseup", alleleMouseUpHandler);
+    }
+    
+    setupAlleleDragDrop();
 
     // Reads canvas hover detection
     readsHoverHandler = (e) => {
