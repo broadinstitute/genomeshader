@@ -228,6 +228,27 @@ class GenomeShader:
         """
         return self._session.get_locus(locus)
 
+    def get_locus_variants(self, locus: str) -> pl.DataFrame:
+        """
+        This function retrieves variant data for a locus from attached
+        variant files (BCF/VCF).
+
+        Args:
+            locus (str): The locus to retrieve variant data for, in the format
+                'chr:start-stop' or 'chr:position'.
+
+        Returns:
+            pl.DataFrame: A Polars DataFrame containing variant data with columns:
+                - chromosome: Chromosome/contig name
+                - position: Variant position (1-based)
+                - ref_allele: Reference allele
+                - alt_allele: Alternate allele
+                - sample_name: Sample name
+                - genotype: Genotype string (e.g., "0/1", "1/1", "./.")
+                - variant_id: Unique variant identifier
+        """
+        return self._session.get_locus_variants(locus)
+
 
     def ideogram(self, contig: str) -> pl.DataFrame:
         # Define the API endpoint with the contig parameter
@@ -731,20 +752,56 @@ class GenomeShader:
             str: an html object that can be displayed (via IPython display) or saved to disk.
         """
 
+        # Try to get variant data if locus is a string
+        variants_df = None
         if isinstance(locus_or_dataframe, str):
-            samples_df = self.get_locus(locus_or_dataframe)
+            try:
+                # Try to get variant data first
+                variants_df = self.get_locus_variants(locus_or_dataframe)
+                if variants_df is not None and len(variants_df) > 0:
+                    samples_df = variants_df.clone()
+                else:
+                    # If no variant data, try reads
+                    samples_df = self.get_locus(locus_or_dataframe)
+            except Exception as e:
+                # If variant extraction fails, fall back to reads
+                try:
+                    samples_df = self.get_locus(locus_or_dataframe)
+                except Exception:
+                    # Re-raise the original variant error if reads also fail
+                    raise e
         elif isinstance(locus_or_dataframe, pl.DataFrame):
             samples_df = locus_or_dataframe.clone()
+            # Check if this looks like variant data
+            if "chromosome" in samples_df.columns and "position" in samples_df.columns:
+                variants_df = samples_df.clone()
         else:
             raise ValueError(
                 "locus_or_dataframe must be a locus string or a Polars DataFrame."
             )
 
-        ref_chr = samples_df["reference_contig"].min()
-        ref_start = samples_df["reference_start"].min()
-        ref_end = samples_df["reference_end"].max()
+        # Determine if we have variant data or read data
+        is_variant_data = (
+            "chromosome" in samples_df.columns and 
+            "position" in samples_df.columns
+        )
         
-        # Store the actual data bounds (where reads exist)
+        if is_variant_data:
+            # Extract region bounds from variant data
+            ref_chr = samples_df["chromosome"].unique().sort().to_list()[0]
+            ref_start = samples_df["position"].min()
+            ref_end = samples_df["position"].max()
+            # Add some padding for visualization
+            padding = max(1000, (ref_end - ref_start) // 10)
+            ref_start = max(1, ref_start - padding)
+            ref_end = ref_end + padding
+        else:
+            # Extract region bounds from read data
+            ref_chr = samples_df["reference_contig"].min()
+            ref_start = samples_df["reference_start"].min()
+            ref_end = samples_df["reference_end"].max()
+        
+        # Store the actual data bounds (where reads/variants exist)
         # These may differ from the displayed region if user zooms/pans
         data_start = int(ref_start)
         data_end = int(ref_end)
@@ -827,6 +884,46 @@ class GenomeShader:
             print(f"Warning: Failed to load reference sequence data: {e}")
             reference_sequence = ""
 
+        # Transform variant data for frontend if we have variant data
+        variants_data = []
+        if variants_df is not None and len(variants_df) > 0:
+            # Get unique variant positions and their alleles
+            unique_variants = (
+                variants_df
+                .select(["position", "ref_allele", "alt_allele", "variant_id"])
+                .unique(subset=["position", "ref_allele", "alt_allele"])
+                .sort("position")
+            )
+            
+            # Group by position to collect all alt alleles for each position
+            variant_groups = {}
+            for row in unique_variants.iter_rows(named=True):
+                pos = row["position"]
+                ref_allele = row["ref_allele"]
+                alt_allele = row["alt_allele"]
+                variant_id = row["variant_id"]
+                
+                if pos not in variant_groups:
+                    variant_groups[pos] = {
+                        "pos": pos,
+                        "refAllele": ref_allele,
+                        "altAlleles": [],
+                        "variant_id": variant_id,
+                    }
+                
+                if alt_allele not in variant_groups[pos]["altAlleles"]:
+                    variant_groups[pos]["altAlleles"].append(alt_allele)
+            
+            # Convert to frontend format
+            for idx, (pos, variant_info) in enumerate(sorted(variant_groups.items())):
+                variants_data.append({
+                    "id": f"v{variant_info['variant_id'] + 1}",
+                    "pos": variant_info["pos"],
+                    "refAllele": variant_info["refAllele"],
+                    "altAlleles": variant_info["altAlleles"],
+                    "alleles": ["ref"] + [f"a{i+1}" for i in range(len(variant_info["altAlleles"]))],
+                })
+
         # Load template HTML
         template_html = self._load_template_html()
 
@@ -843,6 +940,7 @@ class GenomeShader:
             'transcripts_data': transcripts_data,
             'repeats_data': repeats_data,
             'reference_data': reference_sequence,
+            'variants_data': variants_data,  # Add variant data to config
             'data_bounds': {
                 'start': data_start,
                 'end': data_end,

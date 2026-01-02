@@ -619,6 +619,7 @@
 
       <div class="flow" id="flow">
         <canvas class="canvas" id="flowCanvas"></canvas>
+        <canvas id="flowWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
         <svg class="overlay" id="flowOverlay"></svg>
       </div>
 
@@ -2257,10 +2258,13 @@
   const hud = byId(root, "hud");
   const tooltip = byId(root, "tooltip");
   const tracksWebGPU = byId(root, "tracksWebGPU");
+  const flowWebGPU = byId(root, "flowWebGPU");
 
   // Initialize WebGPU infrastructure
   let webgpuCore = null;
   let instancedRenderer = null;
+  let flowWebGPUCore = null;
+  let flowInstancedRenderer = null;
   let webgpuSupported = false;
   let repeatHitTestData = []; // For tooltip hit testing
 
@@ -2591,19 +2595,35 @@
   }
 
   // -----------------------------
-  // Demo data
+  // Variant data: load from config or use demo data
   // -----------------------------
-  const variants = [
-    { id: "v1", pos: 100_120, alleles: ["ref","a1"], refAllele: "A", altAlleles: ["A" + "ATCGATCGATCGATCGATCGATCGATCGAT"] }, // insertion example (30 bp inserted: ATCGATCGATCGATCGATCGATCGATCGAT)
-    { id: "v2", pos: 100_240, alleles: ["ref","a1"] },
-    { id: "v3", pos: 100_410, alleles: ["ref","a1","a2"] },
-    { id: "v4", pos: 100_610, alleles: ["ref","a1"] },
-    { id: "v5", pos: 100_720, alleles: ["ref","a1"] },
-    { id: "v6", pos: 100_780, alleles: ["ref","a1"] },
-    { id: "v7", pos: 100_860, alleles: ["ref","a1"] },
-    { id: "v8", pos: 100_895, alleles: ["ref","a1"] },
-    { id: "v9", pos: 100_930, alleles: ["ref","a1"] },
-  ];
+  let variants = [];
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variants_data) {
+    const data = window.GENOMESHADER_CONFIG.variants_data;
+    // Data should already be an array of variant objects
+    if (Array.isArray(data) && data.length > 0) {
+      variants = data;
+      console.log(`Loaded ${variants.length} variants from config`);
+    } else {
+      console.warn("Variants data is not in expected array format or is empty:", data);
+      // Fall back to empty array or demo data
+      variants = [];
+    }
+  } else {
+    // Fall back to demo data if no config provided
+    console.log("No variants_data found in GENOMESHADER_CONFIG, using demo data");
+    variants = [
+      { id: "v1", pos: 100_120, alleles: ["ref","a1"], refAllele: "A", altAlleles: ["A" + "ATCGATCGATCGATCGATCGATCGATCGAT"] }, // insertion example (30 bp inserted: ATCGATCGATCGATCGATCGATCGATCGAT)
+      { id: "v2", pos: 100_240, alleles: ["ref","a1"] },
+      { id: "v3", pos: 100_410, alleles: ["ref","a1","a2"] },
+      { id: "v4", pos: 100_610, alleles: ["ref","a1"] },
+      { id: "v5", pos: 100_720, alleles: ["ref","a1"] },
+      { id: "v6", pos: 100_780, alleles: ["ref","a1"] },
+      { id: "v7", pos: 100_860, alleles: ["ref","a1"] },
+      { id: "v8", pos: 100_895, alleles: ["ref","a1"] },
+      { id: "v9", pos: 100_930, alleles: ["ref","a1"] },
+    ];
+  }
   
   // Helper to check if variant is an insertion
   function isInsertion(variant) {
@@ -4519,58 +4539,8 @@
       }
     }
 
-    // Execute WebGPU render pass after all tracks are rendered
-    if (webgpuSupported && instancedRenderer && instancedRenderer.rectInstances.length > 0) {
-      try {
-        // Update projection matrix for current canvas size
-        const devicePixelRatio = window.devicePixelRatio || 1;
-        const width = tracksWebGPU.clientWidth * devicePixelRatio;
-        const height = tracksWebGPU.clientHeight * devicePixelRatio;
-        
-        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
-          tracksWebGPU.width = width;
-          tracksWebGPU.height = height;
-          webgpuCore.handleResize();
-        }
-        
-        const encoder = webgpuCore.createCommandEncoder();
-        const texture = webgpuCore.getCurrentTexture();
-        const renderPass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: texture.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear', // Clear canvas on each render
-            storeOp: 'store',
-          }],
-        });
-        
-        instancedRenderer.render(encoder, renderPass);
-        renderPass.end();
-        webgpuCore.submit([encoder.finish()]);
-      } catch (error) {
-        console.error("WebGPU render error:", error);
-        // Fallback: clear instances and continue with SVG only
-        instancedRenderer.clear();
-      }
-    } else if (webgpuSupported && instancedRenderer) {
-      // Clear WebGPU canvas if no instances to render
-      try {
-        const encoder = webgpuCore.createCommandEncoder();
-        const texture = webgpuCore.getCurrentTexture();
-        const renderPass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: texture.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          }],
-        });
-        renderPass.end();
-        webgpuCore.submit([encoder.finish()]);
-      } catch (error) {
-        // Ignore errors when clearing
-      }
-    }
+    // Note: WebGPU render pass is now done at the end of renderFlowCanvas()
+    // to ensure variant columns are included after they're added
   }
 
   // -----------------------------
@@ -4614,6 +4584,10 @@
       // Clear canvas if collapsed
       const ctx = flowCanvas.getContext("2d");
       ctx.clearRect(0, 0, flowCanvas.width, flowCanvas.height);
+      // Clear WebGPU renderer instances
+      if (flowInstancedRenderer) {
+        flowInstancedRenderer.clear();
+      }
       return;
     }
 
@@ -4624,6 +4598,11 @@
     ctx.setTransform(1,0,0,1,0,0);
     ctx.clearRect(0,0,flowCanvas.width,flowCanvas.height);
     ctx.scale(dpr, dpr);
+    
+    // Clear WebGPU renderer instances
+    if (flowInstancedRenderer) {
+      flowInstancedRenderer.clear();
+    }
 
     const isVertical = isVerticalMode();
     const variantMode = getVariantLayoutMode();
@@ -4637,6 +4616,19 @@
     const colText  = cssVar("--muted");
     const colBlue  = cssVar("--blue");
 
+    // Helper function to parse rgba string and convert to hex for WebGPU
+    function rgbaToHex(rgbaStr) {
+      const match = rgbaStr.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      if (match) {
+        const r = parseInt(match[1]);
+        const g = parseInt(match[2]);
+        const b = parseInt(match[3]);
+        return (r << 16) | (g << 8) | b;
+      }
+      // Fallback to blue if parsing fails
+      return 0x78B4FF;
+    }
+
     // background
     ctx.fillStyle = "rgba(127,127,127,0.035)";
     ctx.fillRect(0,0,W,H);
@@ -4644,95 +4636,193 @@
     // connectors (diagonal lines - make them meet the ruler variant position precisely)
     const win = visibleVariantWindow();
     
+    // Use WebGPU for variant columns if available, otherwise fall back to Canvas 2D
+    // Use flowWebGPU instead of tracksWebGPU for variant columns
+    const useWebGPU = webgpuSupported && flowInstancedRenderer;
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    const blueHex = rgbaToHex(colBlue);
+    
     if (isVertical) {
       // In vertical mode, sort variants by position for consistent ordering
       const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
       
       // columns (horizontal lines in vertical mode)
-      ctx.strokeStyle = colBlue;
-      ctx.globalAlpha = 0.6;
+      if (useWebGPU) {
+        for (let i=0;i<sortedWin.length;i++) {
+          const v = sortedWin[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          const alpha = isHovered ? 0.7 : 0.6;
+          // Position column based on mode
+          const y = variantMode === "genomic" 
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          const yScaled = y * devicePixelRatio;
+          flowInstancedRenderer.addLine(
+            junctionX * devicePixelRatio, yScaled,
+            (W - 18) * devicePixelRatio, yScaled,
+            blueHex, alpha
+          );
+        }
+      } else {
+        ctx.strokeStyle = colBlue;
+        ctx.globalAlpha = 0.6;
+        for (let i=0;i<sortedWin.length;i++) {
+          const v = sortedWin[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.lineWidth = isHovered ? 2.5 : 1;
+          // Position column based on mode
+          const y = variantMode === "genomic" 
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          ctx.beginPath();
+          ctx.moveTo(junctionX, y);
+          ctx.lineTo(W-18, y);
+          ctx.stroke();
+        }
+      }
+
+      // Text labels (still use Canvas 2D for text)
+      ctx.fillStyle = colText;
+      ctx.font = "12px ui-sans-serif, system-ui";
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        // Position column based on mode
         const y = variantMode === "genomic" 
           ? yGenomeCanonical(v.pos, H)
           : yColumn(i, sortedWin.length);
-        ctx.beginPath();
-        ctx.moveTo(junctionX, y);
-        ctx.lineTo(W-18, y);
-        ctx.stroke();
-
-        ctx.fillStyle = colText;
-        ctx.font = "12px ui-sans-serif, system-ui";
         ctx.save();
-        ctx.translate(14, y + 6); // Move down by 6px total
+        ctx.translate(14, y + 6);
         ctx.rotate(-Math.PI/2);
         ctx.fillText(`v${variantIdx + 1}`, 0, 0);
         ctx.restore();
       }
-      ctx.strokeStyle = colBlue;
-      ctx.globalAlpha = 0.5;
 
+      // Connector lines from ruler to columns
       const x0 = 6;
-      for (let i=0; i<sortedWin.length; i++) {
-        const v = sortedWin[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
-        const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
-          : yColumn(i, sortedWin.length);
-        ctx.beginPath();
-        ctx.moveTo(x0, vy);
-        ctx.lineTo(junctionX, cy);
-        ctx.stroke();
+      if (useWebGPU) {
+        for (let i=0; i<sortedWin.length; i++) {
+          const v = sortedWin[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          const alpha = isHovered ? 0.7 : 0.5;
+          const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          flowInstancedRenderer.addLine(
+            x0 * devicePixelRatio, vy * devicePixelRatio,
+            junctionX * devicePixelRatio, cy * devicePixelRatio,
+            blueHex, alpha
+          );
+        }
+      } else {
+        ctx.strokeStyle = colBlue;
+        ctx.globalAlpha = 0.5;
+        for (let i=0; i<sortedWin.length; i++) {
+          const v = sortedWin[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.lineWidth = isHovered ? 2.5 : 1;
+          const vy = yGenomeCanonical(v.pos, H);
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          ctx.beginPath();
+          ctx.moveTo(x0, vy);
+          ctx.lineTo(junctionX, cy);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1.0;
       }
-      ctx.globalAlpha = 1.0;
     } else {
       // columns (vertical lines)
-      ctx.strokeStyle = colBlue;
-      ctx.globalAlpha = 0.6;
+      if (useWebGPU) {
+        for (let i=0;i<win.length;i++) {
+          const v = win[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          const alpha = isHovered ? 0.7 : 0.6;
+          // Position column based on mode
+          const x = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          const xScaled = x * devicePixelRatio;
+          flowInstancedRenderer.addLine(
+            xScaled, junctionY * devicePixelRatio,
+            xScaled, (H - 18) * devicePixelRatio,
+            blueHex, alpha
+          );
+        }
+      } else {
+        ctx.strokeStyle = colBlue;
+        ctx.globalAlpha = 0.6;
+        for (let i=0;i<win.length;i++) {
+          const v = win[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.lineWidth = isHovered ? 2.5 : 1;
+          // Position column based on mode
+          const x = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          ctx.beginPath();
+          ctx.moveTo(x, junctionY);
+          ctx.lineTo(x, H-18);
+          ctx.stroke();
+        }
+      }
+
+      // Text labels (still use Canvas 2D for text)
+      ctx.fillStyle = colText;
+      ctx.font = "12px ui-sans-serif, system-ui";
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        // Position column based on mode
         const x = variantMode === "genomic"
           ? xGenomeCanonical(v.pos, W)
           : xColumn(i, win.length);
-        ctx.beginPath();
-        ctx.moveTo(x, junctionY);
-        ctx.lineTo(x, H-18);
-        ctx.stroke();
-
-        ctx.fillStyle = colText;
-        ctx.font = "12px ui-sans-serif, system-ui";
         ctx.fillText(`v${variantIdx + 1}`, x - 10, 14);
       }
-      ctx.strokeStyle = colBlue;
-      ctx.globalAlpha = 0.5;
 
+      // Connector lines from ruler to columns
       const y0 = 6;
-      for (let i=0; i<win.length; i++) {
-        const v = win[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        const vx = xGenomeCanonical(v.pos, W); // always use genomic position for ruler connection
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        ctx.beginPath();
-        ctx.moveTo(vx, y0);
-        ctx.lineTo(cx, junctionY);
-        ctx.stroke();
+      if (useWebGPU) {
+        for (let i=0; i<win.length; i++) {
+          const v = win[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          const alpha = isHovered ? 0.7 : 0.5;
+          const vx = xGenomeCanonical(v.pos, W);
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          flowInstancedRenderer.addLine(
+            vx * devicePixelRatio, y0 * devicePixelRatio,
+            cx * devicePixelRatio, junctionY * devicePixelRatio,
+            blueHex, alpha
+          );
+        }
+      } else {
+        ctx.strokeStyle = colBlue;
+        ctx.globalAlpha = 0.5;
+        for (let i=0; i<win.length; i++) {
+          const v = win[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.lineWidth = isHovered ? 2.5 : 1;
+          const vx = xGenomeCanonical(v.pos, W);
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          ctx.beginPath();
+          ctx.moveTo(vx, y0);
+          ctx.lineTo(cx, junctionY);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1.0;
       }
-      ctx.globalAlpha = 1.0;
     }
 
     // placeholder nodes
@@ -4792,6 +4882,61 @@
           ctx.font = "11px ui-sans-serif, system-ui";
           ctx.fillText(labels[j], cx + 12, y + 13);
         }
+      }
+    }
+
+    // Execute WebGPU render pass after variant columns are added
+    // Render to flowWebGPU canvas (separate from tracksWebGPU)
+    if (webgpuSupported && flowInstancedRenderer && 
+        (flowInstancedRenderer.rectInstances.length > 0 || flowInstancedRenderer.lineInstances.length > 0)) {
+      try {
+        // Update projection matrix for current canvas size
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const width = flowWebGPU.clientWidth * devicePixelRatio;
+        const height = flowWebGPU.clientHeight * devicePixelRatio;
+        
+        if (flowWebGPU.width !== width || flowWebGPU.height !== height) {
+          flowWebGPU.width = width;
+          flowWebGPU.height = height;
+          flowWebGPUCore.handleResize();
+        }
+        
+        const encoder = flowWebGPUCore.createCommandEncoder();
+        const texture = flowWebGPUCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear', // Clear canvas on each render
+            storeOp: 'store',
+          }],
+        });
+        
+        flowInstancedRenderer.render(encoder, renderPass);
+        renderPass.end();
+        flowWebGPUCore.submit([encoder.finish()]);
+      } catch (error) {
+        console.error("Flow WebGPU render error:", error);
+        // Fallback: clear instances and continue with Canvas 2D only
+        flowInstancedRenderer.clear();
+      }
+    } else if (webgpuSupported && flowInstancedRenderer) {
+      // Clear WebGPU canvas if no instances to render
+      try {
+        const encoder = flowWebGPUCore.createCommandEncoder();
+        const texture = flowWebGPUCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        renderPass.end();
+        flowWebGPUCore.submit([encoder.finish()]);
+      } catch (error) {
+        // Ignore errors when clearing
       }
     }
   }
@@ -4972,6 +5117,60 @@
       ctx.globalAlpha = 1.0;
     }
     */
+
+    // Execute WebGPU render pass after variant columns are added
+    if (webgpuSupported && instancedRenderer && 
+        (instancedRenderer.rectInstances.length > 0 || instancedRenderer.lineInstances.length > 0)) {
+      try {
+        // Update projection matrix for current canvas size
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const width = tracksWebGPU.clientWidth * devicePixelRatio;
+        const height = tracksWebGPU.clientHeight * devicePixelRatio;
+        
+        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
+          tracksWebGPU.width = width;
+          tracksWebGPU.height = height;
+          webgpuCore.handleResize();
+        }
+        
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear', // Clear canvas on each render
+            storeOp: 'store',
+          }],
+        });
+        
+        instancedRenderer.render(encoder, renderPass);
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        console.error("WebGPU render error:", error);
+        // Fallback: clear instances and continue with SVG only
+        instancedRenderer.clear();
+      }
+    } else if (webgpuSupported && instancedRenderer) {
+      // Clear WebGPU canvas if no instances to render
+      try {
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        // Ignore errors when clearing
+      }
+    }
   }
 
   // -----------------------------
