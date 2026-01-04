@@ -4842,6 +4842,82 @@
       // Fallback (optional): if you want, keep your old Canvas2D path here.
     };
 
+    // drawRibbonVertical: WebGPU Bezier ribbon renderer for vertical mode
+    // In vertical mode with inverted Y axis (bottom=start, top=end):
+    // - Source (earlier variant) is at BOTTOM (higher Y)
+    // - Destination (later variant) is at TOP (lower Y)
+    // - Ribbons flow UPWARD from srcInfo.top to dstInfo.bottom
+    const drawRibbonVertical = (srcInfo, dstInfo, srcX0, srcX1, dstX0, dstX1, color) => {
+      if (!srcInfo || !dstInfo) return;
+
+      // Scale coordinates from logical pixels (Canvas2D) to physical pixels (WebGPU)
+      const devicePixelRatio = window.devicePixelRatio || 1;
+
+      // Clamp to node bounds so ribbons meet nodes flush (using left/right for horizontal extent)
+      const srcX0C = Math.max(srcInfo.left, Math.min(srcX0, srcInfo.right));
+      const srcX1C = Math.max(srcInfo.left, Math.min(srcX1, srcInfo.right));
+      const dstX0C = Math.max(dstInfo.left, Math.min(dstX0, dstInfo.right));
+      const dstX1C = Math.max(dstInfo.left, Math.min(dstX1, dstInfo.right));
+
+      // Ensure consistent left/right ordering (prevents "candy-wrapper twist")
+      let sLeft = Math.min(srcX0C, srcX1C);
+      let sRight = Math.max(srcX0C, srcX1C);
+      let dLeft = Math.min(dstX0C, dstX1C);
+      let dRight = Math.max(dstX0C, dstX1C);
+
+      // Apply slight endpoint taper (classic alluvial aesthetic)
+      // Shrink endpoints toward midpoint by ~6% for intentional joins
+      const taperFrac = 0.06;
+      const sMid = (sLeft + sRight) / 2;
+      const sHalfW = (sRight - sLeft) / 2;
+      sLeft = sMid - sHalfW * (1 - taperFrac);
+      sRight = sMid + sHalfW * (1 - taperFrac);
+      
+      const dMid = (dLeft + dRight) / 2;
+      const dHalfW = (dRight - dLeft) / 2;
+      dLeft = dMid - dHalfW * (1 - taperFrac);
+      dRight = dMid + dHalfW * (1 - taperFrac);
+
+      // With inverted Y axis: source is at bottom (higher Y), dest is at top (lower Y)
+      // Ribbons flow UPWARD: from srcInfo.top (top edge of source node) to dstInfo.bottom (bottom edge of dest node)
+      const srcY = srcInfo.top;      // Top edge of source node (which is at bottom of screen)
+      const dstY = dstInfo.bottom;   // Bottom edge of dest node (which is at top of screen)
+      const dy = srcY - dstY;        // srcY > dstY, so this is positive
+      if (!(dy > 1.0)) return;
+
+      // Handle length: no fixed 10px minimum; clamp by dy to avoid loops when zoomed out
+      const base = dy * 0.40;
+      const handle = Math.max(1.0, Math.min(base, dy * 0.45));
+
+      // Scale all coordinates to physical pixels for WebGPU
+      // Ribbon flows from bottom (srcY, larger) to top (dstY, smaller)
+      const leftP0 = [sLeft * devicePixelRatio, srcY * devicePixelRatio];
+      const leftP3 = [dLeft * devicePixelRatio, dstY * devicePixelRatio];
+      const rightP0 = [sRight * devicePixelRatio, srcY * devicePixelRatio];
+      const rightP3 = [dRight * devicePixelRatio, dstY * devicePixelRatio];
+
+      // Vertical tangents at endpoints (flowing upward: srcY decreases toward dstY)
+      const leftP1 = [sLeft * devicePixelRatio, (srcY - handle) * devicePixelRatio];
+      const leftP2 = [dLeft * devicePixelRatio, (dstY + handle) * devicePixelRatio];
+      const rightP1 = [sRight * devicePixelRatio, (srcY - handle) * devicePixelRatio];
+      const rightP2 = [dRight * devicePixelRatio, (dstY + handle) * devicePixelRatio];
+
+      // Parse color string to RGBA floats (expects "rgba(r,g,b,a)" or similar)
+      const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      let rgba = [0.47, 0.71, 1.0, 0.20];
+      if (m) {
+        rgba = [parseInt(m[1])/255, parseInt(m[2])/255, parseInt(m[3])/255, m[4] !== undefined ? parseFloat(m[4]) : 1.0];
+      }
+
+      if (webgpuSupported && flowRibbonRenderer) {
+        // For vertical ribbons, we pass left/right edges as top/bottom edges to the renderer
+        flowRibbonRenderer.addRibbon(leftP0, leftP1, leftP2, leftP3, rightP0, rightP1, rightP2, rightP3, rgba);
+        return;
+      }
+
+      // Fallback (optional): if you want, keep your old Canvas2D path here.
+    };
+
     // Helper function to parse rgba string and convert to hex for WebGPU
     function rgbaToHex(rgbaStr) {
       const match = rgbaStr.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
@@ -5469,8 +5545,13 @@
             uniqueAlleles.add(v.altAlleles[k]);
           }
         }
-        // Convert to formatted labels array
-        let labels = Array.from(uniqueAlleles).map(allele => formatAlleleLabel(allele));
+        // Convert to formatted labels array and create mapping from label to actual allele
+        const labelToAllele = new Map();
+        let labels = Array.from(uniqueAlleles).map(allele => {
+          const label = formatAlleleLabel(allele);
+          labelToAllele.set(label, allele);
+          return label;
+        });
         
         // Get order from state, or use default
         let order = state.variantAlleleOrder.get(v.id);
@@ -5969,19 +6050,35 @@
               const alpha = colorMatch ? parseFloat(colorMatch[1]) : 0.65;
               const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha * 0.3})`);
               
-              // Draw thin connecting ribbon
-              const srcH = srcNode.bottom - srcNode.top;
-              const dstH = dstNode.bottom - dstNode.top;
-              const midSrc = srcNode.top + srcH / 2;
-              const midDst = dstNode.top + dstH / 2;
-              const thinH = Math.min(2, srcH * 0.1, dstH * 0.1);
-              
-              drawRibbon(
-                srcNode, dstNode,
-                midSrc - thinH/2, midSrc + thinH/2,
-                midDst - thinH/2, midDst + thinH/2,
-                ribbonColor
-              );
+              if (isVertical) {
+                // Draw thin connecting ribbon (vertical flow)
+                const srcW = srcNode.right - srcNode.left;
+                const dstW = dstNode.right - dstNode.left;
+                const midSrc = srcNode.left + srcW / 2;
+                const midDst = dstNode.left + dstW / 2;
+                const thinW = Math.min(2, srcW * 0.1, dstW * 0.1);
+                
+                drawRibbonVertical(
+                  srcNode, dstNode,
+                  midSrc - thinW/2, midSrc + thinW/2,
+                  midDst - thinW/2, midDst + thinW/2,
+                  ribbonColor
+                );
+              } else {
+                // Draw thin connecting ribbon (horizontal flow)
+                const srcH = srcNode.bottom - srcNode.top;
+                const dstH = dstNode.bottom - dstNode.top;
+                const midSrc = srcNode.top + srcH / 2;
+                const midDst = dstNode.top + dstH / 2;
+                const thinH = Math.min(2, srcH * 0.1, dstH * 0.1);
+                
+                drawRibbon(
+                  srcNode, dstNode,
+                  midSrc - thinH/2, midSrc + thinH/2,
+                  midDst - thinH/2, midDst + thinH/2,
+                  ribbonColor
+                );
+              }
             }
           }
           continue;
@@ -6002,9 +6099,10 @@
           srcTotals.set(srcLabel, total);
         }
         
-        // Track current Y offset within each node for stacking ribbons
-        const srcOffsets = new Map(); // srcLabel -> current Y offset from top
-        const dstOffsets = new Map(); // dstLabel -> current Y offset from top
+        // Track current offset within each node for stacking ribbons
+        // In horizontal mode: Y offset from top; in vertical mode: X offset from left
+        const srcOffsets = new Map();
+        const dstOffsets = new Map();
         
         // Get reference allele labels to identify background persistence flows
         const srcRefLabel = srcVariant.refAllele ? formatAlleleLabel(srcVariant.refAllele) : null;
@@ -6018,38 +6116,62 @@
           if (!srcNode) continue;
           
           const srcTotal = srcTotals.get(srcLabel) || 1;
-          const srcNodeH = srcNode.bottom - srcNode.top;
           
           for (const [dstLabel, count] of dstMap) {
             const dstNode = dstNodes.get(dstLabel);
             if (!dstNode) continue;
             
             const dstTotal = dstTotals.get(dstLabel) || 1;
-            const dstNodeH = dstNode.bottom - dstNode.top;
-            
-            // Calculate ribbon slice heights proportional to transition count
-            const srcSliceH = (count / srcTotal) * srcNodeH;
-            const dstSliceH = (count / dstTotal) * dstNodeH;
             
             // Get current offsets (for stacking)
             const srcOffset = srcOffsets.get(srcLabel) || 0;
             const dstOffset = dstOffsets.get(dstLabel) || 0;
             
-            // Calculate Y positions
-            const srcY0 = srcNode.top + srcOffset;
-            const srcY1 = srcY0 + srcSliceH;
-            const dstY0 = dstNode.top + dstOffset;
-            const dstY1 = dstY0 + dstSliceH;
+            let src0, src1, dst0, dst1;
             
-            // Update offsets for next ribbon
-            srcOffsets.set(srcLabel, srcOffset + srcSliceH);
-            dstOffsets.set(dstLabel, dstOffset + dstSliceH);
+            if (isVertical) {
+              // Vertical mode: ribbons flow downward, width is along X axis
+              const srcNodeW = srcNode.right - srcNode.left;
+              const dstNodeW = dstNode.right - dstNode.left;
+              
+              // Calculate ribbon slice widths proportional to transition count
+              const srcSliceW = (count / srcTotal) * srcNodeW;
+              const dstSliceW = (count / dstTotal) * dstNodeW;
+              
+              // Calculate X positions
+              src0 = srcNode.left + srcOffset;
+              src1 = src0 + srcSliceW;
+              dst0 = dstNode.left + dstOffset;
+              dst1 = dst0 + dstSliceW;
+              
+              // Update offsets for next ribbon
+              srcOffsets.set(srcLabel, srcOffset + srcSliceW);
+              dstOffsets.set(dstLabel, dstOffset + dstSliceW);
+            } else {
+              // Horizontal mode: ribbons flow rightward, height is along Y axis
+              const srcNodeH = srcNode.bottom - srcNode.top;
+              const dstNodeH = dstNode.bottom - dstNode.top;
+              
+              // Calculate ribbon slice heights proportional to transition count
+              const srcSliceH = (count / srcTotal) * srcNodeH;
+              const dstSliceH = (count / dstTotal) * dstNodeH;
+              
+              // Calculate Y positions
+              src0 = srcNode.top + srcOffset;
+              src1 = src0 + srcSliceH;
+              dst0 = dstNode.top + dstOffset;
+              dst1 = dst0 + dstSliceH;
+              
+              // Update offsets for next ribbon
+              srcOffsets.set(srcLabel, srcOffset + srcSliceH);
+              dstOffsets.set(dstLabel, dstOffset + dstSliceH);
+            }
             
             // Check if this is a reference-to-reference flow (background persistence)
             const isRefFlow = srcLabel === srcRefLabel && dstLabel === dstRefLabel;
             
             ribbonData.push({
-              srcNode, dstNode, srcY0, srcY1, dstY0, dstY1,
+              srcNode, dstNode, src0, src1, dst0, dst1,
               srcLabel, count, isRefFlow
             });
           }
@@ -6060,7 +6182,7 @@
         
         // Draw all ribbons with sqrt-scaled opacity
         for (const ribbon of ribbonData) {
-          const { srcNode, dstNode, srcY0, srcY1, dstY0, dstY1, srcLabel, count, isRefFlow } = ribbon;
+          const { srcNode, dstNode, src0, src1, dst0, dst1, srcLabel, count, isRefFlow } = ribbon;
           
           // Get color from source allele
           const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
@@ -6077,7 +6199,13 @@
           
           const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha.toFixed(3)})`);
           
-          drawRibbon(srcNode, dstNode, srcY0, srcY1, dstY0, dstY1, ribbonColor);
+          if (isVertical) {
+            // Vertical mode: src0/src1/dst0/dst1 are X positions
+            drawRibbonVertical(srcNode, dstNode, src0, src1, dst0, dst1, ribbonColor);
+          } else {
+            // Horizontal mode: src0/src1/dst0/dst1 are Y positions
+            drawRibbon(srcNode, dstNode, src0, src1, dst0, dst1, ribbonColor);
+          }
         }
       }
     }
@@ -6156,8 +6284,10 @@
 
     // Execute WebGPU render pass after variant columns are added
     // Render to flowWebGPU canvas (separate from tracksWebGPU)
-    if (webgpuSupported && flowInstancedRenderer && 
-        (flowInstancedRenderer.rectInstances.length > 0 || flowInstancedRenderer.lineInstances.length > 0)) {
+    const hasFlowInstances = flowInstancedRenderer && 
+        (flowInstancedRenderer.rectInstances.length > 0 || flowInstancedRenderer.lineInstances.length > 0);
+    const hasRibbonInstances = flowRibbonRenderer && flowRibbonRenderer.instances.length > 0;
+    if (webgpuSupported && flowInstancedRenderer && (hasFlowInstances || hasRibbonInstances)) {
       try {
         // Update projection matrix for current canvas size
         const devicePixelRatio = window.devicePixelRatio || 1;
