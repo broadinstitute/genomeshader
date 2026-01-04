@@ -207,6 +207,54 @@ impl Session {
         Ok(())
     }
 
+    fn get_locus_variants(&self, locus: String) -> PyResult<PyDataFrame> {
+        let l_fmt = self.parse_locus(locus.clone())?;
+
+        if self.variant_files.is_empty() {
+            return Err(
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("No variant files attached. Use attach_variants() first.")
+                )
+            );
+        }
+
+        let mut combined_df: Option<DataFrame> = None;
+
+        for variant_file in &self.variant_files {
+            match variants::extract_variants(variant_file, &l_fmt.0, &l_fmt.1, &l_fmt.2) {
+                Ok(df) => {
+                    if let Some(existing_df) = combined_df {
+                        // Combine with existing dataframe
+                        combined_df = Some(
+                            existing_df
+                                .vstack(&df)
+                                .map_err(|e| {
+                                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                                        format!("Failed to combine variant dataframes: {}", e)
+                                    )
+                                })?
+                        );
+                    } else {
+                        combined_df = Some(df);
+                    }
+                }
+                Err(e) => {
+                    // Log error but continue with other files
+                    eprintln!("Warning: Failed to extract variants from {}: {}", variant_file, e);
+                }
+            }
+        }
+
+        match combined_df {
+            Some(df) => Ok(PyDataFrame(df)),
+            None => Err(
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("Failed to extract variants from any attached files for locus '{}'.", locus)
+                )
+            )
+        }
+    }
+
     fn reset(&mut self) -> PyResult<()> {
         self.reads_cohort = HashSet::new();
         self.loci = HashSet::new();

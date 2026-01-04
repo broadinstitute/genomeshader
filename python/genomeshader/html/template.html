@@ -126,6 +126,7 @@
       grid-template-columns: 12px 1fr;
     }
     .app.sidebar-collapsed .sidebar {
+      width: 12px !important;
       min-width: 12px;
     }
 
@@ -175,6 +176,10 @@
       background: var(--blue);
       border-right: none;
       box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
+    }
+    /* Adjust main panel position when sidebar is collapsed */
+    .app.sidebar-collapsed .main {
+      left: 12px !important;
     }
 
     .sidebarHeader {
@@ -386,6 +391,16 @@
       pointer-events: none;
       white-space: nowrap;
       box-shadow: var(--shadow);
+      display: none;
+      transition: opacity 0.3s ease;
+    }
+    /* In vertical mode, position HUD in upper right */
+    .main.vertical .hud {
+      bottom: auto;
+      top: 10px;
+    }
+    .hud.visible {
+      display: block;
     }
 
     /* Tooltip */
@@ -619,6 +634,7 @@
 
       <div class="flow" id="flow">
         <canvas class="canvas" id="flowCanvas"></canvas>
+        <canvas id="flowWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
         <svg class="overlay" id="flowOverlay"></svg>
       </div>
 
@@ -1289,6 +1305,200 @@
     }
   }
 
+  // ------------------------------------------------------------
+  // WebGPU: Instanced cubic Bezier ribbon renderer (Sankey ribbons)
+  // ------------------------------------------------------------
+  class BezierRibbonRenderer {
+    constructor(webgpuCore, opts = {}) {
+      this.core = webgpuCore;
+      this.device = webgpuCore.device;
+
+      this.segments = Math.max(8, Math.min(128, opts.segments ?? 40)); // smooth, not too heavy
+      this.pipeline = null;
+      this.bindGroup = null;
+
+      this.instances = [];
+      this.instanceBuffer = null;
+
+      this._init();
+    }
+
+    clear() {
+      this.instances.length = 0;
+    }
+
+    // Instance layout (Float32):
+    // topP0.xy topP1.xy topP2.xy topP3.xy  (8 floats)
+    // botP0.xy botP1.xy botP2.xy botP3.xy  (8 floats)
+    // color.rgba (4 floats)
+    addRibbon(topP0, topP1, topP2, topP3, botP0, botP1, botP2, botP3, colorRgba) {
+      // Basic validity guard
+      if (!isFinite(topP0[0]) || !isFinite(topP0[1]) || !isFinite(topP3[0]) || !isFinite(topP3[1])) return;
+      if (!isFinite(botP0[0]) || !isFinite(botP0[1]) || !isFinite(botP3[0]) || !isFinite(botP3[1])) return;
+
+      this.instances.push({
+        topP0, topP1, topP2, topP3,
+        botP0, botP1, botP2, botP3,
+        color: colorRgba,
+      });
+    }
+
+    _init() {
+      const wgsl = `
+        struct Uniforms {
+          projection: mat4x4<f32>,
+          screenSize: vec2<f32>,
+          _pad: vec2<f32>,
+        };
+        @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+        struct VSOut {
+          @builtin(position) position: vec4<f32>,
+          @location(0) color: vec4<f32>,
+        };
+
+        fn bezier(p0: vec2<f32>, p1: vec2<f32>, p2: vec2<f32>, p3: vec2<f32>, t: f32) -> vec2<f32> {
+          let omt = 1.0 - t;
+          return (omt*omt*omt)*p0 +
+                 (3.0*omt*omt*t)*p1 +
+                 (3.0*omt*t*t)*p2 +
+                 (t*t*t)*p3;
+        }
+
+        @vertex
+        fn vs_main(
+          @builtin(vertex_index) vid: u32,
+          @builtin(instance_index) iid: u32,
+
+          // Top boundary control points
+          @location(0) topP0: vec2<f32>,
+          @location(1) topP1: vec2<f32>,
+          @location(2) topP2: vec2<f32>,
+          @location(3) topP3: vec2<f32>,
+
+          // Bottom boundary control points
+          @location(4) botP0: vec2<f32>,
+          @location(5) botP1: vec2<f32>,
+          @location(6) botP2: vec2<f32>,
+          @location(7) botP3: vec2<f32>,
+
+          // Premultiplied-alpha color is done in FS
+          @location(8) color: vec4<f32>,
+        ) -> VSOut {
+          // Triangle strip: for each segment s, emit [top(s), bottom(s)]
+          // vid: 0 top(0), 1 bot(0), 2 top(1), 3 bot(1), ...
+          let side: u32 = vid & 1u;         // 0 = top, 1 = bottom
+          let s: u32 = vid >> 1u;           // segment index
+          let denom: f32 = f32(${this.segments - 1});
+          let t: f32 = select(0.0, f32(s) / denom, denom > 0.0);
+
+          var p: vec2<f32>;
+          if (side == 0u) {
+            p = bezier(topP0, topP1, topP2, topP3, t);
+          } else {
+            p = bezier(botP0, botP1, botP2, botP3, t);
+          }
+
+          var out: VSOut;
+          out.position = uniforms.projection * vec4<f32>(p, 0.0, 1.0);
+          out.color = color;
+          return out;
+        }
+
+        @fragment
+        fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
+          // premultiply for correct blending
+          let a = in.color.a;
+          return vec4<f32>(in.color.rgb * a, a);
+        }
+      `;
+
+      const module = this.device.createShaderModule({ code: wgsl });
+
+      this.pipeline = this.device.createRenderPipeline({
+        layout: "auto",
+        vertex: {
+          module,
+          entryPoint: "vs_main",
+          buffers: [
+            {
+              stepMode: "instance",
+              arrayStride: (8 + 8 + 4) * 4, // 20 floats
+              attributes: [
+                { shaderLocation: 0, offset:  0 * 4, format: "float32x2" }, // topP0
+                { shaderLocation: 1, offset:  2 * 4, format: "float32x2" }, // topP1
+                { shaderLocation: 2, offset:  4 * 4, format: "float32x2" }, // topP2
+                { shaderLocation: 3, offset:  6 * 4, format: "float32x2" }, // topP3
+
+                { shaderLocation: 4, offset:  8 * 4, format: "float32x2" }, // botP0
+                { shaderLocation: 5, offset: 10 * 4, format: "float32x2" }, // botP1
+                { shaderLocation: 6, offset: 12 * 4, format: "float32x2" }, // botP2
+                { shaderLocation: 7, offset: 14 * 4, format: "float32x2" }, // botP3
+
+                { shaderLocation: 8, offset: 16 * 4, format: "float32x4" }, // color
+              ],
+            },
+          ],
+        },
+        fragment: {
+          module,
+          entryPoint: "fs_main",
+          targets: [{
+            format: this.core.format,
+            blend: {
+              color: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+              alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+            },
+          }],
+        },
+        primitive: { topology: "triangle-strip" },
+      });
+
+      this.bindGroup = this.device.createBindGroup({
+        layout: this.pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: this.core.projectionBuffer } }],
+      });
+    }
+
+    _ensureInstanceBuffer() {
+      const neededFloats = this.instances.length * 20;
+      const neededBytes = neededFloats * 4;
+      if (!this.instanceBuffer || this.instanceBuffer.size < neededBytes) {
+        // Over-allocate a bit to reduce realloc churn
+        const allocBytes = Math.max(neededBytes, (this.instanceBuffer?.size ?? 0) * 2, 64 * 1024);
+        this.instanceBuffer = this.device.createBuffer({
+          size: allocBytes,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+      }
+    }
+
+    render(encoder, renderPass) {
+      if (!this.pipeline || this.instances.length === 0) return;
+
+      this._ensureInstanceBuffer();
+
+      // Pack instances -> Float32Array
+      const data = new Float32Array(this.instances.length * 20);
+      let o = 0;
+      for (const inst of this.instances) {
+        const push2 = (p) => { data[o++] = p[0]; data[o++] = p[1]; };
+        push2(inst.topP0); push2(inst.topP1); push2(inst.topP2); push2(inst.topP3);
+        push2(inst.botP0); push2(inst.botP1); push2(inst.botP2); push2(inst.botP3);
+        data[o++] = inst.color[0]; data[o++] = inst.color[1]; data[o++] = inst.color[2]; data[o++] = inst.color[3];
+      }
+
+      this.device.queue.writeBuffer(this.instanceBuffer, 0, data);
+
+      renderPass.setPipeline(this.pipeline);
+      renderPass.setBindGroup(0, this.bindGroup);
+      renderPass.setVertexBuffer(0, this.instanceBuffer);
+
+      const vertexCount = this.segments * 2;
+      renderPass.draw(vertexCount, this.instances.length, 0, 0);
+    }
+  }
+
   // -----------------------------
   // Genomeshader bootstrap
   // -----------------------------
@@ -1298,13 +1508,11 @@
   function showError(message) {
     window._genomeshaderLazyStatus = { type: 'error', message };
     updateHUDWithStatus();
-    console.error(message);
   }
   
   function showInfo(message) {
     window._genomeshaderLazyStatus = { type: 'info', message };
     updateHUDWithStatus();
-    console.log(message);
   }
   
   function updateHUDWithStatus() {
@@ -1323,7 +1531,6 @@
   
   // Determine host mode (inline or popup)
   const hostMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode) || 'inline';
-  console.log('Genomeshader: hostMode =', hostMode);
   
   // True lazy loading via postMessage
   const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
@@ -1331,7 +1538,6 @@
   if (!manifestUrl) {
     showError('Missing GENOMESHADER_MANIFEST_URL');
   } else {
-    console.log('Manifest URL:', manifestUrl);
     
     // Request manifest via postMessage to opener (Jupyter notebook window)
     // The opener can fetch from localhost, avoiding CORS issues
@@ -1342,7 +1548,6 @@
       return new Promise((resolve, reject) => {
         // Inline mode: use direct fetch
         if (hostMode === 'inline') {
-          console.log('Genomeshader: Using direct fetch for inline mode:', url);
           fetch(url)
             .then(response => {
               if (!response.ok) {
@@ -1351,18 +1556,15 @@
               return response.json();
             })
             .then(data => {
-              console.log('Genomeshader: Direct fetch succeeded for:', url);
               resolve(data);
             })
             .catch(error => {
-              console.error('Genomeshader: Direct fetch failed for:', url, error);
               reject(error);
             });
           return;
         }
-        
+
         // Popup mode: use postMessage
-        console.log('Genomeshader: Using postMessage for popup mode:', url);
         const id = `req_${Date.now()}_${++requestId}`;
         pendingRequests.set(id, { resolve, reject });
         
@@ -1414,22 +1616,18 @@
         // Compute track URL
         const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/') + 1);
         const trackUrl = baseUrl + manifest.tracks.demo.url;
-        console.log('Track URL:', trackUrl);
         
         // Request track file
         return requestData(trackUrl)
           .then(trackData => {
-            console.log('Loaded track data via postMessage:', trackData);
             const recordCount = Array.isArray(trackData) ? trackData.length : 0;
             showInfo(`Run ID: ${manifest.run_id}<br>Loaded ${recordCount} records`);
           })
           .catch(error => {
-            console.error('Track fetch error:', error);
             showError(`Failed to load track: ${error.message}`);
           });
       })
       .catch(error => {
-        console.error('Manifest fetch error:', error);
         showError(`Failed to load manifest: ${error.message}`);
       });
   }
@@ -1443,21 +1641,18 @@
   // Theme + menu
   // -----------------------------
   // Find root container for scoping event handlers in inline mode
-  const root = document.querySelector('[id^="genomeshader-root-"]') || 
+  const root = document.querySelector('[id^="genomeshader-root-"]') ||
                 (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
                 document.body; // Fallback to body if not found
-  console.log('Genomeshader: Root container found:', root?.id || root?.tagName);
   
   // Root-scoped element lookup helpers
   function byId(root, id) {
     const el = root.querySelector(`#${CSS.escape(id)}`);
-    if (!el) console.warn("[gs] missing element", id, "under root", root.id);
     return el;
   }
 
   function $(root, selector) {
     const el = root.querySelector(selector);
-    if (!el) console.warn("[gs] missing element", selector, "under root", root.id);
     return el;
   }
   
@@ -1485,16 +1680,11 @@
   const orientationLabel = getElementById("orientationLabel");
   
   // Debug: Check if elements are found
-  if (!app) console.error('Genomeshader: .app element not found');
-  if (!sidebar) console.error('Genomeshader: #sidebar element not found');
-  if (!menuBtn) console.error('Genomeshader: #menuBtn element not found');
-  if (!ctxMenu) console.error('Genomeshader: #ctxMenu element not found');
   
   // In inline mode, keep menu in root initially, but we'll move it to body when opening
   // This ensures fixed positioning works relative to viewport, not container
   if (hostMode === 'inline' && root && ctxMenu && !root.contains(ctxMenu)) {
     root.appendChild(ctxMenu);
-    console.log('Genomeshader: Moved menu to root container');
   }
 
   // Sidebar collapse/expand
@@ -1508,29 +1698,26 @@
   function updateSidebarState() {
     const collapsed = getSidebarCollapsed();
     if (!app) {
-      console.error('Genomeshader: Cannot update sidebar state - app element not found');
       return;
     }
     if (collapsed) {
       app.classList.add("sidebar-collapsed");
-      console.log('Genomeshader: Sidebar state updated - collapsed (class added)');
     } else {
       app.classList.remove("sidebar-collapsed");
-      console.log('Genomeshader: Sidebar state updated - expanded (class removed)');
     }
+    // Trigger resize after CSS transition completes to ensure tracks re-render
+    // The CSS transition is 0.2s, so wait for it to complete
+    setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+    }, 220);
   }
   
   // Make sidebar border clickable - always bind regardless of hostMode
   if (sidebar) {
-    console.log('[gs] wiring UI events - Sidebar toggle');
-    
     const handleSidebarToggle = (e) => {
-      console.log('[gs] sidebar toggle click', e.type, 'target:', e.target);
-      
       // Don't toggle if clicking on menu button or menu - check this FIRST before stopping propagation
-      if ((menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) || 
+      if ((menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) ||
           (ctxMenu && (ctxMenu === e.target || ctxMenu.contains(e.target)))) {
-        console.log('[gs] Sidebar toggle: ignoring click on menu button/menu');
         return; // Don't stop propagation - let menu button handler fire
       }
       
@@ -1540,17 +1727,13 @@
       const collapsed = getSidebarCollapsed();
       const rect = sidebar.getBoundingClientRect();
       const clickX = e.clientX - rect.left;
-      
-      console.log('Genomeshader: Sidebar clicked at x=' + clickX + ', width=' + rect.width + ', collapsed=' + collapsed);
-      
+
       // Check if click is within 12px of the right edge (or anywhere if collapsed)
       if (collapsed) {
         // When collapsed, the entire 12px strip is clickable
-        console.log('Genomeshader: Expanding sidebar');
         setSidebarCollapsed(false);
       } else if (clickX >= rect.width - 12) {
         // When open, only the right 12px edge is clickable
-        console.log('Genomeshader: Collapsing sidebar');
         setSidebarCollapsed(true);
       }
     };
@@ -1563,10 +1746,6 @@
     
     // Ensure sidebar is clickable
     sidebar.style.pointerEvents = "auto";
-    
-    console.log('[gs] Sidebar toggle handler attached successfully');
-  } else {
-    console.error('Genomeshader: Cannot attach sidebar click handler - element not found');
   }
   
   updateSidebarState();
@@ -1626,7 +1805,6 @@
     // In inline mode, move menu to body so fixed positioning works relative to viewport
     if (hostMode === 'inline' && ctxMenu.parentElement !== document.body) {
       document.body.appendChild(ctxMenu);
-      console.log('Genomeshader: Moved menu to body for fixed positioning');
     }
     
     // Use fixed positioning so menu appears over everything (including Jupyter UI)
@@ -1662,24 +1840,7 @@
     ctxMenu.style.visibility = 'visible';
     ctxMenu.style.pointerEvents = 'auto';
     ctxMenu.style.opacity = '1';
-    
-    // Debug: Check computed styles
-    const computed = window.getComputedStyle(ctxMenu);
-    const rect = ctxMenu.getBoundingClientRect();
-    console.log('Genomeshader: Menu opened at', { 
-      left, top, 
-      buttonRect: r, 
-      windowHeight: window.innerHeight,
-      menuRect: rect,
-      computedDisplay: computed.display,
-      computedVisibility: computed.visibility,
-      computedPosition: computed.position,
-      computedZIndex: computed.zIndex,
-      computedOpacity: computed.opacity,
-      menuParent: ctxMenu.parentElement?.tagName,
-      menuInRoot: root?.contains(ctxMenu)
-    });
-    
+
     // Update variant layout mode label when menu opens
     updateVariantLayoutModeLabel();
   }
@@ -1693,31 +1854,21 @@
     // In inline mode, move menu back to root when closed
     if (hostMode === 'inline' && root && ctxMenu.parentElement === document.body) {
       root.appendChild(ctxMenu);
-      console.log('Genomeshader: Moved menu back to root container');
     }
-    
-    console.log('Genomeshader: Menu closed');
   }
   function toggleMenu() {
     ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
   }
 
   if (menuBtn && ctxMenu) {
-    console.log('[gs] wiring UI events - Settings menu button', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
-    console.log('[gs] Menu button element:', menuBtn, 'ID:', menuBtn.id, 'Classes:', menuBtn.className);
-    
     // Track if we've already handled this interaction to prevent double-toggle
     let menuButtonHandled = false;
     
     const handleMenuButtonClick = (e) => {
       // If we already handled this interaction (e.g., pointerdown), ignore subsequent events (click)
       if (menuButtonHandled && e.type !== 'pointerdown') {
-        console.log('[gs] settings click ignored - already handled by pointerdown', e.type);
         return;
       }
-      
-      console.log('[gs] settings click', e.type, e.target);
-      console.log('Genomeshader: Menu button clicked');
       e.stopPropagation(); 
       e.preventDefault();
       
@@ -1741,14 +1892,7 @@
     
     // Also set onclick as fallback
     menuBtn.onclick = handleMenuButtonClick;
-    
-    console.log('[gs] Menu button handlers attached', {
-      hasClick: true,
-      hasPointerDown: true,
-      hasMouseDown: true,
-      hasOnclick: !!menuBtn.onclick
-    });
-    
+
     // Close menu when clicking outside, but check if click is outside menu/button
     // In inline mode, use root-scoped handler to avoid Jupyter wrapper interference
     if (hostMode === 'inline' && root) {
@@ -1776,7 +1920,6 @@
         }
       };
       root.addEventListener("pointerdown", onPointerDown, true);
-      console.log('[gs] Root-scoped outside-click handler attached (inline mode)');
     } else {
       // Popup mode: use document-level handler
       document.addEventListener("click", (e) => {
@@ -1784,11 +1927,7 @@
           closeMenu();
         }
       });
-      console.log('[gs] Document-level outside-click handler attached (popup mode)');
     }
-    console.log('[gs] Settings menu handlers attached successfully');
-  } else {
-    console.error('Genomeshader: Cannot attach menu handlers - elements not found', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
   }
   ctxMenu.addEventListener("click", (e) => e.stopPropagation());
 
@@ -1830,7 +1969,7 @@
           try {
             webgpuCore.handleResize();
           } catch (error) {
-            console.error("WebGPU resize error:", error);
+            // WebGPU resize error
           }
         }
         renderAll();
@@ -1841,7 +1980,6 @@
   // Focus mode implementation (inlined from focus_mode.js)
   function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     if (!viewerEl || !toggleEl || !viewId) {
-      console.error('installFocusMode: missing required parameters');
       return;
     }
 
@@ -2008,7 +2146,6 @@
           if (mainAfterMove && typeof bindInteractions !== 'undefined') {
             // Use root to maintain scoping, but mainAfterMove is the actual element
             interactionBinding = bindInteractions(root, state, mainAfterMove);
-            console.log("[gs] rebound interactions after overlay enter", mainAfterMove, "root", root.id);
           }
           if (onEnter) {
             onEnter();
@@ -2061,7 +2198,6 @@
           if (mainAfterMove && typeof bindInteractions !== 'undefined') {
             // Use root to maintain scoping, but mainAfterMove is the actual element
             interactionBinding = bindInteractions(root, state, mainAfterMove);
-            console.log("[gs] rebound interactions after overlay exit", mainAfterMove, "root", root.id);
           }
           if (onExit) {
             onExit();
@@ -2131,6 +2267,7 @@
     hoveredVariantIndex: null, // index of hovered variant, or null
     expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
     hoveredRepeatTooltip: null, // { text, x, y } or null
+    hoveredVariantLabelTooltip: null, // { text, x, y } or null
 
     // interaction
     dragging: false,
@@ -2150,14 +2287,29 @@
       { id: "repeats", label: "RepeatMasker", collapsed: false, height: 50, minHeight: 30 },
       { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
       { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
-      { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 300, minHeight: 100 },
+      { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 100 },
       { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
     ],
     trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
     trackResizeState: null, // { trackId, startX, startY, startHeight }
     
     // variant layout mode: "equidistant" or "genomic"
-    variantLayoutMode: null // will be initialized from localStorage
+    variantLayoutMode: null, // will be initialized from localStorage
+    
+    // allele order for each variant: Map<variantId, string[]> where array is ['.', '(N bp) refAllele', '(N bp) altAllele1', ...]
+    variantAlleleOrder: new Map(),
+    
+    // drag state for allele reordering
+    alleleDragState: null, // { variantId, alleleIndex, label, startX, startY, offsetX, offsetY, dropIndex }
+    
+    // hovered allele node: { variantId, alleleIndex } or null
+    hoveredAlleleNode: null,
+    
+    // pinned allele labels: Set of strings like "variantId:alleleIndex"
+    pinnedAlleleLabels: new Set(),
+    
+    // pinned variant labels: Set of variant IDs (strings)
+    pinnedVariantLabels: new Set()
   };
 
   // Initialize variant layout mode
@@ -2257,10 +2409,14 @@
   const hud = byId(root, "hud");
   const tooltip = byId(root, "tooltip");
   const tracksWebGPU = byId(root, "tracksWebGPU");
+  const flowWebGPU = byId(root, "flowWebGPU");
 
   // Initialize WebGPU infrastructure
   let webgpuCore = null;
   let instancedRenderer = null;
+  let flowWebGPUCore = null;
+  let flowInstancedRenderer = null;
+  let flowRibbonRenderer = null;
   let webgpuSupported = false;
   let repeatHitTestData = []; // For tooltip hit testing
 
@@ -2273,7 +2429,6 @@
 
     // Wait for canvas to have dimensions
     if (!tracksWebGPU) {
-      console.warn("WebGPU canvas element not found");
       return false;
     }
     
@@ -2291,7 +2446,6 @@
     }
     
     if (!checkDimensions()) {
-      console.warn("WebGPU canvas has zero dimensions, skipping initialization");
       if (tracksWebGPU) tracksWebGPU.style.display = 'none';
       return false;
     }
@@ -2300,8 +2454,16 @@
       webgpuCore = new WebGPUCore();
       await webgpuCore.init(tracksWebGPU);
       instancedRenderer = new InstancedRenderer(webgpuCore);
+
+      // Flow WebGPU (separate canvas)
+      if (flowWebGPU) {
+        flowWebGPUCore = new WebGPUCore();
+        await flowWebGPUCore.init(flowWebGPU);
+        flowInstancedRenderer = new InstancedRenderer(flowWebGPUCore);
+        flowRibbonRenderer = new BezierRibbonRenderer(flowWebGPUCore, { segments: 44 });
+      }
+
       webgpuSupported = true;
-      console.log("WebGPU initialized successfully");
       return true;
     } catch (error) {
       console.warn("Failed to initialize WebGPU:", error);
@@ -2591,19 +2753,35 @@
   }
 
   // -----------------------------
-  // Demo data
+  // Variant data: load from config or use demo data
   // -----------------------------
-  const variants = [
-    { id: "v1", pos: 100_120, alleles: ["ref","a1"], refAllele: "A", altAlleles: ["A" + "ATCGATCGATCGATCGATCGATCGATCGAT"] }, // insertion example (30 bp inserted: ATCGATCGATCGATCGATCGATCGATCGAT)
-    { id: "v2", pos: 100_240, alleles: ["ref","a1"] },
-    { id: "v3", pos: 100_410, alleles: ["ref","a1","a2"] },
-    { id: "v4", pos: 100_610, alleles: ["ref","a1"] },
-    { id: "v5", pos: 100_720, alleles: ["ref","a1"] },
-    { id: "v6", pos: 100_780, alleles: ["ref","a1"] },
-    { id: "v7", pos: 100_860, alleles: ["ref","a1"] },
-    { id: "v8", pos: 100_895, alleles: ["ref","a1"] },
-    { id: "v9", pos: 100_930, alleles: ["ref","a1"] },
-  ];
+  let variants = [];
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variants_data) {
+    const data = window.GENOMESHADER_CONFIG.variants_data;
+    // Data should already be an array of variant objects
+    if (Array.isArray(data) && data.length > 0) {
+      variants = data;
+      console.log(`Loaded ${variants.length} variants from config`);
+    } else {
+      console.warn("Variants data is not in expected array format or is empty:", data);
+      // Fall back to empty array or demo data
+      variants = [];
+    }
+  } else {
+    // Fall back to demo data if no config provided
+    console.log("No variants_data found in GENOMESHADER_CONFIG, using demo data");
+    variants = [
+      { id: "v1", pos: 100_120, alleles: ["ref","a1"], refAllele: "A", altAlleles: ["A" + "ATCGATCGATCGATCGATCGATCGATCGAT"] }, // insertion example (30 bp inserted: ATCGATCGATCGATCGATCGATCGATCGAT)
+      { id: "v2", pos: 100_240, alleles: ["ref","a1"] },
+      { id: "v3", pos: 100_410, alleles: ["ref","a1","a2"] },
+      { id: "v4", pos: 100_610, alleles: ["ref","a1"] },
+      { id: "v5", pos: 100_720, alleles: ["ref","a1"] },
+      { id: "v6", pos: 100_780, alleles: ["ref","a1"] },
+      { id: "v7", pos: 100_860, alleles: ["ref","a1"] },
+      { id: "v8", pos: 100_895, alleles: ["ref","a1"] },
+      { id: "v9", pos: 100_930, alleles: ["ref","a1"] },
+    ];
+  }
   
   // Helper to check if variant is an insertion
   function isInsertion(variant) {
@@ -2907,7 +3085,6 @@
         }, 50);
         return;
       } else {
-        console.warn('Genomeshader: renderTracks skipped - invalid dimensions after retries', { W, H, retries: renderTracksRetryCount });
         renderTracksRetryCount = 0; // Reset counter
         return;
       }
@@ -2918,12 +3095,10 @@
     
     // Ensure pxPerBp is valid before rendering
     if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
-      console.warn('Genomeshader: renderTracks skipped - invalid pxPerBp', { pxPerBp: state.pxPerBp });
       // Try to update derived values
       updateDerived();
       // Check again
       if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
-        console.warn('Genomeshader: renderTracks skipped - pxPerBp still invalid after updateDerived', { pxPerBp: state.pxPerBp });
         return;
       }
     }
@@ -3949,11 +4124,12 @@
       const isIns = isInsertion(v);
 
       let lineEl;
+      const strokeColor = isHovered ? "var(--blue)" : "rgba(127,127,127,0.5)";
       if (isVertical) {
         lineEl = el("line", {
           x1: baseX - 18, x2: baseX + 18,
           y1: pos, y2: pos,
-          stroke: "var(--blue)",
+          stroke: strokeColor,
           "stroke-width": strokeWidth,
           style: "cursor: pointer;"
         });
@@ -3961,7 +4137,7 @@
         lineEl = el("line", {
           x1: pos, x2: pos,
           y1: baseY - 18, y2: baseY + 18,
-          stroke: "var(--blue)",
+          stroke: strokeColor,
           "stroke-width": strokeWidth,
           style: "cursor: pointer;"
         });
@@ -4028,11 +4204,12 @@
       }
 
       let circleEl;
+      const circleStrokeColor = isHovered ? "var(--blue)" : "rgba(127,127,127,0.5)";
       if (isVertical) {
         circleEl = el("circle", {
           cx: baseX - 18, cy: pos, r: 3.4,
           fill: "none",
-          stroke: "var(--blue)",
+          stroke: circleStrokeColor,
           "stroke-width": circleStrokeWidth,
           style: "cursor: pointer;"
         });
@@ -4040,7 +4217,7 @@
         circleEl = el("circle", {
           cx: pos, cy: baseY - 18, r: 3.4,
           fill: "none",
-          stroke: "var(--blue)",
+          stroke: circleStrokeColor,
           "stroke-width": circleStrokeWidth,
           style: "cursor: pointer;"
         });
@@ -4519,58 +4696,8 @@
       }
     }
 
-    // Execute WebGPU render pass after all tracks are rendered
-    if (webgpuSupported && instancedRenderer && instancedRenderer.rectInstances.length > 0) {
-      try {
-        // Update projection matrix for current canvas size
-        const devicePixelRatio = window.devicePixelRatio || 1;
-        const width = tracksWebGPU.clientWidth * devicePixelRatio;
-        const height = tracksWebGPU.clientHeight * devicePixelRatio;
-        
-        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
-          tracksWebGPU.width = width;
-          tracksWebGPU.height = height;
-          webgpuCore.handleResize();
-        }
-        
-        const encoder = webgpuCore.createCommandEncoder();
-        const texture = webgpuCore.getCurrentTexture();
-        const renderPass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: texture.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear', // Clear canvas on each render
-            storeOp: 'store',
-          }],
-        });
-        
-        instancedRenderer.render(encoder, renderPass);
-        renderPass.end();
-        webgpuCore.submit([encoder.finish()]);
-      } catch (error) {
-        console.error("WebGPU render error:", error);
-        // Fallback: clear instances and continue with SVG only
-        instancedRenderer.clear();
-      }
-    } else if (webgpuSupported && instancedRenderer) {
-      // Clear WebGPU canvas if no instances to render
-      try {
-        const encoder = webgpuCore.createCommandEncoder();
-        const texture = webgpuCore.getCurrentTexture();
-        const renderPass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: texture.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          }],
-        });
-        renderPass.end();
-        webgpuCore.submit([encoder.finish()]);
-      } catch (error) {
-        // Ignore errors when clearing
-      }
-    }
+    // Note: WebGPU render pass is now done at the end of renderFlowCanvas()
+    // to ensure variant columns are included after they're added
   }
 
   // -----------------------------
@@ -4614,6 +4741,10 @@
       // Clear canvas if collapsed
       const ctx = flowCanvas.getContext("2d");
       ctx.clearRect(0, 0, flowCanvas.width, flowCanvas.height);
+      // Clear WebGPU renderer instances
+      if (flowInstancedRenderer) {
+        flowInstancedRenderer.clear();
+      }
       return;
     }
 
@@ -4624,6 +4755,14 @@
     ctx.setTransform(1,0,0,1,0,0);
     ctx.clearRect(0,0,flowCanvas.width,flowCanvas.height);
     ctx.scale(dpr, dpr);
+    
+    // Clear WebGPU renderer instances
+    if (flowInstancedRenderer) {
+      flowInstancedRenderer.clear();
+    }
+    if (flowRibbonRenderer) {
+      flowRibbonRenderer.clear();
+    }
 
     const isVertical = isVerticalMode();
     const variantMode = getVariantLayoutMode();
@@ -4636,6 +4775,166 @@
     const colGrid  = cssVar("--grid2");
     const colText  = cssVar("--muted");
     const colBlue  = cssVar("--blue");
+    const colGray  = "rgba(127,127,127,0.5)"; // Gray for non-hovered lines
+
+    // drawRibbon: WebGPU Bezier ribbon renderer (replaces Canvas2D tessellation)
+    // Note: srcInfo/dstInfo coordinates are in Canvas2D logical pixels (scaled by dpr)
+    // WebGPU uses physical pixels, so we need to scale by devicePixelRatio
+    const drawRibbon = (srcInfo, dstInfo, srcY0, srcY1, dstY0, dstY1, color) => {
+      if (!srcInfo || !dstInfo) return;
+
+      // Scale coordinates from logical pixels (Canvas2D) to physical pixels (WebGPU)
+      const devicePixelRatio = window.devicePixelRatio || 1;
+
+      // Clamp to node bounds so ribbons meet nodes flush
+      const srcY0C = Math.max(srcInfo.top, Math.min(srcY0, srcInfo.bottom));
+      const srcY1C = Math.max(srcInfo.top, Math.min(srcY1, srcInfo.bottom));
+      const dstY0C = Math.max(dstInfo.top, Math.min(dstY0, dstInfo.bottom));
+      const dstY1C = Math.max(dstInfo.top, Math.min(dstY1, dstInfo.bottom));
+
+      // Ensure consistent top/bottom ordering (prevents "candy-wrapper twist")
+      let sTop = Math.min(srcY0C, srcY1C);
+      let sBot = Math.max(srcY0C, srcY1C);
+      let dTop = Math.min(dstY0C, dstY1C);
+      let dBot = Math.max(dstY0C, dstY1C);
+
+      // Apply slight endpoint taper (classic alluvial aesthetic)
+      // Shrink endpoints toward midpoint by ~6% for intentional joins
+      const taperFrac = 0.06;
+      const sMid = (sTop + sBot) / 2;
+      const sHalfH = (sBot - sTop) / 2;
+      sTop = sMid - sHalfH * (1 - taperFrac);
+      sBot = sMid + sHalfH * (1 - taperFrac);
+      
+      const dMid = (dTop + dBot) / 2;
+      const dHalfH = (dBot - dTop) / 2;
+      dTop = dMid - dHalfH * (1 - taperFrac);
+      dBot = dMid + dHalfH * (1 - taperFrac);
+
+      const srcX = srcInfo.right;
+      const dstX = dstInfo.left;
+      const dx = dstX - srcX;
+      if (!(dx > 1.0)) return;
+
+      // Handle length: no fixed 10px minimum; clamp by dx to avoid loops when zoomed out
+      const base = dx * 0.40;
+      const handle = Math.max(1.0, Math.min(base, dx * 0.45));
+
+      // Scale all coordinates to physical pixels for WebGPU
+      const topP0 = [srcX * devicePixelRatio, sTop * devicePixelRatio];
+      const topP3 = [dstX * devicePixelRatio, dTop * devicePixelRatio];
+      const botP0 = [srcX * devicePixelRatio, sBot * devicePixelRatio];
+      const botP3 = [dstX * devicePixelRatio, dBot * devicePixelRatio];
+
+      // Horizontal tangents at endpoints (classic Sankey look)
+      const topP1 = [(srcX + handle) * devicePixelRatio, sTop * devicePixelRatio];
+      const topP2 = [(dstX - handle) * devicePixelRatio, dTop * devicePixelRatio];
+      const botP1 = [(srcX + handle) * devicePixelRatio, sBot * devicePixelRatio];
+      const botP2 = [(dstX - handle) * devicePixelRatio, dBot * devicePixelRatio];
+
+      // Parse color string to RGBA floats (expects "rgba(r,g,b,a)" or similar)
+      const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      let rgba = [0.47, 0.71, 1.0, 0.20];
+      if (m) {
+        rgba = [parseInt(m[1])/255, parseInt(m[2])/255, parseInt(m[3])/255, m[4] !== undefined ? parseFloat(m[4]) : 1.0];
+      }
+
+      if (webgpuSupported && flowRibbonRenderer) {
+        flowRibbonRenderer.addRibbon(topP0, topP1, topP2, topP3, botP0, botP1, botP2, botP3, rgba);
+        return;
+      }
+
+      // Fallback (optional): if you want, keep your old Canvas2D path here.
+    };
+
+    // drawRibbonVertical: WebGPU Bezier ribbon renderer for vertical mode
+    // In vertical mode with inverted Y axis (bottom=start, top=end):
+    // - Source (earlier variant) is at BOTTOM (higher Y)
+    // - Destination (later variant) is at TOP (lower Y)
+    // - Ribbons flow UPWARD from srcInfo.top to dstInfo.bottom
+    const drawRibbonVertical = (srcInfo, dstInfo, srcX0, srcX1, dstX0, dstX1, color) => {
+      if (!srcInfo || !dstInfo) return;
+
+      // Scale coordinates from logical pixels (Canvas2D) to physical pixels (WebGPU)
+      const devicePixelRatio = window.devicePixelRatio || 1;
+
+      // Clamp to node bounds so ribbons meet nodes flush (using left/right for horizontal extent)
+      const srcX0C = Math.max(srcInfo.left, Math.min(srcX0, srcInfo.right));
+      const srcX1C = Math.max(srcInfo.left, Math.min(srcX1, srcInfo.right));
+      const dstX0C = Math.max(dstInfo.left, Math.min(dstX0, dstInfo.right));
+      const dstX1C = Math.max(dstInfo.left, Math.min(dstX1, dstInfo.right));
+
+      // Ensure consistent left/right ordering (prevents "candy-wrapper twist")
+      let sLeft = Math.min(srcX0C, srcX1C);
+      let sRight = Math.max(srcX0C, srcX1C);
+      let dLeft = Math.min(dstX0C, dstX1C);
+      let dRight = Math.max(dstX0C, dstX1C);
+
+      // Apply slight endpoint taper (classic alluvial aesthetic)
+      // Shrink endpoints toward midpoint by ~6% for intentional joins
+      const taperFrac = 0.06;
+      const sMid = (sLeft + sRight) / 2;
+      const sHalfW = (sRight - sLeft) / 2;
+      sLeft = sMid - sHalfW * (1 - taperFrac);
+      sRight = sMid + sHalfW * (1 - taperFrac);
+      
+      const dMid = (dLeft + dRight) / 2;
+      const dHalfW = (dRight - dLeft) / 2;
+      dLeft = dMid - dHalfW * (1 - taperFrac);
+      dRight = dMid + dHalfW * (1 - taperFrac);
+
+      // With inverted Y axis: source is at bottom (higher Y), dest is at top (lower Y)
+      // Ribbons flow UPWARD: from srcInfo.top (top edge of source node) to dstInfo.bottom (bottom edge of dest node)
+      const srcY = srcInfo.top;      // Top edge of source node (which is at bottom of screen)
+      const dstY = dstInfo.bottom;   // Bottom edge of dest node (which is at top of screen)
+      const dy = srcY - dstY;        // srcY > dstY, so this is positive
+      if (!(dy > 1.0)) return;
+
+      // Handle length: no fixed 10px minimum; clamp by dy to avoid loops when zoomed out
+      const base = dy * 0.40;
+      const handle = Math.max(1.0, Math.min(base, dy * 0.45));
+
+      // Scale all coordinates to physical pixels for WebGPU
+      // Ribbon flows from bottom (srcY, larger) to top (dstY, smaller)
+      const leftP0 = [sLeft * devicePixelRatio, srcY * devicePixelRatio];
+      const leftP3 = [dLeft * devicePixelRatio, dstY * devicePixelRatio];
+      const rightP0 = [sRight * devicePixelRatio, srcY * devicePixelRatio];
+      const rightP3 = [dRight * devicePixelRatio, dstY * devicePixelRatio];
+
+      // Vertical tangents at endpoints (flowing upward: srcY decreases toward dstY)
+      const leftP1 = [sLeft * devicePixelRatio, (srcY - handle) * devicePixelRatio];
+      const leftP2 = [dLeft * devicePixelRatio, (dstY + handle) * devicePixelRatio];
+      const rightP1 = [sRight * devicePixelRatio, (srcY - handle) * devicePixelRatio];
+      const rightP2 = [dRight * devicePixelRatio, (dstY + handle) * devicePixelRatio];
+
+      // Parse color string to RGBA floats (expects "rgba(r,g,b,a)" or similar)
+      const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      let rgba = [0.47, 0.71, 1.0, 0.20];
+      if (m) {
+        rgba = [parseInt(m[1])/255, parseInt(m[2])/255, parseInt(m[3])/255, m[4] !== undefined ? parseFloat(m[4]) : 1.0];
+      }
+
+      if (webgpuSupported && flowRibbonRenderer) {
+        // For vertical ribbons, we pass left/right edges as top/bottom edges to the renderer
+        flowRibbonRenderer.addRibbon(leftP0, leftP1, leftP2, leftP3, rightP0, rightP1, rightP2, rightP3, rgba);
+        return;
+      }
+
+      // Fallback (optional): if you want, keep your old Canvas2D path here.
+    };
+
+    // Helper function to parse rgba string and convert to hex for WebGPU
+    function rgbaToHex(rgbaStr) {
+      const match = rgbaStr.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      if (match) {
+        const r = parseInt(match[1]);
+        const g = parseInt(match[2]);
+        const b = parseInt(match[3]);
+        return (r << 16) | (g << 8) | b;
+      }
+      // Fallback to blue if parsing fails
+      return 0x78B4FF;
+    }
 
     // background
     ctx.fillStyle = "rgba(127,127,127,0.035)";
@@ -4644,154 +4943,1405 @@
     // connectors (diagonal lines - make them meet the ruler variant position precisely)
     const win = visibleVariantWindow();
     
+    // Use WebGPU for variant columns if available, otherwise fall back to Canvas 2D
+    // Use flowWebGPU instead of tracksWebGPU for variant columns
+    const useWebGPU = webgpuSupported && flowInstancedRenderer;
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    const blueHex = rgbaToHex(colBlue);
+    const grayHex = rgbaToHex(colGray);
+    
     if (isVertical) {
       // In vertical mode, sort variants by position for consistent ordering
       const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
       
-      // columns (horizontal lines in vertical mode)
-      ctx.strokeStyle = colBlue;
-      ctx.globalAlpha = 0.6;
-      for (let i=0;i<sortedWin.length;i++) {
-        const v = sortedWin[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        // Position column based on mode
-        const y = variantMode === "genomic" 
-          ? yGenomeCanonical(v.pos, H)
-          : yColumn(i, sortedWin.length);
-        ctx.beginPath();
-        ctx.moveTo(junctionX, y);
-        ctx.lineTo(W-18, y);
-        ctx.stroke();
-
-        ctx.fillStyle = colText;
-        ctx.font = "12px ui-sans-serif, system-ui";
-        ctx.save();
-        ctx.translate(14, y + 6); // Move down by 6px total
-        ctx.rotate(-Math.PI/2);
-        ctx.fillText(`v${variantIdx + 1}`, 0, 0);
-        ctx.restore();
+      // columns (horizontal lines in vertical mode) - shortened to end near where allele nodes start
+      // Calculate where allele nodes start (left + margin + horizontal offset)
+      const left = 70;
+      const marginPercent = 0.1;
+      const minMargin = 10;
+      const flowLayoutForStems = layout.find(l => l.track.id === "flow");
+      const trackWidth = flowLayoutForStems ? flowLayoutForStems.contentWidth : 300;
+      const margin = Math.max(minMargin, trackWidth * marginPercent);
+      // Estimate where nodes start - use a reasonable default if we can't calculate exactly
+      const nodeStartX = left + margin + 20; // Add some buffer for centering offset
+      const stemEndXFull = Math.min(nodeStartX + 30, W - 18); // End stem 30px after nodes start, but don't go past right edge
+      // Reduce stem length by half
+      const stemEndX = junctionX + (stemEndXFull - junctionX) / 2;
+      
+      if (useWebGPU) {
+        for (let i=0;i<sortedWin.length;i++) {
+          const v = sortedWin[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          const color = isHovered ? blueHex : grayHex;
+          const alpha = isHovered ? 0.7 : 0.5;
+          // Position column based on mode
+          const y = variantMode === "genomic" 
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          const yScaled = y * devicePixelRatio;
+          flowInstancedRenderer.addLine(
+            junctionX * devicePixelRatio, yScaled,
+            stemEndX * devicePixelRatio, yScaled,
+            color, alpha
+          );
+        }
+      } else {
+        for (let i=0;i<sortedWin.length;i++) {
+          const v = sortedWin[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.strokeStyle = isHovered ? colBlue : colGray;
+          ctx.globalAlpha = isHovered ? 0.7 : 0.5;
+          ctx.lineWidth = isHovered ? 2.5 : 1;
+          // Position column based on mode
+          const y = variantMode === "genomic" 
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          ctx.beginPath();
+          ctx.moveTo(junctionX, y);
+          ctx.lineTo(stemEndX, y);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1.0;
       }
-      ctx.strokeStyle = colBlue;
-      ctx.globalAlpha = 0.5;
 
+      // Text labels (still use Canvas 2D for text)
+      // Group variants by position to handle multiple variants at same position
+      const variantsByPos = new Map();
+      for (const v of sortedWin) {
+        const pos = v.pos;
+        if (!variantsByPos.has(pos)) {
+          variantsByPos.set(pos, []);
+        }
+        variantsByPos.get(pos).push(v);
+      }
+      
+      // Helper function to draw multi-line text (for variants at same position)
+      const drawMultiLineText = (text, x, y, lineHeight = 12) => {
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          ctx.fillText(lines[i], x, y + i * lineHeight);
+        }
+      };
+      
+      // Calculate if we have enough space to show all labels
+      // In vertical mode, labels are rotated 90 degrees, so text width becomes vertical height
+      ctx.font = "12px ui-sans-serif, system-ui";
+      const uniquePositions = Array.from(variantsByPos.keys()).sort((a, b) => a - b);
+      const maxLabelWidth = Math.max(...uniquePositions.map(pos => {
+        const idsAtPos = variantsByPos.get(pos).map(v => v.id).join('\n');
+        return ctx.measureText(idsAtPos).width;
+      }), 30);
+      // When rotated, the label takes up maxLabelWidth pixels vertically
+      // We need spacing between labels, so add some padding
+      const minSpacing = maxLabelWidth + 10; // minimum pixels between label centers
+      
+      // Check spacing between consecutive variant positions
+      // For genomic mode, check actual Y positions; for equidistant, use calculated spacing
+      let hasEnoughSpace = uniquePositions.length === 0;
+      if (uniquePositions.length > 0) {
+        if (variantMode === "genomic") {
+          // In genomic mode, check minimum spacing between actual positions
+          const positions = uniquePositions.map(pos => yGenomeCanonical(pos, H)).sort((a, b) => a - b);
+          let minActualSpacing = Infinity;
+          for (let i = 1; i < positions.length; i++) {
+            const spacing = positions[i] - positions[i - 1];
+            if (spacing < minActualSpacing) {
+              minActualSpacing = spacing;
+            }
+          }
+          hasEnoughSpace = minActualSpacing >= minSpacing;
+        } else {
+          // In equidistant mode, calculate spacing
+          const avgSpacing = H / uniquePositions.length;
+          hasEnoughSpace = avgSpacing >= minSpacing;
+        }
+      }
+      
+      // Store variant label positions for hit testing
+      const variantLabelPositions = [];
+      
+      ctx.fillStyle = colText;
+      // Iterate over unique positions
+      for (let posIdx = 0; posIdx < uniquePositions.length; posIdx++) {
+        const pos = uniquePositions[posIdx];
+        const variantsAtPos = variantsByPos.get(pos);
+        const firstVariant = variantsAtPos[0];
+        const variantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
+        
+        // Calculate Y position for this position
+        // For equidistant mode, use the position index (not variant index) so variants at same position overlap
+        let y;
+        if (variantMode === "genomic") {
+          y = yGenomeCanonical(pos, H);
+        } else {
+          // Use position index so all variants at same position get same Y coordinate
+          y = yColumn(posIdx, uniquePositions.length);
+        }
+        
+        // Determine if we should show this label
+        const isHovered = variantsAtPos.some(v => state.hoveredVariantIndex === variants.findIndex(v2 => v2.id === v.id));
+        const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
+        const shouldShow = isHovered || isPinned || hasEnoughSpace;
+        
+        if (shouldShow) {
+          // Show first ID (or count if multiple)
+          const displayText = variantsAtPos.length > 1 
+            ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
+            : variantsAtPos[0].id;
+          
+          ctx.save();
+          ctx.translate(14, y + 6);
+          ctx.rotate(-Math.PI/2);
+          ctx.fillText(displayText, 0, 0);
+          ctx.restore();
+        }
+        
+        // Store position for hit testing (for click-to-pin and tooltip) - one entry per position
+        const firstVariantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
+        const displayText = variantsAtPos.length > 1 
+          ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
+          : variantsAtPos[0].id;
+        const labelWidth = ctx.measureText(displayText).width;
+        const labelIds = (firstVariant.displayIds && firstVariant.displayIds.length > 0)
+          ? firstVariant.displayIds
+          : [firstVariant.id];
+        variantLabelPositions.push({
+          variantId: firstVariant.id, // Use first variant ID for compatibility
+          variantIdx: firstVariantIdx,
+          x: 14,
+          y: y,
+          width: labelWidth, // When rotated, this is the vertical extent
+          height: labelWidth, // Same as width when rotated
+          allIds: labelIds, // Store all IDs for tooltip
+          position: pos
+        });
+      }
+      
+      // Store positions globally for click detection
+      window._variantLabelPositions = variantLabelPositions;
+
+      // Connector lines from ruler to columns
       const x0 = 6;
-      for (let i=0; i<sortedWin.length; i++) {
-        const v = sortedWin[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
-        const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
-          : yColumn(i, sortedWin.length);
-        ctx.beginPath();
-        ctx.moveTo(x0, vy);
-        ctx.lineTo(junctionX, cy);
-        ctx.stroke();
+      if (useWebGPU) {
+        for (let i=0; i<sortedWin.length; i++) {
+          const v = sortedWin[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          const color = isHovered ? blueHex : grayHex;
+          const alpha = isHovered ? 0.7 : 0.5;
+          const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          flowInstancedRenderer.addLine(
+            x0 * devicePixelRatio, vy * devicePixelRatio,
+            junctionX * devicePixelRatio, cy * devicePixelRatio,
+            color, alpha
+          );
+        }
+      } else {
+        for (let i=0; i<sortedWin.length; i++) {
+          const v = sortedWin[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.strokeStyle = isHovered ? colBlue : colGray;
+          ctx.globalAlpha = isHovered ? 0.7 : 0.5;
+          ctx.lineWidth = isHovered ? 2.5 : 1;
+          const vy = yGenomeCanonical(v.pos, H);
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          ctx.beginPath();
+          ctx.moveTo(x0, vy);
+          ctx.lineTo(junctionX, cy);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1.0;
       }
-      ctx.globalAlpha = 1.0;
     } else {
-      // columns (vertical lines)
-      ctx.strokeStyle = colBlue;
-      ctx.globalAlpha = 0.6;
-      for (let i=0;i<win.length;i++) {
-        const v = win[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        // Position column based on mode
-        const x = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        ctx.beginPath();
-        ctx.moveTo(x, junctionY);
-        ctx.lineTo(x, H-18);
-        ctx.stroke();
-
-        ctx.fillStyle = colText;
-        ctx.font = "12px ui-sans-serif, system-ui";
-        ctx.fillText(`v${variantIdx + 1}`, x - 10, 14);
+      // columns (vertical lines) - shortened to end near where allele nodes start
+      // Calculate where allele nodes start (top + margin + vertical offset)
+      const top = 0;
+      const marginPercent = 0.1;
+      const minMargin = 10;
+      const flowLayoutForStems = layout.find(l => l.track.id === "flow");
+      const trackHeight = flowLayoutForStems ? flowLayoutForStems.contentHeight : 300;
+      const margin = Math.max(minMargin, trackHeight * marginPercent);
+      // Estimate where nodes start - use a reasonable default if we can't calculate exactly
+      const nodeStartY = top + margin + 20; // Add some buffer for centering offset
+      const stemEndYFull = Math.min(nodeStartY + 30, H - 18); // End stem 30px after nodes start, but don't go past bottom
+      // Reduce stem length by half
+      const stemEndY = junctionY + (stemEndYFull - junctionY) / 2;
+      
+      if (useWebGPU) {
+        for (let i=0;i<win.length;i++) {
+          const v = win[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          const color = isHovered ? blueHex : grayHex;
+          const alpha = isHovered ? 0.7 : 0.5;
+          // Position column based on mode
+          const x = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          const xScaled = x * devicePixelRatio;
+          flowInstancedRenderer.addLine(
+            xScaled, junctionY * devicePixelRatio,
+            xScaled, stemEndY * devicePixelRatio,
+            color, alpha
+          );
+        }
+      } else {
+        for (let i=0;i<win.length;i++) {
+          const v = win[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.strokeStyle = isHovered ? colBlue : colGray;
+          ctx.globalAlpha = isHovered ? 0.7 : 0.5;
+          ctx.lineWidth = isHovered ? 2.5 : 1;
+          // Position column based on mode
+          const x = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          ctx.beginPath();
+          ctx.moveTo(x, junctionY);
+          ctx.lineTo(x, stemEndY);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1.0;
       }
-      ctx.strokeStyle = colBlue;
-      ctx.globalAlpha = 0.5;
 
+      // Text labels (still use Canvas 2D for text)
+      // Group variants by position to handle multiple variants at same position
+      const variantsByPos = new Map();
+      for (const v of win) {
+        const pos = v.pos;
+        if (!variantsByPos.has(pos)) {
+          variantsByPos.set(pos, []);
+        }
+        variantsByPos.get(pos).push(v);
+      }
+      
+      // Helper function to draw multi-line text (for variants at same position)
+      const drawMultiLineText = (text, x, y, lineHeight = 12) => {
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          ctx.fillText(lines[i], x, y + i * lineHeight);
+        }
+      };
+      
+      // Calculate if we have enough space to show all labels
+      // Estimate label width (measure text to be more accurate)
+      ctx.font = "12px ui-sans-serif, system-ui";
+      const uniquePositions = Array.from(variantsByPos.keys()).sort((a, b) => a - b);
+      const maxLabelWidth = Math.max(...uniquePositions.map(pos => {
+        const idsAtPos = variantsByPos.get(pos).map(v => v.id).join('\n');
+        return ctx.measureText(idsAtPos).width;
+      }), 50);
+      const minSpacing = maxLabelWidth + 20; // minimum pixels between labels
+      const hasEnoughSpace = uniquePositions.length === 0 || (W / uniquePositions.length) >= minSpacing;
+      
+      // Store variant label positions for hit testing
+      const variantLabelPositions = [];
+      
+      ctx.fillStyle = colText;
+      // Iterate over unique positions
+      for (let posIdx = 0; posIdx < uniquePositions.length; posIdx++) {
+        const pos = uniquePositions[posIdx];
+        const variantsAtPos = variantsByPos.get(pos);
+        const firstVariant = variantsAtPos[0];
+        const variantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
+        
+        // Calculate X position for this position
+        // For equidistant mode, use the position index (not variant index) so variants at same position overlap
+        let x;
+        if (variantMode === "genomic") {
+          x = xGenomeCanonical(pos, W);
+        } else {
+          // Use position index so all variants at same position get same X coordinate
+          x = xColumn(posIdx, uniquePositions.length);
+        }
+        
+        // Determine if we should show this label
+        const isHovered = variantsAtPos.some(v => state.hoveredVariantIndex === variants.findIndex(v2 => v2.id === v.id));
+        const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
+        const shouldShow = isHovered || isPinned || hasEnoughSpace;
+        
+        if (shouldShow) {
+          // Show first ID (or count if multiple)
+          const displayText = variantsAtPos.length > 1 
+            ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
+            : variantsAtPos[0].id;
+          ctx.fillText(displayText, x - 10, 14);
+        }
+        
+        // Store position for hit testing (for click-to-pin and tooltip) - one entry per position
+        const firstVariantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
+        const displayText = variantsAtPos.length > 1 
+          ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
+          : variantsAtPos[0].id;
+        const labelWidth = ctx.measureText(displayText).width;
+        const labelIds = (firstVariant.displayIds && firstVariant.displayIds.length > 0)
+          ? firstVariant.displayIds
+          : [firstVariant.id];
+        variantLabelPositions.push({
+          variantId: firstVariant.id, // Use first variant ID for compatibility
+          variantIdx: firstVariantIdx,
+          x: x - 10,
+          y: 2, // Text baseline is at y=14, but text extends upward, so hit box starts at y=2
+          width: labelWidth,
+          height: 14, // Single line height
+          allIds: labelIds, // Store all IDs for tooltip
+          position: pos
+        });
+      }
+      
+      // Store positions globally for click detection
+      window._variantLabelPositions = variantLabelPositions;
+
+      // Connector lines from ruler to columns
       const y0 = 6;
-      for (let i=0; i<win.length; i++) {
-        const v = win[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        const vx = xGenomeCanonical(v.pos, W); // always use genomic position for ruler connection
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        ctx.beginPath();
-        ctx.moveTo(vx, y0);
-        ctx.lineTo(cx, junctionY);
-        ctx.stroke();
+      if (useWebGPU) {
+        for (let i=0; i<win.length; i++) {
+          const v = win[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          const color = isHovered ? blueHex : grayHex;
+          const alpha = isHovered ? 0.7 : 0.5;
+          const vx = xGenomeCanonical(v.pos, W);
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          flowInstancedRenderer.addLine(
+            vx * devicePixelRatio, y0 * devicePixelRatio,
+            cx * devicePixelRatio, junctionY * devicePixelRatio,
+            color, alpha
+          );
+        }
+      } else {
+        for (let i=0; i<win.length; i++) {
+          const v = win[i];
+          const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+          const isHovered = state.hoveredVariantIndex === variantIdx;
+          ctx.strokeStyle = isHovered ? colBlue : colGray;
+          ctx.globalAlpha = isHovered ? 0.7 : 0.5;
+          ctx.lineWidth = isHovered ? 2.5 : 1;
+          const vx = xGenomeCanonical(v.pos, W);
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          ctx.beginPath();
+          ctx.moveTo(vx, y0);
+          ctx.lineTo(cx, junctionY);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1.0;
       }
-      ctx.globalAlpha = 1.0;
     }
 
-    // placeholder nodes
-    const labels = ["./.","ref","a1"];
-    const nodeW = 16, nodeH = 18, gap = 8;
+    // Helper function to format allele with length suffix
+    // Make it globally accessible for drag handlers
+    window.formatAlleleLabel = function formatAlleleLabel(allele) {
+      if (!allele || allele === ".") {
+        return ". (no-call)";
+      }
+      const length = allele.length;
+      const lengthLabel = length === 1 ? "1 bp" : `${length} bp`;
+      // Truncate to 50 bp and add "..." if longer
+      const displayAllele = length > 50 ? allele.substring(0, 50) + "..." : allele;
+      return `${displayAllele} (${lengthLabel})`;
+    };
+    
+    // Helper function to extract allele string from formatted label
+    function extractAlleleFromLabel(label) {
+      // Label format is "ALLELE (X bp)" or ". (no-call)"
+      if (label.startsWith(". (no-call)")) return ".";
+      const match = label.match(/^(.+?)\s*\([^)]+\)$/);
+      return match ? match[1] : label;
+    }
+    
+    // Helper function to get node colors based on allele type
+    function getAlleleNodeColors(label, variant, actualAllele, isDragging) {
+      const noCallLabel = formatAlleleLabel(".");
+      const opacity = 0.65; // Light translucency
+      const opacityDragging = 0.85; // Slightly more opaque when dragging
+      const currentOpacity = isDragging ? opacityDragging : opacity;
+      
+      let fillColor, strokeColor;
+      
+      if (label === noCallLabel) {
+        // No-call allele: gray with translucency
+        fillColor = `rgba(200,200,200,${currentOpacity})`;
+        strokeColor = `rgba(200,200,200,${currentOpacity})`;
+      } else {
+        // Determine allele type based on variant context and length
+        // Use actualAllele if provided (to avoid truncation issues), otherwise extract from label
+        const allele = actualAllele || extractAlleleFromLabel(label);
+        const refLen = variant.refAllele ? variant.refAllele.length : 0;
+        const alleleLen = allele.length;
+        
+        // 1 bp alleles are always SNVs (blue), regardless of reference length
+        if (alleleLen === 1) {
+          fillColor = `rgba(100,150,255,${currentOpacity})`;
+          strokeColor = `rgba(100,150,255,${currentOpacity})`;
+        } else {
+          // Determine variant type by comparing ref to alts
+          let isDeletion = false;
+          let isInsertion = false;
+          
+          if (variant.altAlleles && Array.isArray(variant.altAlleles) && variant.altAlleles.length > 0) {
+            // Check if any alt is shorter than ref (deletion) or longer than ref (insertion)
+            const hasShorterAlt = variant.altAlleles.some(alt => alt.length < refLen);
+            const hasLongerAlt = variant.altAlleles.some(alt => alt.length > refLen);
+            
+            if (hasShorterAlt && !hasLongerAlt) {
+              isDeletion = true;
+            } else if (hasLongerAlt && !hasShorterAlt) {
+              isInsertion = true;
+            }
+          }
+          
+          // Color based on variant type and allele length
+          if (isDeletion) {
+            // In deletion variants, longer alleles are deletions (yellow)
+            // Shorter alleles (if > 1 bp) would also be deletions, but 1 bp is already handled above
+            const maxDiff = 100;
+            const normalizedDiff = Math.min((alleleLen - 1) / maxDiff, 1.0); // Compare to 1 bp minimum
+            const lightness = 70 - (normalizedDiff * 40); // 70% to 30%
+            fillColor = `hsla(60, 80%, ${lightness}%, ${currentOpacity})`;
+            strokeColor = `hsla(60, 80%, ${lightness}%, ${currentOpacity})`;
+          } else if (isInsertion) {
+            // In insertion variants, longer alleles are insertions (purple)
+            const lengthDiff = alleleLen - refLen;
+            const maxDiff = 100;
+            const normalizedDiff = Math.min(lengthDiff / maxDiff, 1.0);
+            const lightness = 70 - (normalizedDiff * 40); // 70% to 30%
+            fillColor = `hsla(280, 70%, ${lightness}%, ${currentOpacity})`;
+            strokeColor = `hsla(280, 70%, ${lightness}%, ${currentOpacity})`;
+          } else {
+            // SNV or substitution (same length): blue
+            fillColor = `rgba(100,150,255,${currentOpacity})`;
+            strokeColor = `rgba(100,150,255,${currentOpacity})`;
+          }
+        }
+      }
+      
+      return { fillColor, strokeColor };
+    }
+    
+    // Helper function to calculate allele node sizes based on frequencies
+    // Make it globally accessible for drag handlers
+    window.calculateAlleleSizes = function calculateAlleleSizes(variant, totalSpace, minSize, gap, numAlleles) {
+      const alleleFrequencies = variant.alleleFrequencies || {};
+      
+      // Add margins to make the display more comfortable
+      // Use 10% margin on each side (20% total), with a minimum of 20 pixels total
+      const marginPercent = 0.1;
+      const minMargin = 10;
+      const margin = Math.max(minMargin, totalSpace * marginPercent);
+      const availableSpace = totalSpace - (2 * margin);
+      
+      // If no frequencies available, return equal sizes
+      if (!alleleFrequencies || Object.keys(alleleFrequencies).length === 0) {
+        const equalSize = Math.max(minSize, (availableSpace - (numAlleles - 1) * gap) / numAlleles);
+        const sizes = {};
+        const labels = [formatAlleleLabel(".")];
+        if (variant.refAllele) {
+          labels.push(formatAlleleLabel(variant.refAllele));
+        }
+        if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+          for (let k = 0; k < variant.altAlleles.length; k++) {
+            labels.push(formatAlleleLabel(variant.altAlleles[k]));
+          }
+        }
+        for (const label of labels) {
+          // Map label to allele key
+          const noCallLabel = formatAlleleLabel(".");
+          const refLabel = variant.refAllele ? formatAlleleLabel(variant.refAllele) : null;
+          let key = ".";
+          if (label === noCallLabel) {
+            key = ".";
+          } else if (label === refLabel) {
+            key = "ref";
+          } else {
+            // Find which alt allele this is
+            if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+              const altIndex = variant.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
+              if (altIndex >= 0) {
+                key = `a${altIndex + 1}`;
+              }
+            }
+          }
+          sizes[key] = equalSize;
+        }
+        return sizes;
+      }
+      
+      // Calculate total minimum size needed
+      const totalMinSize = numAlleles * minSize;
+      const totalGapSize = (numAlleles - 1) * gap;
+      const remainingSpace = availableSpace - totalMinSize - totalGapSize;
+      
+      if (remainingSpace < 0) {
+        // Edge case: minimum sizes exceed available space
+        // Just use minimum sizes
+        const sizes = {};
+        for (const key of Object.keys(alleleFrequencies)) {
+          sizes[key] = minSize;
+        }
+        return sizes;
+      }
+      
+      // Redistribute remaining space proportionally
+      const finalSizes = {};
+      for (const [allele, freq] of Object.entries(alleleFrequencies)) {
+        const proportional = freq * remainingSpace;
+        finalSizes[allele] = minSize + proportional;
+      }
+      
+      return finalSizes;
+    }
+    
+    // Get track dimensions for sizing (reuse flowLayout from earlier in function)
+    const flowLayoutForSizing = layout.find(l => l.track.id === "flow");
+    const trackDimension = isVertical 
+      ? (flowLayoutForSizing ? flowLayoutForSizing.contentWidth : 300)
+      : (flowLayoutForSizing ? flowLayoutForSizing.contentHeight : 300);
+    
+    // Allele nodes with drag-and-drop support
+    // Define constants at function scope so they're accessible in nested functions
+    const baseNodeW = 4, baseNodeH = 14, gap = 8;
+    const MIN_NODE_SIZE = 4;
+    
+    // Make constants available globally for drag handlers
+    window._alleleNodeConstants = { baseNodeW, baseNodeH, gap, MIN_NODE_SIZE };
+    const nodePositions = []; // Store positions for hit testing: [{ variantId, alleleIndex, x, y, w, h }]
+    
+    // Store node info for ribbon drawing: Map<variantIndex, Map<alleleLabel, {x, y, w, h, top, bottom, left, right}>>
+    const nodeInfoByVariant = new Map();
+    
+    // Collect all labels to draw at the very end (after all nodes and indicators)
+    const allLabelsToDraw = [];
     
     if (isVertical) {
       const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
       const left = 70;
       
+      // Calculate margin for allele nodes (same as in calculateAlleleSizes)
+      const marginPercent = 0.1;
+      const minMargin = 10;
+      const margin = Math.max(minMargin, trackDimension * marginPercent);
+      
       for (let i=0;i<sortedWin.length;i++){
         const v = sortedWin[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        
+        // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
+        // Deduplicate alleles to avoid showing the same allele twice (e.g., when ref == alt)
+        const uniqueAlleles = new Set();
+        uniqueAlleles.add("."); // no-call allele
+        if (v.refAllele) {
+          uniqueAlleles.add(v.refAllele);
+        }
+        if (v.altAlleles && Array.isArray(v.altAlleles)) {
+          for (let k = 0; k < v.altAlleles.length; k++) {
+            uniqueAlleles.add(v.altAlleles[k]);
+          }
+        }
+        // Convert to formatted labels array and create mapping from label to actual allele
+        const labelToAllele = new Map();
+        let labels = Array.from(uniqueAlleles).map(allele => {
+          const label = formatAlleleLabel(allele);
+          labelToAllele.set(label, allele);
+          return label;
+        });
+        
+        // Get order from state, or use default
+        let order = state.variantAlleleOrder.get(v.id);
+        if (!order || order.length !== labels.length) {
+          order = [...labels];
+          state.variantAlleleOrder.set(v.id, order);
+        }
+        
+        // Calculate allele sizes based on frequencies
+        const alleleSizes = calculateAlleleSizes(v, trackDimension, MIN_NODE_SIZE, gap, order.length);
+        
+        // Map labels to allele keys for size lookup
+        const noCallLabel = formatAlleleLabel(".");
+        const refLabel = v.refAllele ? formatAlleleLabel(v.refAllele) : null;
+        function getAlleleKey(label) {
+          if (label === noCallLabel) return ".";
+          if (label === refLabel) return "ref";
+          if (v.altAlleles && Array.isArray(v.altAlleles)) {
+            const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
+            if (altIndex >= 0) return `a${altIndex + 1}`;
+          }
+          return "."; // fallback
+        }
+        
         // Position based on variant layout mode
         const cy = variantMode === "genomic"
           ? yGenomeCanonical(v.pos, H)
           : yColumn(i, sortedWin.length);
         
-        for (let j=0;j<labels.length;j++){
-          const x = left + j*(nodeW+gap);
+        // Calculate total width of all nodes plus gaps
+        let totalNodesWidth = 0;
+        for (let j = 0; j < order.length; j++) {
+          const label = order[j];
+          const alleleKey = getAlleleKey(label);
+          const nodeW = alleleSizes[alleleKey] || baseNodeW;
+          totalNodesWidth += nodeW;
+          if (j < order.length - 1) {
+            totalNodesWidth += gap;
+          }
+        }
+        
+        // Center the nodes horizontally within the actual available space
+        // Account for left offset and right margin to ensure nodes don't extend beyond track boundaries
+        const availableWidth = W - left - margin;
+        const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
+        
+        // Calculate cumulative positions for variable-width nodes, starting with left + horizontal offset
+        let currentX = left + horizontalOffset;
+        
+        // Check if this variant column is hovered
+        const isVariantHovered = state.hoveredVariantIndex === variantIdx;
+        
+        // Draw nodes in current order
+        for (let j=0;j<order.length;j++){
+          const label = order[j];
+          const alleleKey = getAlleleKey(label);
+          let nodeW = alleleSizes[alleleKey] || baseNodeW;
+          let nodeH = baseNodeW;
+          
+          // Increase width when variant is hovered (vertical mode = horizontal nodes)
+          if (isVariantHovered) {
+            nodeH += 2;
+          }
+          
+          const x = currentX;
+          
+          // Check if this node is being dragged
+          const isDragging = state.alleleDragState && 
+            state.alleleDragState.variantId === v.id && 
+            state.alleleDragState.alleleIndex === order.indexOf(label);
+          const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
+          const dragOffsetY = isDragging ? state.alleleDragState.offsetY : 0;
+          
+          const nodeX = x + dragOffsetX;
+          const nodeY = cy - nodeH/2 + dragOffsetY;
 
-          ctx.fillStyle = "rgba(127,127,127,0.08)";
-          ctx.strokeStyle = "rgba(127,127,127,0.18)";
+          // Get colors based on allele type (use actual allele from map, not extracted from label)
+          const actualAllele = labelToAllele.get(label) || extractAlleleFromLabel(label);
+          const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
+          ctx.fillStyle = colors.fillColor;
+          ctx.strokeStyle = colors.strokeColor;
+          ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
-          roundRect(ctx, x, cy - nodeH/2, nodeW, nodeH, 5);
+          roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.fill();
           ctx.stroke();
 
-          ctx.fillStyle = colText;
-          ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.save();
-          // Position label above the node (shift left for better alignment)
-          ctx.translate(x + nodeW/2 - gap - 5 + 12, cy - 12); // Center on node, shift left by gap + 5px, move up by 12px total
-          ctx.rotate(-Math.PI/2);
-          ctx.fillText(labels[j], 0, 4);
-          ctx.restore();
+          // Store label info for drawing after all nodes
+          const labelKey = `${v.id}:${order.indexOf(label)}`;
+          const isHovered = state.hoveredAlleleNode && 
+            state.hoveredAlleleNode.variantId === v.id && 
+            state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
+          const isPinned = state.pinnedAlleleLabels.has(labelKey);
+          
+          if (isHovered || isPinned) {
+            allLabelsToDraw.push({
+              label: label,
+              nodeX: nodeX,
+              nodeY: nodeY,
+              nodeW: nodeW,
+              nodeH: nodeH,
+              isVertical: true
+            });
+          }
+          
+          // Store position for hit testing
+          nodePositions.push({
+            variantId: v.id,
+            alleleIndex: order.indexOf(label),
+            label: label,
+            x: nodeX,
+            y: nodeY,
+            w: nodeW,
+            h: nodeH
+          });
+          
+          // Store node info for ribbon drawing
+          if (!nodeInfoByVariant.has(i)) {
+            nodeInfoByVariant.set(i, new Map());
+          }
+          nodeInfoByVariant.get(i).set(label, {
+            x: nodeX,
+            y: nodeY,
+            w: nodeW,
+            h: nodeH,
+            top: nodeY,
+            bottom: nodeY + nodeH,
+            left: nodeX,
+            right: nodeX + nodeW
+          });
+          
+          // Update position for next node
+          currentX += nodeW + gap;
+        }
+        
+        // Draw drop indicator if dragging this variant
+        if (state.alleleDragState && state.alleleDragState.variantId === v.id && 
+            state.alleleDragState.dropIndex !== null && state.alleleDragState.dropIndex !== undefined) {
+          const dropIdx = state.alleleDragState.dropIndex;
+          const currentIdx = order.indexOf(state.alleleDragState.label);
+          
+          // Only show indicator if dropping at a different position
+          if (dropIdx !== currentIdx) {
+            // Calculate drop position accounting for variable node widths, margin, and centering
+            // Recalculate total width and horizontal offset (same as above)
+            let totalNodesWidth = 0;
+            for (let k = 0; k < order.length; k++) {
+              const label = order[k];
+              const alleleKey = getAlleleKey(label);
+              const nodeW = alleleSizes[alleleKey] || baseNodeW;
+              totalNodesWidth += nodeW;
+              if (k < order.length - 1) {
+                totalNodesWidth += gap;
+              }
+            }
+            const availableWidth = W - left - margin;
+            const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
+            
+            let indicatorX = left + horizontalOffset;
+            for (let k = 0; k < dropIdx; k++) {
+              const label = order[k];
+              const alleleKey = getAlleleKey(label);
+              const nodeW = alleleSizes[alleleKey] || baseNodeW;
+              indicatorX += nodeW + gap;
+            }
+            // For the last position, draw after the last node
+            if (dropIdx === order.length - 1) {
+              const label = order[dropIdx];
+              const alleleKey = getAlleleKey(label);
+              const nodeW = alleleSizes[alleleKey] || baseNodeW;
+              indicatorX += nodeW;
+            }
+            ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(indicatorX, cy - baseNodeH/2 - 4);
+            ctx.lineTo(indicatorX, cy + baseNodeH/2 + 4);
+            ctx.stroke();
+          }
         }
       }
     } else {
       for (let i=0;i<win.length;i++){
+        const v = win[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        
+        // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
+        // Deduplicate alleles to avoid showing the same allele twice (e.g., when ref == alt)
+        const uniqueAlleles = new Set();
+        uniqueAlleles.add("."); // no-call allele
+        if (v.refAllele) {
+          uniqueAlleles.add(v.refAllele);
+        }
+        if (v.altAlleles && Array.isArray(v.altAlleles)) {
+          for (let k = 0; k < v.altAlleles.length; k++) {
+            uniqueAlleles.add(v.altAlleles[k]);
+          }
+        }
+        // Convert to formatted labels array and create mapping from label to actual allele
+        const labelToAllele = new Map();
+        let labels = Array.from(uniqueAlleles).map(allele => {
+          const label = formatAlleleLabel(allele);
+          labelToAllele.set(label, allele);
+          return label;
+        });
+        
+        // Get order from state, or use default
+        let order = state.variantAlleleOrder.get(v.id);
+        if (!order || order.length !== labels.length) {
+          order = [...labels];
+          state.variantAlleleOrder.set(v.id, order);
+        }
+        
+        // Calculate allele sizes based on frequencies
+        const alleleSizes = calculateAlleleSizes(v, trackDimension, MIN_NODE_SIZE, gap, order.length);
+        
+        // Map labels to allele keys for size lookup
+        const noCallLabel = formatAlleleLabel(".");
+        const refLabel = v.refAllele ? formatAlleleLabel(v.refAllele) : null;
+        function getAlleleKey(label) {
+          if (label === noCallLabel) return ".";
+          if (label === refLabel) return "ref";
+          if (v.altAlleles && Array.isArray(v.altAlleles)) {
+            const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
+            if (altIndex >= 0) return `a${altIndex + 1}`;
+          }
+          return "."; // fallback
+        }
+        
         // Position based on variant layout mode
         const cx = variantMode === "genomic"
           ? xGenomeCanonical(win[i].pos, W)
           : xColumn(i, win.length);
-        const top = 70;
+        const top = 20;
 
-        for (let j=0;j<labels.length;j++){
-          const y = top + j*(nodeH+gap);
+        // Calculate margin for allele nodes (same as in calculateAlleleSizes)
+        const marginPercent = 0.1;
+        const minMargin = 10;
+        const margin = Math.max(minMargin, trackDimension * marginPercent);
+        
+        // Calculate total height of all nodes plus gaps
+        let totalNodesHeight = 0;
+        for (let j = 0; j < order.length; j++) {
+          const label = order[j];
+          const alleleKey = getAlleleKey(label);
+          const nodeH = alleleSizes[alleleKey] || baseNodeH;
+          totalNodesHeight += nodeH;
+          if (j < order.length - 1) {
+            totalNodesHeight += gap;
+          }
+        }
+        
+        // Center the nodes vertically within the actual available space
+        // Account for top offset and bottom margin to ensure nodes don't extend beyond track boundaries
+        const availableHeight = H - top - margin;
+        const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
 
-          ctx.fillStyle = "rgba(127,127,127,0.08)";
-          ctx.strokeStyle = "rgba(127,127,127,0.18)";
+        // Calculate cumulative positions for variable-height nodes, starting with top + vertical offset
+        let currentY = top + verticalOffset;
+
+        // Check if this variant column is hovered
+        const isVariantHovered = state.hoveredVariantIndex === variantIdx;
+        
+        // Draw nodes in current order
+        for (let j=0;j<order.length;j++){
+          const label = order[j];
+          const alleleKey = getAlleleKey(label);
+          let nodeW = baseNodeW;
+          let nodeH = alleleSizes[alleleKey] || baseNodeH;
+          
+          // Increase height when variant is hovered (horizontal mode = vertical nodes)
+          if (isVariantHovered) {
+            nodeW += 2;
+          }
+          
+          const y = currentY;
+          
+          // Check if this node is being dragged
+          const isDragging = state.alleleDragState && 
+            state.alleleDragState.variantId === v.id && 
+            state.alleleDragState.alleleIndex === order.indexOf(label);
+          const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
+          const dragOffsetY = isDragging ? state.alleleDragState.offsetY : 0;
+          
+          const nodeX = cx - nodeW/2 + dragOffsetX;
+          const nodeY = y + dragOffsetY;
+
+          // Get colors based on allele type (use actual allele from map, not extracted from label)
+          const actualAllele = labelToAllele.get(label) || extractAlleleFromLabel(label);
+          const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
+          ctx.fillStyle = colors.fillColor;
+          ctx.strokeStyle = colors.strokeColor;
+          ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
-          roundRect(ctx, cx - nodeW/2, y, nodeW, nodeH, 5);
+          roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.fill();
           ctx.stroke();
 
-          ctx.fillStyle = colText;
-          ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.fillText(labels[j], cx + 12, y + 13);
+          // Store label info for drawing after all nodes
+          const labelKey = `${v.id}:${order.indexOf(label)}`;
+          const isHovered = state.hoveredAlleleNode && 
+            state.hoveredAlleleNode.variantId === v.id && 
+            state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
+          const isPinned = state.pinnedAlleleLabels.has(labelKey);
+          
+          if (isHovered || isPinned) {
+            allLabelsToDraw.push({
+              label: label,
+              nodeX: nodeX,
+              nodeY: nodeY,
+              nodeW: nodeW,
+              nodeH: nodeH,
+              isVertical: false
+            });
+          }
+          
+          // Store position for hit testing
+          nodePositions.push({
+            variantId: v.id,
+            alleleIndex: order.indexOf(label),
+            label: label,
+            x: nodeX,
+            y: nodeY,
+            w: nodeW,
+            h: nodeH
+          });
+          
+          // Store node info for ribbon drawing
+          if (!nodeInfoByVariant.has(i)) {
+            nodeInfoByVariant.set(i, new Map());
+          }
+          nodeInfoByVariant.get(i).set(label, {
+            x: nodeX,
+            y: nodeY,
+            w: nodeW,
+            h: nodeH,
+            top: nodeY,
+            bottom: nodeY + nodeH,
+            left: nodeX,
+            right: nodeX + nodeW
+          });
+          
+          // Update position for next node
+          currentY += nodeH + gap;
         }
+        
+        // Draw drop indicator if dragging this variant
+        if (state.alleleDragState && state.alleleDragState.variantId === v.id && 
+            state.alleleDragState.dropIndex !== null && state.alleleDragState.dropIndex !== undefined) {
+          const dropIdx = state.alleleDragState.dropIndex;
+          const currentIdx = order.indexOf(state.alleleDragState.label);
+          
+          // Only show indicator if dropping at a different position
+          if (dropIdx !== currentIdx) {
+            // Calculate drop position accounting for variable node heights, margin, and centering
+            // Recalculate total height and vertical offset (same as above)
+            let totalNodesHeight = 0;
+            for (let k = 0; k < order.length; k++) {
+              const label = order[k];
+              const alleleKey = getAlleleKey(label);
+              const nodeH = alleleSizes[alleleKey] || baseNodeH;
+              totalNodesHeight += nodeH;
+              if (k < order.length - 1) {
+                totalNodesHeight += gap;
+              }
+            }
+            const availableHeight = H - top - margin;
+            const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
+            
+            let indicatorY = top + verticalOffset;
+            for (let k = 0; k < dropIdx; k++) {
+              const label = order[k];
+              const alleleKey = getAlleleKey(label);
+              const nodeH = alleleSizes[alleleKey] || baseNodeH;
+              indicatorY += nodeH + gap;
+            }
+            // For the last position, draw after the last node
+            if (dropIdx === order.length - 1) {
+              const label = order[dropIdx];
+              const alleleKey = getAlleleKey(label);
+              const nodeH = alleleSizes[alleleKey] || baseNodeH;
+              indicatorY += nodeH;
+            }
+            ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(cx - baseNodeW/2 - 4, indicatorY);
+            ctx.lineTo(cx + baseNodeW/2 + 4, indicatorY);
+            ctx.stroke();
+          }
+        }
+      }
+    }
+    
+    // Draw ribbons between alleles based on haplotype transitions (not matching labels)
+    // For each pair of adjacent variants, we compute which alleles each sample has at both variants
+    // and draw ribbons proportional to the number of haplotypes making each transition
+    if (nodeInfoByVariant.size > 1) {
+      const sortedVariantIdxs = Array.from(nodeInfoByVariant.keys()).sort((a, b) => a - b);
+      
+      // Get the actual variant list (sorted for vertical mode, original order for horizontal)
+      const variantList = isVertical ? [...win].sort((a, b) => a.pos - b.pos) : win;
+      
+      for (let i = 0; i < sortedVariantIdxs.length - 1; i++) {
+        const srcIdx = sortedVariantIdxs[i];
+        const dstIdx = sortedVariantIdxs[i + 1];
+        const srcNodes = nodeInfoByVariant.get(srcIdx);
+        const dstNodes = nodeInfoByVariant.get(dstIdx);
+        
+        if (!srcNodes || !dstNodes) continue;
+        
+        // Get the variant objects
+        const srcVariant = variantList[srcIdx];
+        const dstVariant = variantList[dstIdx];
+        if (!srcVariant || !dstVariant) continue;
+        
+        // Helper to get allele label from genotype index for a variant
+        function getAlleleLabelForIndex(variant, alleleIdx) {
+          if (alleleIdx === null || alleleIdx === undefined || alleleIdx === "." || isNaN(alleleIdx)) {
+            return formatAlleleLabel(".");
+          }
+          if (alleleIdx === 0) {
+            // Reference allele
+            return variant.refAllele ? formatAlleleLabel(variant.refAllele) : formatAlleleLabel(".");
+          }
+          // Alt allele (1-indexed in genotype, but 0-indexed in altAlleles array)
+          if (variant.altAlleles && variant.altAlleles[alleleIdx - 1]) {
+            return formatAlleleLabel(variant.altAlleles[alleleIdx - 1]);
+          }
+          return formatAlleleLabel(".");
+        }
+        
+        // Helper to get actual allele string from label for a variant
+        function getActualAlleleFromLabel(variant, label) {
+          const noCallLabel = formatAlleleLabel(".");
+          if (label === noCallLabel) return ".";
+          if (variant.refAllele && label === formatAlleleLabel(variant.refAllele)) {
+            return variant.refAllele;
+          }
+          if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+            for (const alt of variant.altAlleles) {
+              if (label === formatAlleleLabel(alt)) {
+                return alt;
+              }
+            }
+          }
+          return ".";
+        }
+        
+        // Compute transitions: Map<srcLabel, Map<dstLabel, count>>
+        const transitions = new Map();
+        const srcGenotypes = srcVariant.sampleGenotypes || {};
+        const dstGenotypes = dstVariant.sampleGenotypes || {};
+        
+        // Get all samples that have genotype data at both variants
+        const allSamples = new Set([...Object.keys(srcGenotypes), ...Object.keys(dstGenotypes)]);
+        
+        for (const sample of allSamples) {
+          const srcGt = srcGenotypes[sample] || "./.";
+          const dstGt = dstGenotypes[sample] || "./.";
+          
+          // Parse genotypes to get allele indices
+          const srcAlleles = srcGt.replace("|", "/").split("/").map(a => {
+            const trimmed = a.trim();
+            return trimmed === "." || trimmed === "" ? null : parseInt(trimmed, 10);
+          });
+          const dstAlleles = dstGt.replace("|", "/").split("/").map(a => {
+            const trimmed = a.trim();
+            return trimmed === "." || trimmed === "" ? null : parseInt(trimmed, 10);
+          });
+          
+          // For each haplotype (assuming diploid = 2 haplotypes per sample)
+          const numHaplotypes = Math.min(srcAlleles.length, dstAlleles.length);
+          for (let h = 0; h < numHaplotypes; h++) {
+            const srcAlleleIdx = srcAlleles[h];
+            const dstAlleleIdx = dstAlleles[h];
+            
+            const srcLabel = getAlleleLabelForIndex(srcVariant, srcAlleleIdx);
+            const dstLabel = getAlleleLabelForIndex(dstVariant, dstAlleleIdx);
+            
+            if (!transitions.has(srcLabel)) {
+              transitions.set(srcLabel, new Map());
+            }
+            const srcTransitions = transitions.get(srcLabel);
+            srcTransitions.set(dstLabel, (srcTransitions.get(dstLabel) || 0) + 1);
+          }
+        }
+        
+        // If no transition data (no samples), fall back to connecting all src nodes to all dst nodes
+        if (transitions.size === 0) {
+          for (const [srcLabel, srcNode] of srcNodes) {
+            for (const [dstLabel, dstNode] of dstNodes) {
+              const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
+              const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
+              const colorMatch = colors.fillColor.match(/rgba?\([^)]+,\s*([\d.]+)\)/);
+              const alpha = colorMatch ? parseFloat(colorMatch[1]) : 0.65;
+              const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha * 0.3})`);
+              
+              if (isVertical) {
+                // Draw thin connecting ribbon (vertical flow)
+                const srcW = srcNode.right - srcNode.left;
+                const dstW = dstNode.right - dstNode.left;
+                const midSrc = srcNode.left + srcW / 2;
+                const midDst = dstNode.left + dstW / 2;
+                const thinW = Math.min(2, srcW * 0.1, dstW * 0.1);
+                
+                drawRibbonVertical(
+                  srcNode, dstNode,
+                  midSrc - thinW/2, midSrc + thinW/2,
+                  midDst - thinW/2, midDst + thinW/2,
+                  ribbonColor
+                );
+              } else {
+                // Draw thin connecting ribbon (horizontal flow)
+                const srcH = srcNode.bottom - srcNode.top;
+                const dstH = dstNode.bottom - dstNode.top;
+                const midSrc = srcNode.top + srcH / 2;
+                const midDst = dstNode.top + dstH / 2;
+                const thinH = Math.min(2, srcH * 0.1, dstH * 0.1);
+                
+                drawRibbon(
+                  srcNode, dstNode,
+                  midSrc - thinH/2, midSrc + thinH/2,
+                  midDst - thinH/2, midDst + thinH/2,
+                  ribbonColor
+                );
+              }
+            }
+          }
+          continue;
+        }
+        
+        // Calculate total outgoing count per source label and total incoming per dest label
+        const srcTotals = new Map(); // srcLabel -> total outgoing haplotypes
+        const dstTotals = new Map(); // dstLabel -> total incoming haplotypes
+        let totalHaplotypes = 0; // Total haplotypes across all transitions
+        
+        for (const [srcLabel, dstMap] of transitions) {
+          let total = 0;
+          for (const [dstLabel, count] of dstMap) {
+            total += count;
+            totalHaplotypes += count;
+            dstTotals.set(dstLabel, (dstTotals.get(dstLabel) || 0) + count);
+          }
+          srcTotals.set(srcLabel, total);
+        }
+        
+        // Track current offset within each node for stacking ribbons
+        // In horizontal mode: Y offset from top; in vertical mode: X offset from left
+        const srcOffsets = new Map();
+        const dstOffsets = new Map();
+        
+        // Get reference allele labels to identify background persistence flows
+        const srcRefLabel = srcVariant.refAllele ? formatAlleleLabel(srcVariant.refAllele) : null;
+        const dstRefLabel = dstVariant.refAllele ? formatAlleleLabel(dstVariant.refAllele) : null;
+        
+        // Collect all ribbon data first, then sort so reference flows draw first (background)
+        const ribbonData = [];
+        
+        for (const [srcLabel, dstMap] of transitions) {
+          const srcNode = srcNodes.get(srcLabel);
+          if (!srcNode) continue;
+          
+          const srcTotal = srcTotals.get(srcLabel) || 1;
+          
+          for (const [dstLabel, count] of dstMap) {
+            const dstNode = dstNodes.get(dstLabel);
+            if (!dstNode) continue;
+            
+            const dstTotal = dstTotals.get(dstLabel) || 1;
+            
+            // Get current offsets (for stacking)
+            const srcOffset = srcOffsets.get(srcLabel) || 0;
+            const dstOffset = dstOffsets.get(dstLabel) || 0;
+            
+            let src0, src1, dst0, dst1;
+            
+            if (isVertical) {
+              // Vertical mode: ribbons flow downward, width is along X axis
+              const srcNodeW = srcNode.right - srcNode.left;
+              const dstNodeW = dstNode.right - dstNode.left;
+              
+              // Calculate ribbon slice widths proportional to transition count
+              const srcSliceW = (count / srcTotal) * srcNodeW;
+              const dstSliceW = (count / dstTotal) * dstNodeW;
+              
+              // Calculate X positions
+              src0 = srcNode.left + srcOffset;
+              src1 = src0 + srcSliceW;
+              dst0 = dstNode.left + dstOffset;
+              dst1 = dst0 + dstSliceW;
+              
+              // Update offsets for next ribbon
+              srcOffsets.set(srcLabel, srcOffset + srcSliceW);
+              dstOffsets.set(dstLabel, dstOffset + dstSliceW);
+            } else {
+              // Horizontal mode: ribbons flow rightward, height is along Y axis
+              const srcNodeH = srcNode.bottom - srcNode.top;
+              const dstNodeH = dstNode.bottom - dstNode.top;
+              
+              // Calculate ribbon slice heights proportional to transition count
+              const srcSliceH = (count / srcTotal) * srcNodeH;
+              const dstSliceH = (count / dstTotal) * dstNodeH;
+              
+              // Calculate Y positions
+              src0 = srcNode.top + srcOffset;
+              src1 = src0 + srcSliceH;
+              dst0 = dstNode.top + dstOffset;
+              dst1 = dst0 + dstSliceH;
+              
+              // Update offsets for next ribbon
+              srcOffsets.set(srcLabel, srcOffset + srcSliceH);
+              dstOffsets.set(dstLabel, dstOffset + dstSliceH);
+            }
+            
+            // Check if this is a reference-to-reference flow (background persistence)
+            const isRefFlow = srcLabel === srcRefLabel && dstLabel === dstRefLabel;
+            
+            ribbonData.push({
+              srcNode, dstNode, src0, src1, dst0, dst1,
+              srcLabel, count, isRefFlow
+            });
+          }
+        }
+        
+        // Sort ribbons: reference flows first (drawn in background), then colored flows on top
+        ribbonData.sort((a, b) => (b.isRefFlow ? 1 : 0) - (a.isRefFlow ? 1 : 0));
+        
+        // Draw all ribbons with sqrt-scaled opacity
+        for (const ribbon of ribbonData) {
+          const { srcNode, dstNode, src0, src1, dst0, dst1, srcLabel, count, isRefFlow } = ribbon;
+          
+          // Get color from source allele
+          const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
+          const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
+          
+          // Sqrt-scaled opacity: prevents dominant flows from drowning minor ones
+          const frac = count / Math.max(1, totalHaplotypes);
+          let alpha = 0.05 + 0.25 * Math.sqrt(frac);
+          
+          // De-emphasize reference flows further (lower saturation via reduced alpha)
+          if (isRefFlow) {
+            alpha *= 0.6; // 40% reduction for background persistence flows
+          }
+          
+          const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha.toFixed(3)})`);
+          
+          if (isVertical) {
+            // Vertical mode: src0/src1/dst0/dst1 are X positions
+            drawRibbonVertical(srcNode, dstNode, src0, src1, dst0, dst1, ribbonColor);
+          } else {
+            // Horizontal mode: src0/src1/dst0/dst1 are Y positions
+            drawRibbon(srcNode, dstNode, src0, src1, dst0, dst1, ribbonColor);
+          }
+        }
+      }
+    }
+    
+    // Store node positions globally for hit testing
+    window._alleleNodePositions = nodePositions;
+    
+    // Draw all labels at the very end with tooltip-style rounded rectangles (to bring them to foreground)
+    ctx.font = "11px ui-monospace, 'SF Mono', Monaco, 'Consolas', 'Courier New', monospace";
+    const labelPadding = 6;
+    const labelBorderRadius = 4;
+    const labelBgColor = "rgba(0, 0, 0, 0.85)";
+    const labelBorderColor = "rgba(255, 255, 255, 0.2)";
+    const labelTextColor = "rgba(255, 255, 255, 0.95)";
+    
+    for (const labelInfo of allLabelsToDraw) {
+      const text = labelInfo.label;
+      const textMetrics = ctx.measureText(text);
+      const textWidth = textMetrics.width;
+      const textHeight = 11; // font size
+      
+      if (labelInfo.isVertical) {
+        // Vertical mode: rotated text
+        const labelX = labelInfo.nodeX + labelInfo.nodeW/2 - gap - 5 + 12;
+        const labelY = labelInfo.nodeY - 12;
+        
+        // Calculate dimensions for rotated tooltip
+        const tooltipW = textHeight + labelPadding * 2;
+        const tooltipH = textWidth + labelPadding * 2;
+        const tooltipX = labelX - tooltipH / 2;
+        const tooltipY = labelY - tooltipW / 2;
+        
+        ctx.save();
+        ctx.translate(labelX, labelY);
+        ctx.rotate(-Math.PI/2);
+        
+        // Draw tooltip background
+        ctx.fillStyle = labelBgColor;
+        ctx.strokeStyle = labelBorderColor;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        roundRect(ctx, -tooltipH/2, -tooltipW/2, tooltipH, tooltipW, labelBorderRadius);
+        ctx.fill();
+        ctx.stroke();
+        
+        // Draw text
+        ctx.fillStyle = labelTextColor;
+        ctx.fillText(text, -textWidth/2, textHeight/2 + 2);
+        
+        ctx.restore();
+      } else {
+        // Horizontal mode: normal text
+        const labelX = labelInfo.nodeX + 12;
+        const labelY = labelInfo.nodeY + 13;
+        
+        // Calculate dimensions for tooltip
+        const tooltipW = textWidth + labelPadding * 2;
+        const tooltipH = textHeight + labelPadding * 2;
+        const tooltipX = labelX - labelPadding;
+        const tooltipY = labelY - textHeight - labelPadding;
+        
+        // Draw tooltip background
+        ctx.fillStyle = labelBgColor;
+        ctx.strokeStyle = labelBorderColor;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        roundRect(ctx, tooltipX, tooltipY, tooltipW, tooltipH, labelBorderRadius);
+        ctx.fill();
+        ctx.stroke();
+        
+        // Draw text
+        ctx.fillStyle = labelTextColor;
+        ctx.fillText(text, labelX, labelY);
+      }
+    }
+
+    // Execute WebGPU render pass after variant columns are added
+    // Render to flowWebGPU canvas (separate from tracksWebGPU)
+    const hasFlowInstances = flowInstancedRenderer && 
+        (flowInstancedRenderer.rectInstances.length > 0 || flowInstancedRenderer.lineInstances.length > 0);
+    const hasRibbonInstances = flowRibbonRenderer && flowRibbonRenderer.instances.length > 0;
+    if (webgpuSupported && flowInstancedRenderer && (hasFlowInstances || hasRibbonInstances)) {
+      try {
+        // Update projection matrix for current canvas size
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const width = flowWebGPU.clientWidth * devicePixelRatio;
+        const height = flowWebGPU.clientHeight * devicePixelRatio;
+        
+        if (flowWebGPU.width !== width || flowWebGPU.height !== height) {
+          flowWebGPU.width = width;
+          flowWebGPU.height = height;
+          flowWebGPUCore.handleResize();
+        }
+        
+        const encoder = flowWebGPUCore.createCommandEncoder();
+        const texture = flowWebGPUCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear', // Clear canvas on each render
+            storeOp: 'store',
+          }],
+        });
+        
+        if (flowRibbonRenderer) flowRibbonRenderer.render(encoder, renderPass);
+        flowInstancedRenderer.render(encoder, renderPass);
+        renderPass.end();
+        flowWebGPUCore.submit([encoder.finish()]);
+      } catch (error) {
+        console.error("Flow WebGPU render error:", error);
+        // Fallback: clear instances and continue with Canvas 2D only
+        flowInstancedRenderer.clear();
+      }
+    } else if (webgpuSupported && flowInstancedRenderer) {
+      // Clear WebGPU canvas if no instances to render
+      try {
+        const encoder = flowWebGPUCore.createCommandEncoder();
+        const texture = flowWebGPUCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        renderPass.end();
+        flowWebGPUCore.submit([encoder.finish()]);
+      } catch (error) {
+        // Ignore errors when clearing
       }
     }
   }
@@ -4860,13 +6410,13 @@
       drawRead(100_590, 100_820, 5, 0.10);
       drawRead(100_700, 100_900, 6, 0.11);
 
-      // variant guide lines (bright blue)
-      ctx.strokeStyle = cssVar("--blue");
+      // variant guide lines (gray, blue when hovered)
       for (let idx = 0; idx < variants.length; idx++) {
         const v = variants[idx];
         if (v.pos < state.startBp || v.pos > state.endBp) continue;
         const isHovered = state.hoveredVariantIndex === idx;
-        ctx.globalAlpha = isHovered ? 0.7 : 0.4;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.5)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
         const y = yGenomeCanonical(v.pos, H);
         ctx.beginPath();
@@ -4913,13 +6463,13 @@
       drawRead(100_590, 100_820, 5, 0.10);
       drawRead(100_700, 100_900, 6, 0.11);
 
-      // variant guide lines (bright blue)
-      ctx.strokeStyle = cssVar("--blue");
+      // variant guide lines (gray, blue when hovered)
       for (let idx = 0; idx < variants.length; idx++) {
         const v = variants[idx];
         if (v.pos < state.startBp || v.pos > state.endBp) continue;
         const isHovered = state.hoveredVariantIndex === idx;
-        ctx.globalAlpha = isHovered ? 0.7 : 0.4;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.5)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
         const x = xGenomeCanonical(v.pos, W);
         ctx.beginPath();
@@ -4972,6 +6522,60 @@
       ctx.globalAlpha = 1.0;
     }
     */
+
+    // Execute WebGPU render pass after variant columns are added
+    if (webgpuSupported && instancedRenderer && 
+        (instancedRenderer.rectInstances.length > 0 || instancedRenderer.lineInstances.length > 0)) {
+      try {
+        // Update projection matrix for current canvas size
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const width = tracksWebGPU.clientWidth * devicePixelRatio;
+        const height = tracksWebGPU.clientHeight * devicePixelRatio;
+        
+        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
+          tracksWebGPU.width = width;
+          tracksWebGPU.height = height;
+          webgpuCore.handleResize();
+        }
+        
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear', // Clear canvas on each render
+            storeOp: 'store',
+          }],
+        });
+        
+        instancedRenderer.render(encoder, renderPass);
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        console.error("WebGPU render error:", error);
+        // Fallback: clear instances and continue with SVG only
+        instancedRenderer.clear();
+      }
+    } else if (webgpuSupported && instancedRenderer) {
+      // Clear WebGPU canvas if no instances to render
+      try {
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        // Ignore errors when clearing
+      }
+    }
   }
 
   // -----------------------------
@@ -5075,9 +6679,11 @@
   // -----------------------------
   // HUD + renderAll
   // -----------------------------
+  let hudHideTimeout = null;
+
   function renderHUD() {
     const locusText = `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
-    
+
     // Preserve lazy loading status if it exists
     if (window._genomeshaderLazyStatus) {
       const status = window._genomeshaderLazyStatus;
@@ -5086,6 +6692,22 @@
     } else {
       hud.textContent = locusText;
     }
+
+    // In inline mode, show HUD and auto-hide after 3 seconds
+    if (hostMode === 'inline') {
+      hud.classList.add('visible');
+
+      // Clear any existing timeout
+      if (hudHideTimeout) {
+        clearTimeout(hudHideTimeout);
+      }
+
+      // Set new timeout to hide HUD after 3 seconds
+      hudHideTimeout = setTimeout(() => {
+        hud.classList.remove('visible');
+        hudHideTimeout = null;
+      }, 3000);
+    }
   }
 
   function updateTooltip() {
@@ -5093,6 +6715,11 @@
       tooltip.textContent = state.hoveredRepeatTooltip.text;
       tooltip.style.left = state.hoveredRepeatTooltip.x + 'px';
       tooltip.style.top = state.hoveredRepeatTooltip.y + 'px';
+      tooltip.classList.add('visible');
+    } else if (state.hoveredVariantLabelTooltip) {
+      tooltip.textContent = state.hoveredVariantLabelTooltip.text;
+      tooltip.style.left = state.hoveredVariantLabelTooltip.x + 'px';
+      tooltip.style.top = state.hoveredVariantLabelTooltip.y + 'px';
       tooltip.classList.add('visible');
     } else {
       tooltip.classList.remove('visible');
@@ -5221,6 +6848,31 @@
         const H = flowHeightPx();
         const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
         
+        // Check if mouse is over a variant label
+        if (window._variantLabelPositions && window._variantLabelPositions.length > 0) {
+          for (const labelPos of window._variantLabelPositions) {
+            // In vertical mode, labels are rotated 90 degrees at x=14
+            // Check if mouse is near the label position (y coordinate) and in the label area (x < 30)
+            const labelY = labelPos.y;
+            const labelHeight = labelPos.height; // This is the font size (12px)
+            if (Math.abs(y - labelY) < labelHeight && x >= 0 && x <= 30) {
+              // Show tooltip with all IDs (comma-delimited)
+              if (labelPos.allIds && labelPos.allIds.length > 0) {
+                state.hoveredVariantLabelTooltip = {
+                  text: labelPos.allIds.join(', '),
+                  x: e.clientX + 10,
+                  y: e.clientY + 10
+                };
+                updateTooltip();
+              } else {
+                state.hoveredVariantLabelTooltip = null;
+                updateTooltip();
+              }
+              return;
+            }
+          }
+        }
+        
         // Check if mouse is near a column line (horizontal in vertical mode)
         for (let i = 0; i < sortedWin.length; i++) {
           const v = sortedWin[i];
@@ -5235,6 +6887,9 @@
               state.hoveredVariantIndex = variantIdx;
               renderAll();
             }
+            // Clear variant label tooltip when hovering column
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
             return;
           }
         }
@@ -5256,12 +6911,38 @@
               state.hoveredVariantIndex = variantIdx;
               renderAll();
             }
+            // Clear variant label tooltip when hovering connector
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
             return;
           }
         }
       } else {
         const junctionY = 40;
         const W = flowWidthPx();
+        
+        // Check if mouse is over a variant label
+        if (window._variantLabelPositions && window._variantLabelPositions.length > 0) {
+          for (const labelPos of window._variantLabelPositions) {
+            // In horizontal mode, labels are at the top (y=14)
+            if (x >= labelPos.x && x <= labelPos.x + labelPos.width &&
+                y >= labelPos.y && y <= labelPos.y + labelPos.height) {
+              // Show tooltip with all IDs (comma-delimited)
+              if (labelPos.allIds && labelPos.allIds.length > 0) {
+                state.hoveredVariantLabelTooltip = {
+                  text: labelPos.allIds.join(', '),
+                  x: e.clientX + 10,
+                  y: e.clientY + 10
+                };
+                updateTooltip();
+              } else {
+                state.hoveredVariantLabelTooltip = null;
+                updateTooltip();
+              }
+              return;
+            }
+          }
+        }
         
         // Check if mouse is near a column line
         for (let i = 0; i < win.length; i++) {
@@ -5276,6 +6957,9 @@
               state.hoveredVariantIndex = variantIdx;
               renderAll();
             }
+            // Clear variant label tooltip when hovering column
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
             return;
           }
         }
@@ -5307,17 +6991,483 @@
         state.hoveredVariantIndex = null;
         renderAll();
       }
+      // Clear variant label tooltip when not hovering anything
+      if (state.hoveredVariantLabelTooltip !== null) {
+        state.hoveredVariantLabelTooltip = null;
+        updateTooltip();
+      }
     };
     
     flowLeaveHandler = () => {
-      if (state.hoveredVariantIndex !== null) {
+      if (state.hoveredVariantIndex !== null || state.hoveredAlleleNode !== null) {
         state.hoveredVariantIndex = null;
+        state.hoveredAlleleNode = null;
         renderAll();
+      }
+      // Clear variant label tooltip when leaving flow canvas
+      if (state.hoveredVariantLabelTooltip !== null) {
+        state.hoveredVariantLabelTooltip = null;
+        updateTooltip();
       }
     };
     
     flow.addEventListener("mousemove", flowHoverHandler);
     flow.addEventListener("mouseleave", flowLeaveHandler);
+    
+    // Variant label click-to-pin handler
+    let variantLabelClickHandler = null;
+    function setupVariantLabelClick() {
+      if (variantLabelClickHandler) {
+        flow.removeEventListener("click", variantLabelClickHandler);
+        if (flowWebGPU) flowWebGPU.removeEventListener("click", variantLabelClickHandler);
+      }
+      
+      variantLabelClickHandler = (e) => {
+        // Only handle clicks if not dragging alleles
+        if (state.alleleDragState) return;
+        
+        const rect = flow.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        // Check if we clicked on a variant label
+        if (!window._variantLabelPositions || window._variantLabelPositions.length === 0) return;
+        
+        const isVertical = isVerticalMode();
+        
+        for (const labelPos of window._variantLabelPositions) {
+          let clicked = false;
+          if (isVertical) {
+            // In vertical mode, labels are rotated 90 degrees at x=14
+            // Check if click is near the label position (y coordinate) and in the label area (x < 30)
+            const labelY = labelPos.y;
+            const labelHeight = labelPos.height; // This is the font size (12px)
+            if (Math.abs(y - labelY) < labelHeight && x >= 0 && x <= 30) {
+              clicked = true;
+            }
+          } else {
+            // In horizontal mode, labels are at the top (y=14)
+            if (x >= labelPos.x && x <= labelPos.x + labelPos.width &&
+                y >= labelPos.y && y <= labelPos.y + labelPos.height) {
+              clicked = true;
+            }
+          }
+          
+          if (clicked) {
+            // Toggle pinned state
+            if (state.pinnedVariantLabels.has(labelPos.variantId)) {
+              state.pinnedVariantLabels.delete(labelPos.variantId);
+            } else {
+              state.pinnedVariantLabels.add(labelPos.variantId);
+            }
+            renderFlowCanvas();
+            e.stopPropagation();
+            return;
+          }
+        }
+      };
+      
+      flow.addEventListener("click", variantLabelClickHandler);
+      if (flowWebGPU) flowWebGPU.addEventListener("click", variantLabelClickHandler);
+    }
+    
+    setupVariantLabelClick();
+    
+    // Allele node drag-and-drop handlers
+    let alleleMouseDownHandler = null;
+    let alleleMouseMoveHandler = null;
+    let alleleMouseUpHandler = null;
+    
+    function setupAlleleDragDrop() {
+      // Remove existing listeners
+      if (alleleMouseDownHandler) {
+        const oldTarget = flowWebGPU || flow;
+        oldTarget.removeEventListener("mousedown", alleleMouseDownHandler);
+        document.removeEventListener("mousemove", alleleMouseMoveHandler);
+        document.removeEventListener("mouseup", alleleMouseUpHandler);
+      }
+      
+      alleleMouseDownHandler = (e) => {
+        if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) return;
+        
+        // Use flow container for coordinates (same coordinate system as flowCanvas)
+        const rect = flow.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        // Find which node was clicked
+        for (const node of window._alleleNodePositions) {
+          if (x >= node.x && x <= node.x + node.w && 
+              y >= node.y && y <= node.y + node.h) {
+            e.preventDefault();
+            e.stopPropagation();
+            state.alleleDragState = {
+              variantId: node.variantId,
+              alleleIndex: node.alleleIndex,
+              label: node.label,
+              startX: x,
+              startY: y,
+              offsetX: 0,
+              offsetY: 0,
+              isClick: true // Track if this might be a click (not a drag)
+            };
+            flowCanvas.style.cursor = "grabbing";
+            if (flowWebGPU) flowWebGPU.style.cursor = "grabbing";
+            return;
+          }
+        }
+      };
+      
+      alleleMouseMoveHandler = (e) => {
+        const rect = flow.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        if (state.alleleDragState) {
+          // Handle drag
+          state.alleleDragState.offsetX = x - state.alleleDragState.startX;
+          state.alleleDragState.offsetY = y - state.alleleDragState.startY;
+          
+          // If moved more than 5 pixels, it's a drag, not a click
+          const dragDistance = Math.sqrt(
+            Math.pow(state.alleleDragState.offsetX, 2) + 
+            Math.pow(state.alleleDragState.offsetY, 2)
+          );
+          if (dragDistance > 5) {
+            state.alleleDragState.isClick = false;
+          }
+        
+        // Calculate drop position to show indicator
+        const dragState = state.alleleDragState;
+        const order = state.variantAlleleOrder.get(dragState.variantId);
+        if (order) {
+          const isVertical = isVerticalMode();
+          const variantMode = getVariantLayoutMode();
+          const win = visibleVariantWindow();
+          const constants = window._alleleNodeConstants || { baseNodeW: 4, baseNodeH: 14, gap: 8, MIN_NODE_SIZE: 4 };
+          const gap = constants.gap;
+          const MIN_NODE_SIZE = constants.MIN_NODE_SIZE;
+          const baseNodeW = constants.baseNodeW;
+          const baseNodeH = constants.baseNodeH;
+          
+          // Find the variant to get its allele frequencies
+          const v = isVertical 
+            ? [...win].sort((a, b) => a.pos - b.pos).find(v => v.id === dragState.variantId)
+            : win.find(v => v.id === dragState.variantId);
+          
+          if (v) {
+            // Get track dimension for size calculation
+            const layout = getTrackLayout();
+            const flowLayout = layout.find(l => l.track.id === "flow");
+            const trackDimension = isVertical 
+              ? (flowLayout ? flowLayout.contentWidth : 300)
+              : (flowLayout ? flowLayout.contentHeight : 300);
+            
+            // Calculate allele sizes for this variant
+            const calculateAlleleSizesFn = window.calculateAlleleSizes;
+            const alleleSizes = calculateAlleleSizesFn 
+              ? calculateAlleleSizesFn(v, trackDimension, MIN_NODE_SIZE, gap, order.length)
+              : {}; // Fallback to empty if function not available
+            
+            // Map labels to allele keys
+            const formatAlleleLabelFn = window.formatAlleleLabel || function(allele) {
+              if (!allele || allele === ".") return ". (no-call)";
+              const length = allele.length;
+              const lengthLabel = length === 1 ? "1 bp" : `${length} bp`;
+              return `${allele} (${lengthLabel})`;
+            };
+            const noCallLabel = formatAlleleLabelFn(".");
+            const refLabel = v.refAllele ? formatAlleleLabelFn(v.refAllele) : null;
+            function getAlleleKey(label) {
+              if (label === noCallLabel) return ".";
+              if (label === refLabel) return "ref";
+              if (v.altAlleles && Array.isArray(v.altAlleles)) {
+                const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabelFn(alt) === label);
+                if (altIndex >= 0) return `a${altIndex + 1}`;
+              }
+              return ".";
+            }
+            
+            // Calculate margin (same as in calculateAlleleSizes)
+            const marginPercent = 0.1;
+            const minMargin = 10;
+            const margin = Math.max(minMargin, trackDimension * marginPercent);
+            
+            let newIndex = -1;
+            if (isVertical) {
+              const left = 70;
+              const W = flowWidthPx();
+              const cy = variantMode === "genomic"
+                ? yGenomeCanonical(v.pos, flowHeightPx())
+                : yColumn(isVertical ? [...win].sort((a, b) => a.pos - b.pos).findIndex(v2 => v2.id === v.id) : win.findIndex(v2 => v2.id === v.id), isVertical ? [...win].sort((a, b) => a.pos - b.pos).length : win.length);
+              
+              // Calculate total width and horizontal offset for centering
+              let totalNodesWidth = 0;
+              for (let j = 0; j < order.length; j++) {
+                const label = order[j];
+                const alleleKey = getAlleleKey(label);
+                const nodeW = alleleSizes[alleleKey] || baseNodeW;
+                totalNodesWidth += nodeW;
+                if (j < order.length - 1) {
+                  totalNodesWidth += gap;
+                }
+              }
+              const availableWidth = W - left - margin;
+              const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
+              
+              // Calculate cumulative positions for variable-width nodes, starting with left + horizontal offset
+              let currentX = left + horizontalOffset;
+              for (let j = 0; j < order.length; j++) {
+                const label = order[j];
+                const alleleKey = getAlleleKey(label);
+                const nodeW = alleleSizes[alleleKey] || baseNodeW;
+                const nodeCenterX = currentX + nodeW / 2;
+                
+                if (Math.abs(x - nodeCenterX) < (nodeW + gap) / 2 && 
+                    Math.abs(y - cy) < baseNodeH / 2) {
+                  newIndex = j;
+                  break;
+                }
+                currentX += nodeW + gap;
+              }
+              
+              // If no match found, check if mouse is beyond the last node
+              if (newIndex === -1 && Math.abs(y - cy) < baseNodeH / 2) {
+                let lastX = left + horizontalOffset;
+                for (let j = 0; j < order.length; j++) {
+                  const label = order[j];
+                  const alleleKey = getAlleleKey(label);
+                  const nodeW = alleleSizes[alleleKey] || baseNodeW;
+                  lastX += nodeW + (j < order.length - 1 ? gap : 0);
+                }
+                if (x > lastX - (baseNodeW + gap) / 2 && x < lastX + baseNodeW + gap) {
+                  newIndex = order.length - 1;
+                }
+              }
+            } else {
+              const cx = variantMode === "genomic"
+                ? xGenomeCanonical(v.pos, flowWidthPx())
+                : xColumn(win.findIndex(v2 => v2.id === v.id), win.length);
+              const top = 20;
+              const H = flowHeightPx();
+              
+              // Calculate total height and vertical offset for centering
+              let totalNodesHeight = 0;
+              for (let j = 0; j < order.length; j++) {
+                const label = order[j];
+                const alleleKey = getAlleleKey(label);
+                const nodeH = alleleSizes[alleleKey] || baseNodeH;
+                totalNodesHeight += nodeH;
+                if (j < order.length - 1) {
+                  totalNodesHeight += gap;
+                }
+              }
+              const availableHeight = H - top - margin;
+              const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
+              
+              // Calculate cumulative positions for variable-height nodes, starting with top + vertical offset
+              let currentY = top + verticalOffset;
+              for (let j = 0; j < order.length; j++) {
+                const label = order[j];
+                const alleleKey = getAlleleKey(label);
+                const nodeH = alleleSizes[alleleKey] || baseNodeH;
+                const nodeCenterY = currentY + nodeH / 2;
+                
+                if (Math.abs(x - cx) < baseNodeW / 2 && 
+                    Math.abs(y - nodeCenterY) < (nodeH + gap) / 2) {
+                  newIndex = j;
+                  break;
+                }
+                currentY += nodeH + gap;
+              }
+              
+              // If no match found, check if mouse is below the last node
+              if (newIndex === -1 && Math.abs(x - cx) < baseNodeW / 2) {
+                let lastY = top + verticalOffset;
+                for (let j = 0; j < order.length; j++) {
+                  const label = order[j];
+                  const alleleKey = getAlleleKey(label);
+                  const nodeH = alleleSizes[alleleKey] || baseNodeH;
+                  lastY += nodeH + (j < order.length - 1 ? gap : 0);
+                }
+                if (y > lastY - (baseNodeH + gap) / 2 && y < lastY + baseNodeH + gap) {
+                  newIndex = order.length - 1;
+                }
+              }
+            }
+          }
+          
+          // Store drop index for rendering indicator
+          state.alleleDragState.dropIndex = newIndex >= 0 ? newIndex : null;
+        } else {
+          state.alleleDragState.dropIndex = null;
+        }
+        
+        renderFlowCanvas();
+        } else {
+          // Handle hover detection when not dragging
+          if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) {
+            if (state.hoveredAlleleNode) {
+              state.hoveredAlleleNode = null;
+              renderFlowCanvas();
+            }
+            return;
+          }
+          
+          // Find which node is hovered
+          let hoveredNode = null;
+          for (const node of window._alleleNodePositions) {
+            if (x >= node.x && x <= node.x + node.w && 
+                y >= node.y && y <= node.y + node.h) {
+              hoveredNode = { variantId: node.variantId, alleleIndex: node.alleleIndex };
+              break;
+            }
+          }
+          
+          // Update hover state if changed
+          const currentHover = state.hoveredAlleleNode;
+          if ((hoveredNode && (!currentHover || currentHover.variantId !== hoveredNode.variantId || currentHover.alleleIndex !== hoveredNode.alleleIndex)) ||
+              (!hoveredNode && currentHover)) {
+            state.hoveredAlleleNode = hoveredNode;
+            renderFlowCanvas();
+          }
+        }
+      };
+      
+      alleleMouseUpHandler = (e) => {
+        if (!state.alleleDragState) return;
+        
+        const rect = flow.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        const dragState = state.alleleDragState;
+        
+        // Check if this was a click (not a drag)
+        if (dragState.isClick) {
+          // Toggle pinned state for this label
+          const labelKey = `${dragState.variantId}:${dragState.alleleIndex}`;
+          if (state.pinnedAlleleLabels.has(labelKey)) {
+            state.pinnedAlleleLabels.delete(labelKey);
+          } else {
+            state.pinnedAlleleLabels.add(labelKey);
+          }
+          state.alleleDragState = null;
+          flowCanvas.style.cursor = "";
+          if (flowWebGPU) flowWebGPU.style.cursor = "";
+          renderFlowCanvas();
+          return;
+        }
+        
+        // Otherwise, handle as a drag/drop
+        const order = state.variantAlleleOrder.get(dragState.variantId);
+        if (!order) {
+          state.alleleDragState = null;
+          flowCanvas.style.cursor = "";
+          if (flowWebGPU) flowWebGPU.style.cursor = "";
+          renderFlowCanvas();
+          return;
+        }
+        
+        const isVertical = isVerticalMode();
+        const variantMode = getVariantLayoutMode();
+        const win = visibleVariantWindow();
+        const constants = window._alleleNodeConstants || { baseNodeW: 4, baseNodeH: 14, gap: 8, MIN_NODE_SIZE: 4 };
+        const nodeW = constants.baseNodeW;
+        const nodeH = constants.baseNodeH;
+        const gap = constants.gap;
+        
+        let newIndex = -1;
+        if (isVertical) {
+          const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
+          const v = sortedWin.find(v => v.id === dragState.variantId);
+          if (!v) {
+            state.alleleDragState = null;
+            flowCanvas.style.cursor = "";
+            if (flowWebGPU) flowWebGPU.style.cursor = "";
+            renderFlowCanvas();
+            return;
+          }
+          const left = 70;
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, flowHeightPx())
+            : yColumn(sortedWin.findIndex(v2 => v2.id === v.id), sortedWin.length);
+          
+          // Check if dropped near a node position
+          for (let j = 0; j < order.length; j++) {
+            const nodeX = left + j * (nodeW + gap);
+            if (Math.abs(x - nodeX) < (nodeW + gap) / 2 && 
+                Math.abs(y - cy) < nodeH / 2) {
+              newIndex = j;
+              break;
+            }
+          }
+          
+          // If no match found, check if mouse is beyond the last node (for dropping at last position)
+          if (newIndex === -1 && Math.abs(y - cy) < nodeH / 2) {
+            const lastNodeX = left + (order.length - 1) * (nodeW + gap);
+            // Check if mouse is to the right of the last node (within reasonable distance)
+            if (x > lastNodeX - (nodeW + gap) / 2 && x < lastNodeX + nodeW + gap + (nodeW + gap) / 2) {
+              newIndex = order.length - 1;
+            }
+          }
+        } else {
+          const v = win.find(v => v.id === dragState.variantId);
+          if (!v) {
+            state.alleleDragState = null;
+            flowCanvas.style.cursor = "";
+            if (flowWebGPU) flowWebGPU.style.cursor = "";
+            renderFlowCanvas();
+            return;
+          }
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, flowWidthPx())
+            : xColumn(win.findIndex(v2 => v2.id === v.id), win.length);
+          const top = 20;
+          
+          // Check if dropped near a node position
+          for (let j = 0; j < order.length; j++) {
+            const nodeY = top + j * (nodeH + gap);
+            if (Math.abs(x - cx) < nodeW / 2 && 
+                Math.abs(y - nodeY) < (nodeH + gap) / 2) {
+              newIndex = j;
+              break;
+            }
+          }
+          
+          // If no match found, check if mouse is below the last node (for dropping at last position)
+          if (newIndex === -1 && Math.abs(x - cx) < nodeW / 2) {
+            const lastNodeY = top + (order.length - 1) * (nodeH + gap);
+            // Check if mouse is below the last node (within reasonable distance)
+            if (y > lastNodeY - (nodeH + gap) / 2 && y < lastNodeY + nodeH + gap + (nodeH + gap) / 2) {
+              newIndex = order.length - 1;
+            }
+          }
+        }
+        
+        // Reorder if dropped at a valid position
+        if (newIndex >= 0 && newIndex !== order.indexOf(dragState.label)) {
+          const currentIndex = order.indexOf(dragState.label);
+          order.splice(currentIndex, 1);
+          order.splice(newIndex, 0, dragState.label);
+          state.variantAlleleOrder.set(dragState.variantId, order);
+        }
+        
+        state.alleleDragState = null;
+        flowCanvas.style.cursor = "";
+        if (flowWebGPU) flowWebGPU.style.cursor = "";
+        renderFlowCanvas();
+      };
+      
+      // Attach to flowWebGPU canvas (which is on top) or flow container
+      // Both flowCanvas and flowWebGPU are inside flow, so coordinates are relative to flow
+      const targetElement = flowWebGPU || flow;
+      targetElement.addEventListener("mousedown", alleleMouseDownHandler, { passive: false });
+      document.addEventListener("mousemove", alleleMouseMoveHandler);
+      document.addEventListener("mouseup", alleleMouseUpHandler);
+    }
+    
+    setupAlleleDragDrop();
 
     // Reads canvas hover detection
     readsHoverHandler = (e) => {
@@ -5506,7 +7656,6 @@
   // Returns a destroy function to clean up listeners
   function bindInteractions(root, state, main) {
     if (!main) {
-      console.warn("[gs] bindInteractions: main element not found");
       return { destroy() {} };
     }
 
@@ -5709,7 +7858,6 @@
         const windowWheel = getEventListeners(window).wheel;
         const docWheel = getEventListeners(document).wheel;
         if (windowWheel && windowWheel.length > 0) {
-          console.warn("[gs] Found", windowWheel.length, "wheel listener(s) on window, removing...");
           windowWheel.forEach(listener => {
             try {
               window.removeEventListener("wheel", listener.listener, listener.useCapture);
@@ -5719,7 +7867,6 @@
           });
         }
         if (docWheel && docWheel.length > 0) {
-          console.warn("[gs] Found", docWheel.length, "wheel listener(s) on document, removing...");
           docWheel.forEach(listener => {
             try {
               document.removeEventListener("wheel", listener.listener, listener.useCapture);
@@ -5728,14 +7875,9 @@
             }
           });
         }
-        console.log("[gs] Removed global wheel listeners");
       } catch (e) {
         console.warn("[gs] Error checking for global wheel listeners:", e);
       }
-    } else {
-      console.log("[gs] getEventListeners not available (DevTools not open). To check manually, run in console:");
-      console.log("[gs]   getEventListeners(window).wheel");
-      console.log("[gs]   getEventListeners(document).wheel");
     }
   }
   
@@ -5744,7 +7886,6 @@
 
   // Bind interactions and store destroy function
   interactionBinding = bindInteractions(root, state, main);
-  console.log("[gs] bound interactions to", main, "root", root.id);
 
   // -----------------------------
   // Track interactions (drag, resize)

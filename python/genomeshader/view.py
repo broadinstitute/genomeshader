@@ -228,6 +228,28 @@ class GenomeShader:
         """
         return self._session.get_locus(locus)
 
+    def get_locus_variants(self, locus: str) -> pl.DataFrame:
+        """
+        This function retrieves variant data for a locus from attached
+        variant files (BCF/VCF).
+
+        Args:
+            locus (str): The locus to retrieve variant data for, in the format
+                'chr:start-stop' or 'chr:position'.
+
+        Returns:
+            pl.DataFrame: A Polars DataFrame containing variant data with columns:
+                - chromosome: Chromosome/contig name
+                - position: Variant position (1-based)
+                - ref_allele: Reference allele
+                - alt_allele: Alternate allele
+                - sample_name: Sample name
+                - genotype: Genotype string (e.g., "0/1", "1/1", "./.")
+                - variant_id: Unique variant identifier (internal index)
+                - vcf_id: VCF/BCF ID field from the variant record (None if not present)
+        """
+        return self._session.get_locus_variants(locus)
+
 
     def ideogram(self, contig: str) -> pl.DataFrame:
         # Define the API endpoint with the contig parameter
@@ -731,20 +753,56 @@ class GenomeShader:
             str: an html object that can be displayed (via IPython display) or saved to disk.
         """
 
+        # Try to get variant data if locus is a string
+        variants_df = None
         if isinstance(locus_or_dataframe, str):
-            samples_df = self.get_locus(locus_or_dataframe)
+            try:
+                # Try to get variant data first
+                variants_df = self.get_locus_variants(locus_or_dataframe)
+                if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
+                    samples_df = variants_df.clone()
+                else:
+                    # If no variant data, try reads
+                    samples_df = self.get_locus(locus_or_dataframe)
+            except Exception as e:
+                # If variant extraction fails, fall back to reads
+                try:
+                    samples_df = self.get_locus(locus_or_dataframe)
+                except Exception:
+                    # Re-raise the original variant error if reads also fail
+                    raise e
         elif isinstance(locus_or_dataframe, pl.DataFrame):
             samples_df = locus_or_dataframe.clone()
+            # Check if this looks like variant data
+            if "chromosome" in samples_df.columns and "position" in samples_df.columns:
+                variants_df = samples_df.clone()
         else:
             raise ValueError(
                 "locus_or_dataframe must be a locus string or a Polars DataFrame."
             )
 
-        ref_chr = samples_df["reference_contig"].min()
-        ref_start = samples_df["reference_start"].min()
-        ref_end = samples_df["reference_end"].max()
+        # Determine if we have variant data or read data
+        is_variant_data = (
+            "chromosome" in samples_df.columns and 
+            "position" in samples_df.columns
+        )
         
-        # Store the actual data bounds (where reads exist)
+        if is_variant_data:
+            # Extract region bounds from variant data
+            ref_chr = samples_df["chromosome"].unique().sort().to_list()[0]
+            ref_start = samples_df["position"].min()
+            ref_end = samples_df["position"].max()
+            # Add some padding for visualization
+            padding = max(1000, (ref_end - ref_start) // 10)
+            ref_start = max(1, ref_start - padding)
+            ref_end = ref_end + padding
+        else:
+            # Extract region bounds from read data
+            ref_chr = samples_df["reference_contig"].min()
+            ref_start = samples_df["reference_start"].min()
+            ref_end = samples_df["reference_end"].max()
+        
+        # Store the actual data bounds (where reads/variants exist)
         # These may differ from the displayed region if user zooms/pans
         data_start = int(ref_start)
         data_end = int(ref_end)
@@ -827,6 +885,204 @@ class GenomeShader:
             print(f"Warning: Failed to load reference sequence data: {e}")
             reference_sequence = ""
 
+        # Transform variant data for frontend if we have variant data
+        variants_data = []
+        if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
+            # Get unique variant positions and their alleles
+            # Include vcf_id if available, otherwise it will be None
+            select_cols = ["position", "ref_allele", "alt_allele", "variant_id"]
+            if "vcf_id" in variants_df.columns:
+                select_cols.append("vcf_id")
+            
+            unique_variants = (
+                variants_df
+                .select(select_cols)
+                .unique(subset=["position", "ref_allele", "alt_allele"])
+                .sort("position")
+            )
+            
+            # Group by position to collect all alt alleles for each position
+            variant_groups = {}
+            for row in unique_variants.iter_rows(named=True):
+                pos = row["position"]
+                ref_allele = row["ref_allele"]
+                alt_allele = row["alt_allele"]
+                variant_id = row["variant_id"]
+                # Extract vcf_id - handle both None and Polars null values
+                vcf_id = None
+                if "vcf_id" in row:
+                    vcf_id_val = row["vcf_id"]
+                    # Polars nulls can be None, or sometimes need special handling
+                    if vcf_id_val is not None:
+                        vcf_id_str = str(vcf_id_val).strip()
+                        # Accept any non-empty string that's not "." or "null" or "None"
+                        if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
+                            vcf_id = vcf_id_str
+                
+                if pos not in variant_groups:
+                    variant_groups[pos] = {
+                        "pos": pos,
+                        "refAllele": ref_allele,
+                        "altAlleles": [],
+                        "variant_id": variant_id,
+                        "vcf_id": vcf_id,
+                        "variant_display_ids": [],
+                    }
+
+                # Determine display ID for this row (prefers VCF ID when available)
+                row_display_id = str(vcf_id) if vcf_id else str(variant_id)
+                if row_display_id not in variant_groups[pos]["variant_display_ids"]:
+                    variant_groups[pos]["variant_display_ids"].append(row_display_id)
+                
+                if alt_allele not in variant_groups[pos]["altAlleles"]:
+                    variant_groups[pos]["altAlleles"].append(alt_allele)
+            
+            # Collect display IDs for each position so we include duplicates that were collapsed
+            for row in variants_df.iter_rows(named=True):
+                pos = row["position"]
+                if pos not in variant_groups:
+                    continue
+                row_vcf_id = None
+                if "vcf_id" in row:
+                    vcf_id_val = row["vcf_id"]
+                    if vcf_id_val is not None:
+                        vcf_id_str = str(vcf_id_val).strip()
+                        if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
+                            row_vcf_id = vcf_id_str
+                row_variant_id = row["variant_id"]
+                row_display_id = str(row_vcf_id) if row_vcf_id else str(row_variant_id)
+                display_ids = variant_groups[pos].setdefault("variant_display_ids", [])
+                if row_display_id not in display_ids:
+                    display_ids.append(row_display_id)
+
+            # Calculate allele frequencies for each variant
+            # Filter variants_df to get genotype data for frequency calculation
+            if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
+                # Group by position to calculate frequencies per variant
+                for pos, variant_info in variant_groups.items():
+                    # Filter variants_df for this specific position and alleles
+                    pos_df = variants_df.filter(
+                        (pl.col("position") == pos) &
+                        (pl.col("ref_allele") == variant_info["refAllele"])
+                    )
+                    
+                    # Count allele occurrences
+                    allele_counts = {
+                        ".": 0,  # no-call
+                        "ref": 0,  # reference (index 0)
+                    }
+                    # Initialize alt allele counts
+                    for i in range(len(variant_info["altAlleles"])):
+                        allele_counts[f"a{i+1}"] = 0
+                    
+                    total_alleles = 0
+                    
+                    # Parse genotypes and count alleles
+                    for row in pos_df.iter_rows(named=True):
+                        gt_str = row.get("genotype", "./.")
+                        if not gt_str or gt_str == "./.":
+                            allele_counts["."] += 2  # Assume diploid missing
+                            total_alleles += 2
+                        else:
+                            # Parse genotype string (e.g., "0/1", "1/1", "0|1", "1")
+                            parts = gt_str.replace("|", "/").split("/")
+                            for part in parts:
+                                part = part.strip()
+                                if part == "." or part == "":
+                                    allele_counts["."] += 1
+                                    total_alleles += 1
+                                else:
+                                    try:
+                                        allele_idx = int(part)
+                                        total_alleles += 1
+                                        if allele_idx == 0:
+                                            allele_counts["ref"] += 1
+                                        elif allele_idx <= len(variant_info["altAlleles"]):
+                                            allele_counts[f"a{allele_idx}"] += 1
+                                        else:
+                                            # Out of range allele index, count as no-call
+                                            allele_counts["."] += 1
+                                    except ValueError:
+                                        # Invalid allele index, count as no-call
+                                        allele_counts["."] += 1
+                                        total_alleles += 1
+                    
+                    # Calculate frequencies
+                    allele_frequencies = {}
+                    if total_alleles > 0:
+                        for allele, count in allele_counts.items():
+                            allele_frequencies[allele] = count / total_alleles
+                    else:
+                        # Fallback: equal frequencies if no data
+                        num_alleles = 1 + len(variant_info["altAlleles"]) + 1  # ref + alts + no-call
+                        for allele in allele_counts.keys():
+                            allele_frequencies[allele] = 1.0 / num_alleles
+                    
+                    # Normalize frequencies to sum to 1.0
+                    total_freq = sum(allele_frequencies.values())
+                    if total_freq > 0:
+                        for allele in allele_frequencies:
+                            allele_frequencies[allele] /= total_freq
+                    
+                    variant_info["alleleFrequencies"] = allele_frequencies
+            else:
+                # No genotype data available, set equal frequencies as fallback
+                for pos, variant_info in variant_groups.items():
+                    num_alleles = 1 + len(variant_info["altAlleles"]) + 1  # ref + alts + no-call
+                    allele_frequencies = {
+                        ".": 1.0 / num_alleles,
+                        "ref": 1.0 / num_alleles,
+                    }
+                    for i in range(len(variant_info["altAlleles"])):
+                        allele_frequencies[f"a{i+1}"] = 1.0 / num_alleles
+                    variant_info["alleleFrequencies"] = allele_frequencies
+            
+            # Collect sample genotypes for each variant
+            # Group genotypes by sample and variant position
+            sample_genotypes = {}  # {sample_name: {position: genotype_string}}
+            if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
+                for row in variants_df.iter_rows(named=True):
+                    sample_name = row.get("sample_name")
+                    pos = row.get("position")
+                    genotype = row.get("genotype", "./.")
+                    ref_allele = row.get("ref_allele")
+                    
+                    if sample_name not in sample_genotypes:
+                        sample_genotypes[sample_name] = {}
+                    
+                    # Store genotype for this position and ref_allele combination
+                    # Use (pos, ref_allele) as key since we group by position
+                    key = (pos, ref_allele)
+                    if key not in sample_genotypes[sample_name]:
+                        sample_genotypes[sample_name][key] = genotype
+            
+            # Convert to frontend format
+            for idx, (pos, variant_info) in enumerate(sorted(variant_groups.items())):
+                # Use VCF ID if available (numeric IDs like "59434" are valid), otherwise use variant_id index
+                vcf_id = variant_info.get("vcf_id")
+                if vcf_id:
+                    variant_display_id = str(vcf_id)
+                else:
+                    variant_display_id = str(variant_info['variant_id'])
+                
+                # Get genotypes for this variant from all samples
+                variant_genotypes = {}  # {sample_name: genotype_string}
+                key = (pos, variant_info["refAllele"])
+                for sample_name, sample_data in sample_genotypes.items():
+                    if key in sample_data:
+                        variant_genotypes[sample_name] = sample_data[key]
+                
+                variants_data.append({
+                    "id": variant_display_id,
+                    "pos": variant_info["pos"],
+                    "refAllele": variant_info["refAllele"],
+                    "altAlleles": variant_info["altAlleles"],
+                    "alleles": ["ref"] + [f"a{i+1}" for i in range(len(variant_info["altAlleles"]))],
+                    "alleleFrequencies": variant_info.get("alleleFrequencies", {}),
+                    "sampleGenotypes": variant_genotypes,  # Add genotype data per sample
+                    "displayIds": variant_info.get("variant_display_ids", [variant_display_id]),
+                })
+
         # Load template HTML
         template_html = self._load_template_html()
 
@@ -843,6 +1099,7 @@ class GenomeShader:
             'transcripts_data': transcripts_data,
             'repeats_data': repeats_data,
             'reference_data': reference_sequence,
+            'variants_data': variants_data,  # Add variant data to config
             'data_bounds': {
                 'start': data_start,
                 'end': data_end,
@@ -962,12 +1219,12 @@ console.log('Genomeshader: Bootstrap variables set', {{
         # The container needs to have a defined height for the app to render correctly
         # Override html/body height rules to work within container
         inline_html = f"""
-<div id="{container_id}" style="width: 100%; height: 600px; position: relative; overflow: visible; background: var(--bg, #0b0d10); font-family: ui-sans-serif, system-ui; isolation: isolate;">
+<div id="{container_id}" style="width: 100%; height: 700px; position: relative; overflow: visible; background: var(--bg, #0b0d10); font-family: ui-sans-serif, system-ui; isolation: isolate;">
 <style>
 {styles}
 /* Override html/body height rules for container embedding */
 #{container_id} {{
-  height: 600px;
+  height: 700px;
   display: block;
   position: relative;
 }}
