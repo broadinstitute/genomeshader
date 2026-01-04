@@ -394,6 +394,11 @@
       display: none;
       transition: opacity 0.3s ease;
     }
+    /* In vertical mode, position HUD in upper right */
+    .main.vertical .hud {
+      bottom: auto;
+      top: 10px;
+    }
     .hud.visible {
       display: block;
     }
