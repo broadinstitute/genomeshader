@@ -4858,10 +4858,23 @@
       const dstY1C = Math.max(dstInfo.top, Math.min(dstY1, dstInfo.bottom));
 
       // Ensure consistent top/bottom ordering (prevents "candy-wrapper twist")
-      const sTop = Math.min(srcY0C, srcY1C);
-      const sBot = Math.max(srcY0C, srcY1C);
-      const dTop = Math.min(dstY0C, dstY1C);
-      const dBot = Math.max(dstY0C, dstY1C);
+      let sTop = Math.min(srcY0C, srcY1C);
+      let sBot = Math.max(srcY0C, srcY1C);
+      let dTop = Math.min(dstY0C, dstY1C);
+      let dBot = Math.max(dstY0C, dstY1C);
+
+      // Apply slight endpoint taper (classic alluvial aesthetic)
+      // Shrink endpoints toward midpoint by ~6% for intentional joins
+      const taperFrac = 0.06;
+      const sMid = (sTop + sBot) / 2;
+      const sHalfH = (sBot - sTop) / 2;
+      sTop = sMid - sHalfH * (1 - taperFrac);
+      sBot = sMid + sHalfH * (1 - taperFrac);
+      
+      const dMid = (dTop + dBot) / 2;
+      const dHalfH = (dBot - dTop) / 2;
+      dTop = dMid - dHalfH * (1 - taperFrac);
+      dBot = dMid + dHalfH * (1 - taperFrac);
 
       const srcX = srcInfo.right;
       const dstX = dstInfo.left;
@@ -6047,11 +6060,13 @@
         // Calculate total outgoing count per source label and total incoming per dest label
         const srcTotals = new Map(); // srcLabel -> total outgoing haplotypes
         const dstTotals = new Map(); // dstLabel -> total incoming haplotypes
+        let totalHaplotypes = 0; // Total haplotypes across all transitions
         
         for (const [srcLabel, dstMap] of transitions) {
           let total = 0;
           for (const [dstLabel, count] of dstMap) {
             total += count;
+            totalHaplotypes += count;
             dstTotals.set(dstLabel, (dstTotals.get(dstLabel) || 0) + count);
           }
           srcTotals.set(srcLabel, total);
@@ -6061,7 +6076,13 @@
         const srcOffsets = new Map(); // srcLabel -> current Y offset from top
         const dstOffsets = new Map(); // dstLabel -> current Y offset from top
         
-        // Draw ribbons for each transition
+        // Get reference allele labels to identify background persistence flows
+        const srcRefLabel = srcVariant.refAllele ? formatAlleleLabel(srcVariant.refAllele) : null;
+        const dstRefLabel = dstVariant.refAllele ? formatAlleleLabel(dstVariant.refAllele) : null;
+        
+        // Collect all ribbon data first, then sort so reference flows draw first (background)
+        const ribbonData = [];
+        
         for (const [srcLabel, dstMap] of transitions) {
           const srcNode = srcNodes.get(srcLabel);
           if (!srcNode) continue;
@@ -6094,15 +6115,39 @@
             srcOffsets.set(srcLabel, srcOffset + srcSliceH);
             dstOffsets.set(dstLabel, dstOffset + dstSliceH);
             
-            // Get color from source allele
-            const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
-            const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
-            const colorMatch = colors.fillColor.match(/rgba?\([^)]+,\s*([\d.]+)\)/);
-            const alpha = colorMatch ? parseFloat(colorMatch[1]) : 0.65;
-            const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha * 0.6})`);
+            // Check if this is a reference-to-reference flow (background persistence)
+            const isRefFlow = srcLabel === srcRefLabel && dstLabel === dstRefLabel;
             
-            drawRibbon(srcNode, dstNode, srcY0, srcY1, dstY0, dstY1, ribbonColor);
+            ribbonData.push({
+              srcNode, dstNode, srcY0, srcY1, dstY0, dstY1,
+              srcLabel, count, isRefFlow
+            });
           }
+        }
+        
+        // Sort ribbons: reference flows first (drawn in background), then colored flows on top
+        ribbonData.sort((a, b) => (b.isRefFlow ? 1 : 0) - (a.isRefFlow ? 1 : 0));
+        
+        // Draw all ribbons with sqrt-scaled opacity
+        for (const ribbon of ribbonData) {
+          const { srcNode, dstNode, srcY0, srcY1, dstY0, dstY1, srcLabel, count, isRefFlow } = ribbon;
+          
+          // Get color from source allele
+          const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
+          const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
+          
+          // Sqrt-scaled opacity: prevents dominant flows from drowning minor ones
+          const frac = count / Math.max(1, totalHaplotypes);
+          let alpha = 0.05 + 0.25 * Math.sqrt(frac);
+          
+          // De-emphasize reference flows further (lower saturation via reduced alpha)
+          if (isRefFlow) {
+            alpha *= 0.6; // 40% reduction for background persistence flows
+          }
+          
+          const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha.toFixed(3)})`);
+          
+          drawRibbon(srcNode, dstNode, srcY0, srcY1, dstY0, dstY1, ribbonColor);
         }
       }
     }
