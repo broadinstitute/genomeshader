@@ -759,7 +759,7 @@ class GenomeShader:
             try:
                 # Try to get variant data first
                 variants_df = self.get_locus_variants(locus_or_dataframe)
-                if variants_df is not None and len(variants_df) > 0:
+                if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
                     samples_df = variants_df.clone()
                 else:
                     # If no variant data, try reads
@@ -887,7 +887,7 @@ class GenomeShader:
 
         # Transform variant data for frontend if we have variant data
         variants_data = []
-        if variants_df is not None and len(variants_df) > 0:
+        if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
             # Get unique variant positions and their alleles
             # Include vcf_id if available, otherwise it will be None
             select_cols = ["position", "ref_allele", "alt_allele", "variant_id"]
