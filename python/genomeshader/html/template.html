@@ -126,6 +126,7 @@
       grid-template-columns: 12px 1fr;
     }
     .app.sidebar-collapsed .sidebar {
+      width: 12px !important;
       min-width: 12px;
     }
 
@@ -175,6 +176,10 @@
       background: var(--blue);
       border-right: none;
       box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
+    }
+    /* Adjust main panel position when sidebar is collapsed */
+    .app.sidebar-collapsed .main {
+      left: 12px !important;
     }
 
     .sidebarHeader {
@@ -386,6 +391,11 @@
       pointer-events: none;
       white-space: nowrap;
       box-shadow: var(--shadow);
+      display: none;
+      transition: opacity 0.3s ease;
+    }
+    .hud.visible {
+      display: block;
     }
 
     /* Tooltip */
@@ -1493,13 +1503,11 @@
   function showError(message) {
     window._genomeshaderLazyStatus = { type: 'error', message };
     updateHUDWithStatus();
-    console.error(message);
   }
   
   function showInfo(message) {
     window._genomeshaderLazyStatus = { type: 'info', message };
     updateHUDWithStatus();
-    console.log(message);
   }
   
   function updateHUDWithStatus() {
@@ -1518,7 +1526,6 @@
   
   // Determine host mode (inline or popup)
   const hostMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode) || 'inline';
-  console.log('Genomeshader: hostMode =', hostMode);
   
   // True lazy loading via postMessage
   const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
@@ -1526,7 +1533,6 @@
   if (!manifestUrl) {
     showError('Missing GENOMESHADER_MANIFEST_URL');
   } else {
-    console.log('Manifest URL:', manifestUrl);
     
     // Request manifest via postMessage to opener (Jupyter notebook window)
     // The opener can fetch from localhost, avoiding CORS issues
@@ -1537,7 +1543,6 @@
       return new Promise((resolve, reject) => {
         // Inline mode: use direct fetch
         if (hostMode === 'inline') {
-          console.log('Genomeshader: Using direct fetch for inline mode:', url);
           fetch(url)
             .then(response => {
               if (!response.ok) {
@@ -1546,18 +1551,15 @@
               return response.json();
             })
             .then(data => {
-              console.log('Genomeshader: Direct fetch succeeded for:', url);
               resolve(data);
             })
             .catch(error => {
-              console.error('Genomeshader: Direct fetch failed for:', url, error);
               reject(error);
             });
           return;
         }
-        
+
         // Popup mode: use postMessage
-        console.log('Genomeshader: Using postMessage for popup mode:', url);
         const id = `req_${Date.now()}_${++requestId}`;
         pendingRequests.set(id, { resolve, reject });
         
@@ -1609,22 +1611,18 @@
         // Compute track URL
         const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/') + 1);
         const trackUrl = baseUrl + manifest.tracks.demo.url;
-        console.log('Track URL:', trackUrl);
         
         // Request track file
         return requestData(trackUrl)
           .then(trackData => {
-            console.log('Loaded track data via postMessage:', trackData);
             const recordCount = Array.isArray(trackData) ? trackData.length : 0;
             showInfo(`Run ID: ${manifest.run_id}<br>Loaded ${recordCount} records`);
           })
           .catch(error => {
-            console.error('Track fetch error:', error);
             showError(`Failed to load track: ${error.message}`);
           });
       })
       .catch(error => {
-        console.error('Manifest fetch error:', error);
         showError(`Failed to load manifest: ${error.message}`);
       });
   }
@@ -1638,21 +1636,18 @@
   // Theme + menu
   // -----------------------------
   // Find root container for scoping event handlers in inline mode
-  const root = document.querySelector('[id^="genomeshader-root-"]') || 
+  const root = document.querySelector('[id^="genomeshader-root-"]') ||
                 (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
                 document.body; // Fallback to body if not found
-  console.log('Genomeshader: Root container found:', root?.id || root?.tagName);
   
   // Root-scoped element lookup helpers
   function byId(root, id) {
     const el = root.querySelector(`#${CSS.escape(id)}`);
-    if (!el) console.warn("[gs] missing element", id, "under root", root.id);
     return el;
   }
 
   function $(root, selector) {
     const el = root.querySelector(selector);
-    if (!el) console.warn("[gs] missing element", selector, "under root", root.id);
     return el;
   }
   
@@ -1680,16 +1675,11 @@
   const orientationLabel = getElementById("orientationLabel");
   
   // Debug: Check if elements are found
-  if (!app) console.error('Genomeshader: .app element not found');
-  if (!sidebar) console.error('Genomeshader: #sidebar element not found');
-  if (!menuBtn) console.error('Genomeshader: #menuBtn element not found');
-  if (!ctxMenu) console.error('Genomeshader: #ctxMenu element not found');
   
   // In inline mode, keep menu in root initially, but we'll move it to body when opening
   // This ensures fixed positioning works relative to viewport, not container
   if (hostMode === 'inline' && root && ctxMenu && !root.contains(ctxMenu)) {
     root.appendChild(ctxMenu);
-    console.log('Genomeshader: Moved menu to root container');
   }
 
   // Sidebar collapse/expand
@@ -1703,29 +1693,26 @@
   function updateSidebarState() {
     const collapsed = getSidebarCollapsed();
     if (!app) {
-      console.error('Genomeshader: Cannot update sidebar state - app element not found');
       return;
     }
     if (collapsed) {
       app.classList.add("sidebar-collapsed");
-      console.log('Genomeshader: Sidebar state updated - collapsed (class added)');
     } else {
       app.classList.remove("sidebar-collapsed");
-      console.log('Genomeshader: Sidebar state updated - expanded (class removed)');
     }
+    // Trigger resize after CSS transition completes to ensure tracks re-render
+    // The CSS transition is 0.2s, so wait for it to complete
+    setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+    }, 220);
   }
   
   // Make sidebar border clickable - always bind regardless of hostMode
   if (sidebar) {
-    console.log('[gs] wiring UI events - Sidebar toggle');
-    
     const handleSidebarToggle = (e) => {
-      console.log('[gs] sidebar toggle click', e.type, 'target:', e.target);
-      
       // Don't toggle if clicking on menu button or menu - check this FIRST before stopping propagation
-      if ((menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) || 
+      if ((menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) ||
           (ctxMenu && (ctxMenu === e.target || ctxMenu.contains(e.target)))) {
-        console.log('[gs] Sidebar toggle: ignoring click on menu button/menu');
         return; // Don't stop propagation - let menu button handler fire
       }
       
@@ -1735,17 +1722,13 @@
       const collapsed = getSidebarCollapsed();
       const rect = sidebar.getBoundingClientRect();
       const clickX = e.clientX - rect.left;
-      
-      console.log('Genomeshader: Sidebar clicked at x=' + clickX + ', width=' + rect.width + ', collapsed=' + collapsed);
-      
+
       // Check if click is within 12px of the right edge (or anywhere if collapsed)
       if (collapsed) {
         // When collapsed, the entire 12px strip is clickable
-        console.log('Genomeshader: Expanding sidebar');
         setSidebarCollapsed(false);
       } else if (clickX >= rect.width - 12) {
         // When open, only the right 12px edge is clickable
-        console.log('Genomeshader: Collapsing sidebar');
         setSidebarCollapsed(true);
       }
     };
@@ -1758,10 +1741,6 @@
     
     // Ensure sidebar is clickable
     sidebar.style.pointerEvents = "auto";
-    
-    console.log('[gs] Sidebar toggle handler attached successfully');
-  } else {
-    console.error('Genomeshader: Cannot attach sidebar click handler - element not found');
   }
   
   updateSidebarState();
@@ -1821,7 +1800,6 @@
     // In inline mode, move menu to body so fixed positioning works relative to viewport
     if (hostMode === 'inline' && ctxMenu.parentElement !== document.body) {
       document.body.appendChild(ctxMenu);
-      console.log('Genomeshader: Moved menu to body for fixed positioning');
     }
     
     // Use fixed positioning so menu appears over everything (including Jupyter UI)
@@ -1857,24 +1835,7 @@
     ctxMenu.style.visibility = 'visible';
     ctxMenu.style.pointerEvents = 'auto';
     ctxMenu.style.opacity = '1';
-    
-    // Debug: Check computed styles
-    const computed = window.getComputedStyle(ctxMenu);
-    const rect = ctxMenu.getBoundingClientRect();
-    console.log('Genomeshader: Menu opened at', { 
-      left, top, 
-      buttonRect: r, 
-      windowHeight: window.innerHeight,
-      menuRect: rect,
-      computedDisplay: computed.display,
-      computedVisibility: computed.visibility,
-      computedPosition: computed.position,
-      computedZIndex: computed.zIndex,
-      computedOpacity: computed.opacity,
-      menuParent: ctxMenu.parentElement?.tagName,
-      menuInRoot: root?.contains(ctxMenu)
-    });
-    
+
     // Update variant layout mode label when menu opens
     updateVariantLayoutModeLabel();
   }
@@ -1888,31 +1849,21 @@
     // In inline mode, move menu back to root when closed
     if (hostMode === 'inline' && root && ctxMenu.parentElement === document.body) {
       root.appendChild(ctxMenu);
-      console.log('Genomeshader: Moved menu back to root container');
     }
-    
-    console.log('Genomeshader: Menu closed');
   }
   function toggleMenu() {
     ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
   }
 
   if (menuBtn && ctxMenu) {
-    console.log('[gs] wiring UI events - Settings menu button', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
-    console.log('[gs] Menu button element:', menuBtn, 'ID:', menuBtn.id, 'Classes:', menuBtn.className);
-    
     // Track if we've already handled this interaction to prevent double-toggle
     let menuButtonHandled = false;
     
     const handleMenuButtonClick = (e) => {
       // If we already handled this interaction (e.g., pointerdown), ignore subsequent events (click)
       if (menuButtonHandled && e.type !== 'pointerdown') {
-        console.log('[gs] settings click ignored - already handled by pointerdown', e.type);
         return;
       }
-      
-      console.log('[gs] settings click', e.type, e.target);
-      console.log('Genomeshader: Menu button clicked');
       e.stopPropagation(); 
       e.preventDefault();
       
@@ -1936,14 +1887,7 @@
     
     // Also set onclick as fallback
     menuBtn.onclick = handleMenuButtonClick;
-    
-    console.log('[gs] Menu button handlers attached', {
-      hasClick: true,
-      hasPointerDown: true,
-      hasMouseDown: true,
-      hasOnclick: !!menuBtn.onclick
-    });
-    
+
     // Close menu when clicking outside, but check if click is outside menu/button
     // In inline mode, use root-scoped handler to avoid Jupyter wrapper interference
     if (hostMode === 'inline' && root) {
@@ -1971,7 +1915,6 @@
         }
       };
       root.addEventListener("pointerdown", onPointerDown, true);
-      console.log('[gs] Root-scoped outside-click handler attached (inline mode)');
     } else {
       // Popup mode: use document-level handler
       document.addEventListener("click", (e) => {
@@ -1979,11 +1922,7 @@
           closeMenu();
         }
       });
-      console.log('[gs] Document-level outside-click handler attached (popup mode)');
     }
-    console.log('[gs] Settings menu handlers attached successfully');
-  } else {
-    console.error('Genomeshader: Cannot attach menu handlers - elements not found', { menuBtn: !!menuBtn, ctxMenu: !!ctxMenu });
   }
   ctxMenu.addEventListener("click", (e) => e.stopPropagation());
 
@@ -2025,7 +1964,7 @@
           try {
             webgpuCore.handleResize();
           } catch (error) {
-            console.error("WebGPU resize error:", error);
+            // WebGPU resize error
           }
         }
         renderAll();
@@ -2036,7 +1975,6 @@
   // Focus mode implementation (inlined from focus_mode.js)
   function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     if (!viewerEl || !toggleEl || !viewId) {
-      console.error('installFocusMode: missing required parameters');
       return;
     }
 
@@ -2203,7 +2141,6 @@
           if (mainAfterMove && typeof bindInteractions !== 'undefined') {
             // Use root to maintain scoping, but mainAfterMove is the actual element
             interactionBinding = bindInteractions(root, state, mainAfterMove);
-            console.log("[gs] rebound interactions after overlay enter", mainAfterMove, "root", root.id);
           }
           if (onEnter) {
             onEnter();
@@ -2256,7 +2193,6 @@
           if (mainAfterMove && typeof bindInteractions !== 'undefined') {
             // Use root to maintain scoping, but mainAfterMove is the actual element
             interactionBinding = bindInteractions(root, state, mainAfterMove);
-            console.log("[gs] rebound interactions after overlay exit", mainAfterMove, "root", root.id);
           }
           if (onExit) {
             onExit();
@@ -2346,7 +2282,7 @@
       { id: "repeats", label: "RepeatMasker", collapsed: false, height: 50, minHeight: 30 },
       { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
       { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
-      { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 300, minHeight: 100 },
+      { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 100 },
       { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
     ],
     trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
@@ -2488,7 +2424,6 @@
 
     // Wait for canvas to have dimensions
     if (!tracksWebGPU) {
-      console.warn("WebGPU canvas element not found");
       return false;
     }
     
@@ -2506,7 +2441,6 @@
     }
     
     if (!checkDimensions()) {
-      console.warn("WebGPU canvas has zero dimensions, skipping initialization");
       if (tracksWebGPU) tracksWebGPU.style.display = 'none';
       return false;
     }
@@ -2525,7 +2459,6 @@
       }
 
       webgpuSupported = true;
-      console.log("WebGPU initialized successfully");
       return true;
     } catch (error) {
       console.warn("Failed to initialize WebGPU:", error);
@@ -3147,7 +3080,6 @@
         }, 50);
         return;
       } else {
-        console.warn('Genomeshader: renderTracks skipped - invalid dimensions after retries', { W, H, retries: renderTracksRetryCount });
         renderTracksRetryCount = 0; // Reset counter
         return;
       }
@@ -3158,12 +3090,10 @@
     
     // Ensure pxPerBp is valid before rendering
     if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
-      console.warn('Genomeshader: renderTracks skipped - invalid pxPerBp', { pxPerBp: state.pxPerBp });
       // Try to update derived values
       updateDerived();
       // Check again
       if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
-        console.warn('Genomeshader: renderTracks skipped - pxPerBp still invalid after updateDerived', { pxPerBp: state.pxPerBp });
         return;
       }
     }
@@ -6614,9 +6544,11 @@
   // -----------------------------
   // HUD + renderAll
   // -----------------------------
+  let hudHideTimeout = null;
+
   function renderHUD() {
     const locusText = `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
-    
+
     // Preserve lazy loading status if it exists
     if (window._genomeshaderLazyStatus) {
       const status = window._genomeshaderLazyStatus;
@@ -6624,6 +6556,22 @@
       hud.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span> | ${locusText}`;
     } else {
       hud.textContent = locusText;
+    }
+
+    // In inline mode, show HUD and auto-hide after 3 seconds
+    if (hostMode === 'inline') {
+      hud.classList.add('visible');
+
+      // Clear any existing timeout
+      if (hudHideTimeout) {
+        clearTimeout(hudHideTimeout);
+      }
+
+      // Set new timeout to hide HUD after 3 seconds
+      hudHideTimeout = setTimeout(() => {
+        hud.classList.remove('visible');
+        hudHideTimeout = null;
+      }, 3000);
     }
   }
 
@@ -7573,7 +7521,6 @@
   // Returns a destroy function to clean up listeners
   function bindInteractions(root, state, main) {
     if (!main) {
-      console.warn("[gs] bindInteractions: main element not found");
       return { destroy() {} };
     }
 
@@ -7776,7 +7723,6 @@
         const windowWheel = getEventListeners(window).wheel;
         const docWheel = getEventListeners(document).wheel;
         if (windowWheel && windowWheel.length > 0) {
-          console.warn("[gs] Found", windowWheel.length, "wheel listener(s) on window, removing...");
           windowWheel.forEach(listener => {
             try {
               window.removeEventListener("wheel", listener.listener, listener.useCapture);
@@ -7786,7 +7732,6 @@
           });
         }
         if (docWheel && docWheel.length > 0) {
-          console.warn("[gs] Found", docWheel.length, "wheel listener(s) on document, removing...");
           docWheel.forEach(listener => {
             try {
               document.removeEventListener("wheel", listener.listener, listener.useCapture);
@@ -7795,14 +7740,9 @@
             }
           });
         }
-        console.log("[gs] Removed global wheel listeners");
       } catch (e) {
         console.warn("[gs] Error checking for global wheel listeners:", e);
       }
-    } else {
-      console.log("[gs] getEventListeners not available (DevTools not open). To check manually, run in console:");
-      console.log("[gs]   getEventListeners(window).wheel");
-      console.log("[gs]   getEventListeners(document).wheel");
     }
   }
   
@@ -7811,7 +7751,6 @@
 
   // Bind interactions and store destroy function
   interactionBinding = bindInteractions(root, state, main);
-  console.log("[gs] bound interactions to", main, "root", root.id);
 
   // -----------------------------
   // Track interactions (drag, resize)
