@@ -640,6 +640,7 @@
 
       <div class="reads" id="reads">
         <canvas class="canvas" id="readsCanvas"></canvas>
+        <canvas id="readsWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
         <svg class="overlay" id="readsOverlay"></svg>
       </div>
 
@@ -2410,6 +2411,7 @@
   const tooltip = byId(root, "tooltip");
   const tracksWebGPU = byId(root, "tracksWebGPU");
   const flowWebGPU = byId(root, "flowWebGPU");
+  const readsWebGPU = byId(root, "readsWebGPU");
 
   // Initialize WebGPU infrastructure
   let webgpuCore = null;
@@ -2417,6 +2419,8 @@
   let flowWebGPUCore = null;
   let flowInstancedRenderer = null;
   let flowRibbonRenderer = null;
+  let readsWebGPUCore = null;
+  let readsInstancedRenderer = null;
   let webgpuSupported = false;
   let repeatHitTestData = []; // For tooltip hit testing
 
@@ -2461,6 +2465,13 @@
         await flowWebGPUCore.init(flowWebGPU);
         flowInstancedRenderer = new InstancedRenderer(flowWebGPUCore);
         flowRibbonRenderer = new BezierRibbonRenderer(flowWebGPUCore, { segments: 44 });
+      }
+
+      // Reads WebGPU (separate canvas)
+      if (readsWebGPU) {
+        readsWebGPUCore = new WebGPUCore();
+        await readsWebGPUCore.init(readsWebGPU);
+        readsInstancedRenderer = new InstancedRenderer(readsWebGPUCore);
       }
 
       webgpuSupported = true;
@@ -5636,12 +5647,41 @@
           // Get colors based on allele type (use actual allele from map, not extracted from label)
           const actualAllele = labelToAllele.get(label) || extractAlleleFromLabel(label);
           const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
-          ctx.fillStyle = colors.fillColor;
+          
+          // Use WebGPU for fill if available, otherwise fall back to Canvas2D
+          const devicePixelRatio = window.devicePixelRatio || 1;
+          const useWebGPU = webgpuSupported && flowInstancedRenderer;
+          
+          if (useWebGPU) {
+            // Parse rgba color string to array for WebGPU
+            const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+            if (fillMatch) {
+              const r = parseInt(fillMatch[1]) / 255;
+              const g = parseInt(fillMatch[2]) / 255;
+              const b = parseInt(fillMatch[3]) / 255;
+              const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
+              // Scale coordinates to physical pixels for WebGPU
+              flowInstancedRenderer.addRect(
+                nodeX * devicePixelRatio,
+                nodeY * devicePixelRatio,
+                nodeW * devicePixelRatio,
+                nodeH * devicePixelRatio,
+                [r, g, b, a]
+              );
+            }
+          } else {
+            // Fallback to Canvas2D
+            ctx.fillStyle = colors.fillColor;
+            ctx.beginPath();
+            roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
+            ctx.fill();
+          }
+          
+          // Stroke always uses Canvas2D (minimal overhead for borders)
           ctx.strokeStyle = colors.strokeColor;
           ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
-          ctx.fill();
           ctx.stroke();
 
           // Store label info for drawing after all nodes
@@ -5847,12 +5887,41 @@
           // Get colors based on allele type (use actual allele from map, not extracted from label)
           const actualAllele = labelToAllele.get(label) || extractAlleleFromLabel(label);
           const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
-          ctx.fillStyle = colors.fillColor;
+          
+          // Use WebGPU for fill if available, otherwise fall back to Canvas2D
+          const devicePixelRatio = window.devicePixelRatio || 1;
+          const useWebGPU = webgpuSupported && flowInstancedRenderer;
+          
+          if (useWebGPU) {
+            // Parse rgba color string to array for WebGPU
+            const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+            if (fillMatch) {
+              const r = parseInt(fillMatch[1]) / 255;
+              const g = parseInt(fillMatch[2]) / 255;
+              const b = parseInt(fillMatch[3]) / 255;
+              const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
+              // Scale coordinates to physical pixels for WebGPU
+              flowInstancedRenderer.addRect(
+                nodeX * devicePixelRatio,
+                nodeY * devicePixelRatio,
+                nodeW * devicePixelRatio,
+                nodeH * devicePixelRatio,
+                [r, g, b, a]
+              );
+            }
+          } else {
+            // Fallback to Canvas2D
+            ctx.fillStyle = colors.fillColor;
+            ctx.beginPath();
+            roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
+            ctx.fill();
+          }
+          
+          // Stroke always uses Canvas2D (minimal overhead for borders)
           ctx.strokeStyle = colors.strokeColor;
           ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
-          ctx.fill();
           ctx.stroke();
 
           // Store label info for drawing after all nodes
@@ -6353,6 +6422,10 @@
     const layout = getTrackLayout();
     const readsLayout = layout.find(l => l.track.id === "reads");
     if (!readsLayout || readsLayout.track.collapsed) {
+      // Clear WebGPU renderer instances if collapsed
+      if (readsInstancedRenderer) {
+        readsInstancedRenderer.clear();
+      }
       return; // Don't render if collapsed
     }
 
@@ -6362,6 +6435,11 @@
     ctx.setTransform(1,0,0,1,0,0);
     ctx.clearRect(0,0,readsCanvas.width,readsCanvas.height);
     ctx.scale(dpr, dpr);
+    
+    // Clear WebGPU renderer instances
+    if (readsInstancedRenderer) {
+      readsInstancedRenderer.clear();
+    }
 
     const isVertical = isVerticalMode();
     const W = readsWidthPx(), H = readsHeightPx();
@@ -6393,12 +6471,34 @@
         const y2 = yGenomeCanonical(bpEnd, H);
         const x = left + col*colW + 2;
         const w = colW - 6;
+        const y = Math.min(y1, y2);
+        const h = Math.max(6, Math.abs(y2-y1));
 
-        ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+        // Use WebGPU for fill if available, otherwise fall back to Canvas2D
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const useWebGPU = webgpuSupported && readsInstancedRenderer;
+        
+        if (useWebGPU) {
+          // Add rectangle to WebGPU renderer
+          readsInstancedRenderer.addRect(
+            x * devicePixelRatio,
+            y * devicePixelRatio,
+            w * devicePixelRatio,
+            h * devicePixelRatio,
+            [120/255, 180/255, 255/255, alpha]
+          );
+        } else {
+          // Fallback to Canvas2D
+          ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+          ctx.beginPath();
+          roundRect(ctx, x, y, w, h, 6);
+          ctx.fill();
+        }
+        
+        // Stroke always uses Canvas2D (minimal overhead for borders)
         ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
         ctx.beginPath();
-        roundRect(ctx, x, Math.min(y1, y2), w, Math.max(6, Math.abs(y2-y1)), 6);
-        ctx.fill();
+        roundRect(ctx, x, y, w, h, 6);
         ctx.stroke();
       }
 
@@ -6446,12 +6546,34 @@
         const x2 = xGenomeCanonical(bpEnd, W);
         const y = top + row*rowH + 2;
         const h = rowH - 6;
+        const x = x1;
+        const w = Math.max(6, x2-x1);
 
-        ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+        // Use WebGPU for fill if available, otherwise fall back to Canvas2D
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const useWebGPU = webgpuSupported && readsInstancedRenderer;
+        
+        if (useWebGPU) {
+          // Add rectangle to WebGPU renderer
+          readsInstancedRenderer.addRect(
+            x * devicePixelRatio,
+            y * devicePixelRatio,
+            w * devicePixelRatio,
+            h * devicePixelRatio,
+            [120/255, 180/255, 255/255, alpha]
+          );
+        } else {
+          // Fallback to Canvas2D
+          ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+          ctx.beginPath();
+          roundRect(ctx, x, y, w, h, 6);
+          ctx.fill();
+        }
+        
+        // Stroke always uses Canvas2D (minimal overhead for borders)
         ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
         ctx.beginPath();
-        roundRect(ctx, x1, y, Math.max(6, x2-x1), h, 6);
-        ctx.fill();
+        roundRect(ctx, x, y, w, h, 6);
         ctx.stroke();
       }
 
@@ -6523,23 +6645,25 @@
     }
     */
 
-    // Execute WebGPU render pass after variant columns are added
-    if (webgpuSupported && instancedRenderer && 
-        (instancedRenderer.rectInstances.length > 0 || instancedRenderer.lineInstances.length > 0)) {
+    // Execute WebGPU render pass after read rectangles are added
+    // Render to readsWebGPU canvas (separate from tracksWebGPU)
+    const hasReadsInstances = readsInstancedRenderer && 
+        (readsInstancedRenderer.rectInstances.length > 0 || readsInstancedRenderer.lineInstances.length > 0);
+    if (webgpuSupported && readsInstancedRenderer && hasReadsInstances) {
       try {
         // Update projection matrix for current canvas size
         const devicePixelRatio = window.devicePixelRatio || 1;
-        const width = tracksWebGPU.clientWidth * devicePixelRatio;
-        const height = tracksWebGPU.clientHeight * devicePixelRatio;
+        const width = readsWebGPU.clientWidth * devicePixelRatio;
+        const height = readsWebGPU.clientHeight * devicePixelRatio;
         
-        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
-          tracksWebGPU.width = width;
-          tracksWebGPU.height = height;
-          webgpuCore.handleResize();
+        if (readsWebGPU.width !== width || readsWebGPU.height !== height) {
+          readsWebGPU.width = width;
+          readsWebGPU.height = height;
+          readsWebGPUCore.handleResize();
         }
         
-        const encoder = webgpuCore.createCommandEncoder();
-        const texture = webgpuCore.getCurrentTexture();
+        const encoder = readsWebGPUCore.createCommandEncoder();
+        const texture = readsWebGPUCore.getCurrentTexture();
         const renderPass = encoder.beginRenderPass({
           colorAttachments: [{
             view: texture.createView(),
@@ -6549,19 +6673,19 @@
           }],
         });
         
-        instancedRenderer.render(encoder, renderPass);
+        readsInstancedRenderer.render(encoder, renderPass);
         renderPass.end();
-        webgpuCore.submit([encoder.finish()]);
+        readsWebGPUCore.submit([encoder.finish()]);
       } catch (error) {
-        console.error("WebGPU render error:", error);
-        // Fallback: clear instances and continue with SVG only
-        instancedRenderer.clear();
+        console.error("Reads WebGPU render error:", error);
+        // Fallback: clear instances and continue with Canvas2D only
+        readsInstancedRenderer.clear();
       }
-    } else if (webgpuSupported && instancedRenderer) {
+    } else if (webgpuSupported && readsInstancedRenderer) {
       // Clear WebGPU canvas if no instances to render
       try {
-        const encoder = webgpuCore.createCommandEncoder();
-        const texture = webgpuCore.getCurrentTexture();
+        const encoder = readsWebGPUCore.createCommandEncoder();
+        const texture = readsWebGPUCore.getCurrentTexture();
         const renderPass = encoder.beginRenderPass({
           colorAttachments: [{
             view: texture.createView(),
@@ -6571,7 +6695,7 @@
           }],
         });
         renderPass.end();
-        webgpuCore.submit([encoder.finish()]);
+        readsWebGPUCore.submit([encoder.finish()]);
       } catch (error) {
         // Ignore errors when clearing
       }
@@ -6726,6 +6850,55 @@
     }
   }
 
+  // Throttle utility for mousemove handlers (16ms = ~60fps)
+  function throttle(func, delay) {
+    let lastCall = 0;
+    let timeoutId = null;
+    return function(...args) {
+      const now = Date.now();
+      const timeSinceLastCall = now - lastCall;
+      
+      if (timeSinceLastCall >= delay) {
+        lastCall = now;
+        func.apply(this, args);
+      } else {
+        // Clear any pending timeout
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+        }
+        // Schedule call for after delay
+        timeoutId = setTimeout(() => {
+          lastCall = Date.now();
+          func.apply(this, args);
+        }, delay - timeSinceLastCall);
+      }
+    };
+  }
+
+  // Debounce utility for ResizeObserver callbacks (100ms delay)
+  function debounce(func, delay) {
+    let timeoutId = null;
+    return function(...args) {
+      // Clear any pending timeout
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      // Schedule call for after delay
+      timeoutId = setTimeout(() => {
+        func.apply(this, args);
+      }, delay);
+    };
+  }
+
+  // Selective rendering for hover-only state changes (no SVG rebuild)
+  function renderHoverOnly() {
+    // Only redraw canvas elements affected by hover state
+    // Skip expensive SVG rebuilds and layout recalculations
+    renderFlowCanvas();
+    renderReadsCanvas();
+    updateTooltip();
+  }
+
   function renderAll() {
     updateDerived();
     updateTracksHeight();
@@ -6743,7 +6916,7 @@
   // Hit testing for WebGPU-rendered repeats (only add listeners once)
   if (tracksWebGPU && !tracksWebGPU._tooltipListenersAdded) {
     tracksWebGPU._tooltipListenersAdded = true;
-    tracksWebGPU.addEventListener('mousemove', (e) => {
+    const tracksWebGPUHoverHandler = (e) => {
       if (!webgpuSupported || repeatHitTestData.length === 0) return;
       
       const rect = tracksWebGPU.getBoundingClientRect();
@@ -6809,7 +6982,11 @@
         state.hoveredRepeatTooltip = null;
       }
       updateTooltip();
-    });
+    };
+    
+    // Throttle mousemove handler to 16ms (60fps)
+    const throttledTracksWebGPUHoverHandler = throttle(tracksWebGPUHoverHandler, 16);
+    tracksWebGPU.addEventListener('mousemove', throttledTracksWebGPUHoverHandler);
     
     tracksWebGPU.addEventListener('mouseleave', () => {
       state.hoveredRepeatTooltip = null;
@@ -6885,7 +7062,7 @@
           if (Math.abs(y - cy) < 10 && x >= junctionX) {
             if (state.hoveredVariantIndex !== variantIdx) {
               state.hoveredVariantIndex = variantIdx;
-              renderAll();
+              renderHoverOnly();
             }
             // Clear variant label tooltip when hovering column
             state.hoveredVariantLabelTooltip = null;
@@ -6909,7 +7086,7 @@
           if (dist < 5 && x >= x0 && x <= junctionX) {
             if (state.hoveredVariantIndex !== variantIdx) {
               state.hoveredVariantIndex = variantIdx;
-              renderAll();
+              renderHoverOnly();
             }
             // Clear variant label tooltip when hovering connector
             state.hoveredVariantLabelTooltip = null;
@@ -6955,7 +7132,7 @@
           if (Math.abs(x - cx) < 10 && y >= junctionY) {
             if (state.hoveredVariantIndex !== variantIdx) {
               state.hoveredVariantIndex = variantIdx;
-              renderAll();
+              renderHoverOnly();
             }
             // Clear variant label tooltip when hovering column
             state.hoveredVariantLabelTooltip = null;
@@ -6979,7 +7156,7 @@
           if (dist < 5 && y >= y0 && y <= junctionY) {
             if (state.hoveredVariantIndex !== variantIdx) {
               state.hoveredVariantIndex = variantIdx;
-              renderAll();
+              renderHoverOnly();
             }
             return;
           }
@@ -6989,7 +7166,7 @@
       // No variant hovered
       if (state.hoveredVariantIndex !== null) {
         state.hoveredVariantIndex = null;
-        renderAll();
+        renderHoverOnly();
       }
       // Clear variant label tooltip when not hovering anything
       if (state.hoveredVariantLabelTooltip !== null) {
@@ -7002,7 +7179,7 @@
       if (state.hoveredVariantIndex !== null || state.hoveredAlleleNode !== null) {
         state.hoveredVariantIndex = null;
         state.hoveredAlleleNode = null;
-        renderAll();
+        renderHoverOnly();
       }
       // Clear variant label tooltip when leaving flow canvas
       if (state.hoveredVariantLabelTooltip !== null) {
@@ -7489,7 +7666,7 @@
           if (Math.abs(y - vy) < 10 && x >= left) {
             if (state.hoveredVariantIndex !== idx) {
               state.hoveredVariantIndex = idx;
-              renderAll();
+              renderHoverOnly();
             }
             return;
           }
@@ -7507,7 +7684,7 @@
           if (Math.abs(x - vx) < 10 && y >= top) {
             if (state.hoveredVariantIndex !== idx) {
               state.hoveredVariantIndex = idx;
-              renderAll();
+              renderHoverOnly();
             }
             return;
           }
@@ -7517,18 +7694,20 @@
       // No variant hovered
       if (state.hoveredVariantIndex !== null) {
         state.hoveredVariantIndex = null;
-        renderAll();
+        renderHoverOnly();
       }
     };
     
     readsLeaveHandler = () => {
       if (state.hoveredVariantIndex !== null) {
         state.hoveredVariantIndex = null;
-        renderAll();
+        renderHoverOnly();
       }
     };
     
-    reads.addEventListener("mousemove", readsHoverHandler);
+    // Throttle mousemove handler to 16ms (60fps)
+    const throttledReadsHoverHandler = throttle(readsHoverHandler, 16);
+    reads.addEventListener("mousemove", throttledReadsHoverHandler);
     reads.addEventListener("mouseleave", readsLeaveHandler);
   }
 
@@ -8063,8 +8242,8 @@
   });
   }
 
-  // Resize
-  new ResizeObserver(() => {
+  // Resize - debounced to batch resize events (100ms delay)
+  new ResizeObserver(debounce(() => {
     // Handle WebGPU canvas resize
     if (webgpuCore && webgpuSupported) {
       try {
@@ -8074,9 +8253,9 @@
       }
     }
     renderAll();
-  }).observe(flow);
-  new ResizeObserver(() => renderAll()).observe(reads);
-  new ResizeObserver(() => {
+  }, 100)).observe(flow);
+  new ResizeObserver(debounce(() => renderAll(), 100)).observe(reads);
+  new ResizeObserver(debounce(() => {
     // Handle WebGPU canvas resize when tracks container resizes
     if (webgpuCore && webgpuSupported) {
       try {
@@ -8086,7 +8265,7 @@
       }
     }
     renderAll();
-  }).observe(tracksSvg);
+  }, 100)).observe(tracksSvg);
   window.addEventListener("resize", () => {
     // Handle WebGPU canvas resize
     if (webgpuCore && webgpuSupported) {
