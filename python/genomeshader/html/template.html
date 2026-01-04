@@ -1290,6 +1290,200 @@
     }
   }
 
+  // ------------------------------------------------------------
+  // WebGPU: Instanced cubic Bezier ribbon renderer (Sankey ribbons)
+  // ------------------------------------------------------------
+  class BezierRibbonRenderer {
+    constructor(webgpuCore, opts = {}) {
+      this.core = webgpuCore;
+      this.device = webgpuCore.device;
+
+      this.segments = Math.max(8, Math.min(128, opts.segments ?? 40)); // smooth, not too heavy
+      this.pipeline = null;
+      this.bindGroup = null;
+
+      this.instances = [];
+      this.instanceBuffer = null;
+
+      this._init();
+    }
+
+    clear() {
+      this.instances.length = 0;
+    }
+
+    // Instance layout (Float32):
+    // topP0.xy topP1.xy topP2.xy topP3.xy  (8 floats)
+    // botP0.xy botP1.xy botP2.xy botP3.xy  (8 floats)
+    // color.rgba (4 floats)
+    addRibbon(topP0, topP1, topP2, topP3, botP0, botP1, botP2, botP3, colorRgba) {
+      // Basic validity guard
+      if (!isFinite(topP0[0]) || !isFinite(topP0[1]) || !isFinite(topP3[0]) || !isFinite(topP3[1])) return;
+      if (!isFinite(botP0[0]) || !isFinite(botP0[1]) || !isFinite(botP3[0]) || !isFinite(botP3[1])) return;
+
+      this.instances.push({
+        topP0, topP1, topP2, topP3,
+        botP0, botP1, botP2, botP3,
+        color: colorRgba,
+      });
+    }
+
+    _init() {
+      const wgsl = `
+        struct Uniforms {
+          projection: mat4x4<f32>,
+          screenSize: vec2<f32>,
+          _pad: vec2<f32>,
+        };
+        @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+        struct VSOut {
+          @builtin(position) position: vec4<f32>,
+          @location(0) color: vec4<f32>,
+        };
+
+        fn bezier(p0: vec2<f32>, p1: vec2<f32>, p2: vec2<f32>, p3: vec2<f32>, t: f32) -> vec2<f32> {
+          let omt = 1.0 - t;
+          return (omt*omt*omt)*p0 +
+                 (3.0*omt*omt*t)*p1 +
+                 (3.0*omt*t*t)*p2 +
+                 (t*t*t)*p3;
+        }
+
+        @vertex
+        fn vs_main(
+          @builtin(vertex_index) vid: u32,
+          @builtin(instance_index) iid: u32,
+
+          // Top boundary control points
+          @location(0) topP0: vec2<f32>,
+          @location(1) topP1: vec2<f32>,
+          @location(2) topP2: vec2<f32>,
+          @location(3) topP3: vec2<f32>,
+
+          // Bottom boundary control points
+          @location(4) botP0: vec2<f32>,
+          @location(5) botP1: vec2<f32>,
+          @location(6) botP2: vec2<f32>,
+          @location(7) botP3: vec2<f32>,
+
+          // Premultiplied-alpha color is done in FS
+          @location(8) color: vec4<f32>,
+        ) -> VSOut {
+          // Triangle strip: for each segment s, emit [top(s), bottom(s)]
+          // vid: 0 top(0), 1 bot(0), 2 top(1), 3 bot(1), ...
+          let side: u32 = vid & 1u;         // 0 = top, 1 = bottom
+          let s: u32 = vid >> 1u;           // segment index
+          let denom: f32 = f32(${this.segments - 1});
+          let t: f32 = select(0.0, f32(s) / denom, denom > 0.0);
+
+          var p: vec2<f32>;
+          if (side == 0u) {
+            p = bezier(topP0, topP1, topP2, topP3, t);
+          } else {
+            p = bezier(botP0, botP1, botP2, botP3, t);
+          }
+
+          var out: VSOut;
+          out.position = uniforms.projection * vec4<f32>(p, 0.0, 1.0);
+          out.color = color;
+          return out;
+        }
+
+        @fragment
+        fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
+          // premultiply for correct blending
+          let a = in.color.a;
+          return vec4<f32>(in.color.rgb * a, a);
+        }
+      `;
+
+      const module = this.device.createShaderModule({ code: wgsl });
+
+      this.pipeline = this.device.createRenderPipeline({
+        layout: "auto",
+        vertex: {
+          module,
+          entryPoint: "vs_main",
+          buffers: [
+            {
+              stepMode: "instance",
+              arrayStride: (8 + 8 + 4) * 4, // 20 floats
+              attributes: [
+                { shaderLocation: 0, offset:  0 * 4, format: "float32x2" }, // topP0
+                { shaderLocation: 1, offset:  2 * 4, format: "float32x2" }, // topP1
+                { shaderLocation: 2, offset:  4 * 4, format: "float32x2" }, // topP2
+                { shaderLocation: 3, offset:  6 * 4, format: "float32x2" }, // topP3
+
+                { shaderLocation: 4, offset:  8 * 4, format: "float32x2" }, // botP0
+                { shaderLocation: 5, offset: 10 * 4, format: "float32x2" }, // botP1
+                { shaderLocation: 6, offset: 12 * 4, format: "float32x2" }, // botP2
+                { shaderLocation: 7, offset: 14 * 4, format: "float32x2" }, // botP3
+
+                { shaderLocation: 8, offset: 16 * 4, format: "float32x4" }, // color
+              ],
+            },
+          ],
+        },
+        fragment: {
+          module,
+          entryPoint: "fs_main",
+          targets: [{
+            format: this.core.format,
+            blend: {
+              color: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+              alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+            },
+          }],
+        },
+        primitive: { topology: "triangle-strip" },
+      });
+
+      this.bindGroup = this.device.createBindGroup({
+        layout: this.pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: this.core.projectionBuffer } }],
+      });
+    }
+
+    _ensureInstanceBuffer() {
+      const neededFloats = this.instances.length * 20;
+      const neededBytes = neededFloats * 4;
+      if (!this.instanceBuffer || this.instanceBuffer.size < neededBytes) {
+        // Over-allocate a bit to reduce realloc churn
+        const allocBytes = Math.max(neededBytes, (this.instanceBuffer?.size ?? 0) * 2, 64 * 1024);
+        this.instanceBuffer = this.device.createBuffer({
+          size: allocBytes,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+      }
+    }
+
+    render(encoder, renderPass) {
+      if (!this.pipeline || this.instances.length === 0) return;
+
+      this._ensureInstanceBuffer();
+
+      // Pack instances -> Float32Array
+      const data = new Float32Array(this.instances.length * 20);
+      let o = 0;
+      for (const inst of this.instances) {
+        const push2 = (p) => { data[o++] = p[0]; data[o++] = p[1]; };
+        push2(inst.topP0); push2(inst.topP1); push2(inst.topP2); push2(inst.topP3);
+        push2(inst.botP0); push2(inst.botP1); push2(inst.botP2); push2(inst.botP3);
+        data[o++] = inst.color[0]; data[o++] = inst.color[1]; data[o++] = inst.color[2]; data[o++] = inst.color[3];
+      }
+
+      this.device.queue.writeBuffer(this.instanceBuffer, 0, data);
+
+      renderPass.setPipeline(this.pipeline);
+      renderPass.setBindGroup(0, this.bindGroup);
+      renderPass.setVertexBuffer(0, this.instanceBuffer);
+
+      const vertexCount = this.segments * 2;
+      renderPass.draw(vertexCount, this.instances.length, 0, 0);
+    }
+  }
+
   // -----------------------------
   // Genomeshader bootstrap
   // -----------------------------
@@ -2132,6 +2326,7 @@
     hoveredVariantIndex: null, // index of hovered variant, or null
     expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
     hoveredRepeatTooltip: null, // { text, x, y } or null
+    hoveredVariantLabelTooltip: null, // { text, x, y } or null
 
     // interaction
     dragging: false,
@@ -2280,6 +2475,7 @@
   let instancedRenderer = null;
   let flowWebGPUCore = null;
   let flowInstancedRenderer = null;
+  let flowRibbonRenderer = null;
   let webgpuSupported = false;
   let repeatHitTestData = []; // For tooltip hit testing
 
@@ -2319,6 +2515,15 @@
       webgpuCore = new WebGPUCore();
       await webgpuCore.init(tracksWebGPU);
       instancedRenderer = new InstancedRenderer(webgpuCore);
+
+      // Flow WebGPU (separate canvas)
+      if (flowWebGPU) {
+        flowWebGPUCore = new WebGPUCore();
+        await flowWebGPUCore.init(flowWebGPU);
+        flowInstancedRenderer = new InstancedRenderer(flowWebGPUCore);
+        flowRibbonRenderer = new BezierRibbonRenderer(flowWebGPUCore, { segments: 44 });
+      }
+
       webgpuSupported = true;
       console.log("WebGPU initialized successfully");
       return true;
@@ -4620,6 +4825,9 @@
     if (flowInstancedRenderer) {
       flowInstancedRenderer.clear();
     }
+    if (flowRibbonRenderer) {
+      flowRibbonRenderer.clear();
+    }
 
     const isVertical = isVerticalMode();
     const variantMode = getVariantLayoutMode();
@@ -4633,6 +4841,63 @@
     const colText  = cssVar("--muted");
     const colBlue  = cssVar("--blue");
     const colGray  = "rgba(127,127,127,0.5)"; // Gray for non-hovered lines
+
+    // drawRibbon: WebGPU Bezier ribbon renderer (replaces Canvas2D tessellation)
+    // Note: srcInfo/dstInfo coordinates are in Canvas2D logical pixels (scaled by dpr)
+    // WebGPU uses physical pixels, so we need to scale by devicePixelRatio
+    const drawRibbon = (srcInfo, dstInfo, srcY0, srcY1, dstY0, dstY1, color) => {
+      if (!srcInfo || !dstInfo) return;
+
+      // Scale coordinates from logical pixels (Canvas2D) to physical pixels (WebGPU)
+      const devicePixelRatio = window.devicePixelRatio || 1;
+
+      // Clamp to node bounds so ribbons meet nodes flush
+      const srcY0C = Math.max(srcInfo.top, Math.min(srcY0, srcInfo.bottom));
+      const srcY1C = Math.max(srcInfo.top, Math.min(srcY1, srcInfo.bottom));
+      const dstY0C = Math.max(dstInfo.top, Math.min(dstY0, dstInfo.bottom));
+      const dstY1C = Math.max(dstInfo.top, Math.min(dstY1, dstInfo.bottom));
+
+      // Ensure consistent top/bottom ordering (prevents "candy-wrapper twist")
+      const sTop = Math.min(srcY0C, srcY1C);
+      const sBot = Math.max(srcY0C, srcY1C);
+      const dTop = Math.min(dstY0C, dstY1C);
+      const dBot = Math.max(dstY0C, dstY1C);
+
+      const srcX = srcInfo.right;
+      const dstX = dstInfo.left;
+      const dx = dstX - srcX;
+      if (!(dx > 1.0)) return;
+
+      // Handle length: no fixed 10px minimum; clamp by dx to avoid loops when zoomed out
+      const base = dx * 0.40;
+      const handle = Math.max(1.0, Math.min(base, dx * 0.45));
+
+      // Scale all coordinates to physical pixels for WebGPU
+      const topP0 = [srcX * devicePixelRatio, sTop * devicePixelRatio];
+      const topP3 = [dstX * devicePixelRatio, dTop * devicePixelRatio];
+      const botP0 = [srcX * devicePixelRatio, sBot * devicePixelRatio];
+      const botP3 = [dstX * devicePixelRatio, dBot * devicePixelRatio];
+
+      // Horizontal tangents at endpoints (classic Sankey look)
+      const topP1 = [(srcX + handle) * devicePixelRatio, sTop * devicePixelRatio];
+      const topP2 = [(dstX - handle) * devicePixelRatio, dTop * devicePixelRatio];
+      const botP1 = [(srcX + handle) * devicePixelRatio, sBot * devicePixelRatio];
+      const botP2 = [(dstX - handle) * devicePixelRatio, dBot * devicePixelRatio];
+
+      // Parse color string to RGBA floats (expects "rgba(r,g,b,a)" or similar)
+      const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      let rgba = [0.47, 0.71, 1.0, 0.20];
+      if (m) {
+        rgba = [parseInt(m[1])/255, parseInt(m[2])/255, parseInt(m[3])/255, m[4] !== undefined ? parseFloat(m[4]) : 1.0];
+      }
+
+      if (webgpuSupported && flowRibbonRenderer) {
+        flowRibbonRenderer.addRibbon(topP0, topP1, topP2, topP3, botP0, botP1, botP2, botP3, rgba);
+        return;
+      }
+
+      // Fallback (optional): if you want, keep your old Canvas2D path here.
+    };
 
     // Helper function to parse rgba string and convert to hex for WebGPU
     function rgbaToHex(rgbaStr) {
@@ -4718,21 +4983,43 @@
       }
 
       // Text labels (still use Canvas 2D for text)
+      // Group variants by position to handle multiple variants at same position
+      const variantsByPos = new Map();
+      for (const v of sortedWin) {
+        const pos = v.pos;
+        if (!variantsByPos.has(pos)) {
+          variantsByPos.set(pos, []);
+        }
+        variantsByPos.get(pos).push(v);
+      }
+      
+      // Helper function to draw multi-line text (for variants at same position)
+      const drawMultiLineText = (text, x, y, lineHeight = 12) => {
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          ctx.fillText(lines[i], x, y + i * lineHeight);
+        }
+      };
+      
       // Calculate if we have enough space to show all labels
       // In vertical mode, labels are rotated 90 degrees, so text width becomes vertical height
       ctx.font = "12px ui-sans-serif, system-ui";
-      const maxLabelWidth = Math.max(...sortedWin.map(v => ctx.measureText(v.id).width), 30);
+      const uniquePositions = Array.from(variantsByPos.keys()).sort((a, b) => a - b);
+      const maxLabelWidth = Math.max(...uniquePositions.map(pos => {
+        const idsAtPos = variantsByPos.get(pos).map(v => v.id).join('\n');
+        return ctx.measureText(idsAtPos).width;
+      }), 30);
       // When rotated, the label takes up maxLabelWidth pixels vertically
       // We need spacing between labels, so add some padding
       const minSpacing = maxLabelWidth + 10; // minimum pixels between label centers
       
-      // Check spacing between consecutive variants
+      // Check spacing between consecutive variant positions
       // For genomic mode, check actual Y positions; for equidistant, use calculated spacing
-      let hasEnoughSpace = sortedWin.length === 0;
-      if (sortedWin.length > 0) {
+      let hasEnoughSpace = uniquePositions.length === 0;
+      if (uniquePositions.length > 0) {
         if (variantMode === "genomic") {
           // In genomic mode, check minimum spacing between actual positions
-          const positions = sortedWin.map(v => yGenomeCanonical(v.pos, H)).sort((a, b) => a - b);
+          const positions = uniquePositions.map(pos => yGenomeCanonical(pos, H)).sort((a, b) => a - b);
           let minActualSpacing = Infinity;
           for (let i = 1; i < positions.length; i++) {
             const spacing = positions[i] - positions[i - 1];
@@ -4743,7 +5030,7 @@
           hasEnoughSpace = minActualSpacing >= minSpacing;
         } else {
           // In equidistant mode, calculate spacing
-          const avgSpacing = H / sortedWin.length;
+          const avgSpacing = H / uniquePositions.length;
           hasEnoughSpace = avgSpacing >= minSpacing;
         }
       }
@@ -4752,36 +5039,59 @@
       const variantLabelPositions = [];
       
       ctx.fillStyle = colText;
-      for (let i=0;i<sortedWin.length;i++) {
-        const v = sortedWin[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const y = variantMode === "genomic" 
-          ? yGenomeCanonical(v.pos, H)
-          : yColumn(i, sortedWin.length);
+      // Iterate over unique positions
+      for (let posIdx = 0; posIdx < uniquePositions.length; posIdx++) {
+        const pos = uniquePositions[posIdx];
+        const variantsAtPos = variantsByPos.get(pos);
+        const firstVariant = variantsAtPos[0];
+        const variantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
+        
+        // Calculate Y position for this position
+        // For equidistant mode, use the position index (not variant index) so variants at same position overlap
+        let y;
+        if (variantMode === "genomic") {
+          y = yGenomeCanonical(pos, H);
+        } else {
+          // Use position index so all variants at same position get same Y coordinate
+          y = yColumn(posIdx, uniquePositions.length);
+        }
         
         // Determine if we should show this label
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        const isPinned = state.pinnedVariantLabels.has(v.id);
+        const isHovered = variantsAtPos.some(v => state.hoveredVariantIndex === variants.findIndex(v2 => v2.id === v.id));
+        const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
         const shouldShow = isHovered || isPinned || hasEnoughSpace;
         
         if (shouldShow) {
+          // Show first ID (or count if multiple)
+          const displayText = variantsAtPos.length > 1 
+            ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
+            : variantsAtPos[0].id;
+          
           ctx.save();
           ctx.translate(14, y + 6);
           ctx.rotate(-Math.PI/2);
-          // Use the variant ID (VCF ID or variant_id index) directly
-          ctx.fillText(v.id, 0, 0);
+          ctx.fillText(displayText, 0, 0);
           ctx.restore();
         }
         
-        // Store position for hit testing (for click-to-pin)
-        const labelWidth = ctx.measureText(v.id).width;
+        // Store position for hit testing (for click-to-pin and tooltip) - one entry per position
+        const firstVariantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
+        const displayText = variantsAtPos.length > 1 
+          ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
+          : variantsAtPos[0].id;
+        const labelWidth = ctx.measureText(displayText).width;
+        const labelIds = (firstVariant.displayIds && firstVariant.displayIds.length > 0)
+          ? firstVariant.displayIds
+          : [firstVariant.id];
         variantLabelPositions.push({
-          variantId: v.id,
-          variantIdx: variantIdx,
+          variantId: firstVariant.id, // Use first variant ID for compatibility
+          variantIdx: firstVariantIdx,
           x: 14,
           y: y,
           width: labelWidth, // When rotated, this is the vertical extent
-          height: labelWidth  // Same as width when rotated
+          height: labelWidth, // Same as width when rotated
+          allIds: labelIds, // Store all IDs for tooltip
+          position: pos
         });
       }
       
@@ -4880,43 +5190,87 @@
       }
 
       // Text labels (still use Canvas 2D for text)
+      // Group variants by position to handle multiple variants at same position
+      const variantsByPos = new Map();
+      for (const v of win) {
+        const pos = v.pos;
+        if (!variantsByPos.has(pos)) {
+          variantsByPos.set(pos, []);
+        }
+        variantsByPos.get(pos).push(v);
+      }
+      
+      // Helper function to draw multi-line text (for variants at same position)
+      const drawMultiLineText = (text, x, y, lineHeight = 12) => {
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          ctx.fillText(lines[i], x, y + i * lineHeight);
+        }
+      };
+      
       // Calculate if we have enough space to show all labels
       // Estimate label width (measure text to be more accurate)
       ctx.font = "12px ui-sans-serif, system-ui";
-      const maxLabelWidth = Math.max(...win.map(v => ctx.measureText(v.id).width), 50);
+      const uniquePositions = Array.from(variantsByPos.keys()).sort((a, b) => a - b);
+      const maxLabelWidth = Math.max(...uniquePositions.map(pos => {
+        const idsAtPos = variantsByPos.get(pos).map(v => v.id).join('\n');
+        return ctx.measureText(idsAtPos).width;
+      }), 50);
       const minSpacing = maxLabelWidth + 20; // minimum pixels between labels
-      const hasEnoughSpace = win.length === 0 || (W / win.length) >= minSpacing;
+      const hasEnoughSpace = uniquePositions.length === 0 || (W / uniquePositions.length) >= minSpacing;
       
       // Store variant label positions for hit testing
       const variantLabelPositions = [];
       
       ctx.fillStyle = colText;
-      for (let i=0;i<win.length;i++) {
-        const v = win[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const x = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
+      // Iterate over unique positions
+      for (let posIdx = 0; posIdx < uniquePositions.length; posIdx++) {
+        const pos = uniquePositions[posIdx];
+        const variantsAtPos = variantsByPos.get(pos);
+        const firstVariant = variantsAtPos[0];
+        const variantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
+        
+        // Calculate X position for this position
+        // For equidistant mode, use the position index (not variant index) so variants at same position overlap
+        let x;
+        if (variantMode === "genomic") {
+          x = xGenomeCanonical(pos, W);
+        } else {
+          // Use position index so all variants at same position get same X coordinate
+          x = xColumn(posIdx, uniquePositions.length);
+        }
         
         // Determine if we should show this label
-        const isHovered = state.hoveredVariantIndex === variantIdx;
-        const isPinned = state.pinnedVariantLabels.has(v.id);
+        const isHovered = variantsAtPos.some(v => state.hoveredVariantIndex === variants.findIndex(v2 => v2.id === v.id));
+        const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
         const shouldShow = isHovered || isPinned || hasEnoughSpace;
         
         if (shouldShow) {
-          // Use the variant ID (VCF ID or variant_id index) directly
-          ctx.fillText(v.id, x - 10, 14);
+          // Show first ID (or count if multiple)
+          const displayText = variantsAtPos.length > 1 
+            ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
+            : variantsAtPos[0].id;
+          ctx.fillText(displayText, x - 10, 14);
         }
         
-        // Store position for hit testing (for click-to-pin)
-        const labelWidth = ctx.measureText(v.id).width;
+        // Store position for hit testing (for click-to-pin and tooltip) - one entry per position
+        const firstVariantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
+        const displayText = variantsAtPos.length > 1 
+          ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
+          : variantsAtPos[0].id;
+        const labelWidth = ctx.measureText(displayText).width;
+        const labelIds = (firstVariant.displayIds && firstVariant.displayIds.length > 0)
+          ? firstVariant.displayIds
+          : [firstVariant.id];
         variantLabelPositions.push({
-          variantId: v.id,
-          variantIdx: variantIdx,
+          variantId: firstVariant.id, // Use first variant ID for compatibility
+          variantIdx: firstVariantIdx,
           x: x - 10,
           y: 2, // Text baseline is at y=14, but text extends upward, so hit box starts at y=2
           width: labelWidth,
-          height: 14 // Text height
+          height: 14, // Single line height
+          allIds: labelIds, // Store all IDs for tooltip
+          position: pos
         });
       }
       
@@ -5141,6 +5495,9 @@
     window._alleleNodeConstants = { baseNodeW, baseNodeH, gap, MIN_NODE_SIZE };
     const nodePositions = []; // Store positions for hit testing: [{ variantId, alleleIndex, x, y, w, h }]
     
+    // Store node info for ribbon drawing: Map<variantIndex, Map<alleleLabel, {x, y, w, h, top, bottom, left, right}>>
+    const nodeInfoByVariant = new Map();
+    
     // Collect all labels to draw at the very end (after all nodes and indicators)
     const allLabelsToDraw = [];
     
@@ -5285,6 +5642,21 @@
             y: nodeY,
             w: nodeW,
             h: nodeH
+          });
+          
+          // Store node info for ribbon drawing
+          if (!nodeInfoByVariant.has(i)) {
+            nodeInfoByVariant.set(i, new Map());
+          }
+          nodeInfoByVariant.get(i).set(label, {
+            x: nodeX,
+            y: nodeY,
+            w: nodeW,
+            h: nodeH,
+            top: nodeY,
+            bottom: nodeY + nodeH,
+            left: nodeX,
+            right: nodeX + nodeW
           });
           
           // Update position for next node
@@ -5483,6 +5855,21 @@
             h: nodeH
           });
           
+          // Store node info for ribbon drawing
+          if (!nodeInfoByVariant.has(i)) {
+            nodeInfoByVariant.set(i, new Map());
+          }
+          nodeInfoByVariant.get(i).set(label, {
+            x: nodeX,
+            y: nodeY,
+            w: nodeW,
+            h: nodeH,
+            top: nodeY,
+            bottom: nodeY + nodeH,
+            left: nodeX,
+            right: nodeX + nodeW
+          });
+          
           // Update position for next node
           currentY += nodeH + gap;
         }
@@ -5535,228 +5922,193 @@
       }
     }
     
-    // Store node positions globally for hit testing
-    window._alleleNodePositions = nodePositions;
-    
-    // Draw edges (ribbons) connecting alleles between adjacent variants
-    // For now, use the first sample in the VCF/BCF
-    function drawEdges() {
-      if (win.length < 2) return; // Need at least 2 variants to draw edges
+    // Draw ribbons between alleles based on haplotype transitions (not matching labels)
+    // For each pair of adjacent variants, we compute which alleles each sample has at both variants
+    // and draw ribbons proportional to the number of haplotypes making each transition
+    if (nodeInfoByVariant.size > 1) {
+      const sortedVariantIdxs = Array.from(nodeInfoByVariant.keys()).sort((a, b) => a - b);
       
-      // Get the first sample name from any variant's sampleGenotypes
-      let firstSampleName = null;
-      for (const v of win) {
-        const variant = variants.find(v2 => v2.id === v.id);
-        if (variant && variant.sampleGenotypes && Object.keys(variant.sampleGenotypes).length > 0) {
-          firstSampleName = Object.keys(variant.sampleGenotypes)[0];
-          break;
+      // Get the actual variant list (sorted for vertical mode, original order for horizontal)
+      const variantList = isVertical ? [...win].sort((a, b) => a.pos - b.pos) : win;
+      
+      for (let i = 0; i < sortedVariantIdxs.length - 1; i++) {
+        const srcIdx = sortedVariantIdxs[i];
+        const dstIdx = sortedVariantIdxs[i + 1];
+        const srcNodes = nodeInfoByVariant.get(srcIdx);
+        const dstNodes = nodeInfoByVariant.get(dstIdx);
+        
+        if (!srcNodes || !dstNodes) continue;
+        
+        // Get the variant objects
+        const srcVariant = variantList[srcIdx];
+        const dstVariant = variantList[dstIdx];
+        if (!srcVariant || !dstVariant) continue;
+        
+        // Helper to get allele label from genotype index for a variant
+        function getAlleleLabelForIndex(variant, alleleIdx) {
+          if (alleleIdx === null || alleleIdx === undefined || alleleIdx === "." || isNaN(alleleIdx)) {
+            return formatAlleleLabel(".");
+          }
+          if (alleleIdx === 0) {
+            // Reference allele
+            return variant.refAllele ? formatAlleleLabel(variant.refAllele) : formatAlleleLabel(".");
+          }
+          // Alt allele (1-indexed in genotype, but 0-indexed in altAlleles array)
+          if (variant.altAlleles && variant.altAlleles[alleleIdx - 1]) {
+            return formatAlleleLabel(variant.altAlleles[alleleIdx - 1]);
+          }
+          return formatAlleleLabel(".");
         }
-      }
-      
-      if (!firstSampleName) return; // No sample data available
-      
-      // Sort variants by position
-      const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
-      
-      // Draw edges between each pair of adjacent variants
-      for (let i = 0; i < sortedWin.length - 1; i++) {
-        const v1 = sortedWin[i];
-        const v2 = sortedWin[i + 1];
         
-        const variant1 = variants.find(v => v.id === v1.id);
-        const variant2 = variants.find(v => v.id === v2.id);
-        
-        if (!variant1 || !variant2) continue;
-        
-        // Get genotypes for the first sample
-        const gt1 = variant1.sampleGenotypes?.[firstSampleName];
-        const gt2 = variant2.sampleGenotypes?.[firstSampleName];
-        
-        if (!gt1 || !gt2) continue;
-        
-        // Parse genotypes (e.g., "0/1", "1|0", "0|1")
-        // Handle both phased (|) and unphased (/) genotypes
-        const parseGenotype = (gt) => {
-          const parts = gt.replace("|", "/").split("/");
-          if (parts.length >= 2) {
-            return [parts[0].trim(), parts[1].trim()];
-          } else if (parts.length === 1) {
-            return [parts[0].trim(), parts[0].trim()]; // Assume homozygous if single value
+        // Helper to get actual allele string from label for a variant
+        function getActualAlleleFromLabel(variant, label) {
+          const noCallLabel = formatAlleleLabel(".");
+          if (label === noCallLabel) return ".";
+          if (variant.refAllele && label === formatAlleleLabel(variant.refAllele)) {
+            return variant.refAllele;
           }
-          return [".", "."]; // Missing
-        };
-        
-        const [allele1_1, allele1_2] = parseGenotype(gt1);
-        const [allele2_1, allele2_2] = parseGenotype(gt2);
-        
-        // Map allele indices to allele keys (0 = ref, 1+ = alt alleles)
-        const getAlleleKey = (alleleIdx, variant) => {
-          if (alleleIdx === "." || alleleIdx === "") return ".";
-          try {
-            const idx = parseInt(alleleIdx);
-            if (idx === 0) return "ref";
-            if (idx > 0 && variant.altAlleles && idx <= variant.altAlleles.length) {
-              return `a${idx}`;
-            }
-          } catch (e) {
-            // Invalid allele index
-          }
-          return ".";
-        };
-        
-        const key1_1 = getAlleleKey(allele1_1, variant1);
-        const key1_2 = getAlleleKey(allele1_2, variant1);
-        const key2_1 = getAlleleKey(allele2_1, variant2);
-        const key2_2 = getAlleleKey(allele2_2, variant2);
-        
-        // Find node positions for each allele
-        const findNodePosition = (variantId, alleleKey) => {
-          return nodePositions.find(np => {
-            if (np.variantId !== variantId) return false;
-            const variant = variants.find(v => v.id === variantId);
-            if (!variant) return false;
-            
-            // Use the global formatAlleleLabel function
-            const formatAlleleLabel = window.formatAlleleLabel || function(allele) {
-              if (allele === ".") return ".";
-              if (allele.length <= 8) return allele;
-              return allele.substring(0, 5) + "...";
-            };
-            
-            let targetLabel = null;
-            if (alleleKey === ".") {
-              targetLabel = formatAlleleLabel(".");
-            } else if (alleleKey === "ref") {
-              targetLabel = formatAlleleLabel(variant.refAllele || "ref");
-            } else if (alleleKey.startsWith("a")) {
-              const altIdx = parseInt(alleleKey.substring(1)) - 1;
-              if (variant.altAlleles && altIdx >= 0 && altIdx < variant.altAlleles.length) {
-                targetLabel = formatAlleleLabel(variant.altAlleles[altIdx]);
+          if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+            for (const alt of variant.altAlleles) {
+              if (label === formatAlleleLabel(alt)) {
+                return alt;
               }
             }
-            
-            if (!targetLabel) return false;
-            return np.label === targetLabel;
-          });
-        };
-        
-        // Draw two edges (one for each haplotype)
-        const drawEdge = (pos1, pos2, color, alpha) => {
-          if (!pos1 || !pos2) return;
-          
-          // Calculate control points for bezier curve
-          const dx = pos2.x - pos1.x;
-          const dy = pos2.y - pos1.y;
-          const midX = (pos1.x + pos2.x) / 2;
-          const midY = (pos1.y + pos2.y) / 2;
-          
-          // Control points offset perpendicular to the line
-          const perpOffset = 20;
-          const perpX = -dy / Math.sqrt(dx * dx + dy * dy) * perpOffset;
-          const perpY = dx / Math.sqrt(dx * dx + dy * dy) * perpOffset;
-          
-          const control1X = pos1.x + dx * 0.3 + perpX;
-          const control1Y = pos1.y + dy * 0.3 + perpY;
-          const control2X = pos2.x - dx * 0.3 + perpX;
-          const control2Y = pos2.y - dy * 0.3 + perpY;
-          
-          // Draw bezier curve as a ribbon (filled path)
-          ctx.save();
-          ctx.globalAlpha = alpha;
-          ctx.strokeStyle = color;
-          ctx.fillStyle = color;
-          ctx.lineWidth = 2;
-          
-          // Create a path for the ribbon (wider than a line)
-          const ribbonWidth = 3;
-          ctx.beginPath();
-          
-          // Draw bezier curve with width
-          const steps = 20;
-          const points = [];
-          for (let t = 0; t <= 1; t += 1 / steps) {
-            const x = (1 - t) * (1 - t) * (1 - t) * pos1.x +
-                      3 * (1 - t) * (1 - t) * t * control1X +
-                      3 * (1 - t) * t * t * control2X +
-                      t * t * t * pos2.x;
-            const y = (1 - t) * (1 - t) * (1 - t) * pos1.y +
-                      3 * (1 - t) * (1 - t) * t * control1Y +
-                      3 * (1 - t) * t * t * control2Y +
-                      t * t * t * pos2.y;
-            points.push({ x, y });
           }
-          
-          // Draw ribbon by creating a path with width
-          ctx.beginPath();
-          for (let i = 0; i < points.length - 1; i++) {
-            const p1 = points[i];
-            const p2 = points[i + 1];
-            const dx = p2.x - p1.x;
-            const dy = p2.y - p1.y;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            const perpX = -dy / len * ribbonWidth;
-            const perpY = dx / len * ribbonWidth;
-            
-            if (i === 0) {
-              ctx.moveTo(p1.x + perpX, p1.y + perpY);
-            }
-            ctx.lineTo(p2.x + perpX, p2.y + perpY);
-          }
-          for (let i = points.length - 2; i >= 0; i--) {
-            const p1 = points[i];
-            const p2 = points[i + 1];
-            const dx = p2.x - p1.x;
-            const dy = p2.y - p1.y;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            const perpX = -dy / len * ribbonWidth;
-            const perpY = dx / len * ribbonWidth;
-            ctx.lineTo(p2.x - perpX, p2.y - perpY);
-          }
-          ctx.closePath();
-          ctx.fill();
-          ctx.stroke();
-          
-          ctx.restore();
-        };
-        
-        // Get center positions of nodes
-        const getNodeCenter = (pos) => {
-          if (!pos) return null;
-          return {
-            x: pos.x + pos.w / 2,
-            y: pos.y + pos.h / 2
-          };
-        };
-        
-        const pos1_1 = findNodePosition(v1.id, key1_1);
-        const pos1_2 = findNodePosition(v1.id, key1_2);
-        const pos2_1 = findNodePosition(v2.id, key2_1);
-        const pos2_2 = findNodePosition(v2.id, key2_2);
-        
-        // Draw two edges (one for each haplotype)
-        // Use different colors for the two haplotypes
-        const color1 = "rgba(120, 180, 255, 0.6)"; // Blue for first haplotype
-        const color2 = "rgba(255, 120, 180, 0.6)"; // Pink for second haplotype
-        
-        const center1_1 = getNodeCenter(pos1_1);
-        const center1_2 = getNodeCenter(pos1_2);
-        const center2_1 = getNodeCenter(pos2_1);
-        const center2_2 = getNodeCenter(pos2_2);
-        
-        // Draw edge for first haplotype
-        if (center1_1 && center2_1) {
-          drawEdge(center1_1, center2_1, color1, 0.6);
+          return ".";
         }
         
-        // Draw edge for second haplotype
-        if (center1_2 && center2_2) {
-          drawEdge(center1_2, center2_2, color2, 0.6);
+        // Compute transitions: Map<srcLabel, Map<dstLabel, count>>
+        const transitions = new Map();
+        const srcGenotypes = srcVariant.sampleGenotypes || {};
+        const dstGenotypes = dstVariant.sampleGenotypes || {};
+        
+        // Get all samples that have genotype data at both variants
+        const allSamples = new Set([...Object.keys(srcGenotypes), ...Object.keys(dstGenotypes)]);
+        
+        for (const sample of allSamples) {
+          const srcGt = srcGenotypes[sample] || "./.";
+          const dstGt = dstGenotypes[sample] || "./.";
+          
+          // Parse genotypes to get allele indices
+          const srcAlleles = srcGt.replace("|", "/").split("/").map(a => {
+            const trimmed = a.trim();
+            return trimmed === "." || trimmed === "" ? null : parseInt(trimmed, 10);
+          });
+          const dstAlleles = dstGt.replace("|", "/").split("/").map(a => {
+            const trimmed = a.trim();
+            return trimmed === "." || trimmed === "" ? null : parseInt(trimmed, 10);
+          });
+          
+          // For each haplotype (assuming diploid = 2 haplotypes per sample)
+          const numHaplotypes = Math.min(srcAlleles.length, dstAlleles.length);
+          for (let h = 0; h < numHaplotypes; h++) {
+            const srcAlleleIdx = srcAlleles[h];
+            const dstAlleleIdx = dstAlleles[h];
+            
+            const srcLabel = getAlleleLabelForIndex(srcVariant, srcAlleleIdx);
+            const dstLabel = getAlleleLabelForIndex(dstVariant, dstAlleleIdx);
+            
+            if (!transitions.has(srcLabel)) {
+              transitions.set(srcLabel, new Map());
+            }
+            const srcTransitions = transitions.get(srcLabel);
+            srcTransitions.set(dstLabel, (srcTransitions.get(dstLabel) || 0) + 1);
+          }
+        }
+        
+        // If no transition data (no samples), fall back to connecting all src nodes to all dst nodes
+        if (transitions.size === 0) {
+          for (const [srcLabel, srcNode] of srcNodes) {
+            for (const [dstLabel, dstNode] of dstNodes) {
+              const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
+              const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
+              const colorMatch = colors.fillColor.match(/rgba?\([^)]+,\s*([\d.]+)\)/);
+              const alpha = colorMatch ? parseFloat(colorMatch[1]) : 0.65;
+              const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha * 0.3})`);
+              
+              // Draw thin connecting ribbon
+              const srcH = srcNode.bottom - srcNode.top;
+              const dstH = dstNode.bottom - dstNode.top;
+              const midSrc = srcNode.top + srcH / 2;
+              const midDst = dstNode.top + dstH / 2;
+              const thinH = Math.min(2, srcH * 0.1, dstH * 0.1);
+              
+              drawRibbon(
+                srcNode, dstNode,
+                midSrc - thinH/2, midSrc + thinH/2,
+                midDst - thinH/2, midDst + thinH/2,
+                ribbonColor
+              );
+            }
+          }
+          continue;
+        }
+        
+        // Calculate total outgoing count per source label and total incoming per dest label
+        const srcTotals = new Map(); // srcLabel -> total outgoing haplotypes
+        const dstTotals = new Map(); // dstLabel -> total incoming haplotypes
+        
+        for (const [srcLabel, dstMap] of transitions) {
+          let total = 0;
+          for (const [dstLabel, count] of dstMap) {
+            total += count;
+            dstTotals.set(dstLabel, (dstTotals.get(dstLabel) || 0) + count);
+          }
+          srcTotals.set(srcLabel, total);
+        }
+        
+        // Track current Y offset within each node for stacking ribbons
+        const srcOffsets = new Map(); // srcLabel -> current Y offset from top
+        const dstOffsets = new Map(); // dstLabel -> current Y offset from top
+        
+        // Draw ribbons for each transition
+        for (const [srcLabel, dstMap] of transitions) {
+          const srcNode = srcNodes.get(srcLabel);
+          if (!srcNode) continue;
+          
+          const srcTotal = srcTotals.get(srcLabel) || 1;
+          const srcNodeH = srcNode.bottom - srcNode.top;
+          
+          for (const [dstLabel, count] of dstMap) {
+            const dstNode = dstNodes.get(dstLabel);
+            if (!dstNode) continue;
+            
+            const dstTotal = dstTotals.get(dstLabel) || 1;
+            const dstNodeH = dstNode.bottom - dstNode.top;
+            
+            // Calculate ribbon slice heights proportional to transition count
+            const srcSliceH = (count / srcTotal) * srcNodeH;
+            const dstSliceH = (count / dstTotal) * dstNodeH;
+            
+            // Get current offsets (for stacking)
+            const srcOffset = srcOffsets.get(srcLabel) || 0;
+            const dstOffset = dstOffsets.get(dstLabel) || 0;
+            
+            // Calculate Y positions
+            const srcY0 = srcNode.top + srcOffset;
+            const srcY1 = srcY0 + srcSliceH;
+            const dstY0 = dstNode.top + dstOffset;
+            const dstY1 = dstY0 + dstSliceH;
+            
+            // Update offsets for next ribbon
+            srcOffsets.set(srcLabel, srcOffset + srcSliceH);
+            dstOffsets.set(dstLabel, dstOffset + dstSliceH);
+            
+            // Get color from source allele
+            const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
+            const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
+            const colorMatch = colors.fillColor.match(/rgba?\([^)]+,\s*([\d.]+)\)/);
+            const alpha = colorMatch ? parseFloat(colorMatch[1]) : 0.65;
+            const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha * 0.6})`);
+            
+            drawRibbon(srcNode, dstNode, srcY0, srcY1, dstY0, dstY1, ribbonColor);
+          }
         }
       }
     }
     
-    // Draw edges after nodes are drawn
-    drawEdges();
+    // Store node positions globally for hit testing
+    window._alleleNodePositions = nodePositions;
     
     // Draw all labels at the very end with tooltip-style rounded rectangles (to bring them to foreground)
     ctx.font = "11px ui-monospace, 'SF Mono', Monaco, 'Consolas', 'Courier New', monospace";
@@ -5854,6 +6206,7 @@
           }],
         });
         
+        if (flowRibbonRenderer) flowRibbonRenderer.render(encoder, renderPass);
         flowInstancedRenderer.render(encoder, renderPass);
         renderPass.end();
         flowWebGPUCore.submit([encoder.finish()]);
@@ -6235,6 +6588,11 @@
       tooltip.style.left = state.hoveredRepeatTooltip.x + 'px';
       tooltip.style.top = state.hoveredRepeatTooltip.y + 'px';
       tooltip.classList.add('visible');
+    } else if (state.hoveredVariantLabelTooltip) {
+      tooltip.textContent = state.hoveredVariantLabelTooltip.text;
+      tooltip.style.left = state.hoveredVariantLabelTooltip.x + 'px';
+      tooltip.style.top = state.hoveredVariantLabelTooltip.y + 'px';
+      tooltip.classList.add('visible');
     } else {
       tooltip.classList.remove('visible');
     }
@@ -6362,6 +6720,31 @@
         const H = flowHeightPx();
         const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
         
+        // Check if mouse is over a variant label
+        if (window._variantLabelPositions && window._variantLabelPositions.length > 0) {
+          for (const labelPos of window._variantLabelPositions) {
+            // In vertical mode, labels are rotated 90 degrees at x=14
+            // Check if mouse is near the label position (y coordinate) and in the label area (x < 30)
+            const labelY = labelPos.y;
+            const labelHeight = labelPos.height; // This is the font size (12px)
+            if (Math.abs(y - labelY) < labelHeight && x >= 0 && x <= 30) {
+              // Show tooltip with all IDs (comma-delimited)
+              if (labelPos.allIds && labelPos.allIds.length > 0) {
+                state.hoveredVariantLabelTooltip = {
+                  text: labelPos.allIds.join(', '),
+                  x: e.clientX + 10,
+                  y: e.clientY + 10
+                };
+                updateTooltip();
+              } else {
+                state.hoveredVariantLabelTooltip = null;
+                updateTooltip();
+              }
+              return;
+            }
+          }
+        }
+        
         // Check if mouse is near a column line (horizontal in vertical mode)
         for (let i = 0; i < sortedWin.length; i++) {
           const v = sortedWin[i];
@@ -6376,6 +6759,9 @@
               state.hoveredVariantIndex = variantIdx;
               renderAll();
             }
+            // Clear variant label tooltip when hovering column
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
             return;
           }
         }
@@ -6397,12 +6783,38 @@
               state.hoveredVariantIndex = variantIdx;
               renderAll();
             }
+            // Clear variant label tooltip when hovering connector
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
             return;
           }
         }
       } else {
         const junctionY = 40;
         const W = flowWidthPx();
+        
+        // Check if mouse is over a variant label
+        if (window._variantLabelPositions && window._variantLabelPositions.length > 0) {
+          for (const labelPos of window._variantLabelPositions) {
+            // In horizontal mode, labels are at the top (y=14)
+            if (x >= labelPos.x && x <= labelPos.x + labelPos.width &&
+                y >= labelPos.y && y <= labelPos.y + labelPos.height) {
+              // Show tooltip with all IDs (comma-delimited)
+              if (labelPos.allIds && labelPos.allIds.length > 0) {
+                state.hoveredVariantLabelTooltip = {
+                  text: labelPos.allIds.join(', '),
+                  x: e.clientX + 10,
+                  y: e.clientY + 10
+                };
+                updateTooltip();
+              } else {
+                state.hoveredVariantLabelTooltip = null;
+                updateTooltip();
+              }
+              return;
+            }
+          }
+        }
         
         // Check if mouse is near a column line
         for (let i = 0; i < win.length; i++) {
@@ -6417,6 +6829,9 @@
               state.hoveredVariantIndex = variantIdx;
               renderAll();
             }
+            // Clear variant label tooltip when hovering column
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
             return;
           }
         }
@@ -6448,6 +6863,11 @@
         state.hoveredVariantIndex = null;
         renderAll();
       }
+      // Clear variant label tooltip when not hovering anything
+      if (state.hoveredVariantLabelTooltip !== null) {
+        state.hoveredVariantLabelTooltip = null;
+        updateTooltip();
+      }
     };
     
     flowLeaveHandler = () => {
@@ -6455,6 +6875,11 @@
         state.hoveredVariantIndex = null;
         state.hoveredAlleleNode = null;
         renderAll();
+      }
+      // Clear variant label tooltip when leaving flow canvas
+      if (state.hoveredVariantLabelTooltip !== null) {
+        state.hoveredVariantLabelTooltip = null;
+        updateTooltip();
       }
     };
     

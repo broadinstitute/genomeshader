@@ -926,11 +926,35 @@ class GenomeShader:
                         "altAlleles": [],
                         "variant_id": variant_id,
                         "vcf_id": vcf_id,
+                        "variant_display_ids": [],
                     }
+
+                # Determine display ID for this row (prefers VCF ID when available)
+                row_display_id = str(vcf_id) if vcf_id else str(variant_id)
+                if row_display_id not in variant_groups[pos]["variant_display_ids"]:
+                    variant_groups[pos]["variant_display_ids"].append(row_display_id)
                 
                 if alt_allele not in variant_groups[pos]["altAlleles"]:
                     variant_groups[pos]["altAlleles"].append(alt_allele)
             
+            # Collect display IDs for each position so we include duplicates that were collapsed
+            for row in variants_df.iter_rows(named=True):
+                pos = row["position"]
+                if pos not in variant_groups:
+                    continue
+                row_vcf_id = None
+                if "vcf_id" in row:
+                    vcf_id_val = row["vcf_id"]
+                    if vcf_id_val is not None:
+                        vcf_id_str = str(vcf_id_val).strip()
+                        if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
+                            row_vcf_id = vcf_id_str
+                row_variant_id = row["variant_id"]
+                row_display_id = str(row_vcf_id) if row_vcf_id else str(row_variant_id)
+                display_ids = variant_groups[pos].setdefault("variant_display_ids", [])
+                if row_display_id not in display_ids:
+                    display_ids.append(row_display_id)
+
             # Calculate allele frequencies for each variant
             # Filter variants_df to get genotype data for frequency calculation
             if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
@@ -1056,6 +1080,7 @@ class GenomeShader:
                     "alleles": ["ref"] + [f"a{i+1}" for i in range(len(variant_info["altAlleles"]))],
                     "alleleFrequencies": variant_info.get("alleleFrequencies", {}),
                     "sampleGenotypes": variant_genotypes,  # Add genotype data per sample
+                    "displayIds": variant_info.get("variant_display_ids", [variant_display_id]),
                 })
 
         # Load template HTML
