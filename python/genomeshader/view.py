@@ -962,6 +962,7 @@ class GenomeShader:
 
         # Transform variant data for frontend if we have variant data
         variants_data = []
+        insertion_variants_lookup = []  # Precomputed sorted list for coordinate transformations
         if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
             # Get unique variant positions and their alleles
             # Include vcf_id if available, otherwise it will be None
@@ -1131,6 +1132,17 @@ class GenomeShader:
                     if key not in sample_genotypes[sample_name]:
                         sample_genotypes[sample_name][key] = genotype
             
+            # Helper function to format allele labels (matches JavaScript formatAlleleLabel logic)
+            def format_allele_label(allele):
+                """Format allele label to match JavaScript formatAlleleLabel function."""
+                if not allele or allele == ".":
+                    return ". (no-call)"
+                length = len(allele)
+                length_label = "1 bp" if length == 1 else f"{length} bp"
+                # Truncate to 50 bp and add "..." if longer
+                display_allele = allele[:50] + "..." if length > 50 else allele
+                return f"{display_allele} ({length_label})"
+            
             # Convert to frontend format
             for idx, (pos, variant_info) in enumerate(sorted(variant_groups.items())):
                 # Use VCF ID if available (numeric IDs like "59434" are valid), otherwise use variant_id index
@@ -1147,6 +1159,43 @@ class GenomeShader:
                     if key in sample_data:
                         variant_genotypes[sample_name] = sample_data[key]
                 
+                # Precompute variant type metadata for performance
+                ref_allele = variant_info["refAllele"]
+                alt_alleles = variant_info["altAlleles"]
+                ref_len = len(ref_allele) if ref_allele else 0
+                
+                # Check if any alt allele is longer than ref (insertion)
+                is_insertion = False
+                max_insertion_length = 0
+                is_deletion = False
+                variant_type = "snv"  # default
+                
+                if alt_alleles:
+                    for alt in alt_alleles:
+                        alt_len = len(alt) if alt else 0
+                        if alt_len > ref_len:
+                            is_insertion = True
+                            max_insertion_length = max(max_insertion_length, alt_len - ref_len)
+                        elif alt_len < ref_len:
+                            is_deletion = True
+                
+                # Determine variant type
+                if is_insertion and is_deletion:
+                    variant_type = "complex"  # mixed insertion/deletion
+                elif is_insertion:
+                    variant_type = "insertion"
+                elif is_deletion:
+                    variant_type = "deletion"
+                else:
+                    variant_type = "snv"  # substitution or same length
+                
+                # Precompute insertion gap width in pixels (8px per inserted base)
+                insertion_gap_px = max_insertion_length * 8 if is_insertion else 0
+                
+                # Precompute formatted allele labels for performance
+                formatted_ref_allele = format_allele_label(ref_allele) if ref_allele else None
+                formatted_alt_alleles = [format_allele_label(alt) for alt in alt_alleles] if alt_alleles else []
+                
                 variants_data.append({
                     "id": variant_display_id,
                     "pos": variant_info["pos"],
@@ -1156,7 +1205,27 @@ class GenomeShader:
                     "alleleFrequencies": variant_info.get("alleleFrequencies", {}),
                     "sampleGenotypes": variant_genotypes,  # Add genotype data per sample
                     "displayIds": variant_info.get("variant_display_ids", [variant_display_id]),
+                    # Precomputed variant type metadata for performance
+                    "isInsertion": is_insertion,
+                    "maxInsertionLength": max_insertion_length,
+                    "variantType": variant_type,
+                    "insertionGapPx": insertion_gap_px,  # Precomputed gap width in pixels
+                    # Precomputed formatted allele labels for performance
+                    "formattedRefAllele": formatted_ref_allele,
+                    "formattedAltAlleles": formatted_alt_alleles,
                 })
+            
+            # Precompute sorted list of insertion variants for efficient coordinate transformation lookups
+            # This enables binary search instead of linear iteration
+            for variant in variants_data:
+                if variant.get("isInsertion") and variant.get("insertionGapPx", 0) > 0:
+                    insertion_variants_lookup.append({
+                        "id": variant["id"],
+                        "pos": variant["pos"],
+                        "insertionGapPx": variant["insertionGapPx"],
+                    })
+            # Sort by position for binary search
+            insertion_variants_lookup.sort(key=lambda v: v["pos"])
 
         # Load template HTML
         template_html = self._load_template_html()
@@ -1175,6 +1244,7 @@ class GenomeShader:
             'repeats_data': repeats_data,
             'reference_data': reference_sequence,
             'variants_data': variants_data,  # Add variant data to config
+            'insertion_variants_lookup': insertion_variants_lookup,  # Precomputed sorted list for coordinate transformations
             'data_bounds': {
                 'start': data_start,
                 'end': data_end,
