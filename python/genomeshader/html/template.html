@@ -881,14 +881,14 @@
           let halfSize = size * 0.5;
           let minDim = min(size.x, size.y);
           
-          // For very small rectangles (< 6px), don't apply rounding
+          // For very small rectangles (< 6px), don't apply rounding or stroke
           if (minDim < 6.0) {
             // Still need premultiplied alpha for correct blending
             return vec4<f32>(color.rgb * color.a, color.a);
           }
           
-          // Apply rounded corners with radius 6 pixels
-          let radius = 6.0;
+          // Apply rounded corners with radius 4 pixels (matching SVG rx=4)
+          let radius = 4.0;
           let actualRadius = min(radius, minDim * 0.5);
           
           // Proper rounded rectangle SDF
@@ -899,12 +899,32 @@
           // Distance to rounded rectangle: negative inside, positive outside
           let d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - actualRadius;
           
-          // Smooth edge with anti-aliasing (d < 0 means inside)
-          let alpha = 1.0 - smoothstep(-0.5, 0.5, d);
+          // Stroke width of 1 pixel
+          let strokeWidth = 1.0;
           
-          // Output premultiplied alpha for correct blending
-          let finalAlpha = color.a * alpha;
-          return vec4<f32>(color.rgb * finalAlpha, finalAlpha);
+          // Determine if we're in stroke region or fill region
+          // d < -strokeWidth: inside fill region
+          // -strokeWidth <= d < 0: in stroke region
+          // d >= 0: outside
+          
+          // Check if this is a "stroke-enabled" rectangle by looking at alpha
+          // If alpha > 0.5, it's a stroke rectangle (higher opacity = stroke color)
+          // If alpha <= 0.5, it's a fill rectangle (lower opacity = fill color)
+          let isStrokeRect = color.a > 0.5;
+          
+          if (isStrokeRect) {
+            // This is a stroke-only rectangle: only render pixels in the stroke band
+            // Stroke band is from d = -strokeWidth to d = 0
+            let strokeAlpha = smoothstep(-strokeWidth - 0.5, -strokeWidth + 0.5, d) * (1.0 - smoothstep(-0.5, 0.5, d));
+            let finalAlpha = color.a * strokeAlpha;
+            return vec4<f32>(color.rgb * finalAlpha, finalAlpha);
+          } else {
+            // This is a fill rectangle: render the interior (up to but not including stroke)
+            // Fill region is where d < -strokeWidth
+            let fillAlpha = 1.0 - smoothstep(-strokeWidth - 0.5, -strokeWidth + 0.5, d);
+            let finalAlpha = color.a * fillAlpha;
+            return vec4<f32>(color.rgb * finalAlpha, finalAlpha);
+          }
         }
       `;
 
@@ -1022,7 +1042,21 @@
         fragment: {
           module: fragmentModule,
           entryPoint: 'fs_main',
-          targets: [{ format: this.core.format }],
+          targets: [{
+            format: this.core.format,
+            blend: {
+              color: {
+                srcFactor: 'src-alpha',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+              alpha: {
+                srcFactor: 'one',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+            },
+          }],
         },
         primitive: {
           topology: 'triangle-list',
@@ -1095,7 +1129,21 @@
         fragment: {
           module: fragmentModule,
           entryPoint: 'fs_main',
-          targets: [{ format: this.core.format }],
+          targets: [{
+            format: this.core.format,
+            blend: {
+              color: {
+                srcFactor: 'src-alpha',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+              alpha: {
+                srcFactor: 'one',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+            },
+          }],
         },
         primitive: {
           topology: 'line-list',
@@ -2809,15 +2857,16 @@
   }
 
   // Genes: load from config or use empty array as fallback
+  // Note: transcripts_data now contains gene models (exon union) instead of individual transcripts
   let transcripts = [];
   if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.transcripts_data) {
     const data = window.GENOMESHADER_CONFIG.transcripts_data;
-    // Data should already be an array of transcript objects
+    // Data should already be an array of gene model objects
     if (Array.isArray(data)) {
       transcripts = data;
-      console.log(`Loaded ${transcripts.length} transcripts for genes track`);
+      console.log(`Loaded ${transcripts.length} gene models for genes track`);
     } else {
-      console.warn("Transcripts data is not in expected array format:", data);
+      console.warn("Gene models data is not in expected array format:", data);
     }
   } else {
     console.warn("No transcripts_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
@@ -3596,19 +3645,39 @@
         geneStartX = 16;
       }
 
+      // Use WebGPU for lane separator lines if available
+      const devicePixelRatio = window.devicePixelRatio || 1;
+      const useWebGPU = webgpuSupported && instancedRenderer;
+      
       for (let lane=0; lane<lanes; lane++) {
         if (isVertical) {
           const x = geneStartX + lane*laneDim + laneDim/2;
-          tracksSvg.appendChild(el("line", {
-            x1: x, x2: x, y1: 16, y2: H-16,
-            stroke: "rgba(127,127,127,0.14)"
-          }));
+          if (useWebGPU) {
+            instancedRenderer.addLine(
+              x * devicePixelRatio, 16 * devicePixelRatio,
+              x * devicePixelRatio, (H-16) * devicePixelRatio,
+              0x7F7F7F, 0.14
+            );
+          } else {
+            tracksSvg.appendChild(el("line", {
+              x1: x, x2: x, y1: 16, y2: H-16,
+              stroke: "rgba(127,127,127,0.14)"
+            }));
+          }
         } else {
           const y = geneStartY + lane*laneDim + laneDim/2;
-          tracksSvg.appendChild(el("line", {
-            x1: 16, x2: W-16, y1: y, y2: y,
-            stroke: "rgba(127,127,127,0.14)"
-          }));
+          if (useWebGPU) {
+            instancedRenderer.addLine(
+              16 * devicePixelRatio, y * devicePixelRatio,
+              (W-16) * devicePixelRatio, y * devicePixelRatio,
+              0x7F7F7F, 0.14
+            );
+          } else {
+            tracksSvg.appendChild(el("line", {
+              x1: 16, x2: W-16, y1: y, y2: y,
+              stroke: "rgba(127,127,127,0.14)"
+            }));
+          }
         }
       }
 
@@ -3616,72 +3685,133 @@
         const dir = strand === "-" ? -1 : 1;
         const step = 24;
         const start = Math.min(pos1, pos2), end = Math.max(pos1, pos2);
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const useWebGPU = webgpuSupported && instancedRenderer;
+        
         for (let p = start + 10; p < end - 10; p += step) {
           const size = 5;
           if (isVert) {
             const cy = p;
-            const p1 = `${perpPos},${cy}`;
-            const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
-            const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
-            tracksSvg.appendChild(el("polygon", {
-              points: `${p1} ${p2} ${p3}`,
-              fill: "rgba(127,127,127,0.45)"
-            }));
+            if (useWebGPU) {
+              // Triangle: tip at (perpPos, cy), base at (perpPos ± size*0.8, cy + dir*size)
+              instancedRenderer.addTriangle(
+                perpPos * devicePixelRatio, cy * devicePixelRatio,
+                (perpPos - dir*size*0.8) * devicePixelRatio, (cy + dir*size) * devicePixelRatio,
+                (perpPos + dir*size*0.8) * devicePixelRatio, (cy + dir*size) * devicePixelRatio,
+                0x78B4FF, 0.50
+              );
+            } else {
+              const p1 = `${perpPos},${cy}`;
+              const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
+              const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
+              tracksSvg.appendChild(el("polygon", {
+                points: `${p1} ${p2} ${p3}`,
+                fill: "rgba(120,180,255,0.50)"
+              }));
+            }
           } else {
             const cx = p;
-            const p1 = `${cx},${perpPos}`;
-            const p2 = `${cx - dir*size},${perpPos - size*0.8}`;
-            const p3 = `${cx - dir*size},${perpPos + size*0.8}`;
-            tracksSvg.appendChild(el("polygon", {
-              points: `${p1} ${p2} ${p3}`,
-              fill: "rgba(127,127,127,0.45)"
-            }));
+            if (useWebGPU) {
+              // Triangle: tip at (cx, perpPos), base at (cx - dir*size, perpPos ± size*0.8)
+              instancedRenderer.addTriangle(
+                cx * devicePixelRatio, perpPos * devicePixelRatio,
+                (cx - dir*size) * devicePixelRatio, (perpPos - size*0.8) * devicePixelRatio,
+                (cx - dir*size) * devicePixelRatio, (perpPos + size*0.8) * devicePixelRatio,
+                0x78B4FF, 0.50
+              );
+            } else {
+              const p1 = `${cx},${perpPos}`;
+              const p2 = `${cx - dir*size},${perpPos - size*0.8}`;
+              const p3 = `${cx - dir*size},${perpPos + size*0.8}`;
+              tracksSvg.appendChild(el("polygon", {
+                points: `${p1} ${p2} ${p3}`,
+                fill: "rgba(120,180,255,0.50)"
+              }));
+            }
           }
         }
       }
 
-    for (const t of transcripts) {
-      const s = Math.max(t.start, state.startBp);
-      const e = Math.min(t.end,   state.endBp);
+    // Iterate over gene models (transcripts variable now contains gene models)
+    for (const gene of transcripts) {
+      const s = Math.max(gene.start, state.startBp);
+      const e = Math.min(gene.end,   state.endBp);
       if (e <= state.startBp || s >= state.endBp) continue;
 
       let perpPos;
       if (isVertical) {
-        perpPos = geneStartX + t.lane*laneDim + laneDim/2;
+        perpPos = geneStartX + gene.lane*laneDim + laneDim/2;
       } else {
-        perpPos = geneStartY + t.lane*laneDim + laneDim/2;
+        perpPos = geneStartY + gene.lane*laneDim + laneDim/2;
       }
 
-      // intron baseline (full transcript span)
+      // intron baseline (full gene span)
       const pos1 = genomePos(s);
       const pos2 = genomePos(e);
       
+      const devicePixelRatio = window.devicePixelRatio || 1;
+      const useWebGPU = webgpuSupported && instancedRenderer;
+      
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
-          x1: perpPos, x2: perpPos, y1: pos1, y2: pos2,
-          stroke: "rgba(127,127,127,0.40)",
-          "stroke-width": 1
-        }));
-        drawStrandArrows(pos1, pos2, perpPos, t.strand, true);
+        if (useWebGPU) {
+          instancedRenderer.addLine(
+            perpPos * devicePixelRatio, pos1 * devicePixelRatio,
+            perpPos * devicePixelRatio, pos2 * devicePixelRatio,
+            0x78B4FF, 0.45
+          );
+        } else {
+          tracksSvg.appendChild(el("line", {
+            x1: perpPos, x2: perpPos, y1: pos1, y2: pos2,
+            stroke: "rgba(120,180,255,0.45)",
+            "stroke-width": 1
+          }));
+        }
+        drawStrandArrows(pos1, pos2, perpPos, gene.strand, true);
       } else {
-        tracksSvg.appendChild(el("line", {
-          x1: pos1, x2: pos2, y1: perpPos, y2: perpPos,
-          stroke: "rgba(127,127,127,0.40)",
-          "stroke-width": 1
-        }));
-        drawStrandArrows(pos1, pos2, perpPos, t.strand, false);
+        if (useWebGPU) {
+          instancedRenderer.addLine(
+            pos1 * devicePixelRatio, perpPos * devicePixelRatio,
+            pos2 * devicePixelRatio, perpPos * devicePixelRatio,
+            0x78B4FF, 0.45
+          );
+        } else {
+          tracksSvg.appendChild(el("line", {
+            x1: pos1, x2: pos2, y1: perpPos, y2: perpPos,
+            stroke: "rgba(120,180,255,0.45)",
+            "stroke-width": 1
+          }));
+        }
+        drawStrandArrows(pos1, pos2, perpPos, gene.strand, false);
       }
 
-      // exons
+      // exons - now with union model and universal/partial distinction
       let firstExonY = null; // Track bottom-most exon Y position for gene name alignment in vertical mode
       let firstExonX = null; // Track first exon X position for gene name alignment in horizontal mode
-      for (const [es0, ee0] of t.exons) {
+      for (const exon of gene.exons) {
+        // Exon format: [start, end, is_universal]
+        const es0 = exon[0];
+        const ee0 = exon[1];
+        const isUniversal = exon[2] === true || exon[2] === undefined; // Default to universal if not specified
+        
         const es = Math.max(es0, state.startBp);
         const ee = Math.min(ee0, state.endBp);
         if (ee <= state.startBp || es >= state.endBp) continue;
         const exPos1 = genomePos(es);
         const exPos2 = genomePos(ee);
 
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const useWebGPU = webgpuSupported && instancedRenderer;
+        
+        // Determine colors based on universal vs partial
+        // Universal: solid fill + full opacity stroke
+        // Partial: very light fill + reduced opacity stroke
+        const fillColor = isUniversal 
+          ? [120/255, 180/255, 255/255, 0.18]  // Full opacity fill for universal
+          : [120/255, 180/255, 255/255, 0.05]; // Very light fill for partial
+        const strokeColor = isUniversal
+          ? [120/255, 180/255, 255/255, 0.9]   // Full opacity stroke for universal
+          : [120/255, 180/255, 255/255, 0.4]; // Reduced opacity stroke for partial
+        
         if (isVertical) {
           // In vertical mode, exons are horizontal bars
           // exPos1 and exPos2 are Y coordinates, need to ensure correct ordering
@@ -3693,31 +3823,99 @@
           if (firstExonY === null || yMax > firstExonY) {
             firstExonY = yMax;
           }
-          tracksSvg.appendChild(el("rect", {
-            x: perpPos - 6, y: yMin,
-            width: 12, height: Math.max(2, yMax - yMin),
-            rx: 4,
-            fill: "var(--blueFill)",
-            stroke: "var(--blue)",
-            "stroke-width": 1
-          }));
+          
+          const exonX = perpPos - 6;
+          const exonY = yMin;
+          const exonW = 12;
+          const exonH = Math.max(2, yMax - yMin);
+          
+          if (useWebGPU) {
+            // Draw fill (only if universal or very light for partial)
+            if (isUniversal || fillColor[3] > 0) {
+              instancedRenderer.addRect(
+                exonX * devicePixelRatio,
+                exonY * devicePixelRatio,
+                exonW * devicePixelRatio,
+                exonH * devicePixelRatio,
+                fillColor
+              );
+            }
+            // Draw stroke on top
+            instancedRenderer.addRect(
+              exonX * devicePixelRatio,
+              exonY * devicePixelRatio,
+              exonW * devicePixelRatio,
+              exonH * devicePixelRatio,
+              strokeColor
+            );
+          } else {
+            // SVG fallback
+            const rectAttrs = {
+              x: exonX, y: exonY,
+              width: exonW, height: exonH,
+              rx: 4,
+              stroke: isUniversal ? "var(--blue)" : "rgba(120,180,255,0.4)",
+              "stroke-width": 1
+            };
+            // Only add fill for universal exons
+            if (isUniversal) {
+              rectAttrs.fill = "var(--blueFill)";
+            } else {
+              rectAttrs.fill = "rgba(120,180,255,0.05)";
+            }
+            tracksSvg.appendChild(el("rect", rectAttrs));
+          }
         } else {
           // Track the first exon's X position for gene name alignment
           if (firstExonX === null) {
             firstExonX = exPos1;
           }
-          tracksSvg.appendChild(el("rect", {
-            x: exPos1, y: perpPos - 6,
-            width: Math.max(2, exPos2 - exPos1), height: 12,
-            rx: 4,
-            fill: "var(--blueFill)",
-            stroke: "var(--blue)",
-            "stroke-width": 1
-          }));
+          
+          const exonX = exPos1;
+          const exonY = perpPos - 6;
+          const exonW = Math.max(2, exPos2 - exPos1);
+          const exonH = 12;
+          
+          if (useWebGPU) {
+            // Draw fill (only if universal or very light for partial)
+            if (isUniversal || fillColor[3] > 0) {
+              instancedRenderer.addRect(
+                exonX * devicePixelRatio,
+                exonY * devicePixelRatio,
+                exonW * devicePixelRatio,
+                exonH * devicePixelRatio,
+                fillColor
+              );
+            }
+            // Draw stroke on top
+            instancedRenderer.addRect(
+              exonX * devicePixelRatio,
+              exonY * devicePixelRatio,
+              exonW * devicePixelRatio,
+              exonH * devicePixelRatio,
+              strokeColor
+            );
+          } else {
+            // SVG fallback
+            const rectAttrs = {
+              x: exonX, y: exonY,
+              width: exonW, height: exonH,
+              rx: 4,
+              stroke: isUniversal ? "var(--blue)" : "rgba(120,180,255,0.4)",
+              "stroke-width": 1
+            };
+            // Only add fill for universal exons
+            if (isUniversal) {
+              rectAttrs.fill = "var(--blueFill)";
+            } else {
+              rectAttrs.fill = "rgba(120,180,255,0.05)";
+            }
+            tracksSvg.appendChild(el("rect", rectAttrs));
+          }
         }
       }
 
-      // gene label near transcript start
+      // gene label near gene start
       if (isVertical) {
         // Gene name to the left of the gene track
         // Y position should match the bottom of the bottom-most exon
@@ -3729,7 +3927,7 @@
           "text-anchor": "start",
           "dominant-baseline": "text-after-edge",
           transform: "rotate(-90 " + (perpPos - 8) + " " + geneNameY + ")"
-        }, `${t.name}`));
+        }, `${gene.name}`));
         // Strand indicator to the right of the gene track (just a bit to the right)
         tracksSvg.appendChild(el("text", {
           x: perpPos + 8,
@@ -3737,7 +3935,7 @@
           class:"svg-small",
           "text-anchor": "start",
           "dominant-baseline": "middle"
-        }, t.strand === "+" ? "↑" : "↓"));
+        }, gene.strand === "+" ? "↑" : "↓"));
       } else {
         // In horizontal mode, X position should match the first exon's X position
         const geneNameX = firstExonX !== null ? firstExonX : pos1;
@@ -3745,12 +3943,12 @@
           x: geneNameX,
           y: perpPos - 12,
           class:"svg-geneName"
-        }, `${t.name}`));
+        }, `${gene.name}`));
         tracksSvg.appendChild(el("text", {
           x: pos1 + 2,
           y: perpPos + 16,
           class:"svg-small"
-        }, t.strand === "+" ? "→" : "←"));
+        }, gene.strand === "+" ? "→" : "←"));
       }
     }
     }
@@ -4707,8 +4905,73 @@
       }
     }
 
-    // Note: WebGPU render pass is now done at the end of renderFlowCanvas()
-    // to ensure variant columns are included after they're added
+    // Execute WebGPU render pass for tracks canvas (genes and repeats)
+    const hasTracksInstances = instancedRenderer && 
+        (instancedRenderer.rectInstances.length > 0 || 
+         instancedRenderer.triangleInstances.length > 0 || 
+         instancedRenderer.lineInstances.length > 0);
+    if (webgpuSupported && instancedRenderer && hasTracksInstances) {
+      try {
+        // Update projection matrix for current canvas size
+        const dpr = window.devicePixelRatio || 1;
+        const width = tracksWebGPU.clientWidth * dpr;
+        const height = tracksWebGPU.clientHeight * dpr;
+        
+        // Resize canvas if needed
+        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
+          tracksWebGPU.width = width;
+          tracksWebGPU.height = height;
+          webgpuCore.handleResize();
+        }
+        
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        
+        instancedRenderer.render(encoder, renderPass);
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        console.error("Tracks WebGPU render error:", error);
+        // Fallback: clear instances and continue with SVG only
+        instancedRenderer.clear();
+      }
+    } else if (webgpuSupported && instancedRenderer) {
+      // Clear WebGPU canvas if no instances to render
+      try {
+        const dpr = window.devicePixelRatio || 1;
+        const width = tracksWebGPU.clientWidth * dpr;
+        const height = tracksWebGPU.clientHeight * dpr;
+        
+        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
+          tracksWebGPU.width = width;
+          tracksWebGPU.height = height;
+          webgpuCore.handleResize();
+        }
+        
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        // Ignore errors when clearing
+      }
+    }
   }
 
   // -----------------------------
