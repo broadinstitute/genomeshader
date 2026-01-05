@@ -346,7 +346,7 @@ class GenomeShader:
         else:
             raise ConnectionError(f"Failed to retrieve data from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
 
-        # Transform UCSC gene data to transcript format
+        # Transform UCSC gene data to transcript format, then group by gene and compute exon union
         transcripts = []
         if not isinstance(gene_data, list):
             # If gene_data is not a list, return empty (shouldn't happen but be safe)
@@ -431,34 +431,109 @@ class GenomeShader:
                 print(f"Warning: Failed to parse gene entry: {e}")
                 continue
         
-        # Sort transcripts by start position for lane assignment
-        transcripts.sort(key=lambda t: t['start'])
+        # Group transcripts by gene name
+        genes_dict = {}
+        for transcript in transcripts:
+            gene_name = transcript['name']
+            if gene_name not in genes_dict:
+                genes_dict[gene_name] = []
+            genes_dict[gene_name].append(transcript)
+        
+        # Compute exon union for each gene
+        gene_models = []
+        for gene_name, gene_transcripts in genes_dict.items():
+            if not gene_transcripts:
+                continue
+            
+            # Compute gene span: union of all transcript spans
+            gene_start = min(t['start'] for t in gene_transcripts)
+            gene_end = max(t['end'] for t in gene_transcripts)
+            
+            # Get strand (should be same for all transcripts of a gene)
+            strand = gene_transcripts[0]['strand']
+            
+            # Collect all exons from all transcripts
+            all_exons = []
+            for transcript in gene_transcripts:
+                for exon in transcript['exons']:
+                    all_exons.append((exon[0], exon[1]))
+            
+            # Sort exons by start position
+            all_exons.sort(key=lambda x: x[0])
+            
+            # Merge overlapping/adjacent exons to create union
+            merged_exons = []
+            if all_exons:
+                current_start, current_end = all_exons[0]
+                for exon_start, exon_end in all_exons[1:]:
+                    # If overlapping or adjacent (within 1bp), merge
+                    if exon_start <= current_end + 1:
+                        current_end = max(current_end, exon_end)
+                    else:
+                        # No overlap, save current and start new
+                        merged_exons.append((current_start, current_end))
+                        current_start, current_end = exon_start, exon_end
+                # Add the last merged exon
+                merged_exons.append((current_start, current_end))
+            
+            # For each merged exon, determine if it's universal (in all transcripts) or partial
+            exon_models = []
+            for merged_start, merged_end in merged_exons:
+                # Count how many transcripts contain this exon
+                # An exon is "contained" if the merged exon overlaps with any exon in the transcript
+                transcript_count = 0
+                for transcript in gene_transcripts:
+                    has_overlap = False
+                    for exon_start, exon_end in transcript['exons']:
+                        # Check if merged exon overlaps with transcript exon
+                        if not (merged_end < exon_start or merged_start > exon_end):
+                            has_overlap = True
+                            break
+                    if has_overlap:
+                        transcript_count += 1
+                
+                # Mark as universal if present in all transcripts, otherwise partial
+                is_universal = (transcript_count == len(gene_transcripts))
+                exon_models.append([merged_start, merged_end, is_universal])
+            
+            # Create gene model
+            gene_model = {
+                'name': gene_name,
+                'strand': strand,
+                'start': gene_start,
+                'end': gene_end,
+                'exons': exon_models,
+            }
+            gene_models.append(gene_model)
+        
+        # Sort gene models by start position for lane assignment
+        gene_models.sort(key=lambda g: g['start'])
         
         # Assign lanes to avoid overlaps (simple greedy algorithm)
         lanes = [[], [], []]  # Three lanes
-        for transcript in transcripts:
+        for gene_model in gene_models:
             assigned = False
             for lane_idx in range(3):
-                # Check if transcript overlaps with any existing transcript in this lane
+                # Check if gene overlaps with any existing gene in this lane
                 overlaps = False
                 for existing in lanes[lane_idx]:
                     # Check if intervals overlap
-                    if not (transcript['end'] < existing['start'] or transcript['start'] > existing['end']):
+                    if not (gene_model['end'] < existing['start'] or gene_model['start'] > existing['end']):
                         overlaps = True
                         break
                 
                 if not overlaps:
-                    transcript['lane'] = lane_idx
-                    lanes[lane_idx].append(transcript)
+                    gene_model['lane'] = lane_idx
+                    lanes[lane_idx].append(gene_model)
                     assigned = True
                     break
             
             # If no lane available, assign to lane 0 anyway (will overlap)
             if not assigned:
-                transcript['lane'] = 0
-                lanes[0].append(transcript)
+                gene_model['lane'] = 0
+                lanes[0].append(gene_model)
         
-        return transcripts
+        return gene_models
 
     def repeats(self, contig: str, start: int, end: int, track: str = "rmsk") -> List[dict]:
         """
@@ -887,6 +962,7 @@ class GenomeShader:
 
         # Transform variant data for frontend if we have variant data
         variants_data = []
+        insertion_variants_lookup = []  # Precomputed sorted list for coordinate transformations
         if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
             # Get unique variant positions and their alleles
             # Include vcf_id if available, otherwise it will be None
@@ -1056,6 +1132,17 @@ class GenomeShader:
                     if key not in sample_genotypes[sample_name]:
                         sample_genotypes[sample_name][key] = genotype
             
+            # Helper function to format allele labels (matches JavaScript formatAlleleLabel logic)
+            def format_allele_label(allele):
+                """Format allele label to match JavaScript formatAlleleLabel function."""
+                if not allele or allele == ".":
+                    return ". (no-call)"
+                length = len(allele)
+                length_label = "1 bp" if length == 1 else f"{length} bp"
+                # Truncate to 50 bp and add "..." if longer
+                display_allele = allele[:50] + "..." if length > 50 else allele
+                return f"{display_allele} ({length_label})"
+            
             # Convert to frontend format
             for idx, (pos, variant_info) in enumerate(sorted(variant_groups.items())):
                 # Use VCF ID if available (numeric IDs like "59434" are valid), otherwise use variant_id index
@@ -1072,6 +1159,43 @@ class GenomeShader:
                     if key in sample_data:
                         variant_genotypes[sample_name] = sample_data[key]
                 
+                # Precompute variant type metadata for performance
+                ref_allele = variant_info["refAllele"]
+                alt_alleles = variant_info["altAlleles"]
+                ref_len = len(ref_allele) if ref_allele else 0
+                
+                # Check if any alt allele is longer than ref (insertion)
+                is_insertion = False
+                max_insertion_length = 0
+                is_deletion = False
+                variant_type = "snv"  # default
+                
+                if alt_alleles:
+                    for alt in alt_alleles:
+                        alt_len = len(alt) if alt else 0
+                        if alt_len > ref_len:
+                            is_insertion = True
+                            max_insertion_length = max(max_insertion_length, alt_len - ref_len)
+                        elif alt_len < ref_len:
+                            is_deletion = True
+                
+                # Determine variant type
+                if is_insertion and is_deletion:
+                    variant_type = "complex"  # mixed insertion/deletion
+                elif is_insertion:
+                    variant_type = "insertion"
+                elif is_deletion:
+                    variant_type = "deletion"
+                else:
+                    variant_type = "snv"  # substitution or same length
+                
+                # Precompute insertion gap width in pixels (8px per inserted base)
+                insertion_gap_px = max_insertion_length * 8 if is_insertion else 0
+                
+                # Precompute formatted allele labels for performance
+                formatted_ref_allele = format_allele_label(ref_allele) if ref_allele else None
+                formatted_alt_alleles = [format_allele_label(alt) for alt in alt_alleles] if alt_alleles else []
+                
                 variants_data.append({
                     "id": variant_display_id,
                     "pos": variant_info["pos"],
@@ -1081,7 +1205,27 @@ class GenomeShader:
                     "alleleFrequencies": variant_info.get("alleleFrequencies", {}),
                     "sampleGenotypes": variant_genotypes,  # Add genotype data per sample
                     "displayIds": variant_info.get("variant_display_ids", [variant_display_id]),
+                    # Precomputed variant type metadata for performance
+                    "isInsertion": is_insertion,
+                    "maxInsertionLength": max_insertion_length,
+                    "variantType": variant_type,
+                    "insertionGapPx": insertion_gap_px,  # Precomputed gap width in pixels
+                    # Precomputed formatted allele labels for performance
+                    "formattedRefAllele": formatted_ref_allele,
+                    "formattedAltAlleles": formatted_alt_alleles,
                 })
+            
+            # Precompute sorted list of insertion variants for efficient coordinate transformation lookups
+            # This enables binary search instead of linear iteration
+            for variant in variants_data:
+                if variant.get("isInsertion") and variant.get("insertionGapPx", 0) > 0:
+                    insertion_variants_lookup.append({
+                        "id": variant["id"],
+                        "pos": variant["pos"],
+                        "insertionGapPx": variant["insertionGapPx"],
+                    })
+            # Sort by position for binary search
+            insertion_variants_lookup.sort(key=lambda v: v["pos"])
 
         # Load template HTML
         template_html = self._load_template_html()
@@ -1100,6 +1244,7 @@ class GenomeShader:
             'repeats_data': repeats_data,
             'reference_data': reference_sequence,
             'variants_data': variants_data,  # Add variant data to config
+            'insertion_variants_lookup': insertion_variants_lookup,  # Precomputed sorted list for coordinate transformations
             'data_bounds': {
                 'start': data_start,
                 'end': data_end,

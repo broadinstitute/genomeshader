@@ -640,6 +640,7 @@
 
       <div class="reads" id="reads">
         <canvas class="canvas" id="readsCanvas"></canvas>
+        <canvas id="readsWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
         <svg class="overlay" id="readsOverlay"></svg>
       </div>
 
@@ -880,14 +881,14 @@
           let halfSize = size * 0.5;
           let minDim = min(size.x, size.y);
           
-          // For very small rectangles (< 6px), don't apply rounding
+          // For very small rectangles (< 6px), don't apply rounding or stroke
           if (minDim < 6.0) {
             // Still need premultiplied alpha for correct blending
             return vec4<f32>(color.rgb * color.a, color.a);
           }
           
-          // Apply rounded corners with radius 6 pixels
-          let radius = 6.0;
+          // Apply rounded corners with radius 4 pixels (matching SVG rx=4)
+          let radius = 4.0;
           let actualRadius = min(radius, minDim * 0.5);
           
           // Proper rounded rectangle SDF
@@ -898,12 +899,32 @@
           // Distance to rounded rectangle: negative inside, positive outside
           let d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - actualRadius;
           
-          // Smooth edge with anti-aliasing (d < 0 means inside)
-          let alpha = 1.0 - smoothstep(-0.5, 0.5, d);
+          // Stroke width of 1 pixel
+          let strokeWidth = 1.0;
           
-          // Output premultiplied alpha for correct blending
-          let finalAlpha = color.a * alpha;
-          return vec4<f32>(color.rgb * finalAlpha, finalAlpha);
+          // Determine if we're in stroke region or fill region
+          // d < -strokeWidth: inside fill region
+          // -strokeWidth <= d < 0: in stroke region
+          // d >= 0: outside
+          
+          // Check if this is a "stroke-enabled" rectangle by looking at alpha
+          // If alpha > 0.5, it's a stroke rectangle (higher opacity = stroke color)
+          // If alpha <= 0.5, it's a fill rectangle (lower opacity = fill color)
+          let isStrokeRect = color.a > 0.5;
+          
+          if (isStrokeRect) {
+            // This is a stroke-only rectangle: only render pixels in the stroke band
+            // Stroke band is from d = -strokeWidth to d = 0
+            let strokeAlpha = smoothstep(-strokeWidth - 0.5, -strokeWidth + 0.5, d) * (1.0 - smoothstep(-0.5, 0.5, d));
+            let finalAlpha = color.a * strokeAlpha;
+            return vec4<f32>(color.rgb * finalAlpha, finalAlpha);
+          } else {
+            // This is a fill rectangle: render the interior (up to but not including stroke)
+            // Fill region is where d < -strokeWidth
+            let fillAlpha = 1.0 - smoothstep(-strokeWidth - 0.5, -strokeWidth + 0.5, d);
+            let finalAlpha = color.a * fillAlpha;
+            return vec4<f32>(color.rgb * finalAlpha, finalAlpha);
+          }
         }
       `;
 
@@ -1021,7 +1042,21 @@
         fragment: {
           module: fragmentModule,
           entryPoint: 'fs_main',
-          targets: [{ format: this.core.format }],
+          targets: [{
+            format: this.core.format,
+            blend: {
+              color: {
+                srcFactor: 'src-alpha',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+              alpha: {
+                srcFactor: 'one',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+            },
+          }],
         },
         primitive: {
           topology: 'triangle-list',
@@ -1094,7 +1129,21 @@
         fragment: {
           module: fragmentModule,
           entryPoint: 'fs_main',
-          targets: [{ format: this.core.format }],
+          targets: [{
+            format: this.core.format,
+            blend: {
+              color: {
+                srcFactor: 'src-alpha',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+              alpha: {
+                srcFactor: 'one',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+            },
+          }],
         },
         primitive: {
           topology: 'line-list',
@@ -2410,6 +2459,7 @@
   const tooltip = byId(root, "tooltip");
   const tracksWebGPU = byId(root, "tracksWebGPU");
   const flowWebGPU = byId(root, "flowWebGPU");
+  const readsWebGPU = byId(root, "readsWebGPU");
 
   // Initialize WebGPU infrastructure
   let webgpuCore = null;
@@ -2417,6 +2467,8 @@
   let flowWebGPUCore = null;
   let flowInstancedRenderer = null;
   let flowRibbonRenderer = null;
+  let readsWebGPUCore = null;
+  let readsInstancedRenderer = null;
   let webgpuSupported = false;
   let repeatHitTestData = []; // For tooltip hit testing
 
@@ -2461,6 +2513,13 @@
         await flowWebGPUCore.init(flowWebGPU);
         flowInstancedRenderer = new InstancedRenderer(flowWebGPUCore);
         flowRibbonRenderer = new BezierRibbonRenderer(flowWebGPUCore, { segments: 44 });
+      }
+
+      // Reads WebGPU (separate canvas)
+      if (readsWebGPU) {
+        readsWebGPUCore = new WebGPUCore();
+        await readsWebGPUCore.init(readsWebGPU);
+        readsInstancedRenderer = new InstancedRenderer(readsWebGPUCore);
       }
 
       webgpuSupported = true;
@@ -2538,13 +2597,19 @@
   }
 
   // Calculate total insertion gap width for expanded insertions (in pixels)
+  // Uses precomputed insertionGapPx from backend if available for performance
   function getTotalInsertionGapWidth() {
     let totalGap = 0;
     for (const variant of variants) {
       if (state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
-        const maxInsertLen = getMaxInsertionLength(variant);
-        // Each inserted base gets 8px width
-        totalGap += maxInsertLen * 8;
+        // Use precomputed gap width if available (performance optimization)
+        if (variant.hasOwnProperty('insertionGapPx')) {
+          totalGap += variant.insertionGapPx;
+        } else {
+          // Fallback to computation for backward compatibility
+          const maxInsertLen = getMaxInsertionLength(variant);
+          totalGap += maxInsertLen * 8;
+        }
       }
     }
     return totalGap;
@@ -2581,13 +2646,8 @@
     }
     
     // Calculate x position, accounting for insertion gaps before this position
-    let accumulatedGapPx = 0;
-    for (const variant of variants) {
-      if (variant.pos < bp && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
-        const maxInsertLen = getMaxInsertionLength(variant);
-        accumulatedGapPx += maxInsertLen * 8;
-      }
-    }
+    // Uses optimized binary search lookup if available for O(log n) performance
+    const accumulatedGapPx = getAccumulatedGapPx(bp, state.expandedInsertions);
     
     const bpOffset = bp - state.startBp;
     const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
@@ -2617,15 +2677,10 @@
     const t = (xPx - leftPad) / innerW;
     
     // Reverse calculation accounting for gaps - iterative refinement
+    // Uses optimized binary search lookup for O(log n) performance per iteration
     let bpEstimate = state.startBp + t * effectiveSpan;
     for (let iter = 0; iter < 5; iter++) {
-      let accumulatedGapPx = 0;
-      for (const variant of variants) {
-        if (variant.pos < bpEstimate && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
-          const maxInsertLen = getMaxInsertionLength(variant);
-          accumulatedGapPx += maxInsertLen * 8;
-        }
-      }
+      const accumulatedGapPx = getAccumulatedGapPx(bpEstimate, state.expandedInsertions);
       const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
       bpEstimate = state.startBp + (t * effectiveSpan) - accumulatedGapBp;
     }
@@ -2663,13 +2718,8 @@
     }
     
     // Calculate y position, accounting for insertion gaps before this position
-    let accumulatedGapPx = 0;
-    for (const variant of variants) {
-      if (variant.pos < bp && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
-        const maxInsertLen = getMaxInsertionLength(variant);
-        accumulatedGapPx += maxInsertLen * 8;
-      }
-    }
+    // Uses optimized binary search lookup if available for O(log n) performance
+    const accumulatedGapPx = getAccumulatedGapPx(bp, state.expandedInsertions);
     
     const bpOffset = bp - state.startBp;
     const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
@@ -2709,15 +2759,10 @@
     const t = Math.max(0, Math.min(1, normalizedPos));
     
     // Reverse calculation accounting for gaps - iterative refinement
+    // Uses optimized binary search lookup for O(log n) performance per iteration
     let bpEstimate = state.startBp + t * effectiveSpan;
     for (let iter = 0; iter < 5; iter++) {
-      let accumulatedGapPx = 0;
-      for (const variant of variants) {
-        if (variant.pos < bpEstimate && state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
-          const maxInsertLen = getMaxInsertionLength(variant);
-          accumulatedGapPx += maxInsertLen * 8;
-        }
-      }
+      const accumulatedGapPx = getAccumulatedGapPx(bpEstimate, state.expandedInsertions);
       const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
       bpEstimate = state.startBp + (t * effectiveSpan) - accumulatedGapBp;
     }
@@ -2784,29 +2829,98 @@
   }
   
   // Helper to check if variant is an insertion
+  // Uses precomputed value from backend if available, otherwise computes it
   function isInsertion(variant) {
+    // Use precomputed value if available (performance optimization)
+    if (variant.hasOwnProperty('isInsertion')) {
+      return variant.isInsertion === true;
+    }
+    // Fallback to computation for backward compatibility
     if (!variant.refAllele || !variant.altAlleles) return false;
     const refLen = variant.refAllele.length;
     return variant.altAlleles.some(alt => alt.length > refLen);
   }
   
   // Get the longest insertion allele length for a variant
+  // Uses precomputed value from backend if available, otherwise computes it
   function getMaxInsertionLength(variant) {
+    // Use precomputed value if available (performance optimization)
+    if (variant.hasOwnProperty('maxInsertionLength')) {
+      return variant.maxInsertionLength || 0;
+    }
+    // Fallback to computation for backward compatibility
     if (!variant.refAllele || !variant.altAlleles) return 0;
     const refLen = variant.refAllele.length;
     return Math.max(...variant.altAlleles.map(alt => Math.max(0, alt.length - refLen)));
   }
 
+  // Precomputed sorted list of insertion variants for efficient coordinate transformations
+  // Loaded from config if available
+  let insertionVariantsLookup = [];
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.insertion_variants_lookup) {
+    insertionVariantsLookup = window.GENOMESHADER_CONFIG.insertion_variants_lookup;
+    console.log(`Loaded ${insertionVariantsLookup.length} insertion variants for coordinate transformation lookup`);
+  }
+
+  // Optimized function to get accumulated gap pixels up to a position
+  // Uses binary search on precomputed sorted list for O(log n) performance
+  // Filters by expanded insertions at runtime (since that's dynamic state)
+  function getAccumulatedGapPx(bp, expandedInsertions) {
+    if (!insertionVariantsLookup || insertionVariantsLookup.length === 0) {
+      // Fallback to linear search if lookup table not available
+      let accumulatedGapPx = 0;
+      for (const variant of variants) {
+        if (variant.pos < bp && expandedInsertions.has(variant.id) && isInsertion(variant)) {
+          if (variant.hasOwnProperty('insertionGapPx')) {
+            accumulatedGapPx += variant.insertionGapPx;
+          } else {
+            const maxInsertLen = getMaxInsertionLength(variant);
+            accumulatedGapPx += maxInsertLen * 8;
+          }
+        }
+      }
+      return accumulatedGapPx;
+    }
+
+    // Binary search to find all insertion variants before position bp
+    let left = 0;
+    let right = insertionVariantsLookup.length - 1;
+    let lastIndex = -1;
+    
+    // Find the rightmost insertion variant with pos < bp
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      if (insertionVariantsLookup[mid].pos < bp) {
+        lastIndex = mid;
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+    
+    // Sum gaps for all variants up to lastIndex that are expanded
+    let accumulatedGapPx = 0;
+    for (let i = 0; i <= lastIndex; i++) {
+      const lookupVariant = insertionVariantsLookup[i];
+      if (expandedInsertions.has(lookupVariant.id)) {
+        accumulatedGapPx += lookupVariant.insertionGapPx;
+      }
+    }
+    
+    return accumulatedGapPx;
+  }
+
   // Genes: load from config or use empty array as fallback
+  // Note: transcripts_data now contains gene models (exon union) instead of individual transcripts
   let transcripts = [];
   if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.transcripts_data) {
     const data = window.GENOMESHADER_CONFIG.transcripts_data;
-    // Data should already be an array of transcript objects
+    // Data should already be an array of gene model objects
     if (Array.isArray(data)) {
       transcripts = data;
-      console.log(`Loaded ${transcripts.length} transcripts for genes track`);
+      console.log(`Loaded ${transcripts.length} gene models for genes track`);
     } else {
-      console.warn("Transcripts data is not in expected array format:", data);
+      console.warn("Gene models data is not in expected array format:", data);
     }
   } else {
     console.warn("No transcripts_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
@@ -3585,19 +3699,39 @@
         geneStartX = 16;
       }
 
+      // Use WebGPU for lane separator lines if available
+      const devicePixelRatio = window.devicePixelRatio || 1;
+      const useWebGPU = webgpuSupported && instancedRenderer;
+      
       for (let lane=0; lane<lanes; lane++) {
         if (isVertical) {
           const x = geneStartX + lane*laneDim + laneDim/2;
-          tracksSvg.appendChild(el("line", {
-            x1: x, x2: x, y1: 16, y2: H-16,
-            stroke: "rgba(127,127,127,0.14)"
-          }));
+          if (useWebGPU) {
+            instancedRenderer.addLine(
+              x * devicePixelRatio, 16 * devicePixelRatio,
+              x * devicePixelRatio, (H-16) * devicePixelRatio,
+              0x7F7F7F, 0.14
+            );
+          } else {
+            tracksSvg.appendChild(el("line", {
+              x1: x, x2: x, y1: 16, y2: H-16,
+              stroke: "rgba(127,127,127,0.14)"
+            }));
+          }
         } else {
           const y = geneStartY + lane*laneDim + laneDim/2;
-          tracksSvg.appendChild(el("line", {
-            x1: 16, x2: W-16, y1: y, y2: y,
-            stroke: "rgba(127,127,127,0.14)"
-          }));
+          if (useWebGPU) {
+            instancedRenderer.addLine(
+              16 * devicePixelRatio, y * devicePixelRatio,
+              (W-16) * devicePixelRatio, y * devicePixelRatio,
+              0x7F7F7F, 0.14
+            );
+          } else {
+            tracksSvg.appendChild(el("line", {
+              x1: 16, x2: W-16, y1: y, y2: y,
+              stroke: "rgba(127,127,127,0.14)"
+            }));
+          }
         }
       }
 
@@ -3605,72 +3739,133 @@
         const dir = strand === "-" ? -1 : 1;
         const step = 24;
         const start = Math.min(pos1, pos2), end = Math.max(pos1, pos2);
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const useWebGPU = webgpuSupported && instancedRenderer;
+        
         for (let p = start + 10; p < end - 10; p += step) {
           const size = 5;
           if (isVert) {
             const cy = p;
-            const p1 = `${perpPos},${cy}`;
-            const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
-            const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
-            tracksSvg.appendChild(el("polygon", {
-              points: `${p1} ${p2} ${p3}`,
-              fill: "rgba(127,127,127,0.45)"
-            }));
+            if (useWebGPU) {
+              // Triangle: tip at (perpPos, cy), base at (perpPos ± size*0.8, cy + dir*size)
+              instancedRenderer.addTriangle(
+                perpPos * devicePixelRatio, cy * devicePixelRatio,
+                (perpPos - dir*size*0.8) * devicePixelRatio, (cy + dir*size) * devicePixelRatio,
+                (perpPos + dir*size*0.8) * devicePixelRatio, (cy + dir*size) * devicePixelRatio,
+                0x78B4FF, 0.50
+              );
+            } else {
+              const p1 = `${perpPos},${cy}`;
+              const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
+              const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
+              tracksSvg.appendChild(el("polygon", {
+                points: `${p1} ${p2} ${p3}`,
+                fill: "rgba(120,180,255,0.50)"
+              }));
+            }
           } else {
             const cx = p;
-            const p1 = `${cx},${perpPos}`;
-            const p2 = `${cx - dir*size},${perpPos - size*0.8}`;
-            const p3 = `${cx - dir*size},${perpPos + size*0.8}`;
-            tracksSvg.appendChild(el("polygon", {
-              points: `${p1} ${p2} ${p3}`,
-              fill: "rgba(127,127,127,0.45)"
-            }));
+            if (useWebGPU) {
+              // Triangle: tip at (cx, perpPos), base at (cx - dir*size, perpPos ± size*0.8)
+              instancedRenderer.addTriangle(
+                cx * devicePixelRatio, perpPos * devicePixelRatio,
+                (cx - dir*size) * devicePixelRatio, (perpPos - size*0.8) * devicePixelRatio,
+                (cx - dir*size) * devicePixelRatio, (perpPos + size*0.8) * devicePixelRatio,
+                0x78B4FF, 0.50
+              );
+            } else {
+              const p1 = `${cx},${perpPos}`;
+              const p2 = `${cx - dir*size},${perpPos - size*0.8}`;
+              const p3 = `${cx - dir*size},${perpPos + size*0.8}`;
+              tracksSvg.appendChild(el("polygon", {
+                points: `${p1} ${p2} ${p3}`,
+                fill: "rgba(120,180,255,0.50)"
+              }));
+            }
           }
         }
       }
 
-    for (const t of transcripts) {
-      const s = Math.max(t.start, state.startBp);
-      const e = Math.min(t.end,   state.endBp);
+    // Iterate over gene models (transcripts variable now contains gene models)
+    for (const gene of transcripts) {
+      const s = Math.max(gene.start, state.startBp);
+      const e = Math.min(gene.end,   state.endBp);
       if (e <= state.startBp || s >= state.endBp) continue;
 
       let perpPos;
       if (isVertical) {
-        perpPos = geneStartX + t.lane*laneDim + laneDim/2;
+        perpPos = geneStartX + gene.lane*laneDim + laneDim/2;
       } else {
-        perpPos = geneStartY + t.lane*laneDim + laneDim/2;
+        perpPos = geneStartY + gene.lane*laneDim + laneDim/2;
       }
 
-      // intron baseline (full transcript span)
+      // intron baseline (full gene span)
       const pos1 = genomePos(s);
       const pos2 = genomePos(e);
       
+      const devicePixelRatio = window.devicePixelRatio || 1;
+      const useWebGPU = webgpuSupported && instancedRenderer;
+      
       if (isVertical) {
-        tracksSvg.appendChild(el("line", {
-          x1: perpPos, x2: perpPos, y1: pos1, y2: pos2,
-          stroke: "rgba(127,127,127,0.40)",
-          "stroke-width": 1
-        }));
-        drawStrandArrows(pos1, pos2, perpPos, t.strand, true);
+        if (useWebGPU) {
+          instancedRenderer.addLine(
+            perpPos * devicePixelRatio, pos1 * devicePixelRatio,
+            perpPos * devicePixelRatio, pos2 * devicePixelRatio,
+            0x78B4FF, 0.45
+          );
+        } else {
+          tracksSvg.appendChild(el("line", {
+            x1: perpPos, x2: perpPos, y1: pos1, y2: pos2,
+            stroke: "rgba(120,180,255,0.45)",
+            "stroke-width": 1
+          }));
+        }
+        drawStrandArrows(pos1, pos2, perpPos, gene.strand, true);
       } else {
-        tracksSvg.appendChild(el("line", {
-          x1: pos1, x2: pos2, y1: perpPos, y2: perpPos,
-          stroke: "rgba(127,127,127,0.40)",
-          "stroke-width": 1
-        }));
-        drawStrandArrows(pos1, pos2, perpPos, t.strand, false);
+        if (useWebGPU) {
+          instancedRenderer.addLine(
+            pos1 * devicePixelRatio, perpPos * devicePixelRatio,
+            pos2 * devicePixelRatio, perpPos * devicePixelRatio,
+            0x78B4FF, 0.45
+          );
+        } else {
+          tracksSvg.appendChild(el("line", {
+            x1: pos1, x2: pos2, y1: perpPos, y2: perpPos,
+            stroke: "rgba(120,180,255,0.45)",
+            "stroke-width": 1
+          }));
+        }
+        drawStrandArrows(pos1, pos2, perpPos, gene.strand, false);
       }
 
-      // exons
+      // exons - now with union model and universal/partial distinction
       let firstExonY = null; // Track bottom-most exon Y position for gene name alignment in vertical mode
       let firstExonX = null; // Track first exon X position for gene name alignment in horizontal mode
-      for (const [es0, ee0] of t.exons) {
+      for (const exon of gene.exons) {
+        // Exon format: [start, end, is_universal]
+        const es0 = exon[0];
+        const ee0 = exon[1];
+        const isUniversal = exon[2] === true || exon[2] === undefined; // Default to universal if not specified
+        
         const es = Math.max(es0, state.startBp);
         const ee = Math.min(ee0, state.endBp);
         if (ee <= state.startBp || es >= state.endBp) continue;
         const exPos1 = genomePos(es);
         const exPos2 = genomePos(ee);
 
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const useWebGPU = webgpuSupported && instancedRenderer;
+        
+        // Determine colors based on universal vs partial
+        // Universal: solid fill + full opacity stroke
+        // Partial: very light fill + reduced opacity stroke
+        const fillColor = isUniversal 
+          ? [120/255, 180/255, 255/255, 0.18]  // Full opacity fill for universal
+          : [120/255, 180/255, 255/255, 0.05]; // Very light fill for partial
+        const strokeColor = isUniversal
+          ? [120/255, 180/255, 255/255, 0.9]   // Full opacity stroke for universal
+          : [120/255, 180/255, 255/255, 0.4]; // Reduced opacity stroke for partial
+        
         if (isVertical) {
           // In vertical mode, exons are horizontal bars
           // exPos1 and exPos2 are Y coordinates, need to ensure correct ordering
@@ -3682,31 +3877,99 @@
           if (firstExonY === null || yMax > firstExonY) {
             firstExonY = yMax;
           }
-          tracksSvg.appendChild(el("rect", {
-            x: perpPos - 6, y: yMin,
-            width: 12, height: Math.max(2, yMax - yMin),
-            rx: 4,
-            fill: "var(--blueFill)",
-            stroke: "var(--blue)",
-            "stroke-width": 1
-          }));
+          
+          const exonX = perpPos - 6;
+          const exonY = yMin;
+          const exonW = 12;
+          const exonH = Math.max(2, yMax - yMin);
+          
+          if (useWebGPU) {
+            // Draw fill (only if universal or very light for partial)
+            if (isUniversal || fillColor[3] > 0) {
+              instancedRenderer.addRect(
+                exonX * devicePixelRatio,
+                exonY * devicePixelRatio,
+                exonW * devicePixelRatio,
+                exonH * devicePixelRatio,
+                fillColor
+              );
+            }
+            // Draw stroke on top
+            instancedRenderer.addRect(
+              exonX * devicePixelRatio,
+              exonY * devicePixelRatio,
+              exonW * devicePixelRatio,
+              exonH * devicePixelRatio,
+              strokeColor
+            );
+          } else {
+            // SVG fallback
+            const rectAttrs = {
+              x: exonX, y: exonY,
+              width: exonW, height: exonH,
+              rx: 4,
+              stroke: isUniversal ? "var(--blue)" : "rgba(120,180,255,0.4)",
+              "stroke-width": 1
+            };
+            // Only add fill for universal exons
+            if (isUniversal) {
+              rectAttrs.fill = "var(--blueFill)";
+            } else {
+              rectAttrs.fill = "rgba(120,180,255,0.05)";
+            }
+            tracksSvg.appendChild(el("rect", rectAttrs));
+          }
         } else {
           // Track the first exon's X position for gene name alignment
           if (firstExonX === null) {
             firstExonX = exPos1;
           }
-          tracksSvg.appendChild(el("rect", {
-            x: exPos1, y: perpPos - 6,
-            width: Math.max(2, exPos2 - exPos1), height: 12,
-            rx: 4,
-            fill: "var(--blueFill)",
-            stroke: "var(--blue)",
-            "stroke-width": 1
-          }));
+          
+          const exonX = exPos1;
+          const exonY = perpPos - 6;
+          const exonW = Math.max(2, exPos2 - exPos1);
+          const exonH = 12;
+          
+          if (useWebGPU) {
+            // Draw fill (only if universal or very light for partial)
+            if (isUniversal || fillColor[3] > 0) {
+              instancedRenderer.addRect(
+                exonX * devicePixelRatio,
+                exonY * devicePixelRatio,
+                exonW * devicePixelRatio,
+                exonH * devicePixelRatio,
+                fillColor
+              );
+            }
+            // Draw stroke on top
+            instancedRenderer.addRect(
+              exonX * devicePixelRatio,
+              exonY * devicePixelRatio,
+              exonW * devicePixelRatio,
+              exonH * devicePixelRatio,
+              strokeColor
+            );
+          } else {
+            // SVG fallback
+            const rectAttrs = {
+              x: exonX, y: exonY,
+              width: exonW, height: exonH,
+              rx: 4,
+              stroke: isUniversal ? "var(--blue)" : "rgba(120,180,255,0.4)",
+              "stroke-width": 1
+            };
+            // Only add fill for universal exons
+            if (isUniversal) {
+              rectAttrs.fill = "var(--blueFill)";
+            } else {
+              rectAttrs.fill = "rgba(120,180,255,0.05)";
+            }
+            tracksSvg.appendChild(el("rect", rectAttrs));
+          }
         }
       }
 
-      // gene label near transcript start
+      // gene label near gene start
       if (isVertical) {
         // Gene name to the left of the gene track
         // Y position should match the bottom of the bottom-most exon
@@ -3718,7 +3981,7 @@
           "text-anchor": "start",
           "dominant-baseline": "text-after-edge",
           transform: "rotate(-90 " + (perpPos - 8) + " " + geneNameY + ")"
-        }, `${t.name}`));
+        }, `${gene.name}`));
         // Strand indicator to the right of the gene track (just a bit to the right)
         tracksSvg.appendChild(el("text", {
           x: perpPos + 8,
@@ -3726,7 +3989,7 @@
           class:"svg-small",
           "text-anchor": "start",
           "dominant-baseline": "middle"
-        }, t.strand === "+" ? "↑" : "↓"));
+        }, gene.strand === "+" ? "↑" : "↓"));
       } else {
         // In horizontal mode, X position should match the first exon's X position
         const geneNameX = firstExonX !== null ? firstExonX : pos1;
@@ -3734,12 +3997,12 @@
           x: geneNameX,
           y: perpPos - 12,
           class:"svg-geneName"
-        }, `${t.name}`));
+        }, `${gene.name}`));
         tracksSvg.appendChild(el("text", {
           x: pos1 + 2,
           y: perpPos + 16,
           class:"svg-small"
-        }, t.strand === "+" ? "→" : "←"));
+        }, gene.strand === "+" ? "→" : "←"));
       }
     }
     }
@@ -4248,8 +4511,15 @@
       
       // Draw expanded insertion sequence if expanded
       if (state.expandedInsertions.has(v.id) && isInsertion(v)) {
-        const maxInsertLen = getMaxInsertionLength(v);
-        const gapSize = maxInsertLen * 8;
+        // Use precomputed gap width if available (performance optimization)
+        let gapSize;
+        if (v.hasOwnProperty('insertionGapPx')) {
+          gapSize = v.insertionGapPx;
+        } else {
+          // Fallback to computation for backward compatibility
+          const maxInsertLen = getMaxInsertionLength(v);
+          gapSize = maxInsertLen * 8;
+        }
         
         // Draw inserted sequence (use longest alt allele)
         const longestAlt = v.altAlleles.reduce((a, b) => a.length > b.length ? a : b);
@@ -4518,24 +4788,28 @@
           }
           
           // Draw base letters using SVG (text rendering can stay SVG-based)
+          // Use solid colors for text (more vibrant than the semi-transparent rect colors)
+          const nucleotideTextColors = {
+            'A': '#00a000',  // green
+            'C': '#0000cc',  // blue
+            'G': '#cc8400',  // orange
+            'T': '#cc0000'   // red
+          };
           const fragment = document.createDocumentFragment();
           for (const b of basesToRender) {
             if (b.actualSize >= 8) {
               const base = b.base;
               const pos = b.pos;
               const actualSize = b.actualSize;
+              const textColor = nucleotideTextColors[base] || '#666';
               
               if (isVertical) {
                 const textEl = el("text", {
                   x: referenceX + referenceW / 2,
                   y: pos + actualSize / 2,
-                  class: "svg-small",
                   "text-anchor": "middle",
-                  fill: "#fff",
-                  stroke: "#000",
-                  "stroke-width": "0.5",
-                  "font-weight": "bold",
                   "dominant-baseline": "middle",
+                  style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`,
                   transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
                 }, base);
                 fragment.appendChild(textEl);
@@ -4543,13 +4817,9 @@
                 const textEl = el("text", {
                   x: pos + actualSize / 2,
                   y: referenceY + referenceH / 2,
-                  class: "svg-small",
                   "text-anchor": "middle",
-                  fill: "#fff",
-                  stroke: "#000",
-                  "stroke-width": "0.5",
-                  "font-weight": "bold",
-                  "dominant-baseline": "middle"
+                  "dominant-baseline": "middle",
+                  style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`
                 }, base);
                 fragment.appendChild(textEl);
               }
@@ -4558,13 +4828,21 @@
           tracksSvg.appendChild(fragment);
         } else {
           // Fallback to SVG rendering
+          // Use solid colors for text (more vibrant than the semi-transparent rect colors)
+          const svgTextColors = {
+            'A': '#00a000',  // green
+            'C': '#0000cc',  // blue
+            'G': '#cc8400',  // orange
+            'T': '#cc0000'   // red
+          };
           const fragment = document.createDocumentFragment();
           
           for (const b of basesToRender) {
             const pos = b.pos;
             const actualSize = b.actualSize;
             const base = b.base;
-            const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+            const rectColor = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+            const textColor = svgTextColors[base] || '#666';
             
             if (isVertical) {
               fragment.appendChild(el("rect", {
@@ -4572,7 +4850,7 @@
                 y: pos,
                 width: referenceW,
                 height: actualSize - 0.5,
-                fill: color
+                fill: rectColor
               }));
 
               // Draw base letter if space allows
@@ -4580,13 +4858,9 @@
                 const textEl = el("text", {
                   x: referenceX + referenceW / 2,
                   y: pos + actualSize / 2,
-                  class: "svg-small",
                   "text-anchor": "middle",
-                  fill: "#fff",
-                  stroke: "#000",
-                  "stroke-width": "0.5",
-                  "font-weight": "bold",
                   "dominant-baseline": "middle",
+                  style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`,
                   transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
                 }, base);
                 fragment.appendChild(textEl);
@@ -4597,7 +4871,7 @@
                 y: referenceY,
                 width: actualSize - 0.5,
                 height: referenceH,
-                fill: color
+                fill: rectColor
               }));
 
               // Draw base letter if space allows
@@ -4605,13 +4879,9 @@
                 const textEl = el("text", {
                   x: pos + actualSize / 2,
                   y: referenceY + referenceH / 2,
-                  class: "svg-small",
                   "text-anchor": "middle",
-                  fill: "#fff",
-                  stroke: "#000",
-                  "stroke-width": "0.5",
-                  "font-weight": "bold",
-                  "dominant-baseline": "middle"
+                  "dominant-baseline": "middle",
+                  style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`
                 }, base);
                 fragment.appendChild(textEl);
               }
@@ -4696,8 +4966,73 @@
       }
     }
 
-    // Note: WebGPU render pass is now done at the end of renderFlowCanvas()
-    // to ensure variant columns are included after they're added
+    // Execute WebGPU render pass for tracks canvas (genes and repeats)
+    const hasTracksInstances = instancedRenderer && 
+        (instancedRenderer.rectInstances.length > 0 || 
+         instancedRenderer.triangleInstances.length > 0 || 
+         instancedRenderer.lineInstances.length > 0);
+    if (webgpuSupported && instancedRenderer && hasTracksInstances) {
+      try {
+        // Update projection matrix for current canvas size
+        const dpr = window.devicePixelRatio || 1;
+        const width = tracksWebGPU.clientWidth * dpr;
+        const height = tracksWebGPU.clientHeight * dpr;
+        
+        // Resize canvas if needed
+        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
+          tracksWebGPU.width = width;
+          tracksWebGPU.height = height;
+          webgpuCore.handleResize();
+        }
+        
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        
+        instancedRenderer.render(encoder, renderPass);
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        console.error("Tracks WebGPU render error:", error);
+        // Fallback: clear instances and continue with SVG only
+        instancedRenderer.clear();
+      }
+    } else if (webgpuSupported && instancedRenderer) {
+      // Clear WebGPU canvas if no instances to render
+      try {
+        const dpr = window.devicePixelRatio || 1;
+        const width = tracksWebGPU.clientWidth * dpr;
+        const height = tracksWebGPU.clientHeight * dpr;
+        
+        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
+          tracksWebGPU.width = width;
+          tracksWebGPU.height = height;
+          webgpuCore.handleResize();
+        }
+        
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        // Ignore errors when clearing
+      }
+    }
   }
 
   // -----------------------------
@@ -5343,7 +5678,27 @@
 
     // Helper function to format allele with length suffix
     // Make it globally accessible for drag handlers
-    window.formatAlleleLabel = function formatAlleleLabel(allele) {
+    // Uses precomputed formatted labels from backend if available for performance
+    window.formatAlleleLabel = function formatAlleleLabel(allele, variant) {
+      // If variant is provided and has precomputed formatted labels, use them
+      if (variant) {
+        // Check for no-call
+        if (!allele || allele === ".") {
+          return ". (no-call)";
+        }
+        // Check for reference allele
+        if (variant.hasOwnProperty('formattedRefAllele') && variant.refAllele === allele) {
+          return variant.formattedRefAllele;
+        }
+        // Check for alt alleles
+        if (variant.hasOwnProperty('formattedAltAlleles') && variant.altAlleles) {
+          const altIndex = variant.altAlleles.indexOf(allele);
+          if (altIndex >= 0 && altIndex < variant.formattedAltAlleles.length) {
+            return variant.formattedAltAlleles[altIndex];
+          }
+        }
+      }
+      // Fallback to computation for backward compatibility or when variant not provided
       if (!allele || allele === ".") {
         return ". (no-call)";
       }
@@ -5353,6 +5708,58 @@
       const displayAllele = length > 50 ? allele.substring(0, 50) + "..." : allele;
       return `${displayAllele} (${lengthLabel})`;
     };
+    
+    // Helper function to get all formatted labels for a variant
+    // Uses precomputed formatted labels from backend if available for performance
+    function getFormattedLabelsForVariant(variant) {
+      const labels = [];
+      const labelToAllele = new Map();
+      
+      // Use precomputed formatted labels if available
+      if (variant.hasOwnProperty('formattedRefAllele') && variant.hasOwnProperty('formattedAltAlleles')) {
+        // Add no-call label
+        const noCallLabel = ". (no-call)";
+        labels.push(noCallLabel);
+        labelToAllele.set(noCallLabel, ".");
+        
+        // Add reference allele label
+        if (variant.formattedRefAllele) {
+          labels.push(variant.formattedRefAllele);
+          labelToAllele.set(variant.formattedRefAllele, variant.refAllele || ".");
+        }
+        
+        // Add alt allele labels
+        if (variant.formattedAltAlleles && variant.altAlleles) {
+          for (let i = 0; i < variant.formattedAltAlleles.length && i < variant.altAlleles.length; i++) {
+            const label = variant.formattedAltAlleles[i];
+            const allele = variant.altAlleles[i];
+            labels.push(label);
+            labelToAllele.set(label, allele);
+          }
+        }
+      } else {
+        // Fallback to computation for backward compatibility
+        const noCallLabel = formatAlleleLabel(".");
+        labels.push(noCallLabel);
+        labelToAllele.set(noCallLabel, ".");
+        
+        if (variant.refAllele) {
+          const refLabel = formatAlleleLabel(variant.refAllele);
+          labels.push(refLabel);
+          labelToAllele.set(refLabel, variant.refAllele);
+        }
+        
+        if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+          for (let k = 0; k < variant.altAlleles.length; k++) {
+            const altLabel = formatAlleleLabel(variant.altAlleles[k]);
+            labels.push(altLabel);
+            labelToAllele.set(altLabel, variant.altAlleles[k]);
+          }
+        }
+      }
+      
+      return { labels, labelToAllele };
+    }
     
     // Helper function to extract allele string from formatted label
     function extractAlleleFromLabel(label) {
@@ -5388,18 +5795,27 @@
           strokeColor = `rgba(100,150,255,${currentOpacity})`;
         } else {
           // Determine variant type by comparing ref to alts
+          // Use precomputed variantType if available (performance optimization)
           let isDeletion = false;
           let isInsertion = false;
           
-          if (variant.altAlleles && Array.isArray(variant.altAlleles) && variant.altAlleles.length > 0) {
-            // Check if any alt is shorter than ref (deletion) or longer than ref (insertion)
-            const hasShorterAlt = variant.altAlleles.some(alt => alt.length < refLen);
-            const hasLongerAlt = variant.altAlleles.some(alt => alt.length > refLen);
-            
-            if (hasShorterAlt && !hasLongerAlt) {
-              isDeletion = true;
-            } else if (hasLongerAlt && !hasShorterAlt) {
-              isInsertion = true;
+          if (variant.hasOwnProperty('variantType')) {
+            // Use precomputed variant type
+            const variantType = variant.variantType;
+            isDeletion = variantType === 'deletion' || variantType === 'complex';
+            isInsertion = variantType === 'insertion' || variantType === 'complex';
+          } else {
+            // Fallback to computation for backward compatibility
+            if (variant.altAlleles && Array.isArray(variant.altAlleles) && variant.altAlleles.length > 0) {
+              // Check if any alt is shorter than ref (deletion) or longer than ref (insertion)
+              const hasShorterAlt = variant.altAlleles.some(alt => alt.length < refLen);
+              const hasLongerAlt = variant.altAlleles.some(alt => alt.length > refLen);
+              
+              if (hasShorterAlt && !hasLongerAlt) {
+                isDeletion = true;
+              } else if (hasLongerAlt && !hasShorterAlt) {
+                isInsertion = true;
+              }
             }
           }
           
@@ -5447,27 +5863,33 @@
       if (!alleleFrequencies || Object.keys(alleleFrequencies).length === 0) {
         const equalSize = Math.max(minSize, (availableSpace - (numAlleles - 1) * gap) / numAlleles);
         const sizes = {};
-        const labels = [formatAlleleLabel(".")];
-        if (variant.refAllele) {
-          labels.push(formatAlleleLabel(variant.refAllele));
-        }
-        if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
-          for (let k = 0; k < variant.altAlleles.length; k++) {
-            labels.push(formatAlleleLabel(variant.altAlleles[k]));
-          }
-        }
+        
+        // Use helper function to get formatted labels (uses precomputed values if available)
+        const { labels, labelToAllele } = getFormattedLabelsForVariant(variant);
+        
+        // Get precomputed labels for key mapping
+        const noCallLabel = ". (no-call)";
+        const refLabel = variant.hasOwnProperty('formattedRefAllele') && variant.formattedRefAllele
+          ? variant.formattedRefAllele
+          : (variant.refAllele ? formatAlleleLabel(variant.refAllele) : null);
+        
         for (const label of labels) {
           // Map label to allele key
-          const noCallLabel = formatAlleleLabel(".");
-          const refLabel = variant.refAllele ? formatAlleleLabel(variant.refAllele) : null;
           let key = ".";
           if (label === noCallLabel) {
             key = ".";
           } else if (label === refLabel) {
             key = "ref";
           } else {
-            // Find which alt allele this is
-            if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+            // Find which alt allele this is using labelToAllele map or fallback
+            const actualAllele = labelToAllele.get(label);
+            if (actualAllele && variant.altAlleles && Array.isArray(variant.altAlleles)) {
+              const altIndex = variant.altAlleles.indexOf(actualAllele);
+              if (altIndex >= 0) {
+                key = `a${altIndex + 1}`;
+              }
+            } else if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+              // Fallback: find by comparing formatted labels
               const altIndex = variant.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
               if (altIndex >= 0) {
                 key = `a${altIndex + 1}`;
@@ -5539,24 +5961,8 @@
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         
         // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
-        // Deduplicate alleles to avoid showing the same allele twice (e.g., when ref == alt)
-        const uniqueAlleles = new Set();
-        uniqueAlleles.add("."); // no-call allele
-        if (v.refAllele) {
-          uniqueAlleles.add(v.refAllele);
-        }
-        if (v.altAlleles && Array.isArray(v.altAlleles)) {
-          for (let k = 0; k < v.altAlleles.length; k++) {
-            uniqueAlleles.add(v.altAlleles[k]);
-          }
-        }
-        // Convert to formatted labels array and create mapping from label to actual allele
-        const labelToAllele = new Map();
-        let labels = Array.from(uniqueAlleles).map(allele => {
-          const label = formatAlleleLabel(allele);
-          labelToAllele.set(label, allele);
-          return label;
-        });
+        // Use helper function to get formatted labels (uses precomputed values if available)
+        const { labels, labelToAllele } = getFormattedLabelsForVariant(v);
         
         // Get order from state, or use default
         let order = state.variantAlleleOrder.get(v.id);
@@ -5569,11 +5975,21 @@
         const alleleSizes = calculateAlleleSizes(v, trackDimension, MIN_NODE_SIZE, gap, order.length);
         
         // Map labels to allele keys for size lookup
-        const noCallLabel = formatAlleleLabel(".");
-        const refLabel = v.refAllele ? formatAlleleLabel(v.refAllele) : null;
+        // Use precomputed labels if available
+        const noCallLabel = ". (no-call)";
+        const refLabel = v.hasOwnProperty('formattedRefAllele') && v.formattedRefAllele
+          ? v.formattedRefAllele
+          : (v.refAllele ? formatAlleleLabel(v.refAllele) : null);
         function getAlleleKey(label) {
           if (label === noCallLabel) return ".";
           if (label === refLabel) return "ref";
+          // Use labelToAllele map for efficient lookup
+          const actualAllele = labelToAllele.get(label);
+          if (actualAllele && v.altAlleles && Array.isArray(v.altAlleles)) {
+            const altIndex = v.altAlleles.indexOf(actualAllele);
+            if (altIndex >= 0) return `a${altIndex + 1}`;
+          }
+          // Fallback: find by comparing formatted labels
           if (v.altAlleles && Array.isArray(v.altAlleles)) {
             const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
             if (altIndex >= 0) return `a${altIndex + 1}`;
@@ -5636,12 +6052,41 @@
           // Get colors based on allele type (use actual allele from map, not extracted from label)
           const actualAllele = labelToAllele.get(label) || extractAlleleFromLabel(label);
           const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
-          ctx.fillStyle = colors.fillColor;
+          
+          // Use WebGPU for fill if available, otherwise fall back to Canvas2D
+          const devicePixelRatio = window.devicePixelRatio || 1;
+          const useWebGPU = webgpuSupported && flowInstancedRenderer;
+          
+          if (useWebGPU) {
+            // Parse rgba color string to array for WebGPU
+            const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+            if (fillMatch) {
+              const r = parseInt(fillMatch[1]) / 255;
+              const g = parseInt(fillMatch[2]) / 255;
+              const b = parseInt(fillMatch[3]) / 255;
+              const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
+              // Scale coordinates to physical pixels for WebGPU
+              flowInstancedRenderer.addRect(
+                nodeX * devicePixelRatio,
+                nodeY * devicePixelRatio,
+                nodeW * devicePixelRatio,
+                nodeH * devicePixelRatio,
+                [r, g, b, a]
+              );
+            }
+          } else {
+            // Fallback to Canvas2D
+            ctx.fillStyle = colors.fillColor;
+            ctx.beginPath();
+            roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
+            ctx.fill();
+          }
+          
+          // Stroke always uses Canvas2D (minimal overhead for borders)
           ctx.strokeStyle = colors.strokeColor;
           ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
-          ctx.fill();
           ctx.stroke();
 
           // Store label info for drawing after all nodes
@@ -5744,24 +6189,8 @@
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         
         // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
-        // Deduplicate alleles to avoid showing the same allele twice (e.g., when ref == alt)
-        const uniqueAlleles = new Set();
-        uniqueAlleles.add("."); // no-call allele
-        if (v.refAllele) {
-          uniqueAlleles.add(v.refAllele);
-        }
-        if (v.altAlleles && Array.isArray(v.altAlleles)) {
-          for (let k = 0; k < v.altAlleles.length; k++) {
-            uniqueAlleles.add(v.altAlleles[k]);
-          }
-        }
-        // Convert to formatted labels array and create mapping from label to actual allele
-        const labelToAllele = new Map();
-        let labels = Array.from(uniqueAlleles).map(allele => {
-          const label = formatAlleleLabel(allele);
-          labelToAllele.set(label, allele);
-          return label;
-        });
+        // Use helper function to get formatted labels (uses precomputed values if available)
+        const { labels, labelToAllele } = getFormattedLabelsForVariant(v);
         
         // Get order from state, or use default
         let order = state.variantAlleleOrder.get(v.id);
@@ -5774,11 +6203,21 @@
         const alleleSizes = calculateAlleleSizes(v, trackDimension, MIN_NODE_SIZE, gap, order.length);
         
         // Map labels to allele keys for size lookup
-        const noCallLabel = formatAlleleLabel(".");
-        const refLabel = v.refAllele ? formatAlleleLabel(v.refAllele) : null;
+        // Use precomputed labels if available
+        const noCallLabel = ". (no-call)";
+        const refLabel = v.hasOwnProperty('formattedRefAllele') && v.formattedRefAllele
+          ? v.formattedRefAllele
+          : (v.refAllele ? formatAlleleLabel(v.refAllele) : null);
         function getAlleleKey(label) {
           if (label === noCallLabel) return ".";
           if (label === refLabel) return "ref";
+          // Use labelToAllele map for efficient lookup
+          const actualAllele = labelToAllele.get(label);
+          if (actualAllele && v.altAlleles && Array.isArray(v.altAlleles)) {
+            const altIndex = v.altAlleles.indexOf(actualAllele);
+            if (altIndex >= 0) return `a${altIndex + 1}`;
+          }
+          // Fallback: find by comparing formatted labels
           if (v.altAlleles && Array.isArray(v.altAlleles)) {
             const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
             if (altIndex >= 0) return `a${altIndex + 1}`;
@@ -5847,12 +6286,41 @@
           // Get colors based on allele type (use actual allele from map, not extracted from label)
           const actualAllele = labelToAllele.get(label) || extractAlleleFromLabel(label);
           const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
-          ctx.fillStyle = colors.fillColor;
+          
+          // Use WebGPU for fill if available, otherwise fall back to Canvas2D
+          const devicePixelRatio = window.devicePixelRatio || 1;
+          const useWebGPU = webgpuSupported && flowInstancedRenderer;
+          
+          if (useWebGPU) {
+            // Parse rgba color string to array for WebGPU
+            const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+            if (fillMatch) {
+              const r = parseInt(fillMatch[1]) / 255;
+              const g = parseInt(fillMatch[2]) / 255;
+              const b = parseInt(fillMatch[3]) / 255;
+              const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
+              // Scale coordinates to physical pixels for WebGPU
+              flowInstancedRenderer.addRect(
+                nodeX * devicePixelRatio,
+                nodeY * devicePixelRatio,
+                nodeW * devicePixelRatio,
+                nodeH * devicePixelRatio,
+                [r, g, b, a]
+              );
+            }
+          } else {
+            // Fallback to Canvas2D
+            ctx.fillStyle = colors.fillColor;
+            ctx.beginPath();
+            roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
+            ctx.fill();
+          }
+          
+          // Stroke always uses Canvas2D (minimal overhead for borders)
           ctx.strokeStyle = colors.strokeColor;
           ctx.lineWidth = isDragging ? 2 : 1;
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
-          ctx.fill();
           ctx.stroke();
 
           // Store label info for drawing after all nodes
@@ -6353,6 +6821,10 @@
     const layout = getTrackLayout();
     const readsLayout = layout.find(l => l.track.id === "reads");
     if (!readsLayout || readsLayout.track.collapsed) {
+      // Clear WebGPU renderer instances if collapsed
+      if (readsInstancedRenderer) {
+        readsInstancedRenderer.clear();
+      }
       return; // Don't render if collapsed
     }
 
@@ -6362,6 +6834,11 @@
     ctx.setTransform(1,0,0,1,0,0);
     ctx.clearRect(0,0,readsCanvas.width,readsCanvas.height);
     ctx.scale(dpr, dpr);
+    
+    // Clear WebGPU renderer instances
+    if (readsInstancedRenderer) {
+      readsInstancedRenderer.clear();
+    }
 
     const isVertical = isVerticalMode();
     const W = readsWidthPx(), H = readsHeightPx();
@@ -6393,12 +6870,34 @@
         const y2 = yGenomeCanonical(bpEnd, H);
         const x = left + col*colW + 2;
         const w = colW - 6;
+        const y = Math.min(y1, y2);
+        const h = Math.max(6, Math.abs(y2-y1));
 
-        ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+        // Use WebGPU for fill if available, otherwise fall back to Canvas2D
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const useWebGPU = webgpuSupported && readsInstancedRenderer;
+        
+        if (useWebGPU) {
+          // Add rectangle to WebGPU renderer
+          readsInstancedRenderer.addRect(
+            x * devicePixelRatio,
+            y * devicePixelRatio,
+            w * devicePixelRatio,
+            h * devicePixelRatio,
+            [120/255, 180/255, 255/255, alpha]
+          );
+        } else {
+          // Fallback to Canvas2D
+          ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+          ctx.beginPath();
+          roundRect(ctx, x, y, w, h, 6);
+          ctx.fill();
+        }
+        
+        // Stroke always uses Canvas2D (minimal overhead for borders)
         ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
         ctx.beginPath();
-        roundRect(ctx, x, Math.min(y1, y2), w, Math.max(6, Math.abs(y2-y1)), 6);
-        ctx.fill();
+        roundRect(ctx, x, y, w, h, 6);
         ctx.stroke();
       }
 
@@ -6446,12 +6945,34 @@
         const x2 = xGenomeCanonical(bpEnd, W);
         const y = top + row*rowH + 2;
         const h = rowH - 6;
+        const x = x1;
+        const w = Math.max(6, x2-x1);
 
-        ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+        // Use WebGPU for fill if available, otherwise fall back to Canvas2D
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const useWebGPU = webgpuSupported && readsInstancedRenderer;
+        
+        if (useWebGPU) {
+          // Add rectangle to WebGPU renderer
+          readsInstancedRenderer.addRect(
+            x * devicePixelRatio,
+            y * devicePixelRatio,
+            w * devicePixelRatio,
+            h * devicePixelRatio,
+            [120/255, 180/255, 255/255, alpha]
+          );
+        } else {
+          // Fallback to Canvas2D
+          ctx.fillStyle = `rgba(120,180,255,${alpha})`;
+          ctx.beginPath();
+          roundRect(ctx, x, y, w, h, 6);
+          ctx.fill();
+        }
+        
+        // Stroke always uses Canvas2D (minimal overhead for borders)
         ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
         ctx.beginPath();
-        roundRect(ctx, x1, y, Math.max(6, x2-x1), h, 6);
-        ctx.fill();
+        roundRect(ctx, x, y, w, h, 6);
         ctx.stroke();
       }
 
@@ -6523,23 +7044,25 @@
     }
     */
 
-    // Execute WebGPU render pass after variant columns are added
-    if (webgpuSupported && instancedRenderer && 
-        (instancedRenderer.rectInstances.length > 0 || instancedRenderer.lineInstances.length > 0)) {
+    // Execute WebGPU render pass after read rectangles are added
+    // Render to readsWebGPU canvas (separate from tracksWebGPU)
+    const hasReadsInstances = readsInstancedRenderer && 
+        (readsInstancedRenderer.rectInstances.length > 0 || readsInstancedRenderer.lineInstances.length > 0);
+    if (webgpuSupported && readsInstancedRenderer && hasReadsInstances) {
       try {
         // Update projection matrix for current canvas size
         const devicePixelRatio = window.devicePixelRatio || 1;
-        const width = tracksWebGPU.clientWidth * devicePixelRatio;
-        const height = tracksWebGPU.clientHeight * devicePixelRatio;
+        const width = readsWebGPU.clientWidth * devicePixelRatio;
+        const height = readsWebGPU.clientHeight * devicePixelRatio;
         
-        if (tracksWebGPU.width !== width || tracksWebGPU.height !== height) {
-          tracksWebGPU.width = width;
-          tracksWebGPU.height = height;
-          webgpuCore.handleResize();
+        if (readsWebGPU.width !== width || readsWebGPU.height !== height) {
+          readsWebGPU.width = width;
+          readsWebGPU.height = height;
+          readsWebGPUCore.handleResize();
         }
         
-        const encoder = webgpuCore.createCommandEncoder();
-        const texture = webgpuCore.getCurrentTexture();
+        const encoder = readsWebGPUCore.createCommandEncoder();
+        const texture = readsWebGPUCore.getCurrentTexture();
         const renderPass = encoder.beginRenderPass({
           colorAttachments: [{
             view: texture.createView(),
@@ -6549,19 +7072,19 @@
           }],
         });
         
-        instancedRenderer.render(encoder, renderPass);
+        readsInstancedRenderer.render(encoder, renderPass);
         renderPass.end();
-        webgpuCore.submit([encoder.finish()]);
+        readsWebGPUCore.submit([encoder.finish()]);
       } catch (error) {
-        console.error("WebGPU render error:", error);
-        // Fallback: clear instances and continue with SVG only
-        instancedRenderer.clear();
+        console.error("Reads WebGPU render error:", error);
+        // Fallback: clear instances and continue with Canvas2D only
+        readsInstancedRenderer.clear();
       }
-    } else if (webgpuSupported && instancedRenderer) {
+    } else if (webgpuSupported && readsInstancedRenderer) {
       // Clear WebGPU canvas if no instances to render
       try {
-        const encoder = webgpuCore.createCommandEncoder();
-        const texture = webgpuCore.getCurrentTexture();
+        const encoder = readsWebGPUCore.createCommandEncoder();
+        const texture = readsWebGPUCore.getCurrentTexture();
         const renderPass = encoder.beginRenderPass({
           colorAttachments: [{
             view: texture.createView(),
@@ -6571,7 +7094,7 @@
           }],
         });
         renderPass.end();
-        webgpuCore.submit([encoder.finish()]);
+        readsWebGPUCore.submit([encoder.finish()]);
       } catch (error) {
         // Ignore errors when clearing
       }
@@ -6726,6 +7249,55 @@
     }
   }
 
+  // Throttle utility for mousemove handlers (16ms = ~60fps)
+  function throttle(func, delay) {
+    let lastCall = 0;
+    let timeoutId = null;
+    return function(...args) {
+      const now = Date.now();
+      const timeSinceLastCall = now - lastCall;
+      
+      if (timeSinceLastCall >= delay) {
+        lastCall = now;
+        func.apply(this, args);
+      } else {
+        // Clear any pending timeout
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+        }
+        // Schedule call for after delay
+        timeoutId = setTimeout(() => {
+          lastCall = Date.now();
+          func.apply(this, args);
+        }, delay - timeSinceLastCall);
+      }
+    };
+  }
+
+  // Debounce utility for ResizeObserver callbacks (100ms delay)
+  function debounce(func, delay) {
+    let timeoutId = null;
+    return function(...args) {
+      // Clear any pending timeout
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      // Schedule call for after delay
+      timeoutId = setTimeout(() => {
+        func.apply(this, args);
+      }, delay);
+    };
+  }
+
+  // Selective rendering for hover-only state changes (no SVG rebuild)
+  function renderHoverOnly() {
+    // Only redraw canvas elements affected by hover state
+    // Skip expensive SVG rebuilds and layout recalculations
+    renderFlowCanvas();
+    renderReadsCanvas();
+    updateTooltip();
+  }
+
   function renderAll() {
     updateDerived();
     updateTracksHeight();
@@ -6743,7 +7315,7 @@
   // Hit testing for WebGPU-rendered repeats (only add listeners once)
   if (tracksWebGPU && !tracksWebGPU._tooltipListenersAdded) {
     tracksWebGPU._tooltipListenersAdded = true;
-    tracksWebGPU.addEventListener('mousemove', (e) => {
+    const tracksWebGPUHoverHandler = (e) => {
       if (!webgpuSupported || repeatHitTestData.length === 0) return;
       
       const rect = tracksWebGPU.getBoundingClientRect();
@@ -6809,7 +7381,11 @@
         state.hoveredRepeatTooltip = null;
       }
       updateTooltip();
-    });
+    };
+    
+    // Throttle mousemove handler to 16ms (60fps)
+    const throttledTracksWebGPUHoverHandler = throttle(tracksWebGPUHoverHandler, 16);
+    tracksWebGPU.addEventListener('mousemove', throttledTracksWebGPUHoverHandler);
     
     tracksWebGPU.addEventListener('mouseleave', () => {
       state.hoveredRepeatTooltip = null;
@@ -6885,7 +7461,7 @@
           if (Math.abs(y - cy) < 10 && x >= junctionX) {
             if (state.hoveredVariantIndex !== variantIdx) {
               state.hoveredVariantIndex = variantIdx;
-              renderAll();
+              renderHoverOnly();
             }
             // Clear variant label tooltip when hovering column
             state.hoveredVariantLabelTooltip = null;
@@ -6909,7 +7485,7 @@
           if (dist < 5 && x >= x0 && x <= junctionX) {
             if (state.hoveredVariantIndex !== variantIdx) {
               state.hoveredVariantIndex = variantIdx;
-              renderAll();
+              renderHoverOnly();
             }
             // Clear variant label tooltip when hovering connector
             state.hoveredVariantLabelTooltip = null;
@@ -6955,7 +7531,7 @@
           if (Math.abs(x - cx) < 10 && y >= junctionY) {
             if (state.hoveredVariantIndex !== variantIdx) {
               state.hoveredVariantIndex = variantIdx;
-              renderAll();
+              renderHoverOnly();
             }
             // Clear variant label tooltip when hovering column
             state.hoveredVariantLabelTooltip = null;
@@ -6979,7 +7555,7 @@
           if (dist < 5 && y >= y0 && y <= junctionY) {
             if (state.hoveredVariantIndex !== variantIdx) {
               state.hoveredVariantIndex = variantIdx;
-              renderAll();
+              renderHoverOnly();
             }
             return;
           }
@@ -6989,7 +7565,7 @@
       // No variant hovered
       if (state.hoveredVariantIndex !== null) {
         state.hoveredVariantIndex = null;
-        renderAll();
+        renderHoverOnly();
       }
       // Clear variant label tooltip when not hovering anything
       if (state.hoveredVariantLabelTooltip !== null) {
@@ -7002,7 +7578,7 @@
       if (state.hoveredVariantIndex !== null || state.hoveredAlleleNode !== null) {
         state.hoveredVariantIndex = null;
         state.hoveredAlleleNode = null;
-        renderAll();
+        renderHoverOnly();
       }
       // Clear variant label tooltip when leaving flow canvas
       if (state.hoveredVariantLabelTooltip !== null) {
@@ -7489,7 +8065,7 @@
           if (Math.abs(y - vy) < 10 && x >= left) {
             if (state.hoveredVariantIndex !== idx) {
               state.hoveredVariantIndex = idx;
-              renderAll();
+              renderHoverOnly();
             }
             return;
           }
@@ -7507,7 +8083,7 @@
           if (Math.abs(x - vx) < 10 && y >= top) {
             if (state.hoveredVariantIndex !== idx) {
               state.hoveredVariantIndex = idx;
-              renderAll();
+              renderHoverOnly();
             }
             return;
           }
@@ -7517,18 +8093,20 @@
       // No variant hovered
       if (state.hoveredVariantIndex !== null) {
         state.hoveredVariantIndex = null;
-        renderAll();
+        renderHoverOnly();
       }
     };
     
     readsLeaveHandler = () => {
       if (state.hoveredVariantIndex !== null) {
         state.hoveredVariantIndex = null;
-        renderAll();
+        renderHoverOnly();
       }
     };
     
-    reads.addEventListener("mousemove", readsHoverHandler);
+    // Throttle mousemove handler to 16ms (60fps)
+    const throttledReadsHoverHandler = throttle(readsHoverHandler, 16);
+    reads.addEventListener("mousemove", throttledReadsHoverHandler);
     reads.addEventListener("mouseleave", readsLeaveHandler);
   }
 
@@ -8063,8 +8641,8 @@
   });
   }
 
-  // Resize
-  new ResizeObserver(() => {
+  // Resize - debounced to batch resize events (100ms delay)
+  new ResizeObserver(debounce(() => {
     // Handle WebGPU canvas resize
     if (webgpuCore && webgpuSupported) {
       try {
@@ -8074,9 +8652,9 @@
       }
     }
     renderAll();
-  }).observe(flow);
-  new ResizeObserver(() => renderAll()).observe(reads);
-  new ResizeObserver(() => {
+  }, 100)).observe(flow);
+  new ResizeObserver(debounce(() => renderAll(), 100)).observe(reads);
+  new ResizeObserver(debounce(() => {
     // Handle WebGPU canvas resize when tracks container resizes
     if (webgpuCore && webgpuSupported) {
       try {
@@ -8086,7 +8664,7 @@
       }
     }
     renderAll();
-  }).observe(tracksSvg);
+  }, 100)).observe(tracksSvg);
   window.addEventListener("resize", () => {
     // Handle WebGPU canvas resize
     if (webgpuCore && webgpuSupported) {
