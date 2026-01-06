@@ -15,6 +15,14 @@ import polars as pl
 from IPython.display import display, HTML
 import json
 
+# Try to import Comm for Jupyter comms
+try:
+    from ipykernel.comm import Comm
+    COMM_AVAILABLE = True
+except ImportError:
+    Comm = None
+    COMM_AVAILABLE = False
+
 import genomeshader.genomeshader as gs
 from . import staging
 
@@ -50,6 +58,12 @@ class GenomeShader:
         self._localhost_server: Optional[HTTPServer] = None
         self._localhost_port: Optional[int] = None
         self._localhost_thread: Optional[threading.Thread] = None
+        
+        # Comm for bidirectional communication
+        self._comm = None
+        
+        # Store last rendered locus for on-demand loading
+        self._last_locus = None
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
@@ -889,6 +903,10 @@ class GenomeShader:
         region_str = f"{ref_chr}:{ref_start}-{ref_end}"
         hash_input = f"{region_str}:{self.genome_build}"
         run_id = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()[:8]
+        
+        # Store view_id and locus for use in show() method and on-demand loading
+        self._last_view_id = run_id
+        self._last_locus = region_str
 
         # Create run directory structure
         try:
@@ -1230,8 +1248,11 @@ class GenomeShader:
         # Load template HTML
         template_html = self._load_template_html()
 
-        # Get manifest URL using localhost server
-        manifest_url = self._get_manifest_url(manifest_path)
+        # Get manifest URL using localhost server (available if needed later)
+        _ = self._get_manifest_url(manifest_path)
+
+        # Check if comms are available for bidirectional communication
+        comm_available = COMM_AVAILABLE
 
         # Build config dict first, then JSON-encode it
         config = {
@@ -1249,6 +1270,7 @@ class GenomeShader:
                 'start': data_start,
                 'end': data_end,
             },
+            'comm_available': comm_available,  # Indicates if Jupyter comms are available
         }
 
         # Get Jupyter origin for constructing absolute URLs
@@ -1265,10 +1287,8 @@ class GenomeShader:
                 # Default to localhost:8888 (common Jupyter port)
                 jupyter_origin = "http://localhost:8888"
         
-        # Build bootstrap snippet with manifest URL, config, and view ID
-        # Data will be fetched lazily via postMessage (not embedded)
+        # Build bootstrap snippet with config and view ID
         bootstrap = f"""<script>
-window.GENOMESHADER_MANIFEST_URL = {json.dumps(manifest_url)};
 window.GENOMESHADER_CONFIG = {json.dumps(config)};
 window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
 window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
@@ -1301,12 +1321,10 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         bootstrap_script = f"""
 <script type="text/javascript">
 // Bootstrap: Set window variables before template scripts run
-window.GENOMESHADER_MANIFEST_URL = {json.dumps(manifest_url)};
 window.GENOMESHADER_CONFIG = {json.dumps(config)};
 window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
 window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
 console.log('Genomeshader: Bootstrap variables set', {{
-  manifestUrl: window.GENOMESHADER_MANIFEST_URL,
   hasConfig: !!window.GENOMESHADER_CONFIG,
   viewId: window.GENOMESHADER_VIEW_ID
 }});
@@ -1526,8 +1544,72 @@ console.log('Genomeshader: Bootstrap variables set', {{
         locus_or_dataframe: Union[str, pl.DataFrame],
     ):
         html_script = self.render(locus_or_dataframe)
+        # view_id available via self._last_view_id if needed
 
-        # Display the HTML and JavaScript
+        # Register comm target for JavaScript to connect to
+        if COMM_AVAILABLE:
+            try:
+                from IPython import get_ipython
+                ip = get_ipython()
+                if ip is not None and hasattr(ip, 'kernel') and ip.kernel is not None:
+                    gs_instance = self
+                    
+                    def handle_comm_open(comm, msg):
+                        """Handle comm open from JavaScript."""
+                        print(f"Genomeshader: Comm opened, id: {comm.comm_id}")
+                        
+                        @comm.on_msg
+                        def _recv(msg):
+                            data = msg['content']['data']
+                            msg_type = data.get('type')
+                            request_id = data.get('request_id')
+                            
+                            if msg_type == 'test':
+                                comm.send({
+                                    'type': 'test_response',
+                                    'request_id': request_id,
+                                    'message': f'Hello from Python! Got: {data.get("message", "")}',
+                                })
+                            
+                            elif msg_type == 'fetch_reads':
+                                # Fetch reads for the current locus from the first attached BAM
+                                try:
+                                    locus = gs_instance._last_locus
+                                    if locus is None:
+                                        comm.send({
+                                            'type': 'fetch_reads_error',
+                                            'request_id': request_id,
+                                            'error': 'No locus available',
+                                        })
+                                        return
+                                    
+                                    # Use the Rust-based fetch
+                                    reads_df = gs_instance._session.fetch_reads_for_locus(locus)
+                                    
+                                    # Convert to JSON-serializable format
+                                    reads_data = reads_df.to_dict(as_series=False)
+                                    
+                                    comm.send({
+                                        'type': 'fetch_reads_response',
+                                        'request_id': request_id,
+                                        'locus': locus,
+                                        'reads': reads_data,
+                                        'count': len(reads_df),
+                                    })
+                                except Exception as e:
+                                    comm.send({
+                                        'type': 'fetch_reads_error',
+                                        'request_id': request_id,
+                                        'error': str(e),
+                                    })
+                        
+                        gs_instance._comm = comm
+                    
+                    ip.kernel.comm_manager.register_target('genomeshader', handle_comm_open)
+            except Exception as e:
+                print(f"Genomeshader: Failed to register comm target: {e}")
+        
+        # Display the HTML
         display(HTML(html_script))
 
 

@@ -622,6 +622,12 @@
           <span>Variable</span>
           <span class="menuRight">Super-pop</span>
         </div>
+
+        <div class="menuTitle">Data</div>
+        <div class="menuItem" id="loadReadsItem" role="menuitem">
+          <span>Load Reads</span>
+          <span class="menuRight" id="loadReadsLabel">▶</span>
+        </div>
       </div>
     </div>
 
@@ -1551,140 +1557,240 @@
   // -----------------------------
   // Genomeshader bootstrap
   // -----------------------------
-  // Store lazy loading status to display in HUD
-  window._genomeshaderLazyStatus = null;
-  
-  function showError(message) {
-    window._genomeshaderLazyStatus = { type: 'error', message };
-    updateHUDWithStatus();
-  }
-  
-  function showInfo(message) {
-    window._genomeshaderLazyStatus = { type: 'info', message };
-    updateHUDWithStatus();
-  }
-  
-  function updateHUDWithStatus() {
-    const hudEl = document.getElementById('hud');
-    if (!hudEl || !window._genomeshaderLazyStatus) return;
-    
-    const status = window._genomeshaderLazyStatus;
-    const statusColor = status.type === 'error' ? 'var(--accent)' : 'var(--text)';
-    const statusBorder = status.type === 'error' ? 'var(--accent)' : 'var(--border)';
-    
-    // Get current locus text if state is available
-    // Note: state is defined later in the script, so we'll update HUD with locus later
-    // For now, just show the status message
-    hudEl.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span>`;
-  }
-  
   // Determine host mode (inline or popup)
   const hostMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode) || 'inline';
-  
-  // True lazy loading via postMessage
-  const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
-  
-  if (!manifestUrl) {
-    showError('Missing GENOMESHADER_MANIFEST_URL');
-  } else {
-    
-    // Request manifest via postMessage to opener (Jupyter notebook window)
-    // The opener can fetch from localhost, avoiding CORS issues
-    let requestId = 0;
-    const pendingRequests = new Map();
-    
-    function requestData(url) {
-      return new Promise((resolve, reject) => {
-        // Inline mode: use direct fetch
-        if (hostMode === 'inline') {
-          fetch(url)
-            .then(response => {
-              if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-              }
-              return response.json();
-            })
-            .then(data => {
-              resolve(data);
-            })
-            .catch(error => {
-              reject(error);
-            });
-          return;
-        }
 
-        // Popup mode: use postMessage
-        const id = `req_${Date.now()}_${++requestId}`;
-        pendingRequests.set(id, { resolve, reject });
+  // -----------------------------
+  // Jupyter Comms (Classic Notebook) - Optimized
+  // -----------------------------
+  // Python registers a comm target 'genomeshader'
+  // We create a comm from JS to connect to it (lazy initialization)
+  
+  let genomeshaderComm = null;
+  let jupyterKernel = null; // Cache kernel reference
+  const pendingCommRequests = new Map();
+  let commInitialized = false;
+  
+  // Lazy initialization: only set up comm when actually needed
+  function ensureCommReady() {
+    if (commInitialized || genomeshaderComm) {
+      return Promise.resolve(genomeshaderComm);
+    }
+    
+    return new Promise(function(resolve, reject) {
+      const commAvailable = window.GENOMESHADER_CONFIG?.comm_available;
+      if (!commAvailable) {
+        reject(new Error('Comms not available'));
+        return;
+      }
+      
+      // Use cached kernel if available
+      if (jupyterKernel) {
+        setupComm(jupyterKernel).then(resolve).catch(reject);
+        return;
+      }
+      
+      // Try to get kernel (cached or load)
+      if (typeof Jupyter !== 'undefined' && Jupyter.notebook && Jupyter.notebook.kernel) {
+        jupyterKernel = Jupyter.notebook.kernel;
+        setupComm(jupyterKernel).then(resolve).catch(reject);
+      } else if (typeof require !== 'undefined') {
+        // Load Jupyter namespace once and cache it
+        require(['base/js/namespace'], function(Jupyter) {
+          if (Jupyter && Jupyter.notebook && Jupyter.notebook.kernel) {
+            jupyterKernel = Jupyter.notebook.kernel;
+            setupComm(jupyterKernel).then(resolve).catch(reject);
+          } else {
+            reject(new Error('Kernel not available'));
+          }
+        }, reject);
+      } else {
+        reject(new Error('Jupyter not available'));
+      }
+    });
+  }
+  
+  function setupComm(kernel) {
+    return new Promise(function(resolve, reject) {
+      try {
+        const comm = kernel.comm_manager.new_comm('genomeshader', {
+          view_id: window.GENOMESHADER_VIEW_ID
+        });
         
-        // Send request to opener
-        window.opener.postMessage({
-          type: 'genomeshader_fetch',
-          requestId: id,
-          url: url
-        }, '*');
+        comm.on_msg(function(msg) {
+          const data = msg.content.data;
+          
+          // Handle pending requests
+          const request = pendingCommRequests.get(data.request_id);
+          if (request) {
+            pendingCommRequests.delete(data.request_id);
+            request.resolve(data);
+          }
+          
+          // Dispatch event for other listeners
+          document.dispatchEvent(new CustomEvent('genomeshader_msg', { detail: data }));
+        });
         
-        // Set timeout
-        setTimeout(() => {
-          if (pendingRequests.has(id)) {
-            pendingRequests.delete(id);
+        genomeshaderComm = comm;
+        commInitialized = true;
+        resolve(comm);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+  
+  function sendCommMessage(type, data) {
+    return ensureCommReady().then(function(comm) {
+      return new Promise(function(resolve, reject) {
+        const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        pendingCommRequests.set(requestId, { resolve: resolve, reject: reject });
+        
+        comm.send({
+          type: type,
+          request_id: requestId,
+          ...data
+        });
+        
+        // Timeout
+        setTimeout(function() {
+          if (pendingCommRequests.has(requestId)) {
+            pendingCommRequests.delete(requestId);
             reject(new Error('Request timeout'));
           }
-        }, 30000); // 30 second timeout
+        }, 30000); // 30 second timeout for actual requests
       });
-    }
-    
-    // Listen for responses from opener (only in popup mode)
-    if (hostMode === 'popup') {
-      window.addEventListener('message', function(event) {
-        // Only accept messages from opener
-        if (event.source !== window.opener) {
-          return;
-        }
-        
-        const data = event.data;
-        if (data && data.type === 'genomeshader_fetch_response') {
-          const request = pendingRequests.get(data.requestId);
-          if (request) {
-            pendingRequests.delete(data.requestId);
-            if (data.success) {
-              request.resolve(data.data);
-            } else {
-              request.reject(new Error(data.error || 'Fetch failed'));
-            }
-          }
-        }
+    });
+  }
+  
+  // Defer comm initialization until after visualization renders
+  // Use requestAnimationFrame to ensure rendering happens first
+  function initCommLazy() {
+    // Wait for visualization to render first
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        // Initialize comm in background (non-blocking)
+        ensureCommReady().catch(function() {
+          // Silently fail - comm is optional
+        });
       });
-    }
+    });
+  }
+  
+  // Start lazy initialization after a short delay
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+      setTimeout(initCommLazy, 1000); // Wait 1s for visualization to render
+    });
+  } else {
+    setTimeout(initCommLazy, 1000);
+  }
+  
+  // -----------------------------
+  // On-demand Read Loading
+  // -----------------------------
+  // Reads data storage
+  let readsData = null;           // Raw reads from Python (array of read objects)
+  let loadedReadsLayout = null;   // Processed layout with row assignments
+  let readsLoading = false;       // Loading state
+  
+  // Process raw reads data into a layout structure
+  function processReadsData(rawReads) {
+    if (!rawReads || !rawReads.query_name) return null;
     
-    // Request manifest
-    requestData(manifestUrl)
-      .then(manifest => {
-        console.log('Loaded manifest via postMessage:', manifest);
-        
-        // Compute track URL
-        const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/') + 1);
-        const trackUrl = baseUrl + manifest.tracks.demo.url;
-        
-        // Request track file
-        return requestData(trackUrl)
-          .then(trackData => {
-            const recordCount = Array.isArray(trackData) ? trackData.length : 0;
-            showInfo(`Run ID: ${manifest.run_id}<br>Loaded ${recordCount} records`);
-          })
-          .catch(error => {
-            showError(`Failed to load track: ${error.message}`);
+    // Convert column-oriented data to row-oriented
+    const numRows = rawReads.query_name.length;
+    const reads = [];
+    
+    // Group by query_name to get unique reads (element_type 0 = READ)
+    const readMap = new Map();
+    for (let i = 0; i < numRows; i++) {
+      if (rawReads.element_type[i] === 0) { // READ element
+        const name = rawReads.query_name[i];
+        if (!readMap.has(name)) {
+          readMap.set(name, {
+            name: name,
+            start: rawReads.reference_start[i],
+            end: rawReads.reference_end[i],
+            isForward: rawReads.is_forward[i],
+            haplotype: rawReads.haplotype[i],
+            sample: rawReads.sample_name[i],
+            elements: []
           });
+        }
+      }
+    }
+    
+    // Add non-read elements (insertions, deletions, etc.)
+    for (let i = 0; i < numRows; i++) {
+      const name = rawReads.query_name[i];
+      const read = readMap.get(name);
+      if (read && rawReads.element_type[i] !== 0) {
+        read.elements.push({
+          type: rawReads.element_type[i],
+          start: rawReads.reference_start[i],
+          end: rawReads.reference_end[i],
+          sequence: rawReads.sequence[i]
+        });
+      }
+    }
+    
+    // Convert to array and sort by start position
+    const readArray = Array.from(readMap.values());
+    readArray.sort((a, b) => a.start - b.start);
+    
+    // Simple greedy packing: assign reads to rows
+    const rows = [];
+    for (const read of readArray) {
+      let placed = false;
+      for (let r = 0; r < rows.length; r++) {
+        const lastRead = rows[r][rows[r].length - 1];
+        if (read.start > lastRead.end + 10) { // 10bp gap
+          read.row = r;
+          rows[r].push(read);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        read.row = rows.length;
+        rows.push([read]);
+      }
+    }
+    
+    console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
+    return { reads: readArray, rowCount: rows.length };
+  }
+  
+  // Request reads from Python for the current locus
+  function fetchReadsFromPython() {
+    readsLoading = true;
+    renderAll(); // Show loading state
+    
+    return sendCommMessage('fetch_reads', {})
+      .then(function(response) {
+        readsLoading = false;
+        if (response.type === 'fetch_reads_response') {
+          console.log('Genomeshader: Received ' + response.count + ' read elements for locus ' + response.locus);
+          readsData = response.reads;
+          loadedReadsLayout = processReadsData(readsData);
+          renderAll(); // Re-render with new data
+          return loadedReadsLayout;
+        } else if (response.type === 'fetch_reads_error') {
+          throw new Error(response.error);
+        }
+        return null;
       })
-      .catch(error => {
-        showError(`Failed to load manifest: ${error.message}`);
+      .catch(function(err) {
+        readsLoading = false;
+        console.error('Genomeshader: Failed to fetch reads:', err);
+        renderAll();
+        throw err;
       });
   }
-
-  // -----------------------------
-  // Jupyter Comms Test - REMOVED
-  // This test code has been removed as it was showing unwanted dialogs
-  // -----------------------------
+  
+  // Expose for testing from console
+  window.genomeshader_fetchReads = fetchReadsFromPython;
 
   // -----------------------------
   // Theme + menu
@@ -2003,6 +2109,28 @@
       const next = (cur === "equidistant") ? "genomic" : "equidistant";
       setVariantLayoutMode(next);
       renderAll();
+    });
+  }
+
+  // Load Reads button in settings menu
+  const loadReadsItem = getElementById("loadReadsItem");
+  const loadReadsLabel = getElementById("loadReadsLabel");
+  
+  if (loadReadsItem) {
+    loadReadsItem.addEventListener("click", () => {
+      if (readsLoading) return; // Already loading
+      
+      loadReadsLabel.textContent = "⏳";
+      fetchReadsFromPython()
+        .then(() => {
+          loadReadsLabel.textContent = "✓";
+          setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
+        })
+        .catch((err) => {
+          loadReadsLabel.textContent = "✗";
+          console.error("Failed to load reads:", err);
+          setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
+        });
     });
   }
 
@@ -4726,8 +4854,9 @@
         const visibleBases = [];
         for (let i = 0; i < refSeq.length; i++) {
           // Calculate the actual genomic position for this base
-          // refSeq[i] corresponds to genomic position refSeqStartBp + i
-          const bp = refSeqStartBp + i;
+          // UCSC uses 0-based coordinates, but genomic positions are 1-based
+          // refSeq[i] corresponds to genomic position refSeqStartBp + i + 1 (1-based)
+          const bp = refSeqStartBp + i + 1;
           
           // Only render bases that are within the visible view
           if (bp < state.startBp || bp > state.endBp) continue;
@@ -6901,21 +7030,71 @@
         ctx.stroke();
       }
 
-      // a few fake reads
-      drawRead(100_030, 100_160, 1, 0.10);
-      drawRead(100_090, 100_240, 2, 0.12);
-      drawRead(100_210, 100_420, 3, 0.10);
-      drawRead(100_380, 100_610, 4, 0.11);
-      drawRead(100_590, 100_820, 5, 0.10);
-      drawRead(100_700, 100_900, 6, 0.11);
+      // Draw actual reads if available (vertical mode)
+      if (loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
+        const maxCols = Math.floor((W - left - 12) / colW);
+        for (const read of loadedReadsLayout.reads) {
+          if (read.row >= maxCols) continue;
+          if (read.end < state.startBp || read.start > state.endBp) continue;
+          
+          // Color based on haplotype
+          let color, alpha;
+          if (read.haplotype === 1) {
+            color = [255, 100, 100];
+            alpha = 0.5;
+          } else if (read.haplotype === 2) {
+            color = [100, 100, 255];
+            alpha = 0.5;
+          } else {
+            color = [150, 150, 150];
+            alpha = 0.35;
+          }
+          if (!read.isForward) alpha *= 0.7;
+          
+          const y1 = yGenomeCanonical(read.start, H);
+          const y2 = yGenomeCanonical(read.end, H);
+          const x = left + read.row * colW + 2;
+          const w = colW - 4;
+          const y = Math.min(y1, y2);
+          const h = Math.max(4, Math.abs(y2 - y1));
+          
+          const devicePixelRatio = window.devicePixelRatio || 1;
+          const useWebGPU = webgpuSupported && readsInstancedRenderer;
+          
+          if (useWebGPU) {
+            readsInstancedRenderer.addRect(
+              x * devicePixelRatio, y * devicePixelRatio,
+              w * devicePixelRatio, h * devicePixelRatio,
+              [color[0]/255, color[1]/255, color[2]/255, alpha]
+            );
+          } else {
+            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+            ctx.beginPath();
+            roundRect(ctx, x, y, w, h, 3);
+            ctx.fill();
+          }
+        }
+      } else if (readsLoading) {
+        ctx.fillStyle = cssVar("--muted");
+        ctx.font = "14px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Loading...", W/2, H/2);
+      } else {
+        ctx.fillStyle = cssVar("--muted");
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.globalAlpha = 0.5;
+        ctx.fillText("Load reads via console", W/2, H/2);
+        ctx.globalAlpha = 1.0;
+      }
 
       // variant guide lines (gray, blue when hovered)
       for (let idx = 0; idx < variants.length; idx++) {
         const v = variants[idx];
         if (v.pos < state.startBp || v.pos > state.endBp) continue;
         const isHovered = state.hoveredVariantIndex === idx;
-        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.5)";
-        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.3;
         ctx.lineWidth = isHovered ? 2.5 : 1;
         const y = yGenomeCanonical(v.pos, H);
         ctx.beginPath();
@@ -6976,21 +7155,138 @@
         ctx.stroke();
       }
 
-      // a few fake reads
-      drawRead(100_030, 100_160, 1, 0.10);
-      drawRead(100_090, 100_240, 2, 0.12);
-      drawRead(100_210, 100_420, 3, 0.10);
-      drawRead(100_380, 100_610, 4, 0.11);
-      drawRead(100_590, 100_820, 5, 0.10);
-      drawRead(100_700, 100_900, 6, 0.11);
+      // Draw actual reads if available, otherwise show placeholder
+      if (loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
+        // Render real reads
+        const maxRows = Math.floor((H - top - 12) / rowH);
+        
+        let renderedCount = 0;
+        for (const read of loadedReadsLayout.reads) {
+          if (read.row >= maxRows) continue;
+          if (read.end < state.startBp || read.start > state.endBp) continue;
+          renderedCount++;
+          
+          // Color based on haplotype
+          let color, alpha;
+          if (read.haplotype === 1) {
+            color = [255, 100, 100]; // Red for hap1
+            alpha = 0.5;
+          } else if (read.haplotype === 2) {
+            color = [100, 100, 255]; // Blue for hap2
+            alpha = 0.5;
+          } else {
+            color = [150, 150, 150]; // Gray for unphased
+            alpha = 0.35;
+          }
+          
+          // Direction indicator (lighter for reverse)
+          if (!read.isForward) alpha *= 0.7;
+          
+          const x1 = xGenomeCanonical(read.start, W);
+          const x2 = xGenomeCanonical(read.end, W);
+          const y = top + read.row * rowH + 2;
+          const h = rowH - 4;
+          const x = Math.max(0, x1);
+          const w = Math.max(4, Math.min(x2, W) - x);
+          
+          const devicePixelRatio = window.devicePixelRatio || 1;
+          const useWebGPU = webgpuSupported && readsInstancedRenderer;
+          
+          if (useWebGPU) {
+            readsInstancedRenderer.addRect(
+              x * devicePixelRatio,
+              y * devicePixelRatio,
+              w * devicePixelRatio,
+              h * devicePixelRatio,
+              [color[0]/255, color[1]/255, color[2]/255, alpha]
+            );
+          } else {
+            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+            ctx.beginPath();
+            roundRect(ctx, x, y, w, h, 3);
+            ctx.fill();
+          }
+          
+          // Draw direction arrow
+          ctx.fillStyle = `rgba(255,255,255,0.6)`;
+          const arrowSize = Math.min(6, w * 0.2);
+          if (read.isForward) {
+            // Arrow pointing right
+            ctx.beginPath();
+            ctx.moveTo(x + w - arrowSize - 2, y + h/2 - arrowSize/2);
+            ctx.lineTo(x + w - 2, y + h/2);
+            ctx.lineTo(x + w - arrowSize - 2, y + h/2 + arrowSize/2);
+            ctx.fill();
+          } else {
+            // Arrow pointing left
+            ctx.beginPath();
+            ctx.moveTo(x + arrowSize + 2, y + h/2 - arrowSize/2);
+            ctx.lineTo(x + 2, y + h/2);
+            ctx.lineTo(x + arrowSize + 2, y + h/2 + arrowSize/2);
+            ctx.fill();
+          }
+          
+          // Draw insertion/deletion/diff markers
+          for (const elem of read.elements) {
+            if (elem.start < state.startBp || elem.start > state.endBp) continue;
+            const ex = xGenomeCanonical(elem.start, W);
+            const ey = y;
+            const eh = h;
+            
+            if (elem.type === 2) { // Insertion - purple tick
+              ctx.fillStyle = 'rgba(200,100,255,0.9)';
+              ctx.fillRect(ex - 1, ey, 2, eh);
+            } else if (elem.type === 3) { // Deletion - black gap
+              const ex2 = xGenomeCanonical(elem.end, W);
+              ctx.fillStyle = 'rgba(0,0,0,0.4)';
+              ctx.fillRect(ex, ey + eh/4, ex2 - ex, eh/2);
+            } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
+              // Calculate base width (approximately 1bp in screen coords)
+              const baseWidth = Math.max(8, xGenomeCanonical(elem.start + 1, W) - ex);
+              
+              // Color based on nucleotide
+              const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
+              const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
+              const bgColor = nucColors[nuc] || '#9C27B0';
+              
+              // Draw background
+              ctx.fillStyle = bgColor;
+              ctx.fillRect(ex, ey + 1, baseWidth, eh - 2);
+              
+              // Draw nucleotide letter if there's enough space
+              if (baseWidth >= 6) {
+                ctx.fillStyle = 'white';
+                ctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(nuc, ex + baseWidth/2, ey + eh/2);
+              }
+            }
+          }
+        }
+      } else if (readsLoading) {
+        // Show loading indicator
+        ctx.fillStyle = cssVar("--muted");
+        ctx.font = "14px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Loading reads...", W/2, H/2);
+      } else {
+        // Show placeholder text
+        ctx.fillStyle = cssVar("--muted");
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.globalAlpha = 0.5;
+        ctx.fillText("Click 'Load Reads' or run genomeshader_fetchReads() to load", W/2, H/2);
+        ctx.globalAlpha = 1.0;
+      }
 
       // variant guide lines (gray, blue when hovered)
       for (let idx = 0; idx < variants.length; idx++) {
         const v = variants[idx];
         if (v.pos < state.startBp || v.pos > state.endBp) continue;
         const isHovered = state.hoveredVariantIndex === idx;
-        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.5)";
-        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.3;
         ctx.lineWidth = isHovered ? 2.5 : 1;
         const x = xGenomeCanonical(v.pos, W);
         ctx.beginPath();
@@ -7206,15 +7502,7 @@
 
   function renderHUD() {
     const locusText = `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
-
-    // Preserve lazy loading status if it exists
-    if (window._genomeshaderLazyStatus) {
-      const status = window._genomeshaderLazyStatus;
-      const statusColor = status.type === 'error' ? 'var(--accent)' : 'var(--text)';
-      hud.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span> | ${locusText}`;
-    } else {
-      hud.textContent = locusText;
-    }
+    hud.textContent = locusText;
 
     // In inline mode, show HUD and auto-hide after 3 seconds
     if (hostMode === 'inline') {

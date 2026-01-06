@@ -6,6 +6,7 @@ pub mod storage_local;
 pub mod variants;
 
 use stage::stage_data;
+use stage::fetch_reads_from_first_bam;
 use storage_gcs::*;
 
 use std::{ collections::{ HashSet, HashMap }, path::PathBuf };
@@ -262,6 +263,42 @@ impl Session {
         self.variant_files = HashSet::new();
 
         Ok(())
+    }
+
+    /// Fetch reads from the first attached BAM/CRAM for a given locus.
+    /// This is used for on-demand loading via Jupyter comms.
+    fn fetch_reads_for_locus(&self, locus: String) -> PyResult<PyDataFrame> {
+        let l_fmt = self.parse_locus(locus.clone())?;
+
+        if self.reads_cohort.is_empty() {
+            return Err(
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "No read files attached. Use attach_reads() first."
+                )
+            );
+        }
+
+        // Get the first attached BAM/CRAM
+        let (reads_url, cohort) = self.reads_cohort.iter().next().unwrap();
+        let cache_path = std::env::temp_dir();
+
+        match fetch_reads_from_first_bam(reads_url, cohort, &l_fmt.0, &l_fmt.1, &l_fmt.2, &cache_path) {
+            Ok(df) => Ok(PyDataFrame(df)),
+            Err(e) => Err(
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("Failed to fetch reads for locus '{}': {}", locus, e)
+                )
+            )
+        }
+    }
+
+    /// Get the list of attached read files
+    fn get_attached_reads(&self) -> PyResult<Vec<String>> {
+        let reads: Vec<String> = self.reads_cohort
+            .iter()
+            .map(|(url, _)| url.to_string())
+            .collect();
+        Ok(reads)
     }
 
     fn print(&self) {
