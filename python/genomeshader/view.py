@@ -1414,7 +1414,8 @@ console.log('Genomeshader: Bootstrap variables set', {{
   bottom: 0 !important;
   width: var(--sidebar-w, 240px) !important;
   z-index: 100 !important;
-  overflow: visible !important;
+  overflow-y: auto !important;
+  overflow-x: visible !important;
   pointer-events: auto !important;
   transition: width 0.2s ease;
 }}
@@ -1452,10 +1453,13 @@ console.log('Genomeshader: Bootstrap variables set', {{
   pointer-events: auto !important;
   opacity: 1 !important;
 }}
-/* Ensure sidebar toggle border is clickable */
+/* Ensure sidebar toggle border is clickable - but only on the right edge */
 #{container_id} .sidebar::after {{
-  z-index: 2147483000 !important;
+  z-index: 5 !important;
   pointer-events: auto !important;
+  width: 4px !important;
+  left: auto !important;
+  right: 0 !important;
 }}
 /* Ensure gear button is clickable and above everything in sidebar */
 #{container_id} .gearBtn {{
@@ -1476,6 +1480,63 @@ console.log('Genomeshader: Bootstrap variables set', {{
 #{container_id} .group {{
   pointer-events: auto !important;
   opacity: 1 !important;
+}}
+/* Ensure all form elements in sidebar are clickable and interactive */
+#{container_id} .sidebar select,
+#{container_id} .sidebar input,
+#{container_id} .sidebar button,
+#{container_id} .sidebar label {{
+  pointer-events: auto !important;
+  position: relative !important;
+  z-index: 200 !important;
+}}
+/* Style for select dropdown to ensure it's visible */
+#{container_id} .sidebar select {{
+  -webkit-appearance: menulist !important;
+  -moz-appearance: menulist !important;
+  appearance: menulist !important;
+  cursor: pointer !important;
+}}
+/* Style for range input to ensure it's interactive */
+#{container_id} .sidebar input[type="range"] {{
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+  cursor: pointer !important;
+}}
+/* Style for number input */
+#{container_id} .sidebar input[type="number"] {{
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+}}
+/* Style for text input */
+#{container_id} .sidebar input[type="text"] {{
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+  cursor: text !important;
+}}
+/* Fix for nested elements in sample selection section */
+#{container_id} #sampleStrategySection,
+#{container_id} #sampleStrategySection *,
+#{container_id} #sampleSearchSection,
+#{container_id} #sampleSearchSection *,
+#{container_id} #sampleContext,
+#{container_id} #sampleContext * {{
+  pointer-events: auto !important;
+}}
+/* Ensure sample strategy section has proper stacking context */
+#{container_id} #sampleStrategySection {{
+  position: relative !important;
+  z-index: 200 !important;
+}}
+#{container_id} #sampleSearchSection {{
+  position: relative !important;
+  z-index: 200 !important;
+}}
+/* Ensure sidebar content is above any potential overlays */
+#{container_id} .sidebar .sidebarHeader,
+#{container_id} .sidebar .group {{
+  position: relative !important;
+  z-index: 200 !important;
 }}
 /* Ensure menu is above everything - use fixed positioning set by JS */
 #{container_id} .menu {{

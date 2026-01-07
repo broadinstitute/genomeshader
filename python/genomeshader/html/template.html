@@ -135,7 +135,8 @@
       background: var(--panel);
       border-right: 1px solid var(--border2);
       padding: 12px;
-      overflow: visible;
+      overflow-y: auto;
+      overflow-x: visible;
       padding-bottom: 56px; /* space for gear button */
       transition: opacity 0.2s ease;
     }
@@ -295,6 +296,126 @@
     }
     .menuItem:hover { background: var(--panel2); }
     .menuRight { color: var(--muted); font-size: 12px; }
+    .menuHotkey {
+      color: var(--muted2);
+      font-size: 11px;
+      font-family: monospace;
+      background: var(--panel2);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 8px;
+    }
+    
+    /* Selection controls in sidebar */
+    .selectionBtn {
+      padding: 9px 10px;
+      border-radius: 10px;
+      background: var(--panel2);
+      border: 1px solid var(--border2);
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.2s ease;
+      text-align: left;
+    }
+    .selectionBtn:hover {
+      background: var(--panel);
+      border-color: var(--border);
+    }
+    .selectionBtn:active {
+      transform: scale(0.98);
+    }
+    .selectionBtn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    /* Combine toggle (AND/OR) */
+    .combineToggle.active {
+      background: var(--blue) !important;
+      color: white !important;
+    }
+    
+    /* Sample search results */
+    #sampleSearchResults {
+      font-size: 11px;
+    }
+    .sampleSearchResult {
+      padding: 6px 8px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--border2);
+    }
+    .sampleSearchResult:last-child {
+      border-bottom: none;
+    }
+    .sampleSearchResult:hover {
+      background: var(--panel2);
+    }
+    
+    /* Ensure all form elements in sidebar are clickable and interactive */
+    .sidebar select,
+    .sidebar input,
+    .sidebar button,
+    .sidebar label {
+      pointer-events: auto !important;
+      position: relative !important;
+      z-index: 200 !important;
+    }
+    
+    /* Style for select dropdown to ensure it's visible */
+    .sidebar select {
+      -webkit-appearance: menulist !important;
+      -moz-appearance: menulist !important;
+      appearance: menulist !important;
+      cursor: pointer !important;
+    }
+    
+    /* Style for range input to ensure it's interactive */
+    .sidebar input[type="range"] {
+      -webkit-appearance: auto !important;
+      appearance: auto !important;
+      cursor: pointer !important;
+    }
+    
+    /* Style for number input */
+    .sidebar input[type="number"] {
+      -webkit-appearance: auto !important;
+      appearance: auto !important;
+    }
+    
+    /* Style for text input */
+    .sidebar input[type="text"] {
+      -webkit-appearance: auto !important;
+      appearance: auto !important;
+      cursor: text !important;
+    }
+    
+    /* Fix for nested elements in sample selection section */
+    #sampleStrategySection,
+    #sampleStrategySection *,
+    #sampleSearchSection,
+    #sampleSearchSection *,
+    #sampleContext,
+    #sampleContext * {
+      pointer-events: auto !important;
+    }
+    
+    /* Ensure sample strategy section has proper stacking context */
+    #sampleStrategySection {
+      position: relative !important;
+      z-index: 200 !important;
+    }
+    #sampleSearchSection {
+      position: relative !important;
+      z-index: 200 !important;
+    }
+    /* Ensure sidebar content is above any potential overlays */
+    .sidebar .sidebarHeader,
+    .sidebar .group {
+      position: relative !important;
+      z-index: 200 !important;
+    }
 
     .main {
       position: relative;
@@ -582,7 +703,7 @@
 
 <body>
   <div class="app" style="position: relative; display: block;">
-    <div class="sidebar" id="sidebar" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
+    <div class="sidebar" id="sidebar" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto; overflow-y: auto;">
       <div class="sidebarHeader">
         <h3>Participant groups</h3>
       </div>
@@ -593,27 +714,94 @@
       <div class="group"><span>EUR</span><span class="pill">5340</span></div>
       <div class="group"><span>SAS</span><span class="pill">328</span></div>
 
+      <div class="sidebarHeader" style="margin-top: 20px;">
+        <h3>Selection</h3>
+      </div>
+
+      <!-- Context Indicator -->
+      <div id="sampleContext" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); font-size: 11px; color: var(--muted); display: none;">
+        <div id="contextText"></div>
+      </div>
+
+      <!-- Strategy Selection Section -->
+      <div id="sampleStrategySection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2);">
+        <div id="noSelectionHint" style="margin-bottom: 8px; font-size: 11px; color: var(--muted);">
+          Select an allele or edge in the alluvial to generate candidate samples.
+        </div>
+        
+        <!-- Strategy Dropdown -->
+        <div style="margin-bottom: 8px;">
+          <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;">Strategy</label>
+          <select id="sampleStrategy" disabled style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px;">
+            <option value="best_evidence">Best evidence</option>
+            <option value="most_diverse">Most diverse</option>
+            <option value="compare_branches">Compare branches</option>
+            <option value="carriers_controls">Carriers + controls</option>
+          </select>
+        </div>
+        
+        <!-- Combine Selection Toggle (AND/OR) -->
+        <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+          <label style="font-size: 11px; color: var(--muted);">Combine selection:</label>
+          <div style="display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--border2); border-radius: 6px; padding: 2px;">
+            <button id="combineAnd" class="combineToggle active" style="padding: 4px 8px; font-size: 11px; border: none; background: transparent; color: var(--text); border-radius: 4px; cursor: pointer;">AND</button>
+            <button id="combineOr" class="combineToggle" style="padding: 4px 8px; font-size: 11px; border: none; background: transparent; color: var(--muted); border-radius: 4px; cursor: pointer;">OR</button>
+          </div>
+        </div>
+        
+        <!-- Number of Samples Input -->
+        <div style="margin-bottom: 8px;">
+          <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;"># samples</label>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="range" id="sampleCountSlider" min="1" max="20" value="3" disabled style="flex: 1;">
+            <input type="number" id="sampleCountInput" min="1" max="20" value="3" disabled style="width: 50px; padding: 4px 6px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font-size: 12px; text-align: center;">
+          </div>
+        </div>
+        
+        <!-- Load Buttons -->
+        <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+          <button id="loadSamplesReplace" disabled class="selectionBtn" style="flex: 1; padding: 6px 10px; font-size: 12px;">Load (replace)</button>
+          <button id="loadSamplesAdd" disabled class="selectionBtn" style="flex: 1; padding: 6px 10px; font-size: 12px; display: none;">Load (add)</button>
+        </div>
+        
+        <!-- Preview -->
+        <div id="samplePreview" style="font-size: 11px; color: var(--muted); padding-top: 8px; border-top: 1px solid var(--border2); display: none;">
+          <div style="margin-bottom: 4px; color: var(--text);">Will load:</div>
+          <div id="samplePreviewList" style="color: var(--text);"></div>
+        </div>
+      </div>
+
+      <!-- Sample Search Section -->
+      <div class="sidebarHeader" style="margin-top: 20px;">
+        <h3>Sample Search</h3>
+      </div>
+
+      <div id="sampleSearchSection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); margin-bottom: 20px;">
+        <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;">
+        <div id="sampleSearchResults" style="display: none; margin-top: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel);"></div>
+      </div>
+
       <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
 
       <div class="menu" id="ctxMenu" role="menu" aria-hidden="true">
         <div class="menuTitle">Display</div>
         <div class="menuItem" id="themeItem" role="menuitem">
-          <span>Theme</span>
+          <span>Theme<span class="menuHotkey">T</span></span>
           <span class="menuRight" id="themeLabel">Auto</span>
         </div>
 
         <div class="menuItem" id="orientationItem" role="menuitem">
-          <span>Orientation</span>
+          <span>Orientation<span class="menuHotkey">O</span></span>
           <span class="menuRight" id="orientationLabel">Horizontal</span>
         </div>
 
         <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
-          <span>Variant Layout</span>
+          <span>Variant Layout<span class="menuHotkey">V</span></span>
           <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
         </div>
 
         <div class="menuItem" id="fullscreenItem" role="menuitem">
-          <span>Full screen</span>
+          <span>Full screen<span class="menuHotkey">F</span></span>
           <span class="menuRight" id="fullscreenLabel">Enter full screen</span>
         </div>
 
@@ -625,7 +813,7 @@
 
         <div class="menuTitle">Data</div>
         <div class="menuItem" id="loadReadsItem" role="menuitem">
-          <span>Load Reads</span>
+          <span>Load Reads<span class="menuHotkey">R</span></span>
           <span class="menuRight" id="loadReadsLabel">▶</span>
         </div>
       </div>
@@ -656,6 +844,17 @@
   </div>
 
 <script type="module">
+  // -----------------------------
+  // Clean up any stale overlays from previous sessions
+  // -----------------------------
+  (function cleanupStaleOverlays() {
+    const staleOverlays = document.querySelectorAll('[id^="genomeshader-overlay-"]');
+    staleOverlays.forEach(overlay => {
+      console.log(`Cleaning up stale overlay: ${overlay.id}`);
+      overlay.remove();
+    });
+  })();
+
   // -----------------------------
   // WebGPU Classes (inlined to avoid module import issues with blob URLs)
   // -----------------------------
@@ -1884,14 +2083,17 @@
   // Make sidebar border clickable - always bind regardless of hostMode
   if (sidebar) {
     const handleSidebarToggle = (e) => {
-      // Don't toggle if clicking on menu button or menu - check this FIRST before stopping propagation
+      // Don't toggle if clicking on menu button or menu
       if ((menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) ||
           (ctxMenu && (ctxMenu === e.target || ctxMenu.contains(e.target)))) {
-        return; // Don't stop propagation - let menu button handler fire
+        return; // Let menu button handler fire
       }
       
-      e.preventDefault();
-      e.stopPropagation();
+      // Don't intercept clicks on form elements or their containers
+      const target = e.target;
+      if (target.closest('select, input, button, label, .sampleStrategyControls, .sampleSearchControls, #samplePreview, #sampleContext')) {
+        return; // Let form element handlers fire
+      }
       
       const collapsed = getSidebarCollapsed();
       const rect = sidebar.getBoundingClientRect();
@@ -1900,11 +2102,16 @@
       // Check if click is within 12px of the right edge (or anywhere if collapsed)
       if (collapsed) {
         // When collapsed, the entire 12px strip is clickable
+        e.preventDefault();
+        e.stopPropagation();
         setSidebarCollapsed(false);
       } else if (clickX >= rect.width - 12) {
         // When open, only the right 12px edge is clickable
+        e.preventDefault();
+        e.stopPropagation();
         setSidebarCollapsed(true);
       }
+      // For clicks elsewhere in the sidebar, don't stop propagation
     };
     
     // Use multiple event types with capturing phase (like debug buttons)
@@ -2148,6 +2355,7 @@
     });
   }
 
+
   // Fullscreen mode setup
   const fullscreenItem = getElementById("fullscreenItem");
   const fullscreenLabel = getElementById("fullscreenLabel");
@@ -2186,8 +2394,21 @@
     const modalId = `genomeshader-modal-${viewId}`;
     const topbarId = `genomeshader-topbar-${viewId}`;
     const placeholderId = `genomeshader-placeholder-${viewId}`;
+    
+    // Clean up any stale overlays from previous sessions on initialization
+    const staleOverlay = document.getElementById(overlayId);
+    if (staleOverlay) {
+      console.log(`Cleaning up stale overlay: ${overlayId}`);
+      staleOverlay.remove();
+    }
 
     function createOverlay() {
+      // Remove any existing overlay with this ID first
+      const existingOverlay = document.getElementById(overlayId);
+      if (existingOverlay) {
+        existingOverlay.remove();
+      }
+      
       overlay = document.createElement('div');
       overlay.id = overlayId;
       overlay.style.cssText = `
@@ -2283,9 +2504,38 @@
         }
       });
 
+      // Close menu when clicking on modal body in full-screen mode
+      const handleModalBodyClick = (e) => {
+        // Check if menu is open and click is outside menu and menu button
+        const menuBtn = document.getElementById('menuBtn');
+        const ctxMenu = document.getElementById('ctxMenu');
+        if (ctxMenu && ctxMenu.classList.contains('open') &&
+            !ctxMenu.contains(e.target) && 
+            menuBtn && !menuBtn.contains(e.target)) {
+          // Close the menu
+          if (typeof closeMenu === 'function') {
+            closeMenu();
+          }
+        }
+      };
+      modalBody.addEventListener('click', handleModalBodyClick, true);
+      overlay._menuCloseHandler = handleModalBodyClick;
+      overlay._modalBody = modalBody;
+
       const handleEscape = (e) => {
-        if (e.key === 'Escape' && isActive) {
-          exit();
+        if (e.key === 'Escape') {
+          // First check if menu is open, close it if so
+          const ctxMenu = document.getElementById('ctxMenu');
+          if (ctxMenu && ctxMenu.classList.contains('open') && typeof closeMenu === 'function') {
+            closeMenu();
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          // Otherwise exit full-screen mode
+          if (isActive) {
+            exit();
+          }
         }
       };
       document.addEventListener('keydown', handleEscape);
@@ -2356,6 +2606,11 @@
 
       if (overlay && overlay._escapeHandler) {
         document.removeEventListener('keydown', overlay._escapeHandler);
+      }
+
+      // Remove menu close handler from modal body
+      if (overlay && overlay._menuCloseHandler && overlay._modalBody) {
+        overlay._modalBody.removeEventListener('click', overlay._menuCloseHandler, true);
       }
 
       if (placeholder && originalParent) {
@@ -2436,32 +2691,84 @@
       onExit: triggerResize
     });
 
-    // Add hotkey to activate fullscreen from inline mode
-    // Only enable in inline mode to avoid conflicts with popup mode
-    if (hostMode === 'inline' && focusModeController) {
-      const handleFullscreenHotkey = (e) => {
-        // Check for 'f' or 'F' key, but only if not already in fullscreen
-        // Also check that we're not in an input field (to avoid interfering with typing)
-        const isInputField = e.target.tagName === 'INPUT' || 
-                            e.target.tagName === 'TEXTAREA' || 
-                            e.target.isContentEditable;
-        
-        if ((e.key === 'f' || e.key === 'F') && 
-            !isInputField && 
-            !focusModeController.isActive() &&
-            !e.ctrlKey && 
-            !e.metaKey && 
-            !e.altKey) {
-          e.preventDefault();
-          e.stopPropagation();
-          focusModeController.enter();
-        }
-      };
-      
-      // Use capturing phase to catch the event early
-      document.addEventListener('keydown', handleFullscreenHotkey, true);
-    }
   }
+
+  // Hotkeys for Settings menu items
+  const handleSettingsHotkeys = (e) => {
+    // Check if we're in an input field (to avoid interfering with typing)
+    const isInputField = e.target.tagName === 'INPUT' || 
+                        e.target.tagName === 'TEXTAREA' || 
+                        e.target.isContentEditable;
+    
+    // Only process if not in input field and no modifier keys are pressed
+    if (isInputField || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) {
+      return;
+    }
+
+    const key = e.key.toLowerCase();
+    
+    // Theme toggle: 't'
+    if (key === 't' && themeItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cur = document.documentElement.getAttribute("data-theme") || "auto";
+      const next = cur === "dark" ? "light" : (cur === "light" ? "auto" : "dark");
+      setTheme(next);
+      renderAll();
+      return;
+    }
+
+    // Orientation toggle: 'o'
+    if (key === 'o' && orientationItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cur = getStoredOrientation() ?? "horizontal";
+      const next = (cur === "horizontal") ? "vertical" : "horizontal";
+      setOrientation(next);
+      renderAll();
+      return;
+    }
+
+    // Variant Layout toggle: 'v'
+    if (key === 'v' && variantLayoutModeItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cur = getVariantLayoutMode();
+      const next = (cur === "equidistant") ? "genomic" : "equidistant";
+      setVariantLayoutMode(next);
+      renderAll();
+      return;
+    }
+
+    // Full screen toggle: 'f'
+    if (key === 'f' && fullscreenItem && focusModeController && !focusModeController.isActive()) {
+      e.preventDefault();
+      e.stopPropagation();
+      focusModeController.enter();
+      return;
+    }
+
+    // Load Reads: 'r'
+    if (key === 'r' && loadReadsItem && !readsLoading) {
+      e.preventDefault();
+      e.stopPropagation();
+      loadReadsLabel.textContent = "⏳";
+      fetchReadsFromPython()
+        .then(() => {
+          loadReadsLabel.textContent = "✓";
+          setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
+        })
+        .catch((err) => {
+          loadReadsLabel.textContent = "✗";
+          console.error("Failed to load reads:", err);
+          setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
+        });
+      return;
+    }
+  };
+
+  // Add hotkey listener for all Settings menu items
+  document.addEventListener('keydown', handleSettingsHotkeys, true);
 
   const mq = window.matchMedia?.("(prefers-color-scheme: light)");
   mq?.addEventListener?.("change", () => {
@@ -2527,7 +2834,22 @@
     pinnedAlleleLabels: new Set(),
     
     // pinned variant labels: Set of variant IDs (strings)
-    pinnedVariantLabels: new Set()
+    pinnedVariantLabels: new Set(),
+    
+    // selected alleles for multi-select: Set of strings like "variantId:alleleIndex"
+    selectedAlleles: new Set(),
+    
+    // sample selection state
+    sampleSelection: {
+      strategy: 'best_evidence',
+      numSamples: 3,
+      combineMode: 'AND', // 'AND' or 'OR'
+      candidateSamples: [], // Will be populated when selection changes
+      allSampleIds: [] // All available sample IDs (populated from data)
+    },
+    
+    // allele context menu state: { x, y, visible } or null
+    alleleContextMenu: null
   };
 
   // Initialize variant layout mode
@@ -3407,8 +3729,10 @@
     
     // Coordinate mapping functions based on orientation
     const genomePos = isVertical ? yGenome.bind(null) : xGenome.bind(null);
+    // In vertical mode, use tracksHeightPx() for Y coordinate (genomic axis is vertical)
+    // In horizontal mode, use W (tracksWidthPx()) for X coordinate (genomic axis is horizontal)
     const genomePosCanonical = isVertical 
-      ? (bp) => yGenomeCanonical(bp, H)
+      ? (bp) => yGenomeCanonical(bp, tracksHeightPx())
       : (bp) => xGenomeCanonical(bp, W);
     
     // Find track positions (needed to exclude ideogram from shading)
@@ -6269,9 +6593,19 @@
             ctx.fill();
           }
           
+          // Check if this allele is selected
+          const selectionKey = `${v.id}:${order.indexOf(label)}`;
+          const isSelected = state.selectedAlleles.has(selectionKey);
+          
           // Stroke always uses Canvas2D (minimal overhead for borders)
-          ctx.strokeStyle = colors.strokeColor;
-          ctx.lineWidth = isDragging ? 2 : 1;
+          // Use highlight color and thicker stroke for selected alleles
+          if (isSelected) {
+            ctx.strokeStyle = "rgba(255, 215, 0, 1)"; // Gold highlight for selected
+            ctx.lineWidth = 3;
+          } else {
+            ctx.strokeStyle = colors.strokeColor;
+            ctx.lineWidth = isDragging ? 2 : 1;
+          }
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.stroke();
@@ -6283,7 +6617,7 @@
             state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
           const isPinned = state.pinnedAlleleLabels.has(labelKey);
           
-          if (isHovered || isPinned) {
+          if (isHovered || isPinned || isSelected) {
             allLabelsToDraw.push({
               label: label,
               nodeX: nodeX,
@@ -6302,7 +6636,8 @@
             x: nodeX,
             y: nodeY,
             w: nodeW,
-            h: nodeH
+            h: nodeH,
+            isSelected: isSelected
           });
           
           // Store node info for ribbon drawing
@@ -6313,6 +6648,7 @@
             x: nodeX,
             y: nodeY,
             w: nodeW,
+            isSelected: isSelected,
             h: nodeH,
             top: nodeY,
             bottom: nodeY + nodeH,
@@ -6503,9 +6839,19 @@
             ctx.fill();
           }
           
+          // Check if this allele is selected
+          const selectionKey = `${v.id}:${order.indexOf(label)}`;
+          const isSelected = state.selectedAlleles.has(selectionKey);
+          
           // Stroke always uses Canvas2D (minimal overhead for borders)
-          ctx.strokeStyle = colors.strokeColor;
-          ctx.lineWidth = isDragging ? 2 : 1;
+          // Use highlight color and thicker stroke for selected alleles
+          if (isSelected) {
+            ctx.strokeStyle = "rgba(255, 215, 0, 1)"; // Gold highlight for selected
+            ctx.lineWidth = 3;
+          } else {
+            ctx.strokeStyle = colors.strokeColor;
+            ctx.lineWidth = isDragging ? 2 : 1;
+          }
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.stroke();
@@ -6517,7 +6863,7 @@
             state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
           const isPinned = state.pinnedAlleleLabels.has(labelKey);
           
-          if (isHovered || isPinned) {
+          if (isHovered || isPinned || isSelected) {
             allLabelsToDraw.push({
               label: label,
               nodeX: nodeX,
@@ -6536,7 +6882,8 @@
             x: nodeX,
             y: nodeY,
             w: nodeW,
-            h: nodeH
+            h: nodeH,
+            isSelected: isSelected
           });
           
           // Store node info for ribbon drawing
@@ -6551,7 +6898,8 @@
             top: nodeY,
             bottom: nodeY + nodeH,
             left: nodeX,
-            right: nodeX + nodeW
+            right: nodeX + nodeW,
+            isSelected: isSelected
           });
           
           // Update position for next node
@@ -6944,6 +7292,9 @@
           const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
           const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
           
+          // Check if source or destination node is selected
+          const isEdgeSelected = srcNode.isSelected || dstNode.isSelected;
+          
           // Sqrt-scaled opacity: prevents dominant flows from drowning minor ones
           const frac = count / Math.max(1, totalHaplotypes);
           let alpha = 0.05 + 0.25 * Math.sqrt(frac);
@@ -6953,7 +7304,18 @@
             alpha *= 0.6; // 40% reduction for background persistence flows
           }
           
-          const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha.toFixed(3)})`);
+          // Boost opacity for edges connected to selected alleles
+          if (isEdgeSelected) {
+            alpha = Math.min(1.0, alpha * 3.0); // Triple the opacity for selected edges
+          }
+          
+          let ribbonColor;
+          if (isEdgeSelected) {
+            // Use gold highlight color for selected edges
+            ribbonColor = `rgba(255, 215, 0, ${alpha.toFixed(3)})`;
+          } else {
+            ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha.toFixed(3)})`);
+          }
           
           if (isVertical) {
             // Vertical mode: src0/src1/dst0/dst1 are X positions
@@ -7343,11 +7705,16 @@
                 
                 // Draw nucleotide letter only if there's enough space
                 if (actualBaseHeight >= 8) {
+                  ctx.save();
                   ctx.fillStyle = 'white';
                   ctx.font = `bold ${Math.min(10, ew - 4)}px monospace`;
                   ctx.textAlign = 'center';
                   ctx.textBaseline = 'middle';
-                  ctx.fillText(nuc, ex + ew/2, ey);
+                  // Rotate text -90 degrees for vertical mode
+                  ctx.translate(ex + ew/2, ey);
+                  ctx.rotate(-Math.PI / 2);
+                  ctx.fillText(nuc, 0, 0);
+                  ctx.restore();
                 }
               }
             }
@@ -8358,6 +8725,9 @@
             ? [...win].sort((a, b) => a.pos - b.pos).find(v => v.id === dragState.variantId)
             : win.find(v => v.id === dragState.variantId);
           
+          // Declare newIndex in this scope so it's accessible after the if (v) block
+          let newIndex = -1;
+          
           if (v) {
             // Get track dimension for size calculation
             const layout = getTrackLayout();
@@ -8395,8 +8765,6 @@
             const marginPercent = 0.1;
             const minMargin = 10;
             const margin = Math.max(minMargin, trackDimension * marginPercent);
-            
-            let newIndex = -1;
             if (isVertical) {
               const left = 70;
               const W = flowWidthPx();
@@ -8548,17 +8916,32 @@
         
         // Check if this was a click (not a drag)
         if (dragState.isClick) {
-          // Toggle pinned state for this label
           const labelKey = `${dragState.variantId}:${dragState.alleleIndex}`;
-          if (state.pinnedAlleleLabels.has(labelKey)) {
-            state.pinnedAlleleLabels.delete(labelKey);
+          
+          // Handle selection with Ctrl/Cmd for multi-select
+          if (e.ctrlKey || e.metaKey) {
+            // Multi-select: toggle this allele in selection
+            if (state.selectedAlleles.has(labelKey)) {
+              state.selectedAlleles.delete(labelKey);
+            } else {
+              state.selectedAlleles.add(labelKey);
+            }
           } else {
-            state.pinnedAlleleLabels.add(labelKey);
+            // Single-select: replace selection with this allele
+            // If clicking on already-selected single allele, deselect it
+            if (state.selectedAlleles.size === 1 && state.selectedAlleles.has(labelKey)) {
+              state.selectedAlleles.clear();
+            } else {
+              state.selectedAlleles.clear();
+              state.selectedAlleles.add(labelKey);
+            }
           }
+          
           state.alleleDragState = null;
           flowCanvas.style.cursor = "";
           if (flowWebGPU) flowWebGPU.style.cursor = "";
           renderFlowCanvas();
+          if (window.updateSelectionDisplay) window.updateSelectionDisplay();
           return;
         }
         
@@ -8671,6 +9054,303 @@
     }
     
     setupAlleleDragDrop();
+    
+    // -----------------------------
+    // Sample Selection Strategy UI
+    // -----------------------------
+    
+    // Get information about selected alleles for loading reads
+    function getSelectedAlleleInfo() {
+      const selectedInfo = [];
+      for (const key of state.selectedAlleles) {
+        const [variantId, alleleIndexStr] = key.split(':');
+        const alleleIndex = parseInt(alleleIndexStr, 10);
+        
+        // Find the variant
+        const variant = variants.find(v => v.id === variantId);
+        if (!variant) continue;
+        
+        // Find the node position info to get the label
+        const nodeInfo = window._alleleNodePositions?.find(n => 
+          n.variantId === variantId && n.alleleIndex === alleleIndex
+        );
+        
+        selectedInfo.push({
+          variantId,
+          alleleIndex,
+          label: nodeInfo?.label || `Allele ${alleleIndex}`,
+          variant
+        });
+      }
+      return selectedInfo;
+    }
+    
+    // Update context indicator (shows what's selected)
+    function updateSampleContext() {
+      const contextEl = byId(root, 'sampleContext');
+      const contextTextEl = byId(root, 'contextText');
+      
+      if (!contextEl || !contextTextEl) return;
+      
+      if (state.selectedAlleles.size === 0) {
+        contextEl.style.display = 'none';
+        return;
+      }
+      
+      // Count selected alleles
+      const alleleCount = state.selectedAlleles.size;
+      const combineMode = state.sampleSelection.combineMode;
+      
+      // TODO: Calculate carriers count (placeholder for now)
+      const carriersCount = 0; // Will be computed from selection
+      
+      // Build context text
+      let text = `Selected: ${alleleCount} ${alleleCount === 1 ? 'allele' : 'alleles'}, ${combineMode}`;
+      if (carriersCount > 0) {
+        text += `<br>Carriers: ${carriersCount.toLocaleString()} samples`;
+      }
+      
+      contextTextEl.innerHTML = text;
+      contextEl.style.display = 'block';
+    }
+    
+    // Update strategy section state (enable/disable controls)
+    function updateSampleStrategySection() {
+      const hasSelection = state.selectedAlleles.size > 0;
+      const strategyEl = byId(root, 'sampleStrategy');
+      const sliderEl = byId(root, 'sampleCountSlider');
+      const inputEl = byId(root, 'sampleCountInput');
+      const replaceBtn = byId(root, 'loadSamplesReplace');
+      const addBtn = byId(root, 'loadSamplesAdd');
+      const placeholderEl = byId(root, 'noSelectionHint');
+      
+      // Enable/disable controls based on selection
+      const disabled = !hasSelection;
+      if (strategyEl) strategyEl.disabled = disabled;
+      if (sliderEl) sliderEl.disabled = disabled;
+      if (inputEl) inputEl.disabled = disabled;
+      if (replaceBtn) replaceBtn.disabled = disabled;
+      if (addBtn) addBtn.disabled = disabled;
+      
+      // Show/hide placeholder message
+      if (placeholderEl) {
+        placeholderEl.style.display = hasSelection ? 'none' : 'block';
+      }
+      
+      // Update "Compare branches" option enablement
+      if (strategyEl) {
+        const compareOption = strategyEl.querySelector('option[value="compare_branches"]');
+        if (compareOption) {
+          // Enable only when 2+ branches selected
+          compareOption.disabled = state.selectedAlleles.size < 2;
+        }
+      }
+      
+      // Update preview
+      updateSamplePreview();
+    }
+    
+    // Update sample preview
+    function updateSamplePreview() {
+      const previewEl = byId(root, 'samplePreview');
+      const previewListEl = byId(root, 'samplePreviewList');
+      const candidates = state.sampleSelection.candidateSamples;
+      
+      if (!previewEl || !previewListEl) return;
+      
+      if (candidates.length === 0) {
+        previewEl.style.display = 'none';
+        return;
+      }
+      
+      // Show first 5 samples + count of remaining
+      const displayCount = Math.min(5, candidates.length);
+      const remaining = candidates.length - displayCount;
+      
+      let text = candidates.slice(0, displayCount).join(', ');
+      if (remaining > 0) {
+        text += `, +${remaining} more`;
+      }
+      
+      previewListEl.textContent = text;
+      previewEl.style.display = 'block';
+    }
+    
+    // Recompute candidate samples based on strategy and selection
+    function recomputeCandidateSamples() {
+      // TODO: Implement actual sample selection logic
+      // For now, just placeholder
+      state.sampleSelection.candidateSamples = [];
+      updateSamplePreview();
+    }
+    
+    // Strategy change handler
+    function onStrategyChange() {
+      const strategyEl = byId(root, 'sampleStrategy');
+      if (strategyEl) {
+        state.sampleSelection.strategy = strategyEl.value;
+      }
+      recomputeCandidateSamples();
+    }
+    
+    // Setup sample search with autocomplete
+    function setupSampleSearch() {
+      const searchInput = byId(root, 'sampleSearchInput');
+      const resultsEl = byId(root, 'sampleSearchResults');
+      
+      if (!searchInput || !resultsEl) return;
+      
+      let searchTimeout = null;
+      
+      searchInput.addEventListener('input', (e) => {
+        clearTimeout(searchTimeout);
+        const query = e.target.value.trim().toLowerCase();
+        
+        if (query.length === 0) {
+          resultsEl.style.display = 'none';
+          return;
+        }
+        
+        searchTimeout = setTimeout(() => {
+          // Filter sample IDs by prefix/substring match
+          const matches = state.sampleSelection.allSampleIds
+            .filter(id => id.toLowerCase().includes(query))
+            .slice(0, 8); // Top 8 matches
+          
+          if (matches.length === 0) {
+            resultsEl.style.display = 'none';
+            return;
+          }
+          
+          // Render results
+          resultsEl.innerHTML = '';
+          matches.forEach(sampleId => {
+            const resultEl = document.createElement('div');
+            resultEl.className = 'sampleSearchResult';
+            resultEl.textContent = sampleId;
+            resultEl.addEventListener('click', () => {
+              // TODO: Load reads for this sample
+              console.log('Load sample:', sampleId);
+              searchInput.value = '';
+              resultsEl.style.display = 'none';
+            });
+            resultsEl.appendChild(resultEl);
+          });
+          
+          resultsEl.style.display = 'block';
+        }, 150); // Debounce search
+      });
+      
+      // Hide results when clicking outside
+      document.addEventListener('click', (e) => {
+        if (!searchInput.contains(e.target) && !resultsEl.contains(e.target)) {
+          resultsEl.style.display = 'none';
+        }
+      });
+      
+      // Handle Enter key
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          const firstResult = resultsEl.querySelector('.sampleSearchResult');
+          if (firstResult) {
+            firstResult.click();
+          }
+        }
+      });
+    }
+    
+    // Main update function for selection display
+    function updateSelectionDisplay() {
+      updateSampleContext();
+      updateSampleStrategySection();
+      recomputeCandidateSamples();
+    }
+    
+    // Setup sample selection strategy controls
+    const strategyEl = byId(root, 'sampleStrategy');
+    const sliderEl = byId(root, 'sampleCountSlider');
+    const sampleCountInputEl = byId(root, 'sampleCountInput');
+    const combineAndBtn = byId(root, 'combineAnd');
+    const combineOrBtn = byId(root, 'combineOr');
+    const replaceBtn = byId(root, 'loadSamplesReplace');
+    const addBtn = byId(root, 'loadSamplesAdd');
+    
+    // Strategy dropdown
+    if (strategyEl) {
+      strategyEl.addEventListener('change', onStrategyChange);
+    }
+    
+    // Sample count sync between slider and input
+    if (sliderEl) {
+      sliderEl.addEventListener('input', (e) => {
+        if (sampleCountInputEl) sampleCountInputEl.value = e.target.value;
+        state.sampleSelection.numSamples = parseInt(e.target.value);
+        recomputeCandidateSamples();
+      });
+    }
+    
+    if (sampleCountInputEl) {
+      sampleCountInputEl.addEventListener('change', (e) => {
+        const value = Math.max(1, Math.min(20, parseInt(e.target.value) || 3));
+        if (sliderEl) sliderEl.value = value;
+        sampleCountInputEl.value = value;
+        state.sampleSelection.numSamples = value;
+        recomputeCandidateSamples();
+      });
+    }
+    
+    // Combine mode toggle
+    if (combineAndBtn) {
+      combineAndBtn.addEventListener('click', () => {
+        state.sampleSelection.combineMode = 'AND';
+        combineAndBtn.classList.add('active');
+        if (combineOrBtn) {
+          combineOrBtn.classList.remove('active');
+          combineOrBtn.style.color = 'var(--muted)';
+        }
+        combineAndBtn.style.color = 'white';
+        updateSampleContext();
+        recomputeCandidateSamples();
+      });
+    }
+    
+    if (combineOrBtn) {
+      combineOrBtn.addEventListener('click', () => {
+        state.sampleSelection.combineMode = 'OR';
+        combineOrBtn.classList.add('active');
+        if (combineAndBtn) {
+          combineAndBtn.classList.remove('active');
+          combineAndBtn.style.color = 'var(--muted)';
+        }
+        combineOrBtn.style.color = 'white';
+        updateSampleContext();
+        recomputeCandidateSamples();
+      });
+    }
+    
+    // Load buttons (placeholders for now)
+    if (replaceBtn) {
+      replaceBtn.addEventListener('click', () => {
+        console.log('Load samples (replace):', state.sampleSelection.candidateSamples);
+        const selectedInfo = getSelectedAlleleInfo();
+        console.log('Selected alleles:', selectedInfo);
+      });
+    }
+    
+    if (addBtn) {
+      addBtn.addEventListener('click', () => {
+        console.log('Load samples (add):', state.sampleSelection.candidateSamples);
+      });
+    }
+    
+    // Setup search
+    setupSampleSearch();
+    
+    // Initial update
+    updateSelectionDisplay();
+    
+    // Export updateSelectionDisplay so it can be called after selection changes
+    window.updateSelectionDisplay = updateSelectionDisplay;
 
     // Reads canvas hover detection
     readsHoverHandler = (e) => {
