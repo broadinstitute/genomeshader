@@ -1541,9 +1541,23 @@ console.log('Genomeshader: Bootstrap variables set', {{
 
     def show(
         self,
-        locus_or_dataframe: Union[str, pl.DataFrame],
+        locus: str,
     ):
-        html_script = self.render(locus_or_dataframe)
+        """
+        Visualizes variant data for a genomic locus by fetching variant data
+        and rendering a graphical representation.
+
+        Parameters:
+            locus (str): The genomic locus to visualize, in the format
+                'chromosome:start-stop' or 'chromosome:position'
+                (e.g., 'chr1:1000000-2000000' or 'chr1:1000000').
+
+        Returns:
+            None: Displays the visualization in the notebook.
+        """
+        # Fetch variant data for the locus
+        variants_df = self.get_locus_variants(locus)
+        html_script = self.render(variants_df)
         # view_id available via self._last_view_id if needed
 
         # Register comm target for JavaScript to connect to
@@ -1583,6 +1597,15 @@ console.log('Genomeshader: Bootstrap variables set', {{
                                         })
                                         return
                                     
+                                    # Get the file path that will be used for loading reads
+                                    attached_reads = gs_instance._session.get_attached_reads()
+                                    reads_file = None
+                                    if attached_reads:
+                                        reads_file = attached_reads[0]
+                                        print(f"Genomeshader: Loading reads from: {reads_file}")
+                                    else:
+                                        print("Genomeshader: Warning - No read files attached")
+                                    
                                     # Use the Rust-based fetch
                                     reads_df = gs_instance._session.fetch_reads_for_locus(locus)
                                     
@@ -1595,6 +1618,7 @@ console.log('Genomeshader: Bootstrap variables set', {{
                                         'locus': locus,
                                         'reads': reads_data,
                                         'count': len(reads_df),
+                                        'reads_file': reads_file,  # Include file path in response
                                     })
                                 except Exception as e:
                                     comm.send({

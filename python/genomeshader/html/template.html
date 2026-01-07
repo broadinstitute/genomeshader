@@ -1739,15 +1739,26 @@
     const readArray = Array.from(readMap.values());
     readArray.sort((a, b) => a.start - b.start);
     
-    // Simple greedy packing: assign reads to rows
+    // Improved greedy packing: assign reads to rows, checking if read fits anywhere in each row
     const rows = [];
     for (const read of readArray) {
       let placed = false;
+      // Try to place in existing rows
       for (let r = 0; r < rows.length; r++) {
-        const lastRead = rows[r][rows[r].length - 1];
-        if (read.start > lastRead.end + 10) { // 10bp gap
+        // Check if read can fit in this row (doesn't overlap with any existing read)
+        let canFit = true;
+        for (const existingRead of rows[r]) {
+          // Check for overlap: read overlaps if it starts before existing ends and ends after existing starts
+          if (!(read.end < existingRead.start - 10 || read.start > existingRead.end + 10)) {
+            canFit = false;
+            break;
+          }
+        }
+        if (canFit) {
           read.row = r;
           rows[r].push(read);
+          // Keep row sorted by start position for better packing
+          rows[r].sort((a, b) => a.start - b.start);
           placed = true;
           break;
         }
@@ -1772,6 +1783,9 @@
         readsLoading = false;
         if (response.type === 'fetch_reads_response') {
           console.log('Genomeshader: Received ' + response.count + ' read elements for locus ' + response.locus);
+          if (response.reads_file) {
+            console.log('Genomeshader: Loading reads from: ' + response.reads_file);
+          }
           readsData = response.reads;
           loadedReadsLayout = processReadsData(readsData);
           renderAll(); // Re-render with new data
@@ -2412,14 +2426,41 @@
   let interactionBinding = null;
   
   const viewId = window.GENOMESHADER_VIEW_ID || document.querySelector('[data-view-id]')?.dataset.viewId || 'default';
+  let focusModeController = null;
   if (fullscreenItem && app) {
-    installFocusMode({
+    focusModeController = installFocusMode({
       viewerEl: app,
       toggleEl: fullscreenItem,
       viewId: viewId,
       onEnter: triggerResize,
       onExit: triggerResize
     });
+
+    // Add hotkey to activate fullscreen from inline mode
+    // Only enable in inline mode to avoid conflicts with popup mode
+    if (hostMode === 'inline' && focusModeController) {
+      const handleFullscreenHotkey = (e) => {
+        // Check for 'f' or 'F' key, but only if not already in fullscreen
+        // Also check that we're not in an input field (to avoid interfering with typing)
+        const isInputField = e.target.tagName === 'INPUT' || 
+                            e.target.tagName === 'TEXTAREA' || 
+                            e.target.isContentEditable;
+        
+        if ((e.key === 'f' || e.key === 'F') && 
+            !isInputField && 
+            !focusModeController.isActive() &&
+            !e.ctrlKey && 
+            !e.metaKey && 
+            !e.altKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          focusModeController.enter();
+        }
+      };
+      
+      // Use capturing phase to catch the event early
+      document.addEventListener('keydown', handleFullscreenHotkey, true);
+    }
   }
 
   const mq = window.matchMedia?.("(prefers-color-scheme: light)");
@@ -2460,7 +2501,7 @@
     // track management
     tracks: [
       { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
-      { id: "genes", label: "Genes", collapsed: false, height: 110, minHeight: 30 },
+      { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
       { id: "repeats", label: "RepeatMasker", collapsed: false, height: 50, minHeight: 30 },
       { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
       { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
@@ -2599,6 +2640,23 @@
   let readsInstancedRenderer = null;
   let webgpuSupported = false;
   let repeatHitTestData = []; // For tooltip hit testing
+  
+  // Cache for ribbon transition data (keyed by variant pair IDs)
+  // This avoids recalculating transitions on every pan/zoom
+  const ribbonTransitionCache = new Map();
+  const MAX_CACHE_SIZE = 1000; // Limit cache size to prevent unbounded growth
+  let cachedVisibleVariantIds = null; // Track which variants were used for cache
+  let cachedViewportRange = null; // Track the viewport range used for cache (with padding)
+  
+  // Expanded variant window with padding to reduce cache invalidation during pan/zoom
+  // Returns variants within viewport + padding (e.g., 30% on each side)
+  function expandedVariantWindow(paddingFraction = 0.3) {
+    const span = state.endBp - state.startBp;
+    const padding = span * paddingFraction;
+    const expandedStart = Math.max(0, state.startBp - padding);
+    const expandedEnd = state.endBp + padding;
+    return variants.filter(v => v.pos >= expandedStart && v.pos <= expandedEnd);
+  }
 
   async function initWebGPU() {
     if (!navigator.gpu) {
@@ -6557,53 +6615,68 @@
       // Get the actual variant list (sorted for vertical mode, original order for horizontal)
       const variantList = isVertical ? [...win].sort((a, b) => a.pos - b.pos) : win;
       
-      for (let i = 0; i < sortedVariantIdxs.length - 1; i++) {
-        const srcIdx = sortedVariantIdxs[i];
-        const dstIdx = sortedVariantIdxs[i + 1];
-        const srcNodes = nodeInfoByVariant.get(srcIdx);
-        const dstNodes = nodeInfoByVariant.get(dstIdx);
-        
-        if (!srcNodes || !dstNodes) continue;
-        
-        // Get the variant objects
-        const srcVariant = variantList[srcIdx];
-        const dstVariant = variantList[dstIdx];
-        if (!srcVariant || !dstVariant) continue;
-        
-        // Helper to get allele label from genotype index for a variant
-        function getAlleleLabelForIndex(variant, alleleIdx) {
-          if (alleleIdx === null || alleleIdx === undefined || alleleIdx === "." || isNaN(alleleIdx)) {
-            return formatAlleleLabel(".");
-          }
-          if (alleleIdx === 0) {
-            // Reference allele
-            return variant.refAllele ? formatAlleleLabel(variant.refAllele) : formatAlleleLabel(".");
-          }
-          // Alt allele (1-indexed in genotype, but 0-indexed in altAlleles array)
-          if (variant.altAlleles && variant.altAlleles[alleleIdx - 1]) {
-            return formatAlleleLabel(variant.altAlleles[alleleIdx - 1]);
-          }
+      // Use expanded variant window for caching (includes padding to reduce cache invalidation)
+      // This way, small pan movements don't invalidate the cache
+      const expandedWin = expandedVariantWindow(0.3); // 30% padding on each side
+      const expandedVariantList = isVertical ? [...expandedWin].sort((a, b) => a.pos - b.pos) : expandedWin;
+      
+      // Check if viewport has moved beyond cached range (cache invalidation)
+      // Only invalidate if viewport has moved significantly (beyond padding zone)
+      const currentViewportRange = { start: state.startBp, end: state.endBp };
+      const span = currentViewportRange.end - currentViewportRange.start;
+      const padding = span * 0.3; // Same as expandedVariantWindow padding
+      
+      const viewportMovedBeyondCache = cachedViewportRange && (
+        currentViewportRange.start < cachedViewportRange.start - padding ||
+        currentViewportRange.end > cachedViewportRange.end + padding
+      );
+      
+      if (viewportMovedBeyondCache || cachedVisibleVariantIds === null) {
+        // Clear cache when viewport moves significantly beyond cached range
+        // This happens less frequently now because we cache an expanded set
+        ribbonTransitionCache.clear();
+        cachedVisibleVariantIds = expandedVariantList.map(v => v.id).join(',');
+        cachedViewportRange = { 
+          start: currentViewportRange.start - padding, 
+          end: currentViewportRange.end + padding 
+        };
+      }
+      
+      // Helper to get allele label from genotype index for a variant
+      function getAlleleLabelForIndex(variant, alleleIdx) {
+        if (alleleIdx === null || alleleIdx === undefined || alleleIdx === "." || isNaN(alleleIdx)) {
           return formatAlleleLabel(".");
         }
-        
-        // Helper to get actual allele string from label for a variant
-        function getActualAlleleFromLabel(variant, label) {
-          const noCallLabel = formatAlleleLabel(".");
-          if (label === noCallLabel) return ".";
-          if (variant.refAllele && label === formatAlleleLabel(variant.refAllele)) {
-            return variant.refAllele;
-          }
-          if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
-            for (const alt of variant.altAlleles) {
-              if (label === formatAlleleLabel(alt)) {
-                return alt;
-              }
+        if (alleleIdx === 0) {
+          // Reference allele
+          return variant.refAllele ? formatAlleleLabel(variant.refAllele) : formatAlleleLabel(".");
+        }
+        // Alt allele (1-indexed in genotype, but 0-indexed in altAlleles array)
+        if (variant.altAlleles && variant.altAlleles[alleleIdx - 1]) {
+          return formatAlleleLabel(variant.altAlleles[alleleIdx - 1]);
+        }
+        return formatAlleleLabel(".");
+      }
+      
+      // Helper to get actual allele string from label for a variant
+      function getActualAlleleFromLabel(variant, label) {
+        const noCallLabel = formatAlleleLabel(".");
+        if (label === noCallLabel) return ".";
+        if (variant.refAllele && label === formatAlleleLabel(variant.refAllele)) {
+          return variant.refAllele;
+        }
+        if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+          for (const alt of variant.altAlleles) {
+            if (label === formatAlleleLabel(alt)) {
+              return alt;
             }
           }
-          return ".";
         }
-        
-        // Compute transitions: Map<srcLabel, Map<dstLabel, count>>
+        return ".";
+      }
+      
+      // Helper function to compute transitions for a variant pair
+      function computeTransitions(srcVariant, dstVariant) {
         const transitions = new Map();
         const srcGenotypes = srcVariant.sampleGenotypes || {};
         const dstGenotypes = dstVariant.sampleGenotypes || {};
@@ -6640,6 +6713,53 @@
             const srcTransitions = transitions.get(srcLabel);
             srcTransitions.set(dstLabel, (srcTransitions.get(dstLabel) || 0) + 1);
           }
+        }
+        
+        return transitions;
+      }
+      
+      for (let i = 0; i < sortedVariantIdxs.length - 1; i++) {
+        const srcIdx = sortedVariantIdxs[i];
+        const dstIdx = sortedVariantIdxs[i + 1];
+        const srcNodes = nodeInfoByVariant.get(srcIdx);
+        const dstNodes = nodeInfoByVariant.get(dstIdx);
+        
+        if (!srcNodes || !dstNodes) continue;
+        
+        // Get the variant objects from visible list (nodes only exist for visible variants)
+        const srcVariant = variantList[srcIdx];
+        const dstVariant = variantList[dstIdx];
+        if (!srcVariant || !dstVariant) continue;
+        
+        // Cache key: variant pair IDs (variant objects are the same regardless of which list they come from)
+        const cacheKey = `${srcVariant.id}-${dstVariant.id}`;
+        
+        // Get or compute transitions (cached to avoid recalculating on every pan/zoom)
+        // The cache includes transitions for variants in the expanded window, so when variants
+        // move slightly off-screen and back, we don't need to recalculate
+        let transitions = ribbonTransitionCache.get(cacheKey);
+        if (!transitions) {
+          transitions = computeTransitions(srcVariant, dstVariant);
+          // Store as serializable Map structure (convert nested Maps to objects for storage)
+          const serialized = Array.from(transitions.entries()).map(([srcLabel, dstMap]) => [
+            srcLabel,
+            Array.from(dstMap.entries())
+          ]);
+          
+          // Limit cache size: remove oldest entries if cache is too large
+          if (ribbonTransitionCache.size >= MAX_CACHE_SIZE) {
+            // Remove first (oldest) entry
+            const firstKey = ribbonTransitionCache.keys().next().value;
+            ribbonTransitionCache.delete(firstKey);
+          }
+          
+          ribbonTransitionCache.set(cacheKey, serialized);
+        } else {
+          // Deserialize cached transitions back to Map structure
+          transitions = new Map(transitions.map(([srcLabel, dstEntries]) => [
+            srcLabel,
+            new Map(dstEntries)
+          ]));
         }
         
         // If no transition data (no samples), fall back to connecting all src nodes to all dst nodes
@@ -6783,8 +6903,42 @@
         ribbonData.sort((a, b) => (b.isRefFlow ? 1 : 0) - (a.isRefFlow ? 1 : 0));
         
         // Draw all ribbons with sqrt-scaled opacity
+        // Add viewport clipping: skip ribbons where both nodes are completely off-screen
+        const viewportLeft = 0;
+        const viewportRight = W;
+        const viewportTop = 0;
+        const viewportBottom = H;
+        
         for (const ribbon of ribbonData) {
           const { srcNode, dstNode, src0, src1, dst0, dst1, srcLabel, count, isRefFlow } = ribbon;
+          
+          // Viewport clipping: skip if both nodes are completely off-screen
+          // This avoids rendering ribbons that are outside the visible area
+          if (isVertical) {
+            // Vertical mode: check X coordinates (horizontal position)
+            const srcRight = Math.max(srcNode.left, srcNode.right);
+            const srcLeft = Math.min(srcNode.left, srcNode.right);
+            const dstRight = Math.max(dstNode.left, dstNode.right);
+            const dstLeft = Math.min(dstNode.left, dstNode.right);
+            
+            // Skip if both nodes are completely outside viewport
+            if ((srcRight < viewportLeft && dstRight < viewportLeft) ||
+                (srcLeft > viewportRight && dstLeft > viewportRight)) {
+              continue;
+            }
+          } else {
+            // Horizontal mode: check Y coordinates (vertical position)
+            const srcBottom = Math.max(srcNode.top, srcNode.bottom);
+            const srcTop = Math.min(srcNode.top, srcNode.bottom);
+            const dstBottom = Math.max(dstNode.top, dstNode.bottom);
+            const dstTop = Math.min(dstNode.top, dstNode.bottom);
+            
+            // Skip if both nodes are completely outside viewport
+            if ((srcBottom < viewportTop && dstBottom < viewportTop) ||
+                (srcTop > viewportBottom && dstTop > viewportBottom)) {
+              continue;
+            }
+          }
           
           // Get color from source allele
           const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
@@ -6957,9 +7111,75 @@
       return; // Don't render if collapsed
     }
 
-    const dpr = resizeCanvasTo(reads, readsCanvas);
-    const ctx = readsCanvas.getContext("2d");
+    // Ensure readsCanvas exists
+    if (!readsCanvas || !reads) {
+      return;
+    }
 
+    // Get device pixel ratio first (before any other operations)
+    const dpr = window.devicePixelRatio || 1;
+    
+    const isVertical = isVerticalMode();
+    const W = readsWidthPx();
+    let H = readsHeightPx(); // Visible height
+    
+    // Calculate total content height if reads are loaded
+    let totalContentHeight = H;
+    if (!isVertical && loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
+      // Only set up scrolling canvas in inline (horizontal) mode
+      const top = 8;
+      const rowH = 18;
+      const totalRows = loadedReadsLayout.rowCount || Math.max(...loadedReadsLayout.reads.map(r => r.row)) + 1;
+      totalContentHeight = top + totalRows * rowH + 12;
+      
+      // Use CSS grid on the container to stack canvases while keeping them in document flow
+      // This allows overflow scrolling to work (absolutely positioned elements don't contribute to scroll overflow)
+      reads.style.display = 'grid';
+      reads.style.gridTemplateRows = '1fr';
+      reads.style.gridTemplateColumns = '1fr';
+      reads.style.height = readsLayout.track.collapsed ? "0px" : `${readsLayout.contentHeight}px`;
+      reads.style.overflowY = 'auto';
+      reads.style.overflowX = 'hidden';
+      
+      // Set canvas to fill grid cell and use explicit height for scrolling
+      readsCanvas.height = totalContentHeight * dpr;
+      readsCanvas.style.height = totalContentHeight + 'px';
+      readsCanvas.style.width = W + 'px';
+      readsCanvas.style.gridRow = '1';
+      readsCanvas.style.gridColumn = '1';
+      readsCanvas.style.position = 'static';
+      readsCanvas.style.inset = 'auto';
+      readsCanvas.width = W * dpr;
+      
+      // Also update WebGPU canvas to use grid stacking
+      if (readsWebGPU) {
+        readsWebGPU.style.height = totalContentHeight + 'px';
+        readsWebGPU.style.width = W + 'px';
+        readsWebGPU.style.gridRow = '1';
+        readsWebGPU.style.gridColumn = '1';
+        readsWebGPU.style.position = 'static';
+        readsWebGPU.style.inset = 'auto';
+      }
+    } else {
+      // For vertical mode or when no reads are loaded, use resizeCanvasTo
+      // Reset grid styles if they were set
+      reads.style.display = '';
+      reads.style.gridTemplateRows = '';
+      reads.style.gridTemplateColumns = '';
+      readsCanvas.style.gridRow = '';
+      readsCanvas.style.gridColumn = '';
+      readsCanvas.style.position = '';
+      readsCanvas.style.inset = '';
+      if (readsWebGPU) {
+        readsWebGPU.style.gridRow = '';
+        readsWebGPU.style.gridColumn = '';
+        readsWebGPU.style.position = '';
+        readsWebGPU.style.inset = '';
+      }
+      resizeCanvasTo(reads, readsCanvas);
+    }
+
+    const ctx = readsCanvas.getContext("2d");
     ctx.setTransform(1,0,0,1,0,0);
     ctx.clearRect(0,0,readsCanvas.width,readsCanvas.height);
     ctx.scale(dpr, dpr);
@@ -6968,17 +7188,28 @@
     if (readsInstancedRenderer) {
       readsInstancedRenderer.clear();
     }
-
-    const isVertical = isVerticalMode();
-    const W = readsWidthPx(), H = readsHeightPx();
     const colText = cssVar("--muted");
     const grid = cssVar("--grid2");
 
-    // soft background
+    // soft background - use totalContentHeight for inline mode when reads are loaded
+    const bgHeight = (!isVertical && loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) ? totalContentHeight : H;
     ctx.fillStyle = "rgba(127,127,127,0.02)";
-    ctx.fillRect(0,0,W,H);
+    ctx.fillRect(0,0,W,bgHeight);
 
     if (isVertical) {
+      // In vertical mode, use tracksWidthPx() for coordinate mapping (same as renderTracks does)
+      // In vertical mode: W = tracksHeightPx(), H = tracksWidthPx()
+      // The genomic axis is vertical, so we use the width dimension for coordinate mapping
+      const tracksH = tracksWidthPx();
+      
+      // Calculate offset between reads container and tracks container
+      let readsOffsetY = 0;
+      if (tracksSvg && reads) {
+        const tracksRect = tracksSvg.getBoundingClientRect();
+        const readsRect = reads.getBoundingClientRect();
+        readsOffsetY = readsRect.top - tracksRect.top;
+      }
+      
       // a few columns to suggest lanes (vertical mode)
       ctx.strokeStyle = grid;
       ctx.lineWidth = 1;
@@ -6995,8 +7226,8 @@
 
       // placeholder "reads" as rounded rects aligned in genome space
       function drawRead(bpStart, bpEnd, col, alpha=0.20) {
-        const y1 = yGenomeCanonical(bpStart, H);
-        const y2 = yGenomeCanonical(bpEnd, H);
+        const y1 = yGenomeCanonical(bpStart, tracksH) - readsOffsetY;
+        const y2 = yGenomeCanonical(bpEnd, tracksH) - readsOffsetY;
         const x = left + col*colW + 2;
         const w = colW - 6;
         const y = Math.min(y1, y2);
@@ -7033,9 +7264,19 @@
       // Draw actual reads if available (vertical mode)
       if (loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
         const maxCols = Math.floor((W - left - 12) / colW);
+        let renderedCount = 0;
+        let filteredByRow = 0;
+        let filteredByViewport = 0;
         for (const read of loadedReadsLayout.reads) {
-          if (read.row >= maxCols) continue;
-          if (read.end < state.startBp || read.start > state.endBp) continue;
+          if (read.row >= maxCols) {
+            filteredByRow++;
+            continue;
+          }
+          if (read.end < state.startBp || read.start > state.endBp) {
+            filteredByViewport++;
+            continue;
+          }
+          renderedCount++;
           
           // Color based on haplotype
           let color, alpha;
@@ -7051,8 +7292,9 @@
           }
           if (!read.isForward) alpha *= 0.7;
           
-          const y1 = yGenomeCanonical(read.start, H);
-          const y2 = yGenomeCanonical(read.end, H);
+          // Use tracks height for coordinate mapping, then adjust for reads container offset
+          const y1 = yGenomeCanonical(read.start, tracksH) - readsOffsetY;
+          const y2 = yGenomeCanonical(read.end, tracksH) - readsOffsetY;
           const x = left + read.row * colW + 2;
           const w = colW - 4;
           const y = Math.min(y1, y2);
@@ -7073,6 +7315,56 @@
             roundRect(ctx, x, y, w, h, 3);
             ctx.fill();
           }
+          
+          // Draw insertion/deletion/diff markers (vertical mode)
+          if (read.elements && read.elements.length > 0) {
+            for (const elem of read.elements) {
+              if (elem.start < state.startBp || elem.start > state.endBp) continue;
+              const ey = yGenomeCanonical(elem.start, tracksH) - readsOffsetY;
+              const ex = x;
+              const ew = w;
+              
+              if (elem.type === 2) { // Insertion - purple tick
+                ctx.fillStyle = 'rgba(200,100,255,0.9)';
+                ctx.fillRect(ex, ey - 1, ew, 2);
+              } else if (elem.type === 3) { // Deletion - black gap
+                const ey2 = yGenomeCanonical(elem.end, tracksH) - readsOffsetY;
+                const delY = Math.min(ey, ey2);
+                const delH = Math.max(2, Math.abs(ey2 - ey));
+                ctx.fillStyle = 'rgba(0,0,0,0.4)';
+                ctx.fillRect(ex + ew/4, delY, ew/2, delH);
+              } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
+                // Calculate actual base height (matching reference base calculation)
+                const nextBp = elem.start + 1;
+                const nextY = (nextBp <= state.endBp ? yGenomeCanonical(nextBp, tracksH) : yGenomeCanonical(state.endBp, tracksH)) - readsOffsetY;
+                const actualBaseHeight = Math.max(2, Math.abs(nextY - ey));
+                
+                // Color based on nucleotide
+                const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
+                const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
+                const bgColor = nucColors[nuc] || '#9C27B0';
+                
+                // Draw background (use actual height, but ensure minimum for visibility)
+                const drawHeight = Math.max(2, actualBaseHeight);
+                ctx.fillStyle = bgColor;
+                ctx.fillRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight);
+                
+                // Draw nucleotide letter only if there's enough space
+                if (actualBaseHeight >= 8) {
+                  ctx.fillStyle = 'white';
+                  ctx.font = `bold ${Math.min(10, ew - 4)}px monospace`;
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  ctx.fillText(nuc, ex + ew/2, ey);
+                }
+              }
+            }
+          }
+        }
+        
+        // Log rendering statistics (vertical mode)
+        if (renderedCount > 0 || filteredByRow > 0 || filteredByViewport > 0) {
+          console.log(`Genomeshader: Rendered ${renderedCount} reads (filtered: ${filteredByRow} by row, ${filteredByViewport} by viewport, total: ${loadedReadsLayout.reads.length}, viewport: ${state.startBp}-${state.endBp}, maxCols: ${maxCols})`);
         }
       } else if (readsLoading) {
         ctx.fillStyle = cssVar("--muted");
@@ -7096,7 +7388,7 @@
         ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
         ctx.globalAlpha = isHovered ? 0.7 : 0.3;
         ctx.lineWidth = isHovered ? 2.5 : 1;
-        const y = yGenomeCanonical(v.pos, H);
+        const y = yGenomeCanonical(v.pos, tracksH) - readsOffsetY;
         ctx.beginPath();
         ctx.moveTo(left, y);
         ctx.lineTo(W-10, y);
@@ -7104,18 +7396,41 @@
       }
       ctx.globalAlpha = 1.0;
     } else {
-      // a few rows to suggest lanes
+      // Draw row lines for all rows if reads are loaded
       ctx.strokeStyle = grid;
       ctx.lineWidth = 1;
       const top = 8;
       const rowH = 18;
-      const rows = Math.floor((H - top - 12) / rowH);
-      for (let i=0; i<rows; i++) {
-        const y = top + i*rowH + rowH/2;
-        ctx.beginPath();
-        ctx.moveTo(16, y);
-        ctx.lineTo(W-16, y);
-        ctx.stroke();
+      
+      let totalRows = Math.floor((H - top - 12) / rowH);
+      if (loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
+        // Draw lines for all rows in the layout
+        totalRows = loadedReadsLayout.rowCount || Math.max(...loadedReadsLayout.reads.map(r => r.row)) + 1;
+        const scrollTop = reads.scrollTop || 0;
+        
+        // Only draw lines visible in viewport
+        const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
+        const endRow = Math.min(totalRows, Math.ceil((scrollTop + H) / rowH) + 1);
+        
+        for (let i = startRow; i < endRow; i++) {
+          const y = top + i*rowH + rowH/2 - scrollTop;
+          if (y >= -rowH && y <= H + rowH) {
+            ctx.beginPath();
+            ctx.moveTo(16, y);
+            ctx.lineTo(W-16, y);
+            ctx.stroke();
+          }
+        }
+      } else {
+        // Default: draw a few rows to suggest lanes
+        const rows = Math.floor((H - top - 12) / rowH);
+        for (let i=0; i<rows; i++) {
+          const y = top + i*rowH + rowH/2;
+          ctx.beginPath();
+          ctx.moveTo(16, y);
+          ctx.lineTo(W-16, y);
+          ctx.stroke();
+        }
       }
 
       // placeholder "reads" as rounded rects aligned in genome space
@@ -7157,13 +7472,20 @@
 
       // Draw actual reads if available, otherwise show placeholder
       if (loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
-        // Render real reads
-        const maxRows = Math.floor((H - top - 12) / rowH);
+        // Get scroll position
+        const scrollTop = reads.scrollTop || 0;
         
+        // Render all reads (no row filtering)
         let renderedCount = 0;
+        let filteredByViewport = 0;
+        
         for (const read of loadedReadsLayout.reads) {
-          if (read.row >= maxRows) continue;
-          if (read.end < state.startBp || read.start > state.endBp) continue;
+          // Only filter by viewport (genomic coordinates)
+          if (read.end < state.startBp || read.start > state.endBp) {
+            filteredByViewport++;
+            continue;
+          }
+          
           renderedCount++;
           
           // Color based on haplotype
@@ -7184,10 +7506,14 @@
           
           const x1 = xGenomeCanonical(read.start, W);
           const x2 = xGenomeCanonical(read.end, W);
-          const y = top + read.row * rowH + 2;
+          // Account for scroll position when rendering
+          const y = top + read.row * rowH + 2 - scrollTop;
           const h = rowH - 4;
           const x = Math.max(0, x1);
           const w = Math.max(4, Math.min(x2, W) - x);
+          
+          // Skip rendering if read is outside visible area (above or below viewport)
+          if (y + h < 0 || y > H) continue;
           
           const devicePixelRatio = window.devicePixelRatio || 1;
           const useWebGPU = webgpuSupported && readsInstancedRenderer;
@@ -7241,28 +7567,37 @@
               ctx.fillStyle = 'rgba(0,0,0,0.4)';
               ctx.fillRect(ex, ey + eh/4, ex2 - ex, eh/2);
             } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
-              // Calculate base width (approximately 1bp in screen coords)
-              const baseWidth = Math.max(8, xGenomeCanonical(elem.start + 1, W) - ex);
+              // Calculate actual base width (matching reference base calculation)
+              const nextBp = elem.start + 1;
+              const nextX = nextBp <= state.endBp ? xGenomeCanonical(nextBp, W) : xGenomeCanonical(state.endBp, W);
+              const actualBaseWidth = Math.max(2, Math.abs(nextX - ex));
               
               // Color based on nucleotide
               const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
               const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
               const bgColor = nucColors[nuc] || '#9C27B0';
               
-              // Draw background
+              // Draw background (use actual width, but ensure minimum for visibility)
+              const drawWidth = Math.max(2, actualBaseWidth);
               ctx.fillStyle = bgColor;
-              ctx.fillRect(ex, ey + 1, baseWidth, eh - 2);
+              ctx.fillRect(ex, ey + 1, drawWidth, eh - 2);
               
-              // Draw nucleotide letter if there's enough space
-              if (baseWidth >= 6) {
+              // Draw nucleotide letter only if there's enough space (matching reference base threshold)
+              // Reference bases show letters when actualSize >= 8, so use same threshold here
+              if (actualBaseWidth >= 8) {
                 ctx.fillStyle = 'white';
                 ctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(nuc, ex + baseWidth/2, ey + eh/2);
+                ctx.fillText(nuc, ex + drawWidth/2, ey + eh/2);
               }
             }
           }
+        }
+        
+        // Log rendering statistics
+        if (renderedCount > 0 || filteredByViewport > 0) {
+          console.log(`Genomeshader: Rendered ${renderedCount} reads (filtered: ${filteredByViewport} by viewport, total: ${loadedReadsLayout.reads.length}, rows: ${totalRows}, viewport: ${state.startBp}-${state.endBp})`);
         }
       } else if (readsLoading) {
         // Show loading indicator
@@ -7349,7 +7684,19 @@
         // Update projection matrix for current canvas size
         const devicePixelRatio = window.devicePixelRatio || 1;
         const width = readsWebGPU.clientWidth * devicePixelRatio;
-        const height = readsWebGPU.clientHeight * devicePixelRatio;
+        // Use total content height if reads are loaded in horizontal mode, otherwise use visible height
+        let height = readsWebGPU.clientHeight * devicePixelRatio;
+        if (!isVertical && loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
+          // Horizontal mode with reads loaded - canvas height already set via grid layout above
+          // Just update the internal canvas dimensions
+          const top = 8;
+          const rowH = 18;
+          const totalRows = loadedReadsLayout.rowCount || Math.max(...loadedReadsLayout.reads.map(r => r.row)) + 1;
+          const totalContentHeight = top + totalRows * rowH + 12;
+          height = totalContentHeight * devicePixelRatio;
+          readsWebGPU.height = height;
+          // Style already set in the grid layout section above
+        }
         
         if (readsWebGPU.width !== width || readsWebGPU.height !== height) {
           readsWebGPU.width = width;
@@ -8341,7 +8688,7 @@
       const isVertical = isVerticalMode();
       
       if (isVertical) {
-        const H = readsHeightPx();
+        const H = tracksHeightPx(); // Use tracks height for consistent coordinate system
         const left = 8;
         
         // Check if mouse is near a variant line (horizontal in vertical mode)
@@ -8359,7 +8706,7 @@
           }
         }
       } else {
-        const W = readsWidthPx();
+        const W = tracksWidthPx(); // Use tracks width for consistent coordinate system
         const top = 8;
         
         // Check if mouse is near a variant line
@@ -8396,6 +8743,28 @@
     const throttledReadsHoverHandler = throttle(readsHoverHandler, 16);
     reads.addEventListener("mousemove", throttledReadsHoverHandler);
     reads.addEventListener("mouseleave", readsLeaveHandler);
+    
+    // Re-render on scroll to update visible reads
+    reads.addEventListener("scroll", () => {
+      renderReadsCanvas();
+    });
+    
+    // Allow wheel events to scroll the reads container (don't let main handler prevent it)
+    const readsWheelHandler = (e) => {
+      // Only handle if reads container is scrollable
+      if (reads.scrollHeight > reads.clientHeight) {
+        // Allow native scrolling - don't prevent default
+        // The scroll will happen naturally, and we'll re-render via scroll event
+        return;
+      }
+    };
+    reads.addEventListener("wheel", readsWheelHandler, { passive: true });
+    if (readsCanvas) {
+      readsCanvas.addEventListener("wheel", readsWheelHandler, { passive: true });
+    }
+    if (readsWebGPU) {
+      readsWebGPU.addEventListener("wheel", readsWheelHandler, { passive: true });
+    }
   }
 
   function updateFlowAndReadsPosition() {
@@ -8425,13 +8794,19 @@
         // Extend Reads track to the right edge of the main container
         const mainWidth = rectW(main);
         reads.style.width = readsLayout.track.collapsed ? "0px" : `${mainWidth - readsLayout.contentLeft}px`;
-        reads.style.top = "0";
-        reads.style.height = "100%";
+        // Position reads at the correct vertical offset (where the reads track starts)
+        reads.style.top = `${readsLayout.contentTop}px`;
+        // Height spans from contentTop to bottom of container
+        const mainHeight = rectH(main);
+        reads.style.height = readsLayout.track.collapsed ? "0px" : `${mainHeight - readsLayout.contentTop}px`;
       } else {
         reads.style.top = `${readsLayout.contentTop}px`;
-        reads.style.height = readsLayout.track.collapsed ? "0px" : `${readsLayout.contentHeight}px`;
         reads.style.left = "0";
         reads.style.width = "100%";
+        // Height and overflow are managed by renderReadsCanvas when reads are loaded
+        if (!loadedReadsLayout || !loadedReadsLayout.reads || loadedReadsLayout.reads.length === 0) {
+          reads.style.height = readsLayout.track.collapsed ? "0px" : `${readsLayout.contentHeight}px`;
+        }
       }
       reads.style.display = readsLayout.track.collapsed ? "none" : "block";
     }
@@ -8536,6 +8911,20 @@
       // Extra safety: ignore wheel not originating inside this viewer
       const path = e.composedPath ? e.composedPath() : [];
       if (!path.includes(main)) return;
+
+      // Allow scrolling in reads container - don't intercept wheel events there
+      const readsEl = byId(root, "reads");
+      if (readsEl) {
+        // Check if event target is within reads container (including canvas children)
+        const target = e.target;
+        if (readsEl.contains(target) || path.includes(readsEl)) {
+          // Check if reads container is scrollable and has overflow
+          if (readsEl.scrollHeight > readsEl.clientHeight) {
+            // Allow native scrolling - don't prevent default
+            return;
+          }
+        }
+      }
 
       const isPinchZoom = e.ctrlKey === true || e.metaKey === true;
       const isVertical = isVerticalMode();
