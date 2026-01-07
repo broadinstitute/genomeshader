@@ -8794,11 +8794,10 @@
         // Extend Reads track to the right edge of the main container
         const mainWidth = rectW(main);
         reads.style.width = readsLayout.track.collapsed ? "0px" : `${mainWidth - readsLayout.contentLeft}px`;
-        // Position reads at the correct vertical offset (where the reads track starts)
-        reads.style.top = `${readsLayout.contentTop}px`;
-        // Height spans from contentTop to bottom of container
+        // In vertical mode, tracks are side-by-side, so top should be 0 and height spans full container
+        reads.style.top = "0";
         const mainHeight = rectH(main);
-        reads.style.height = readsLayout.track.collapsed ? "0px" : `${mainHeight - readsLayout.contentTop}px`;
+        reads.style.height = readsLayout.track.collapsed ? "0px" : `${mainHeight}px`;
       } else {
         reads.style.top = `${readsLayout.contentTop}px`;
         reads.style.left = "0";
