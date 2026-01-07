@@ -7197,18 +7197,10 @@
     ctx.fillRect(0,0,W,bgHeight);
 
     if (isVertical) {
-      // In vertical mode, use tracksWidthPx() for coordinate mapping (same as renderTracks does)
-      // In vertical mode: W = tracksHeightPx(), H = tracksWidthPx()
-      // The genomic axis is vertical, so we use the width dimension for coordinate mapping
-      const tracksH = tracksWidthPx();
-      
-      // Calculate offset between reads container and tracks container
-      let readsOffsetY = 0;
-      if (tracksSvg && reads) {
-        const tracksRect = tracksSvg.getBoundingClientRect();
-        const readsRect = reads.getBoundingClientRect();
-        readsOffsetY = readsRect.top - tracksRect.top;
-      }
+      // In vertical mode, the genomic axis runs vertically
+      // Use the reads container height (H) for coordinate mapping to match the canvas we're drawing in
+      // Both tracks and reads containers now have the same height (mainHeight) and start at top: 0
+      const coordHeight = H;
       
       // a few columns to suggest lanes (vertical mode)
       ctx.strokeStyle = grid;
@@ -7226,8 +7218,8 @@
 
       // placeholder "reads" as rounded rects aligned in genome space
       function drawRead(bpStart, bpEnd, col, alpha=0.20) {
-        const y1 = yGenomeCanonical(bpStart, tracksH) - readsOffsetY;
-        const y2 = yGenomeCanonical(bpEnd, tracksH) - readsOffsetY;
+        const y1 = yGenomeCanonical(bpStart, coordHeight);
+        const y2 = yGenomeCanonical(bpEnd, coordHeight);
         const x = left + col*colW + 2;
         const w = colW - 6;
         const y = Math.min(y1, y2);
@@ -7292,9 +7284,9 @@
           }
           if (!read.isForward) alpha *= 0.7;
           
-          // Use tracks height for coordinate mapping, then adjust for reads container offset
-          const y1 = yGenomeCanonical(read.start, tracksH) - readsOffsetY;
-          const y2 = yGenomeCanonical(read.end, tracksH) - readsOffsetY;
+          // Use reads container height for coordinate mapping
+          const y1 = yGenomeCanonical(read.start, coordHeight);
+          const y2 = yGenomeCanonical(read.end, coordHeight);
           const x = left + read.row * colW + 2;
           const w = colW - 4;
           const y = Math.min(y1, y2);
@@ -7320,7 +7312,7 @@
           if (read.elements && read.elements.length > 0) {
             for (const elem of read.elements) {
               if (elem.start < state.startBp || elem.start > state.endBp) continue;
-              const ey = yGenomeCanonical(elem.start, tracksH) - readsOffsetY;
+              const ey = yGenomeCanonical(elem.start, coordHeight);
               const ex = x;
               const ew = w;
               
@@ -7328,7 +7320,7 @@
                 ctx.fillStyle = 'rgba(200,100,255,0.9)';
                 ctx.fillRect(ex, ey - 1, ew, 2);
               } else if (elem.type === 3) { // Deletion - black gap
-                const ey2 = yGenomeCanonical(elem.end, tracksH) - readsOffsetY;
+                const ey2 = yGenomeCanonical(elem.end, coordHeight);
                 const delY = Math.min(ey, ey2);
                 const delH = Math.max(2, Math.abs(ey2 - ey));
                 ctx.fillStyle = 'rgba(0,0,0,0.4)';
@@ -7336,7 +7328,7 @@
               } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
                 // Calculate actual base height (matching reference base calculation)
                 const nextBp = elem.start + 1;
-                const nextY = (nextBp <= state.endBp ? yGenomeCanonical(nextBp, tracksH) : yGenomeCanonical(state.endBp, tracksH)) - readsOffsetY;
+                const nextY = (nextBp <= state.endBp ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(state.endBp, coordHeight));
                 const actualBaseHeight = Math.max(2, Math.abs(nextY - ey));
                 
                 // Color based on nucleotide
@@ -7388,7 +7380,7 @@
         ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
         ctx.globalAlpha = isHovered ? 0.7 : 0.3;
         ctx.lineWidth = isHovered ? 2.5 : 1;
-        const y = yGenomeCanonical(v.pos, tracksH) - readsOffsetY;
+        const y = yGenomeCanonical(v.pos, coordHeight);
         ctx.beginPath();
         ctx.moveTo(left, y);
         ctx.lineTo(W-10, y);
