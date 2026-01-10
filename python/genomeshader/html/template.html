@@ -134,11 +134,18 @@
       position: relative;
       background: var(--panel);
       border-right: 1px solid var(--border2);
-      padding: 12px;
+      padding: 0;
+      overflow: hidden;
+      transition: opacity 0.2s ease;
+      display: flex;
+      flex-direction: column;
+    }
+    .sidebarContent {
+      flex: 1;
       overflow-y: auto;
       overflow-x: visible;
-      padding-bottom: 56px; /* space for gear button */
-      transition: opacity 0.2s ease;
+      padding: 12px;
+      padding-bottom: 12px;
     }
     .sidebar::after {
       content: "";
@@ -161,6 +168,10 @@
       overflow: visible;
     }
     .app.sidebar-collapsed .sidebar > * {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .app.sidebar-collapsed .sidebarContent {
       opacity: 0;
       pointer-events: none;
     }
@@ -244,8 +255,7 @@
       position: absolute !important;
       left: 12px !important;
       bottom: 12px !important;
-      top: auto !important;
-      right: auto !important;
+      z-index: 10 !important;
       border: 1px solid var(--border2);
       background: var(--panel2);
       color: var(--text);
@@ -703,7 +713,8 @@
 
 <body>
   <div class="app" style="position: relative; display: block;">
-    <div class="sidebar" id="sidebar" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto; overflow-y: auto;">
+    <div class="sidebar" id="sidebar" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
+      <div class="sidebarContent">
       <div style="display: none;">
         <div class="sidebarHeader">
           <h3>Participant groups</h3>
@@ -716,21 +727,26 @@
         <div class="group"><span>SAS</span><span class="pill">328</span></div>
       </div>
 
+      <!-- Sample Search Section -->
+      <div class="sidebarHeader" style="margin-top: 20px;">
+        <h3>Sample Search</h3>
+      </div>
+
+      <div id="sampleSearchSection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); margin-bottom: 20px;">
+        <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;">
+        <div id="sampleSearchResults" style="display: none; margin-top: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel);"></div>
+      </div>
+
       <div class="sidebarHeader" style="margin-top: 20px;">
         <h3>Selection</h3>
       </div>
 
       <!-- Context Indicator -->
       <div id="sampleContext" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); font-size: 11px; color: var(--muted); display: none;">
-        <div id="contextText"></div>
       </div>
 
       <!-- Strategy Selection Section -->
-      <div id="sampleStrategySection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2);">
-        <div id="noSelectionHint" style="margin-bottom: 8px; font-size: 11px; color: var(--muted);">
-          Select an allele or edge in the alluvial to generate candidate samples.
-        </div>
-        
+      <div id="sampleStrategySection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); display: none;">
         <!-- Strategy Dropdown -->
         <div style="margin-bottom: 8px;">
           <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;">Strategy</label>
@@ -773,18 +789,6 @@
         </div>
       </div>
 
-      <!-- Sample Search Section -->
-      <div class="sidebarHeader" style="margin-top: 20px;">
-        <h3>Sample Search</h3>
-      </div>
-
-      <div id="sampleSearchSection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); margin-bottom: 20px;">
-        <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;">
-        <div id="sampleSearchResults" style="display: none; margin-top: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel);"></div>
-      </div>
-
-      <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
-
       <div class="menu" id="ctxMenu" role="menu" aria-hidden="true">
         <div class="menuTitle">Display</div>
         <div class="menuItem" id="themeItem" role="menuitem">
@@ -819,6 +823,9 @@
           <span class="menuRight" id="loadReadsLabel">▶</span>
         </div>
       </div>
+      </div>
+
+      <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
     </div>
 
     <div class="main" id="main" style="position: absolute; left: 240px; top: 0; right: 0; bottom: 0; z-index: 1;">
@@ -2210,36 +2217,63 @@
       document.body.appendChild(ctxMenu);
     }
     
+    // Temporarily show menu to measure its actual dimensions
+    ctxMenu.style.position = 'fixed';
+    ctxMenu.style.visibility = 'hidden';
+    ctxMenu.style.display = 'block';
+    ctxMenu.classList.add("open");
+    ctxMenu.setAttribute("aria-hidden", "false");
+    
+    // Get actual menu dimensions
+    const menuRect = ctxMenu.getBoundingClientRect();
+    const menuHeight = menuRect.height;
+    const menuWidth = menuRect.width;
+    
     // Use fixed positioning so menu appears over everything (including Jupyter UI)
     const r = menuBtn.getBoundingClientRect();
-    // Position menu above the gear button, or below if not enough space above
-    const menuHeight = 220; // Approximate menu height
-    let top = r.top - menuHeight - 8;
-    let left = r.left;
+    const padding = 8;
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
     
-    // If not enough space above, position below
-    if (top < 8) {
-      top = r.bottom + 8;
+    // Calculate positions for above and below the button
+    const spaceAbove = r.top;
+    const spaceBelow = viewportHeight - r.bottom;
+    const topIfAbove = r.top - menuHeight - padding;
+    const topIfBelow = r.bottom + padding;
+    
+    // Determine best position: prefer above, but use below if not enough space above
+    // However, if below would extend off screen, position above even with limited space
+    let top, left = r.left;
+    
+    // Check if positioning below would extend off screen
+    const wouldExtendBelow = (topIfBelow + menuHeight) > (viewportHeight - padding);
+    
+    if (spaceAbove >= menuHeight + padding && !wouldExtendBelow) {
+      // Enough space above, position above
+      top = topIfAbove;
+    } else if (spaceBelow >= menuHeight + padding && !wouldExtendBelow) {
+      // Not enough space above, but enough below, position below
+      top = topIfBelow;
+    } else {
+      // Not enough space in either direction, position above and adjust to fit
+      // This ensures menu never extends below viewport
+      top = Math.max(padding, viewportHeight - menuHeight - padding);
     }
     
     // Ensure menu doesn't go off right edge
-    const menuWidth = 220;
-    if (left + menuWidth > window.innerWidth - 8) {
-      left = window.innerWidth - menuWidth - 8;
+    if (left + menuWidth > viewportWidth - padding) {
+      left = Math.max(padding, viewportWidth - menuWidth - padding);
     }
     
-    // Ensure menu doesn't go off bottom edge
-    if (top + menuHeight > window.innerHeight - 8) {
-      top = Math.max(8, window.innerHeight - menuHeight - 8);
+    // Final check: ensure menu never extends below viewport
+    if (top + menuHeight > viewportHeight - padding) {
+      top = Math.max(padding, viewportHeight - menuHeight - padding);
     }
     
-    ctxMenu.style.position = 'fixed';
+    // Apply final positioning
     ctxMenu.style.left = `${left}px`;
     ctxMenu.style.top = `${top}px`;
     ctxMenu.style.zIndex = '2147483647';
-    ctxMenu.classList.add("open");
-    ctxMenu.setAttribute("aria-hidden", "false");
-    ctxMenu.style.display = 'block';
     ctxMenu.style.visibility = 'visible';
     ctxMenu.style.pointerEvents = 'auto';
     ctxMenu.style.opacity = '1';
@@ -2291,7 +2325,8 @@
     menuBtn.style.pointerEvents = "auto";
     menuBtn.style.cursor = "pointer";
     menuBtn.style.zIndex = "150";
-    menuBtn.style.position = "relative";
+    // Keep absolute positioning for bottom-left placement
+    menuBtn.style.position = "absolute";
     
     // Also set onclick as fallback
     menuBtn.onclick = handleMenuButtonClick;
@@ -9386,9 +9421,8 @@
     function updateSampleContext() {
       const currentRoot = getCurrentRoot();
       const contextEl = byId(currentRoot, 'sampleContext');
-      const contextTextEl = byId(currentRoot, 'contextText');
       
-      if (!contextEl || !contextTextEl) return;
+      if (!contextEl) return;
       
       if (state.selectedAlleles.size === 0) {
         contextEl.style.display = 'none';
@@ -9397,18 +9431,9 @@
       
       // Count selected alleles
       const alleleCount = state.selectedAlleles.size;
-      const combineMode = state.sampleSelection.combineMode;
       
-      // TODO: Calculate carriers count (placeholder for now)
-      const carriersCount = 0; // Will be computed from selection
-      
-      // Build context text
-      let text = `Selected: ${alleleCount} ${alleleCount === 1 ? 'allele' : 'alleles'}, ${combineMode}`;
-      if (carriersCount > 0) {
-        text += `<br>Carriers: ${carriersCount.toLocaleString()} samples`;
-      }
-      
-      contextTextEl.innerHTML = text;
+      // Show allele count directly in the context div
+      contextEl.textContent = `${alleleCount} ${alleleCount === 1 ? 'allele' : 'alleles'} selected`;
       contextEl.style.display = 'block';
     }
     
@@ -9416,12 +9441,17 @@
     function updateSampleStrategySection() {
       const hasSelection = state.selectedAlleles.size > 0;
       const currentRoot = getCurrentRoot();
+      const strategySectionEl = byId(currentRoot, 'sampleStrategySection');
       const strategyEl = byId(currentRoot, 'sampleStrategy');
       const sliderEl = byId(currentRoot, 'sampleCountSlider');
       const inputEl = byId(currentRoot, 'sampleCountInput');
       const replaceBtn = byId(currentRoot, 'loadSamplesReplace');
       const addBtn = byId(currentRoot, 'loadSamplesAdd');
-      const placeholderEl = byId(currentRoot, 'noSelectionHint');
+      
+      // Show/hide entire strategy section based on selection
+      if (strategySectionEl) {
+        strategySectionEl.style.display = hasSelection ? 'block' : 'none';
+      }
       
       // Enable/disable controls based on selection
       const disabled = !hasSelection;
@@ -9430,11 +9460,6 @@
       if (inputEl) inputEl.disabled = disabled;
       if (replaceBtn) replaceBtn.disabled = disabled;
       if (addBtn) addBtn.disabled = disabled;
-      
-      // Show/hide placeholder message
-      if (placeholderEl) {
-        placeholderEl.style.display = hasSelection ? 'none' : 'block';
-      }
       
       // Update "Compare branches" option enablement
       if (strategyEl) {
