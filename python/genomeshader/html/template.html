@@ -710,7 +710,8 @@
       border-color: var(--blue);
     }
     
-    .smart-track-refresh-btn,
+    .smart-track-reload-btn,
+    .smart-track-shuffle-btn,
     .smart-track-close-btn {
       font-size: 16px;
       padding: 0;
@@ -728,13 +729,15 @@
       justify-content: center;
       line-height: 1;
     }
-    .smart-track-refresh-btn:hover {
+    .smart-track-reload-btn:hover,
+    .smart-track-shuffle-btn:hover {
       color: var(--text);
     }
     .smart-track-close-btn:hover {
       color: var(--text);
     }
-    .smart-track-refresh-btn:active {
+    .smart-track-reload-btn:active,
+    .smart-track-shuffle-btn:active {
       transform: scale(0.95);
     }
     .smart-track-close-btn:active {
@@ -1938,7 +1941,7 @@
     });
   }
   
-  function sendCommMessage(type, data) {
+  function sendCommMessage(type, data, timeoutMs) {
     return ensureCommReady().then(function(comm) {
       return new Promise(function(resolve, reject) {
         const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -1950,13 +1953,14 @@
           ...data
         });
         
-        // Timeout
+        // Timeout - use longer timeout for fetch_reads (120 seconds), default 30 seconds
+        const timeout = timeoutMs || (type === 'fetch_reads' ? 120000 : 30000);
         setTimeout(function() {
           if (pendingCommRequests.has(requestId)) {
             pendingCommRequests.delete(requestId);
             reject(new Error('Request timeout'));
           }
-        }, 30000); // 30 second timeout for actual requests
+        }, timeout);
       });
     });
   }
@@ -2067,7 +2071,8 @@
       }
     }
     
-    console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
+    // Only log in debug mode or for first few calls to avoid console spam
+    // console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
     return { reads: readArray, rowCount: rows.length };
   }
   
@@ -2114,6 +2119,14 @@
     const index = state.smartTracks.length;
     const trackId = `smart-track-${timestamp}-${index}`;
     
+    // Check if track with this ID already exists (shouldn't happen, but guard against it)
+    if (state.smartTracks.find(t => t.id === trackId)) {
+      console.warn(`Smart track ${trackId} already exists, skipping creation`);
+      return state.smartTracks.find(t => t.id === trackId);
+    }
+    
+    // console.log(`Creating Smart track ${trackId} (total tracks: ${state.smartTracks.length})`);
+    
     // Create track object
     const track = {
       id: trackId,
@@ -2137,7 +2150,7 @@
     const insertIndex = readsIndex >= 0 ? readsIndex + 1 : state.tracks.length;
     state.tracks.splice(insertIndex, 0, track);
     
-    // Initialize WebGPU renderer
+    // Initialize WebGPU renderer (async, but don't await - it will complete in background)
     initSmartTrackWebGPU(trackId);
     
     // Update layout
@@ -2149,6 +2162,12 @@
   
   // Initialize WebGPU renderer for a Smart track
   async function initSmartTrackWebGPU(trackId) {
+    // Check if renderer already exists - prevent re-initialization
+    if (state.smartTrackRenderers.has(trackId)) {
+      // console.log(`Smart track ${trackId}: WebGPU already initialized, skipping`);
+      return;
+    }
+    
     if (!webgpuSupported || !navigator.gpu) {
       console.warn('WebGPU not supported, Smart track will use Canvas2D fallback');
       return;
@@ -2303,7 +2322,7 @@
       .then(function(response) {
         track.loading = false;
         if (response.type === 'fetch_reads_response') {
-          console.log(`Smart track ${trackId}: Received ${response.count} read elements`);
+          // console.log(`Smart track ${trackId}: Received ${response.count} read elements`);
           track.readsData = response.reads;
           track.readsLayout = processReadsData(response.reads);
           track.sampleId = sampleId || response.sample_id || null;
@@ -2362,32 +2381,52 @@
       });
   }
   
-  // Refresh Smart track (reload with new sample)
-  function refreshSmartTrack(trackId) {
+  // Reload Smart track (reload with current sample)
+  function reloadSmartTrack(trackId) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    // Reload with the same sample ID
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId)
+      .catch(err => {
+        console.error(`Failed to reload track ${trackId}:`, err);
+      });
+  }
+  
+  // Shuffle Smart track (choose a new/different sample)
+  function shuffleSmartTrack(trackId) {
     const track = state.smartTracks.find(t => t.id === trackId);
     if (!track) return;
     
     // Recompute candidate samples based on current strategy
-    // For now, just get a new sample from candidates
     const candidates = state.sampleSelection.candidateSamples;
     let sampleId = null;
     
     if (candidates && candidates.length > 0) {
-      // If we have a current sample, try to get a different one
-      if (track.sampleId && candidates.includes(track.sampleId)) {
-        const currentIndex = candidates.indexOf(track.sampleId);
-        const nextIndex = (currentIndex + 1) % candidates.length;
-        sampleId = candidates[nextIndex];
-      } else {
-        // Just use the first candidate
+      if (candidates.length === 1) {
+        // Only one candidate, use it
         sampleId = candidates[0];
+      } else {
+        // If we have a current sample, try to get a different one
+        if (track.sampleId && candidates.includes(track.sampleId)) {
+          const currentIndex = candidates.indexOf(track.sampleId);
+          // Pick a random different sample
+          let nextIndex;
+          do {
+            nextIndex = Math.floor(Math.random() * candidates.length);
+          } while (nextIndex === currentIndex && candidates.length > 1);
+          sampleId = candidates[nextIndex];
+        } else {
+          // No current sample or it's not in candidates, pick a random one
+          sampleId = candidates[Math.floor(Math.random() * candidates.length)];
+        }
       }
     }
     
-    // Fetch reads again
+    // Fetch reads with new sample
     fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
       .catch(err => {
-        console.error(`Failed to refresh track ${trackId}:`, err);
+        console.error(`Failed to shuffle track ${trackId}:`, err);
       });
   }
   
@@ -9196,33 +9235,61 @@
         strategySelect.style.pointerEvents = "auto";
         strategySelect.style.zIndex = "20";
         
-        // Refresh button
-        const refreshBtn = document.createElement("button");
-        refreshBtn.className = "smart-track-refresh-btn";
-        refreshBtn.textContent = "↻";
-        refreshBtn.title = "Refresh sample";
-        refreshBtn.type = "button";
-        refreshBtn.style.fontSize = "16px";
-        refreshBtn.style.padding = "0";
-        refreshBtn.style.border = "none";
-        refreshBtn.style.borderRadius = "0";
-        refreshBtn.style.background = "transparent";
-        refreshBtn.style.color = "var(--muted)";
-        refreshBtn.style.cursor = "pointer";
-        refreshBtn.style.marginLeft = "6px";
-        refreshBtn.style.width = "18px";
-        refreshBtn.style.height = "18px";
-        refreshBtn.style.display = "flex";
-        refreshBtn.style.alignItems = "center";
-        refreshBtn.style.justifyContent = "center";
-        refreshBtn.style.lineHeight = "1";
-        refreshBtn.addEventListener("click", (e) => {
+        // Reload button (reload current sample)
+        const reloadBtn = document.createElement("button");
+        reloadBtn.className = "smart-track-reload-btn";
+        reloadBtn.textContent = "↻";
+        reloadBtn.title = "Reload sample";
+        reloadBtn.type = "button";
+        reloadBtn.style.fontSize = "16px";
+        reloadBtn.style.padding = "0";
+        reloadBtn.style.border = "none";
+        reloadBtn.style.borderRadius = "0";
+        reloadBtn.style.background = "transparent";
+        reloadBtn.style.color = "var(--muted)";
+        reloadBtn.style.cursor = "pointer";
+        reloadBtn.style.marginLeft = "6px";
+        reloadBtn.style.width = "18px";
+        reloadBtn.style.height = "18px";
+        reloadBtn.style.display = "flex";
+        reloadBtn.style.alignItems = "center";
+        reloadBtn.style.justifyContent = "center";
+        reloadBtn.style.lineHeight = "1";
+        reloadBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           e.preventDefault();
-          refreshSmartTrack(track.id);
+          reloadSmartTrack(track.id);
         });
-        refreshBtn.style.pointerEvents = "auto";
-        refreshBtn.style.zIndex = "20";
+        reloadBtn.style.pointerEvents = "auto";
+        reloadBtn.style.zIndex = "20";
+        
+        // Shuffle button (choose new sample)
+        const shuffleBtn = document.createElement("button");
+        shuffleBtn.className = "smart-track-shuffle-btn";
+        shuffleBtn.textContent = "⇆";
+        shuffleBtn.title = "Shuffle to new sample";
+        shuffleBtn.type = "button";
+        shuffleBtn.style.fontSize = "16px";
+        shuffleBtn.style.padding = "0";
+        shuffleBtn.style.border = "none";
+        shuffleBtn.style.borderRadius = "0";
+        shuffleBtn.style.background = "transparent";
+        shuffleBtn.style.color = "var(--muted)";
+        shuffleBtn.style.cursor = "pointer";
+        shuffleBtn.style.marginLeft = "6px";
+        shuffleBtn.style.width = "18px";
+        shuffleBtn.style.height = "18px";
+        shuffleBtn.style.display = "flex";
+        shuffleBtn.style.alignItems = "center";
+        shuffleBtn.style.justifyContent = "center";
+        shuffleBtn.style.lineHeight = "1";
+        shuffleBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          shuffleSmartTrack(track.id);
+        });
+        shuffleBtn.style.pointerEvents = "auto";
+        shuffleBtn.style.zIndex = "20";
         
         // Close button
         const closeBtn = document.createElement("button");
@@ -9260,7 +9327,8 @@
         if (isVertical) {
           controls.appendChild(label);
           controls.appendChild(strategySelect);
-          controls.appendChild(refreshBtn);
+          controls.appendChild(reloadBtn);
+          controls.appendChild(shuffleBtn);
           controls.appendChild(closeBtn);
           controls.appendChild(collapseBtn);
           container.appendChild(controls);
@@ -9268,7 +9336,8 @@
           controls.appendChild(collapseBtn);
           controls.appendChild(label);
           controls.appendChild(strategySelect);
-          controls.appendChild(refreshBtn);
+          controls.appendChild(reloadBtn);
+          controls.appendChild(shuffleBtn);
           controls.appendChild(closeBtn);
           container.appendChild(controls);
         }
@@ -10689,57 +10758,107 @@
     }
     
     // Load buttons
-    if (replaceBtn) {
-      replaceBtn.addEventListener('click', () => {
+    if (replaceBtn && !replaceBtn._listenerAttached) {
+      replaceBtn._listenerAttached = true;
+      replaceBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Use button's disabled state as the loading flag
+        if (replaceBtn.disabled) {
+          return; // Prevent multiple simultaneous loads
+        }
+        
         if (state.selectedAlleles.size === 0) {
           console.warn('No alleles selected');
           return;
         }
         
+        replaceBtn.disabled = true;
+        
         const strategy = state.sampleSelection.strategy;
         const candidates = state.sampleSelection.candidateSamples;
         const selectedAlleles = Array.from(state.selectedAlleles);
+        const numSamples = state.sampleSelection.numSamples || 1;
         
         // Remove all existing Smart tracks
         const smartTrackIds = state.smartTracks.map(t => t.id);
         smartTrackIds.forEach(id => removeSmartTrack(id));
         
-        // Create new Smart track
-        const track = createSmartTrack(strategy, selectedAlleles);
+        // Create Smart tracks based on numSamples
+        const trackPromises = [];
+        for (let i = 0; i < numSamples; i++) {
+          const track = createSmartTrack(strategy, selectedAlleles);
+          
+          // Get sample ID from candidates (cycle through if fewer candidates than requested)
+          let sampleId = null;
+          if (candidates && candidates.length > 0) {
+            sampleId = candidates[i % candidates.length];
+          }
+          
+          // Fetch reads
+          trackPromises.push(
+            fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+              .catch(err => {
+                console.error('Failed to load reads for Smart track:', err);
+              })
+          );
+        }
         
-        // Get sample ID from candidates
-        const sampleId = candidates && candidates.length > 0 ? candidates[0] : null;
-        
-        // Fetch reads
-        fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
-          .catch(err => {
-            console.error('Failed to load reads for Smart track:', err);
-          });
+        // Re-enable button after all tracks are created (reads may still be loading)
+        Promise.all(trackPromises).finally(() => {
+          replaceBtn.disabled = false;
+        });
       });
     }
     
-    if (addBtn) {
-      addBtn.addEventListener('click', () => {
+    if (addBtn && !addBtn._listenerAttached) {
+      addBtn._listenerAttached = true;
+      addBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Use button's disabled state as the loading flag
+        if (addBtn.disabled) {
+          return; // Prevent multiple simultaneous loads
+        }
+        
         if (state.selectedAlleles.size === 0) {
           console.warn('No alleles selected');
           return;
         }
         
+        addBtn.disabled = true;
+        
         const strategy = state.sampleSelection.strategy;
         const candidates = state.sampleSelection.candidateSamples;
         const selectedAlleles = Array.from(state.selectedAlleles);
+        const numSamples = state.sampleSelection.numSamples || 1;
         
-        // Create new Smart track (add, don't replace)
-        const track = createSmartTrack(strategy, selectedAlleles);
+        // Create Smart tracks based on numSamples (add, don't replace)
+        const trackPromises = [];
+        for (let i = 0; i < numSamples; i++) {
+          const track = createSmartTrack(strategy, selectedAlleles);
+          
+          // Get sample ID from candidates (cycle through if fewer candidates than requested)
+          let sampleId = null;
+          if (candidates && candidates.length > 0) {
+            sampleId = candidates[i % candidates.length];
+          }
+          
+          // Fetch reads
+          trackPromises.push(
+            fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+              .catch(err => {
+                console.error('Failed to load reads for Smart track:', err);
+              })
+          );
+        }
         
-        // Get sample ID from candidates
-        const sampleId = candidates && candidates.length > 0 ? candidates[0] : null;
-        
-        // Fetch reads
-        fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
-          .catch(err => {
-            console.error('Failed to load reads for Smart track:', err);
-          });
+        // Re-enable button after all tracks are created (reads may still be loading)
+        Promise.all(trackPromises).finally(() => {
+          addBtn.disabled = false;
+        });
       });
     }
     
@@ -11232,7 +11351,8 @@
     // Don't start drag if clicking on buttons or interactive elements
     if (e.target.closest(".track-collapse-btn") ||
         e.target.closest(".smart-track-close-btn") ||
-        e.target.closest(".smart-track-refresh-btn") ||
+        e.target.closest(".smart-track-reload-btn") ||
+        e.target.closest(".smart-track-shuffle-btn") ||
         e.target.closest(".smart-track-strategy-select") ||
         e.target.closest(".smart-track-label-input") ||
         e.target.closest("button") ||
