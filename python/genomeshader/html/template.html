@@ -7957,10 +7957,24 @@
     const layout = getTrackLayout();
     const trackLayout = layout.find(l => l.track.id === trackId);
     if (!trackLayout || trackLayout.track.collapsed) {
-      // Clear WebGPU renderer instances if collapsed
+      // Hide container and clear renderer instances if collapsed
       const renderer = state.smartTrackRenderers.get(trackId);
-      if (renderer && renderer.instancedRenderer) {
-        renderer.instancedRenderer.clear();
+      if (renderer) {
+        // Hide the container
+        if (renderer.container) {
+          renderer.container.style.display = "none";
+        }
+        // Clear WebGPU renderer instances
+        if (renderer.instancedRenderer) {
+          renderer.instancedRenderer.clear();
+        }
+        // Clear Canvas2D canvas
+        if (renderer.canvas) {
+          const ctx = renderer.canvas.getContext("2d");
+          if (ctx) {
+            ctx.clearRect(0, 0, renderer.canvas.width, renderer.canvas.height);
+          }
+        }
       }
       return;
     }
@@ -7983,7 +7997,8 @@
       container.style.width = "100%";
       container.style.height = `${trackLayout.contentHeight}px`;
     }
-    container.style.display = trackLayout.track.collapsed ? "none" : "block";
+    // Ensure container is visible when track is expanded (we know it's not collapsed here)
+    container.style.display = "block";
     
     if (!canvas || !webgpuCanvas) return;
     
@@ -8092,7 +8107,8 @@
         }, 100);
       }
     } else {
-      container.style.display = '';
+      // Ensure container is visible (for vertical mode or when no reads are loaded)
+      container.style.display = "block";
       container.style.gridTemplateRows = '';
       container.style.gridTemplateColumns = '';
       container.classList.remove('scrollable');
