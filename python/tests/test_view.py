@@ -1,10 +1,8 @@
 """
 Unit tests for the refactored view.py template-based popup creation.
 
-Note: Tests decode base64-encoded HTML from the render() output to verify
-that bootstrap variables (GENOMESHADER_MANIFEST_URL, GENOMESHADER_CONFIG)
-are properly injected into the template, since the HTML is embedded in
-JavaScript as a base64-encoded string.
+Note: Tests verify that bootstrap variables (GENOMESHADER_CONFIG, GENOMESHADER_VIEW_ID)
+are properly injected into the template for Jupyter comms-based data retrieval.
 """
 import os
 import json
@@ -96,9 +94,9 @@ class TestRenderMethod:
         # Should contain inline HTML structure (div container)
         assert '<div id="genomeshader-root-' in html_output
         assert '</div>' in html_output
-        # Should contain bootstrap script
-        assert 'window.GENOMESHADER_MANIFEST_URL' in html_output
+        # Should contain bootstrap script with comms-based variables
         assert 'window.GENOMESHADER_CONFIG' in html_output
+        assert 'window.GENOMESHADER_VIEW_ID' in html_output
     
     def test_render_uses_genomeshader_window_name(self, mock_genomeshader, sample_dataframe):
         """Test that container ID follows genomeshader-root pattern."""
@@ -114,29 +112,29 @@ class TestRenderMethod:
         html_output = mock_genomeshader.render(sample_dataframe)
         
         # Should contain bootstrap variables directly in inline script
-        assert 'window.GENOMESHADER_MANIFEST_URL' in html_output
         assert 'window.GENOMESHADER_CONFIG' in html_output
-        
-        # Should contain manifest URL (could be GCS path or localhost URL)
-        assert 'manifest.json' in html_output or 'http://127.0.0.1' in html_output
+        assert 'window.GENOMESHADER_VIEW_ID' in html_output
         
         # Should contain config fields
         assert 'region' in html_output
         assert 'genome_build' in html_output
+        # Should contain comm_available flag for Jupyter comms
+        assert 'comm_available' in html_output
     
-    def test_render_manifest_url_construction(self, mock_genomeshader, sample_dataframe):
-        """Test that manifest URL is constructed correctly."""
+    def test_render_view_id_construction(self, mock_genomeshader, sample_dataframe):
+        """Test that view ID is set correctly for Jupyter comms."""
         html_output = mock_genomeshader.render(sample_dataframe)
         
-        # Extract the manifest URL from the inline script
-        manifest_match = re.search(r'window\.GENOMESHADER_MANIFEST_URL\s*=\s*([^;]+)', html_output)
-        assert manifest_match is not None, "Should find manifest URL in HTML"
+        # Extract the view ID from the inline script
+        view_id_match = re.search(r'window\.GENOMESHADER_VIEW_ID\s*=\s*([^;]+)', html_output)
+        assert view_id_match is not None, "Should find view ID in HTML"
         
-        manifest_value = manifest_match.group(1).strip()
+        view_id_value = view_id_match.group(1).strip()
         # Should be JSON-encoded, so parse it
-        manifest_value = json.loads(manifest_value)
-        # URL could be GCS path or localhost URL
-        assert 'manifest.json' in manifest_value or 'http://127.0.0.1' in manifest_value
+        view_id_value = json.loads(view_id_value)
+        # View ID should be a non-empty string
+        assert isinstance(view_id_value, str)
+        assert len(view_id_value) > 0
     
     def test_render_config_contains_region(self, mock_genomeshader, sample_dataframe):
         """Test that config contains the region."""
@@ -194,8 +192,8 @@ class TestRenderMethod:
         assert len(html_output) > 0
         
         # Should contain bootstrap variables in inline script
-        assert 'window.GENOMESHADER_MANIFEST_URL' in html_output
         assert 'window.GENOMESHADER_CONFIG' in html_output
+        assert 'window.GENOMESHADER_VIEW_ID' in html_output
     
     def test_render_invalid_input(self, mock_genomeshader):
         """Test that render() raises error for invalid input."""
@@ -235,10 +233,11 @@ class TestBootstrapInjection:
         html_output = mock_genomeshader.render(sample_df)
         
         # Bootstrap should be valid JavaScript in inline script tags
-        assert 'window.GENOMESHADER_MANIFEST_URL' in html_output
         assert 'window.GENOMESHADER_CONFIG' in html_output
-        assert '<script' in html_output
         assert 'window.GENOMESHADER_VIEW_ID' in html_output
+        assert '<script' in html_output
+        # Should contain comm_available in config for Jupyter comms
+        assert 'comm_available' in html_output
 
 
 if __name__ == '__main__':
