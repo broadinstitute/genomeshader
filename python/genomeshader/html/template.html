@@ -747,8 +747,44 @@
     .smart-track-container {
       position: absolute;
       width: 100%;
-      height: 100%;
       pointer-events: none;
+      z-index: 5; /* above tracksWebGPU (z-index 1) */
+    }
+    .smart-track-container.scrollable {
+      pointer-events: none;
+      /* Firefox scrollbar styling */
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.2) rgba(0, 0, 0, 0.05);
+      /* Ensure scrollbar is always visible when scrollable */
+      overflow-y: auto !important;
+      overflow-x: hidden !important;
+      /* Ensure scrollbar area is visible */
+      z-index: 30;
+      /* Make sure scrollbar has space - don't let content overlap scrollbar */
+      box-sizing: border-box;
+      /* Force scrollbar to be visible - reserve space for it */
+      scrollbar-gutter: stable;
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar {
+      width: 14px;
+      height: 14px;
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.1);
+      border-radius: 7px;
+      border: 1px solid rgba(0, 0, 0, 0.05);
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar-thumb {
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 7px;
+      border: 2px solid rgba(0, 0, 0, 0.1);
+      min-height: 20px;
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 0, 0, 0.5);
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar-thumb:active {
+      background: rgba(0, 0, 0, 0.6);
     }
     .smart-track-container canvas {
       pointer-events: none;
@@ -2248,7 +2284,8 @@
         container
       });
       
-      // Add scroll event listener for horizontal mode
+      // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
+      // But we need a basic scroll handler for re-rendering
       container.addEventListener("scroll", () => {
         renderSmartTrack(trackId);
       });
@@ -2267,7 +2304,8 @@
         container
       });
       
-      // Add scroll event listener even without WebGPU
+      // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
+      // But we need a basic scroll handler for re-rendering
       container.addEventListener("scroll", () => {
         renderSmartTrack(trackId);
       });
@@ -8671,19 +8709,33 @@
       const totalRows = track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1;
       totalContentHeight = top + totalRows * rowH + 12;
       
+      // Set up grid layout for scrolling
+      // CRITICAL: Set explicit height FIRST (this overrides the CSS height: 100%)
+      // Add scrollable class first so CSS height: auto takes effect
+      if (totalContentHeight > H) {
+        container.classList.add('scrollable');
+      }
+      
+      // Set height with !important to override CSS height: 100%
+      container.style.setProperty('height', `${trackLayout.contentHeight}px`, 'important');
+      container.style.maxHeight = `${trackLayout.contentHeight}px`;
+      container.style.minHeight = `${trackLayout.contentHeight}px`;
+      container.style.overflowX = 'hidden';
+      container.style.boxSizing = 'border-box';
+      
+      // Set up grid AFTER height is set
       container.style.display = 'grid';
       container.style.gridTemplateRows = '1fr';
       container.style.gridTemplateColumns = '1fr';
-      container.style.height = `${trackLayout.contentHeight}px`;
-      container.style.overflowY = 'auto';
-      container.style.overflowX = 'hidden';
       
+      // Set canvas dimensions - these need to be larger than container for scrolling
       canvas.height = totalContentHeight * dpr;
       canvas.style.height = totalContentHeight + 'px';
       canvas.style.width = W + 'px';
       canvas.style.gridRow = '1';
       canvas.style.gridColumn = '1';
       canvas.style.position = 'static';
+      canvas.style.inset = 'auto';
       canvas.width = W * dpr;
       
       webgpuCanvas.style.height = totalContentHeight + 'px';
@@ -8691,10 +8743,69 @@
       webgpuCanvas.style.gridRow = '1';
       webgpuCanvas.style.gridColumn = '1';
       webgpuCanvas.style.position = 'static';
+      webgpuCanvas.style.inset = 'auto';
+      
+      // Enable overflow for scrolling when content exceeds container height
+      if (totalContentHeight > H) {
+        container.style.overflowY = 'auto';
+        
+        // Attach scroll and wheel handlers when container becomes scrollable
+        // Check if handlers are already attached to avoid duplicates
+        const renderer = state.smartTrackRenderers.get(trackId);
+        if (renderer && !renderer.scrollHandlerAttached) {
+          // Add scroll event listener
+          const scrollHandler = () => {
+            renderSmartTrack(trackId);
+          };
+          container.addEventListener("scroll", scrollHandler);
+          
+          // Add wheel event handler to allow native scrolling
+          const smartTrackWheelHandler = (e) => {
+            // Stop propagation to prevent main wheel handler from intercepting
+            e.stopPropagation();
+            // Allow native scrolling - don't prevent default
+            // The scroll will happen naturally, and we'll re-render via scroll event
+          };
+          container.addEventListener("wheel", smartTrackWheelHandler, { passive: false });
+          canvas.addEventListener("wheel", smartTrackWheelHandler, { passive: false });
+          if (webgpuCanvas) {
+            webgpuCanvas.addEventListener("wheel", smartTrackWheelHandler, { passive: false });
+          }
+          
+          // Store handlers in renderer for cleanup
+          renderer.scrollHandler = scrollHandler;
+          renderer.wheelHandler = smartTrackWheelHandler;
+          renderer.scrollHandlerAttached = true;
+        }
+      } else {
+        container.classList.remove('scrollable');
+        container.style.overflowY = 'hidden';
+      }
+      
+      // Force a reflow to ensure layout is calculated
+      void container.offsetHeight;
+      
+      // Verify container is scrollable after layout (only if we expect it to be scrollable)
+      // Only check after a delay to ensure layout has settled
+      if (totalContentHeight > H) {
+        // Use setTimeout to check after layout has fully settled
+        setTimeout(() => {
+          const actualScrollHeight = container.scrollHeight;
+          const actualClientHeight = container.clientHeight;
+          // Only log error if container has dimensions but isn't scrollable
+          // Don't log if dimensions are 0 - that means layout hasn't settled yet
+          if (actualClientHeight > 0 && actualScrollHeight > 0) {
+            if (actualScrollHeight <= actualClientHeight) {
+              console.warn(`Smart track ${trackId}: Container should be scrollable but scrollHeight (${actualScrollHeight}) <= clientHeight (${actualClientHeight}). Total content: ${totalContentHeight}, container H: ${H}`);
+            }
+          }
+        }, 100);
+      }
     } else {
       container.style.display = '';
       container.style.gridTemplateRows = '';
       container.style.gridTemplateColumns = '';
+      container.classList.remove('scrollable');
       canvas.style.gridRow = '';
       canvas.style.gridColumn = '';
       webgpuCanvas.style.gridRow = '';
@@ -11122,6 +11233,58 @@
           // Check if reads container is scrollable and has overflow
           if (readsEl.scrollHeight > readsEl.clientHeight) {
             // Allow native scrolling - don't prevent default
+            return;
+          }
+        }
+      }
+
+      // Allow scrolling in Smart Tracks even if container has pointer-events:none
+      // Determine if wheel event is over a Smart Track content area
+      const smartTracks = state.smartTracks || [];
+      if (smartTracks.length > 0) {
+        const layout = getTrackLayout();
+        const svgRect = tracksSvg.getBoundingClientRect();
+        const isVertical = isVerticalMode();
+        const clientX = e.clientX;
+        const clientY = e.clientY;
+        const xInPane = clientX - svgRect.left;
+        const yInPane = clientY - svgRect.top;
+        for (const track of smartTracks) {
+          const layoutItem = layout.find(l => l.track.id === track.id);
+          if (!layoutItem) continue;
+          const inTrack = isVertical
+            ? (xInPane >= layoutItem.contentLeft && xInPane <= layoutItem.contentLeft + layoutItem.contentWidth)
+            : (yInPane >= layoutItem.contentTop && yInPane <= layoutItem.contentTop + layoutItem.contentHeight);
+          if (!inTrack) continue;
+
+          const renderer = state.smartTrackRenderers.get(track.id);
+          if (!renderer || !renderer.container) continue;
+          const container = renderer.container;
+          if (!container.classList.contains('scrollable')) continue;
+
+          // Scroll the Smart Track container directly
+          e.preventDefault();
+          e.stopPropagation();
+          const delta = isVertical ? e.deltaX : e.deltaY;
+          const maxScroll = container.scrollHeight - container.clientHeight;
+          if (maxScroll > 0) {
+            const next = Math.max(0, Math.min(maxScroll, container.scrollTop + delta));
+            if (next !== container.scrollTop) {
+              container.scrollTop = next;
+              renderSmartTrack(track.id);
+            }
+          }
+          return;
+        }
+      }
+
+      // Allow scrolling in Smart Track containers - don't intercept wheel events there
+      const target = e.target;
+      for (const [trackId, renderer] of state.smartTrackRenderers.entries()) {
+        const smartContainer = renderer.container;
+        if (smartContainer && (smartContainer.contains(target) || path.includes(smartContainer))) {
+          // If smart track is scrollable, allow native scrolling
+          if (smartContainer.classList.contains('scrollable')) {
             return;
           }
         }
