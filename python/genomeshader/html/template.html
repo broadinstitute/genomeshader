@@ -964,12 +964,6 @@
         <svg class="overlay" id="flowOverlay"></svg>
       </div>
 
-      <div class="reads" id="reads">
-        <canvas class="canvas" id="readsCanvas"></canvas>
-        <canvas id="readsWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
-        <svg class="overlay" id="readsOverlay"></svg>
-      </div>
-
       <div class="hud" id="hud"></div>
       <div class="tooltip" id="tooltip"></div>
     </div>
@@ -2019,14 +2013,10 @@
   }
   
   // -----------------------------
-  // On-demand Read Loading
+  // Smart Tracks
   // -----------------------------
-  // Reads data storage
-  let readsData = null;           // Raw reads from Python (array of read objects)
-  let loadedReadsLayout = null;   // Processed layout with row assignments
-  let readsLoading = false;       // Loading state
   
-  // Process raw reads data into a layout structure
+  // Process raw reads data into a layout structure (used by Smart Tracks)
   function processReadsData(rawReads) {
     if (!rawReads || !rawReads.query_name) return null;
     
@@ -2106,43 +2096,6 @@
     return { reads: readArray, rowCount: rows.length };
   }
   
-  // Request reads from Python for the current locus
-  function fetchReadsFromPython() {
-    readsLoading = true;
-    renderAll(); // Show loading state
-    
-    return sendCommMessage('fetch_reads', {})
-      .then(function(response) {
-        readsLoading = false;
-        if (response.type === 'fetch_reads_response') {
-          console.log('Genomeshader: Received ' + response.count + ' read elements for locus ' + response.locus);
-          if (response.reads_file) {
-            console.log('Genomeshader: Loading reads from: ' + response.reads_file);
-          }
-          readsData = response.reads;
-          loadedReadsLayout = processReadsData(readsData);
-          renderAll(); // Re-render with new data
-          return loadedReadsLayout;
-        } else if (response.type === 'fetch_reads_error') {
-          throw new Error(response.error);
-        }
-        return null;
-      })
-      .catch(function(err) {
-        readsLoading = false;
-        console.error('Genomeshader: Failed to fetch reads:', err);
-        renderAll();
-        throw err;
-      });
-  }
-  
-  // Expose for testing from console
-  window.genomeshader_fetchReads = fetchReadsFromPython;
-
-  // -----------------------------
-  // Smart Tracks
-  // -----------------------------
-  
   // Create a new Smart track
   function createSmartTrack(strategy, selectedAlleles) {
     const timestamp = Date.now();
@@ -2175,9 +2128,9 @@
     // Add to smartTracks array
     state.smartTracks.push(track);
     
-    // Find Reads track index and insert after it
-    const readsIndex = state.tracks.findIndex(t => t.id === "reads");
-    const insertIndex = readsIndex >= 0 ? readsIndex + 1 : state.tracks.length;
+    // Insert after the flow track
+    const flowIndex = state.tracks.findIndex(t => t.id === "flow");
+    const insertIndex = flowIndex >= 0 ? flowIndex + 1 : state.tracks.length;
     state.tracks.splice(insertIndex, 0, track);
     
     // Initialize WebGPU renderer (async, but don't await - it will complete in background)
@@ -3338,8 +3291,7 @@
       { id: "repeats", label: "RepeatMasker", collapsed: false, height: 50, minHeight: 30 },
       { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
       { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
-      { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 100 },
-      { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
+      { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 100 }
     ],
     trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
     trackResizeState: null, // { trackId, startX, startY, startHeight }
@@ -3473,16 +3425,12 @@
   const main = byId(root, "main");
   const tracksSvg = byId(root, "tracksSvg");
   const flow = byId(root, "flow");
-  const reads = byId(root, "reads");
   const flowCanvas = byId(root, "flowCanvas");
-  const readsCanvas = byId(root, "readsCanvas");
   const flowOverlay = byId(root, "flowOverlay");
-  const readsOverlay = byId(root, "readsOverlay");
   const hud = byId(root, "hud");
   const tooltip = byId(root, "tooltip");
   const tracksWebGPU = byId(root, "tracksWebGPU");
   const flowWebGPU = byId(root, "flowWebGPU");
-  const readsWebGPU = byId(root, "readsWebGPU");
 
   // Initialize WebGPU infrastructure
   let webgpuCore = null;
@@ -3490,8 +3438,6 @@
   let flowWebGPUCore = null;
   let flowInstancedRenderer = null;
   let flowRibbonRenderer = null;
-  let readsWebGPUCore = null;
-  let readsInstancedRenderer = null;
   let webgpuSupported = false;
   let repeatHitTestData = []; // For tooltip hit testing
   
@@ -3555,13 +3501,6 @@
         flowRibbonRenderer = new BezierRibbonRenderer(flowWebGPUCore, { segments: 44 });
       }
 
-      // Reads WebGPU (separate canvas)
-      if (readsWebGPU) {
-        readsWebGPUCore = new WebGPUCore();
-        await readsWebGPUCore.init(readsWebGPU);
-        readsInstancedRenderer = new InstancedRenderer(readsWebGPUCore);
-      }
-
       webgpuSupported = true;
       return true;
     } catch (error) {
@@ -3599,8 +3538,6 @@
   }
   function flowWidthPx()   { return rectW(flow); }
   function flowHeightPx()  { return rectH(flow); }
-  function readsWidthPx()  { return rectW(reads); }
-  function readsHeightPx() { return rectH(reads); }
 
   function cssVar(name) {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -4276,7 +4213,6 @@
     const rulerLayout = layout.find(l => l.track.id === "ruler");
     const referenceLayout = layout.find(l => l.track.id === "reference");
     const flowLayout = layout.find(l => l.track.id === "flow");
-    const readsLayout = layout.find(l => l.track.id === "reads");
     
     // Calculate ideogram track bounds to exclude from shading (including track controls header)
     let ideogramTrackStart = 0;
@@ -4414,7 +4350,7 @@
       }
     }
 
-    if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout || !readsLayout) return;
+    if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout) return;
 
     // Ideogram layout
     if (!ideogramLayout.track.collapsed) {
@@ -8010,648 +7946,8 @@
   }
 
   // -----------------------------
-  // Reads placeholder (IGV-style area)
+  // Render a Smart track
   // -----------------------------
-  function renderReadsCanvas() {
-    const layout = getTrackLayout();
-    const readsLayout = layout.find(l => l.track.id === "reads");
-    if (!readsLayout || readsLayout.track.collapsed) {
-      // Clear WebGPU renderer instances if collapsed
-      if (readsInstancedRenderer) {
-        readsInstancedRenderer.clear();
-      }
-      return; // Don't render if collapsed
-    }
-
-    // Ensure readsCanvas exists
-    if (!readsCanvas || !reads) {
-      return;
-    }
-
-    // Get device pixel ratio first (before any other operations)
-    const dpr = window.devicePixelRatio || 1;
-    
-    const isVertical = isVerticalMode();
-    const W = readsWidthPx();
-    let H = readsHeightPx(); // Visible height
-    
-    // Calculate total content height if reads are loaded
-    let totalContentHeight = H;
-    if (!isVertical && loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
-      // Only set up scrolling canvas in inline (horizontal) mode
-      const top = 8;
-      const rowH = 18;
-      const totalRows = loadedReadsLayout.rowCount || Math.max(...loadedReadsLayout.reads.map(r => r.row)) + 1;
-      totalContentHeight = top + totalRows * rowH + 12;
-      
-      // Use CSS grid on the container to stack canvases while keeping them in document flow
-      // This allows overflow scrolling to work (absolutely positioned elements don't contribute to scroll overflow)
-      reads.style.display = 'grid';
-      reads.style.gridTemplateRows = '1fr';
-      reads.style.gridTemplateColumns = '1fr';
-      reads.style.height = readsLayout.track.collapsed ? "0px" : `${readsLayout.contentHeight}px`;
-      reads.style.overflowY = 'auto';
-      reads.style.overflowX = 'hidden';
-      
-      // Set canvas to fill grid cell and use explicit height for scrolling
-      readsCanvas.height = totalContentHeight * dpr;
-      readsCanvas.style.height = totalContentHeight + 'px';
-      readsCanvas.style.width = W + 'px';
-      readsCanvas.style.gridRow = '1';
-      readsCanvas.style.gridColumn = '1';
-      readsCanvas.style.position = 'static';
-      readsCanvas.style.inset = 'auto';
-      readsCanvas.width = W * dpr;
-      
-      // Also update WebGPU canvas to use grid stacking
-      if (readsWebGPU) {
-        readsWebGPU.style.height = totalContentHeight + 'px';
-        readsWebGPU.style.width = W + 'px';
-        readsWebGPU.style.gridRow = '1';
-        readsWebGPU.style.gridColumn = '1';
-        readsWebGPU.style.position = 'static';
-        readsWebGPU.style.inset = 'auto';
-      }
-    } else {
-      // For vertical mode or when no reads are loaded, use resizeCanvasTo
-      // Reset grid styles if they were set
-      reads.style.display = '';
-      reads.style.gridTemplateRows = '';
-      reads.style.gridTemplateColumns = '';
-      readsCanvas.style.gridRow = '';
-      readsCanvas.style.gridColumn = '';
-      readsCanvas.style.position = '';
-      readsCanvas.style.inset = '';
-      if (readsWebGPU) {
-        readsWebGPU.style.gridRow = '';
-        readsWebGPU.style.gridColumn = '';
-        readsWebGPU.style.position = '';
-        readsWebGPU.style.inset = '';
-      }
-      resizeCanvasTo(reads, readsCanvas);
-    }
-
-    const ctx = readsCanvas.getContext("2d");
-    ctx.setTransform(1,0,0,1,0,0);
-    ctx.clearRect(0,0,readsCanvas.width,readsCanvas.height);
-    ctx.scale(dpr, dpr);
-    
-    // Clear WebGPU renderer instances
-    if (readsInstancedRenderer) {
-      readsInstancedRenderer.clear();
-    }
-    const colText = cssVar("--muted");
-    const grid = cssVar("--grid2");
-
-    // soft background - use totalContentHeight for inline mode when reads are loaded
-    const bgHeight = (!isVertical && loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) ? totalContentHeight : H;
-    ctx.fillStyle = "rgba(127,127,127,0.02)";
-    ctx.fillRect(0,0,W,bgHeight);
-
-    if (isVertical) {
-      // In vertical mode, the genomic axis runs vertically
-      // Use the reads container height (H) for coordinate mapping to match the canvas we're drawing in
-      // Both tracks and reads containers now have the same height (mainHeight) and start at top: 0
-      const coordHeight = H;
-      
-      // a few columns to suggest lanes (vertical mode)
-      ctx.strokeStyle = grid;
-      ctx.lineWidth = 1;
-      const left = 8;
-      const colW = 18;
-      const cols = Math.floor((W - left - 12) / colW);
-      for (let i=0; i<cols; i++) {
-        const x = left + i*colW + colW/2;
-        ctx.beginPath();
-        ctx.moveTo(x, 16);
-        ctx.lineTo(x, H-16);
-        ctx.stroke();
-      }
-
-      // placeholder "reads" as rounded rects aligned in genome space
-      function drawRead(bpStart, bpEnd, col, alpha=0.20) {
-        const y1 = yGenomeCanonical(bpStart, coordHeight);
-        const y2 = yGenomeCanonical(bpEnd, coordHeight);
-        const x = left + col*colW + 2;
-        const w = colW - 6;
-        const y = Math.min(y1, y2);
-        const h = Math.max(6, Math.abs(y2-y1));
-
-        // Use WebGPU for fill if available, otherwise fall back to Canvas2D
-        const devicePixelRatio = window.devicePixelRatio || 1;
-        const useWebGPU = webgpuSupported && readsInstancedRenderer;
-        
-        if (useWebGPU) {
-          // Add rectangle to WebGPU renderer
-          readsInstancedRenderer.addRect(
-            x * devicePixelRatio,
-            y * devicePixelRatio,
-            w * devicePixelRatio,
-            h * devicePixelRatio,
-            [120/255, 180/255, 255/255, alpha]
-          );
-        } else {
-          // Fallback to Canvas2D
-          ctx.fillStyle = `rgba(120,180,255,${alpha})`;
-          ctx.beginPath();
-          roundRect(ctx, x, y, w, h, 6);
-          ctx.fill();
-        }
-        
-        // Stroke always uses Canvas2D (minimal overhead for borders)
-        ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
-        ctx.beginPath();
-        roundRect(ctx, x, y, w, h, 6);
-        ctx.stroke();
-      }
-
-      // Draw actual reads if available (vertical mode)
-      if (loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
-        const maxCols = Math.floor((W - left - 12) / colW);
-        let renderedCount = 0;
-        let filteredByRow = 0;
-        let filteredByViewport = 0;
-        for (const read of loadedReadsLayout.reads) {
-          if (read.row >= maxCols) {
-            filteredByRow++;
-            continue;
-          }
-          if (read.end < state.startBp || read.start > state.endBp) {
-            filteredByViewport++;
-            continue;
-          }
-          renderedCount++;
-          
-          // Color based on haplotype
-          let color, alpha;
-          if (read.haplotype === 1) {
-            color = [255, 100, 100];
-            alpha = 0.5;
-          } else if (read.haplotype === 2) {
-            color = [100, 100, 255];
-            alpha = 0.5;
-          } else {
-            color = [150, 150, 150];
-            alpha = 0.35;
-          }
-          if (!read.isForward) alpha *= 0.7;
-          
-          // Use reads container height for coordinate mapping
-          const y1 = yGenomeCanonical(read.start, coordHeight);
-          const y2 = yGenomeCanonical(read.end, coordHeight);
-          const x = left + read.row * colW + 2;
-          const w = colW - 4;
-          const y = Math.min(y1, y2);
-          const h = Math.max(4, Math.abs(y2 - y1));
-          
-          const devicePixelRatio = window.devicePixelRatio || 1;
-          const useWebGPU = webgpuSupported && readsInstancedRenderer;
-          
-          if (useWebGPU) {
-            readsInstancedRenderer.addRect(
-              x * devicePixelRatio, y * devicePixelRatio,
-              w * devicePixelRatio, h * devicePixelRatio,
-              [color[0]/255, color[1]/255, color[2]/255, alpha]
-            );
-          } else {
-            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
-            ctx.beginPath();
-            roundRect(ctx, x, y, w, h, 3);
-            ctx.fill();
-          }
-          
-          // Draw insertion/deletion/diff markers (vertical mode)
-          if (read.elements && read.elements.length > 0) {
-            for (const elem of read.elements) {
-              if (elem.start < state.startBp || elem.start > state.endBp) continue;
-              const ey = yGenomeCanonical(elem.start, coordHeight);
-              const ex = x;
-              const ew = w;
-              
-              if (elem.type === 2) { // Insertion - purple tick
-                ctx.fillStyle = 'rgba(200,100,255,0.9)';
-                ctx.fillRect(ex, ey - 1, ew, 2);
-              } else if (elem.type === 3) { // Deletion - black gap
-                const ey2 = yGenomeCanonical(elem.end, coordHeight);
-                const delY = Math.min(ey, ey2);
-                const delH = Math.max(2, Math.abs(ey2 - ey));
-                ctx.fillStyle = 'rgba(0,0,0,0.4)';
-                ctx.fillRect(ex + ew/4, delY, ew/2, delH);
-              } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
-                // Calculate actual base height (matching reference base calculation)
-                const nextBp = elem.start + 1;
-                const nextY = (nextBp <= state.endBp ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(state.endBp, coordHeight));
-                const actualBaseHeight = Math.max(2, Math.abs(nextY - ey));
-                
-                // Color based on nucleotide
-                const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
-                const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
-                const bgColor = nucColors[nuc] || '#9C27B0';
-                
-                // Draw background (use actual height, but ensure minimum for visibility)
-                const drawHeight = Math.max(2, actualBaseHeight);
-                ctx.fillStyle = bgColor;
-                ctx.fillRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight);
-                
-                // Draw nucleotide letter only if there's enough space
-                if (actualBaseHeight >= 8) {
-                  ctx.save();
-                  ctx.fillStyle = 'white';
-                  ctx.font = `bold ${Math.min(10, ew - 4)}px monospace`;
-                  ctx.textAlign = 'center';
-                  ctx.textBaseline = 'middle';
-                  // Rotate text -90 degrees for vertical mode
-                  ctx.translate(ex + ew/2, ey);
-                  ctx.rotate(-Math.PI / 2);
-                  ctx.fillText(nuc, 0, 0);
-                  ctx.restore();
-                }
-              }
-            }
-          }
-        }
-        
-        // Log rendering statistics (vertical mode)
-        if (renderedCount > 0 || filteredByRow > 0 || filteredByViewport > 0) {
-          console.log(`Genomeshader: Rendered ${renderedCount} reads (filtered: ${filteredByRow} by row, ${filteredByViewport} by viewport, total: ${loadedReadsLayout.reads.length}, viewport: ${state.startBp}-${state.endBp}, maxCols: ${maxCols})`);
-        }
-      } else if (readsLoading) {
-        ctx.fillStyle = cssVar("--muted");
-        ctx.font = "14px system-ui, sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText("Loading...", W/2, H/2);
-      } else {
-        ctx.fillStyle = cssVar("--muted");
-        ctx.font = "11px system-ui, sans-serif";
-        ctx.textAlign = "center";
-        ctx.globalAlpha = 0.5;
-        ctx.fillText("Load reads via console", W/2, H/2);
-        ctx.globalAlpha = 1.0;
-      }
-
-      // variant guide lines (gray, blue when hovered)
-      for (let idx = 0; idx < variants.length; idx++) {
-        const v = variants[idx];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        const isHovered = state.hoveredVariantIndex === idx;
-        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
-        ctx.globalAlpha = isHovered ? 0.7 : 0.3;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        const y = yGenomeCanonical(v.pos, coordHeight);
-        ctx.beginPath();
-        ctx.moveTo(left, y);
-        ctx.lineTo(W-10, y);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1.0;
-    } else {
-      // Draw row lines for all rows if reads are loaded
-      ctx.strokeStyle = grid;
-      ctx.lineWidth = 1;
-      const top = 8;
-      const rowH = 18;
-      
-      let totalRows = Math.floor((H - top - 12) / rowH);
-      if (loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
-        // Draw lines for all rows in the layout
-        totalRows = loadedReadsLayout.rowCount || Math.max(...loadedReadsLayout.reads.map(r => r.row)) + 1;
-        const scrollTop = reads.scrollTop || 0;
-        
-        // Only draw lines visible in viewport
-        const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
-        const endRow = Math.min(totalRows, Math.ceil((scrollTop + H) / rowH) + 1);
-        
-        for (let i = startRow; i < endRow; i++) {
-          const y = top + i*rowH + rowH/2 - scrollTop;
-          if (y >= -rowH && y <= H + rowH) {
-            ctx.beginPath();
-            ctx.moveTo(16, y);
-            ctx.lineTo(W-16, y);
-            ctx.stroke();
-          }
-        }
-      } else {
-        // Default: draw a few rows to suggest lanes
-        const rows = Math.floor((H - top - 12) / rowH);
-        for (let i=0; i<rows; i++) {
-          const y = top + i*rowH + rowH/2;
-          ctx.beginPath();
-          ctx.moveTo(16, y);
-          ctx.lineTo(W-16, y);
-          ctx.stroke();
-        }
-      }
-
-      // placeholder "reads" as rounded rects aligned in genome space
-      function drawRead(bpStart, bpEnd, row, alpha=0.20) {
-        const x1 = xGenomeCanonical(bpStart, W);
-        const x2 = xGenomeCanonical(bpEnd, W);
-        const y = top + row*rowH + 2;
-        const h = rowH - 6;
-        const x = x1;
-        const w = Math.max(6, x2-x1);
-
-        // Use WebGPU for fill if available, otherwise fall back to Canvas2D
-        const devicePixelRatio = window.devicePixelRatio || 1;
-        const useWebGPU = webgpuSupported && readsInstancedRenderer;
-        
-        if (useWebGPU) {
-          // Add rectangle to WebGPU renderer
-          readsInstancedRenderer.addRect(
-            x * devicePixelRatio,
-            y * devicePixelRatio,
-            w * devicePixelRatio,
-            h * devicePixelRatio,
-            [120/255, 180/255, 255/255, alpha]
-          );
-        } else {
-          // Fallback to Canvas2D
-          ctx.fillStyle = `rgba(120,180,255,${alpha})`;
-          ctx.beginPath();
-          roundRect(ctx, x, y, w, h, 6);
-          ctx.fill();
-        }
-        
-        // Stroke always uses Canvas2D (minimal overhead for borders)
-        ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
-        ctx.beginPath();
-        roundRect(ctx, x, y, w, h, 6);
-        ctx.stroke();
-      }
-
-      // Draw actual reads if available, otherwise show placeholder
-      if (loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
-        // Get scroll position
-        const scrollTop = reads.scrollTop || 0;
-        
-        // Render all reads (no row filtering)
-        let renderedCount = 0;
-        let filteredByViewport = 0;
-        
-        for (const read of loadedReadsLayout.reads) {
-          // Only filter by viewport (genomic coordinates)
-          if (read.end < state.startBp || read.start > state.endBp) {
-            filteredByViewport++;
-            continue;
-          }
-          
-          renderedCount++;
-          
-          // Color based on haplotype
-          let color, alpha;
-          if (read.haplotype === 1) {
-            color = [255, 100, 100]; // Red for hap1
-            alpha = 0.5;
-          } else if (read.haplotype === 2) {
-            color = [100, 100, 255]; // Blue for hap2
-            alpha = 0.5;
-          } else {
-            color = [150, 150, 150]; // Gray for unphased
-            alpha = 0.35;
-          }
-          
-          // Direction indicator (lighter for reverse)
-          if (!read.isForward) alpha *= 0.7;
-          
-          const x1 = xGenomeCanonical(read.start, W);
-          const x2 = xGenomeCanonical(read.end, W);
-          // Account for scroll position when rendering
-          const y = top + read.row * rowH + 2 - scrollTop;
-          const h = rowH - 4;
-          const x = Math.max(0, x1);
-          const w = Math.max(4, Math.min(x2, W) - x);
-          
-          // Skip rendering if read is outside visible area (above or below viewport)
-          if (y + h < 0 || y > H) continue;
-          
-          const devicePixelRatio = window.devicePixelRatio || 1;
-          const useWebGPU = webgpuSupported && readsInstancedRenderer;
-          
-          if (useWebGPU) {
-            readsInstancedRenderer.addRect(
-              x * devicePixelRatio,
-              y * devicePixelRatio,
-              w * devicePixelRatio,
-              h * devicePixelRatio,
-              [color[0]/255, color[1]/255, color[2]/255, alpha]
-            );
-          } else {
-            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
-            ctx.beginPath();
-            roundRect(ctx, x, y, w, h, 3);
-            ctx.fill();
-          }
-          
-          // Draw direction arrow
-          ctx.fillStyle = `rgba(255,255,255,0.6)`;
-          const arrowSize = Math.min(6, w * 0.2);
-          if (read.isForward) {
-            // Arrow pointing right
-            ctx.beginPath();
-            ctx.moveTo(x + w - arrowSize - 2, y + h/2 - arrowSize/2);
-            ctx.lineTo(x + w - 2, y + h/2);
-            ctx.lineTo(x + w - arrowSize - 2, y + h/2 + arrowSize/2);
-            ctx.fill();
-          } else {
-            // Arrow pointing left
-            ctx.beginPath();
-            ctx.moveTo(x + arrowSize + 2, y + h/2 - arrowSize/2);
-            ctx.lineTo(x + 2, y + h/2);
-            ctx.lineTo(x + arrowSize + 2, y + h/2 + arrowSize/2);
-            ctx.fill();
-          }
-          
-          // Draw insertion/deletion/diff markers
-          for (const elem of read.elements) {
-            if (elem.start < state.startBp || elem.start > state.endBp) continue;
-            const ex = xGenomeCanonical(elem.start, W);
-            const ey = y;
-            const eh = h;
-            
-            if (elem.type === 2) { // Insertion - purple tick
-              ctx.fillStyle = 'rgba(200,100,255,0.9)';
-              ctx.fillRect(ex - 1, ey, 2, eh);
-            } else if (elem.type === 3) { // Deletion - black gap
-              const ex2 = xGenomeCanonical(elem.end, W);
-              ctx.fillStyle = 'rgba(0,0,0,0.4)';
-              ctx.fillRect(ex, ey + eh/4, ex2 - ex, eh/2);
-            } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
-              // Calculate actual base width (matching reference base calculation)
-              const nextBp = elem.start + 1;
-              const nextX = nextBp <= state.endBp ? xGenomeCanonical(nextBp, W) : xGenomeCanonical(state.endBp, W);
-              const actualBaseWidth = Math.max(2, Math.abs(nextX - ex));
-              
-              // Color based on nucleotide
-              const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
-              const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
-              const bgColor = nucColors[nuc] || '#9C27B0';
-              
-              // Draw background (use actual width, but ensure minimum for visibility)
-              const drawWidth = Math.max(2, actualBaseWidth);
-              ctx.fillStyle = bgColor;
-              ctx.fillRect(ex, ey + 1, drawWidth, eh - 2);
-              
-              // Draw nucleotide letter only if there's enough space (matching reference base threshold)
-              // Reference bases show letters when actualSize >= 8, so use same threshold here
-              if (actualBaseWidth >= 8) {
-                ctx.fillStyle = 'white';
-                ctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(nuc, ex + drawWidth/2, ey + eh/2);
-              }
-            }
-          }
-        }
-        
-        // Log rendering statistics
-        if (renderedCount > 0 || filteredByViewport > 0) {
-          console.log(`Genomeshader: Rendered ${renderedCount} reads (filtered: ${filteredByViewport} by viewport, total: ${loadedReadsLayout.reads.length}, rows: ${totalRows}, viewport: ${state.startBp}-${state.endBp})`);
-        }
-      } else if (readsLoading) {
-        // Show loading indicator
-        ctx.fillStyle = cssVar("--muted");
-        ctx.font = "14px system-ui, sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText("Loading reads...", W/2, H/2);
-      } else {
-        // Show placeholder text
-        ctx.fillStyle = cssVar("--muted");
-        ctx.font = "12px system-ui, sans-serif";
-        ctx.textAlign = "center";
-        ctx.globalAlpha = 0.5;
-        ctx.fillText("Click 'Load Reads' or run genomeshader_fetchReads() to load", W/2, H/2);
-        ctx.globalAlpha = 1.0;
-      }
-
-      // variant guide lines (gray, blue when hovered)
-      for (let idx = 0; idx < variants.length; idx++) {
-        const v = variants[idx];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        const isHovered = state.hoveredVariantIndex === idx;
-        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
-        ctx.globalAlpha = isHovered ? 0.7 : 0.3;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        const x = xGenomeCanonical(v.pos, W);
-        ctx.beginPath();
-        ctx.moveTo(x, top);
-        ctx.lineTo(x, H-10);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1.0;
-    }
-
-    // connectors from Sankey columns down to Reads track (diagonal lines)
-    // Disabled for now - makes display too busy
-    /*
-    const win = visibleVariantWindow();
-    const trackLayoutForConnectors = getTrackLayout();
-    const flowLayoutItem = trackLayoutForConnectors.find(l => l.track.id === "flow");
-    const readsLayoutItem = trackLayoutForConnectors.find(l => l.track.id === "reads");
-    
-    if (flowLayoutItem && readsLayoutItem && !flowLayoutItem.track.collapsed && !readsLayoutItem.track.collapsed) {
-      ctx.strokeStyle = cssVar("--blue");
-      ctx.globalAlpha = 0.5;
-      ctx.lineWidth = 1;
-      
-      // Draw diagonal lines from Sankey columns to variant positions in Reads track
-      // Similar to how Locus connects to Sankey, but in reverse direction
-      for (let i=0; i<win.length; i++) {
-        const v = win[i];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        
-        // Calculate column x position in Reads canvas coordinates
-        // Use the same logic as xColumn but with Reads canvas width
-        const margin = 60;
-        const innerW = Math.max(10, W - 2*margin);
-        let columnX;
-        if (state.K <= 1) {
-          columnX = margin;
-        } else {
-          columnX = margin + (i / (state.K - 1)) * innerW;
-        }
-        
-        // Variant position x in Reads track (genomic coordinate mapping)
-        const variantX = xGenomeCanonical(v.pos, W);
-        
-        // Draw diagonal line from column position to variant position
-        ctx.beginPath();
-        ctx.moveTo(columnX, 0); // top of reads canvas, at column x position
-        ctx.lineTo(variantX, top); // connect to variant position at top of read lanes
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1.0;
-    }
-    */
-
-    // Execute WebGPU render pass after read rectangles are added
-    // Render to readsWebGPU canvas (separate from tracksWebGPU)
-    const hasReadsInstances = readsInstancedRenderer && 
-        (readsInstancedRenderer.rectInstances.length > 0 || readsInstancedRenderer.lineInstances.length > 0);
-    if (webgpuSupported && readsInstancedRenderer && hasReadsInstances) {
-      try {
-        // Update projection matrix for current canvas size
-        const devicePixelRatio = window.devicePixelRatio || 1;
-        const width = readsWebGPU.clientWidth * devicePixelRatio;
-        // Use total content height if reads are loaded in horizontal mode, otherwise use visible height
-        let height = readsWebGPU.clientHeight * devicePixelRatio;
-        if (!isVertical && loadedReadsLayout && loadedReadsLayout.reads && loadedReadsLayout.reads.length > 0) {
-          // Horizontal mode with reads loaded - canvas height already set via grid layout above
-          // Just update the internal canvas dimensions
-          const top = 8;
-          const rowH = 18;
-          const totalRows = loadedReadsLayout.rowCount || Math.max(...loadedReadsLayout.reads.map(r => r.row)) + 1;
-          const totalContentHeight = top + totalRows * rowH + 12;
-          height = totalContentHeight * devicePixelRatio;
-          readsWebGPU.height = height;
-          // Style already set in the grid layout section above
-        }
-        
-        if (readsWebGPU.width !== width || readsWebGPU.height !== height) {
-          readsWebGPU.width = width;
-          readsWebGPU.height = height;
-          readsWebGPUCore.handleResize();
-        }
-        
-        const encoder = readsWebGPUCore.createCommandEncoder();
-        const texture = readsWebGPUCore.getCurrentTexture();
-        const renderPass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: texture.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear', // Clear canvas on each render
-            storeOp: 'store',
-          }],
-        });
-        
-        readsInstancedRenderer.render(encoder, renderPass);
-        renderPass.end();
-        readsWebGPUCore.submit([encoder.finish()]);
-      } catch (error) {
-        console.error("Reads WebGPU render error:", error);
-        // Fallback: clear instances and continue with Canvas2D only
-        readsInstancedRenderer.clear();
-      }
-    } else if (webgpuSupported && readsInstancedRenderer) {
-      // Clear WebGPU canvas if no instances to render
-      try {
-        const encoder = readsWebGPUCore.createCommandEncoder();
-        const texture = readsWebGPUCore.getCurrentTexture();
-        const renderPass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: texture.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          }],
-        });
-        renderPass.end();
-        readsWebGPUCore.submit([encoder.finish()]);
-      } catch (error) {
-        // Ignore errors when clearing
-      }
-    }
-  }
 
   // Render a Smart track
   function renderSmartTrack(trackId) {
@@ -9590,7 +8886,7 @@
 
   // Set up variant hover areas in canvas overlays
   function setupVariantHoverAreas() {
-    if (!flowOverlay || !readsOverlay) return;
+    if (!flowOverlay) return;
     
     const isVertical = isVerticalMode();
     const clearSvg = (svg) => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
@@ -9643,67 +8939,14 @@
     
     // Clear existing hover areas
     clearSvg(flowOverlay);
-    clearSvg(readsOverlay);
     
     // Set overlay dimensions to match containers
     const flowW = flowWidthPx();
     const flowH = flowHeightPx();
-    const readsW = readsWidthPx();
-    const readsH = readsHeightPx();
     
     flowOverlay.setAttribute("width", flowW);
     flowOverlay.setAttribute("height", flowH);
     flowOverlay.setAttribute("viewBox", `0 0 ${flowW} ${flowH}`);
-    
-    readsOverlay.setAttribute("width", readsW);
-    readsOverlay.setAttribute("height", readsH);
-    readsOverlay.setAttribute("viewBox", `0 0 ${readsW} ${readsH}`);
-    
-    // Create hover areas for Reads track
-    const top = 8;
-    const left = 8;
-    
-    if (isVertical) {
-      // Vertical mode: horizontal lines
-      for (let idx = 0; idx < variants.length; idx++) {
-        const v = variants[idx];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        const y = yGenomeCanonical(v.pos, readsH);
-        
-        // Create invisible hover rectangle
-        const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        hoverRect.setAttribute("x", left);
-        hoverRect.setAttribute("y", y - 8);
-        hoverRect.setAttribute("width", Math.max(0, readsW - left - 10));
-        hoverRect.setAttribute("height", 16);
-        hoverRect.setAttribute("fill", "transparent");
-        hoverRect.setAttribute("data-variant-id", v.id);
-        hoverRect.style.cursor = "pointer";
-        hoverRect.style.pointerEvents = "auto";
-        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
-        readsOverlay.appendChild(hoverRect);
-      }
-    } else {
-      // Horizontal mode: vertical lines
-      for (let idx = 0; idx < variants.length; idx++) {
-        const v = variants[idx];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        const x = xGenomeCanonical(v.pos, readsW);
-        
-        // Create invisible hover rectangle
-        const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        hoverRect.setAttribute("x", x - 8);
-        hoverRect.setAttribute("y", top);
-        hoverRect.setAttribute("width", 16);
-        hoverRect.setAttribute("height", Math.max(0, readsH - top - 10));
-        hoverRect.setAttribute("fill", "transparent");
-        hoverRect.setAttribute("data-variant-id", v.id);
-        hoverRect.style.cursor = "pointer";
-        hoverRect.style.pointerEvents = "auto";
-        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
-        readsOverlay.appendChild(hoverRect);
-      }
-    }
     
     // Create hover areas for Variants/Haplotypes track
     const win = visibleVariantWindow();
@@ -9795,21 +9038,12 @@
       flowOverlay.removeEventListener("mouseenter", flowOverlay._variantHoverHandler, true);
       flowOverlay.removeEventListener("mouseleave", flowOverlay._variantHoverHandler, true);
     }
-    if (readsOverlay._variantHoverHandler) {
-      readsOverlay.removeEventListener("mouseenter", readsOverlay._variantHoverHandler, true);
-      readsOverlay.removeEventListener("mouseleave", readsOverlay._variantHoverHandler, true);
-    }
     
     // Add new listeners with capture phase to catch events on child elements (hover only)
     flowOverlay._variantHoverHandler = handleVariantHover;
     flowOverlay._variantLeaveHandler = handleVariantLeave;
     flowOverlay.addEventListener("mouseenter", handleVariantHover, true);
     flowOverlay.addEventListener("mouseleave", handleVariantLeave, true);
-    
-    readsOverlay._variantHoverHandler = handleVariantHover;
-    readsOverlay._variantLeaveHandler = handleVariantLeave;
-    readsOverlay.addEventListener("mouseenter", handleVariantHover, true);
-    readsOverlay.addEventListener("mouseleave", handleVariantLeave, true);
   }
 
   // Selective rendering for hover-only state changes (no SVG rebuild)
@@ -9818,7 +9052,6 @@
     // Skip expensive SVG rebuilds and layout recalculations
     updateLocusTrackHover(); // Update Locus track SVG hover styles
     renderFlowCanvas();
-    renderReadsCanvas();
     updateTooltip();
   }
 
@@ -9829,7 +9062,6 @@
     renderTrackControls();
     updateFlowAndReadsPosition();
     renderFlowCanvas();
-    renderReadsCanvas();
     // Render all Smart tracks
     state.smartTracks.forEach(track => {
       renderSmartTrack(track.id);
@@ -9925,22 +9157,12 @@
   // Setup hover detection for canvas elements
   let flowHoverHandler = null;
   let flowLeaveHandler = null;
-  let readsHoverHandler = null;
-  let readsLeaveHandler = null;
 
   function setupCanvasHover() {
     // Remove existing listeners to avoid duplicates
     if (flowHoverHandler) {
       flow.removeEventListener("mousemove", flowHoverHandler);
       flow.removeEventListener("mouseleave", flowLeaveHandler);
-    }
-    // Note: readsHoverHandler is now handled by overlay-based ID detection
-    // Keeping this for potential fallback, but overlay approach should be primary
-    if (readsHoverHandler) {
-      reads.removeEventListener("mousemove", readsHoverHandler);
-      reads.removeEventListener("mouseleave", readsLeaveHandler);
-      readsHoverHandler = null; // Disable old coordinate-based handler
-      readsLeaveHandler = null;
     }
 
     // Flow canvas hover detection
@@ -10975,91 +10197,6 @@
     
     // Export updateSelectionDisplay so it can be called after selection changes
     window.updateSelectionDisplay = updateSelectionDisplay;
-
-    // Reads canvas hover detection
-    readsHoverHandler = (e) => {
-      const rect = reads.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const isVertical = isVerticalMode();
-      
-      // Convert mouse position to genomic position for more accurate matching
-      // This is especially important when zoomed in, as pixel distances can be misleading
-      let mouseBp;
-      if (isVertical) {
-        const H = readsHeightPx();
-        mouseBp = bpFromYGenome(y, H);
-      } else {
-        const W = readsWidthPx();
-        mouseBp = bpFromXGenome(x, W);
-      }
-      
-      // Find the variant closest to the mouse position in genomic coordinates
-      let closestIdx = null;
-      let closestBpDist = Infinity;
-      const span = state.endBp - state.startBp;
-      // Use a genomic distance threshold: 0.5% of view span, but at least 1bp and at most 50bp
-      const maxBpDist = Math.max(1, Math.min(50, span * 0.005));
-      
-      for (let idx = 0; idx < variants.length; idx++) {
-        const v = variants[idx];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        
-        const bpDist = Math.abs(v.pos - mouseBp);
-        if (bpDist < maxBpDist && bpDist < closestBpDist) {
-          closestBpDist = bpDist;
-          closestIdx = idx;
-        }
-      }
-      
-      // Update hover state if we found a variant
-      if (closestIdx !== null) {
-        if (state.hoveredVariantIndex !== closestIdx) {
-          state.hoveredVariantIndex = closestIdx;
-          renderHoverOnly();
-        }
-      } else {
-        // No variant hovered
-        if (state.hoveredVariantIndex !== null) {
-          state.hoveredVariantIndex = null;
-          renderHoverOnly();
-        }
-      }
-    };
-    
-    readsLeaveHandler = () => {
-      if (state.hoveredVariantIndex !== null) {
-        state.hoveredVariantIndex = null;
-        renderHoverOnly();
-      }
-    };
-    
-    // Throttle mousemove handler to 16ms (60fps)
-    const throttledReadsHoverHandler = throttle(readsHoverHandler, 16);
-    reads.addEventListener("mousemove", throttledReadsHoverHandler);
-    reads.addEventListener("mouseleave", readsLeaveHandler);
-    
-    // Re-render on scroll to update visible reads
-    reads.addEventListener("scroll", () => {
-      renderReadsCanvas();
-    });
-    
-    // Allow wheel events to scroll the reads container (don't let main handler prevent it)
-    const readsWheelHandler = (e) => {
-      // Only handle if reads container is scrollable
-      if (reads.scrollHeight > reads.clientHeight) {
-        // Allow native scrolling - don't prevent default
-        // The scroll will happen naturally, and we'll re-render via scroll event
-        return;
-      }
-    };
-    reads.addEventListener("wheel", readsWheelHandler, { passive: true });
-    if (readsCanvas) {
-      readsCanvas.addEventListener("wheel", readsWheelHandler, { passive: true });
-    }
-    if (readsWebGPU) {
-      readsWebGPU.addEventListener("wheel", readsWheelHandler, { passive: true });
-    }
   }
 
   function updateFlowAndReadsPosition() {
@@ -11080,29 +10217,6 @@
         flow.style.width = "100%";
       }
       flow.style.display = flowLayout.track.collapsed ? "none" : "block";
-    }
-    
-    const readsLayout = layout.find(l => l.track.id === "reads");
-    if (readsLayout) {
-      if (isVertical) {
-        reads.style.left = `${readsLayout.contentLeft}px`;
-        // Extend Reads track to the right edge of the main container
-        const mainWidth = rectW(main);
-        reads.style.width = readsLayout.track.collapsed ? "0px" : `${mainWidth - readsLayout.contentLeft}px`;
-        // In vertical mode, tracks are side-by-side, so top should be 0 and height spans full container
-        reads.style.top = "0";
-        const mainHeight = rectH(main);
-        reads.style.height = readsLayout.track.collapsed ? "0px" : `${mainHeight}px`;
-      } else {
-        reads.style.top = `${readsLayout.contentTop}px`;
-        reads.style.left = "0";
-        reads.style.width = "100%";
-        // Height and overflow are managed by renderReadsCanvas when reads are loaded
-        if (!loadedReadsLayout || !loadedReadsLayout.reads || loadedReadsLayout.reads.length === 0) {
-          reads.style.height = readsLayout.track.collapsed ? "0px" : `${readsLayout.contentHeight}px`;
-        }
-      }
-      reads.style.display = readsLayout.track.collapsed ? "none" : "block";
     }
     
     // Update Smart track container positions (actual rendering is done in renderSmartTrack)
@@ -11696,7 +10810,6 @@
     }
     renderAll();
   }, 100)).observe(flow);
-  new ResizeObserver(debounce(() => renderAll(), 100)).observe(reads);
   new ResizeObserver(debounce(() => {
     // Handle WebGPU canvas resize when tracks container resizes
     if (webgpuCore && webgpuSupported) {
