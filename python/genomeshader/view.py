@@ -15,6 +15,14 @@ import polars as pl
 from IPython.display import display, HTML
 import json
 
+# Try to import Comm for Jupyter comms
+try:
+    from ipykernel.comm import Comm
+    COMM_AVAILABLE = True
+except ImportError:
+    Comm = None
+    COMM_AVAILABLE = False
+
 import genomeshader.genomeshader as gs
 from . import staging
 
@@ -50,6 +58,17 @@ class GenomeShader:
         self._localhost_server: Optional[HTTPServer] = None
         self._localhost_port: Optional[int] = None
         self._localhost_thread: Optional[threading.Thread] = None
+        
+        # Comm for bidirectional communication
+        self._comm = None
+        
+        # Store last rendered locus for on-demand loading
+        self._last_locus = None
+        
+        # Sample mapping: VCF sample names -> BAM sample names
+        # Format: {"VCF_sample1": ["BAM_sample1"], "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
+        # If empty, assumes 1:1 identity mapping (VCF sample name == BAM sample name)
+        self._sample_mapping: dict = {}
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
@@ -203,6 +222,74 @@ class GenomeShader:
                 self._session.attach_variants(bcfs)
                 self._session.attach_variants(vcfs)
                 self._session.attach_variants(vcf_gzs)
+
+    def set_sample_mapping(self, mapping: dict):
+        """
+        Sets the mapping between VCF sample names and BAM sample names.
+        
+        This is useful when VCF samples have different names than BAM samples,
+        or when one VCF sample corresponds to multiple BAM files.
+        
+        Args:
+            mapping (dict): A dictionary mapping VCF sample names to lists of
+                BAM sample names.
+                Format: {"VCF_sample1": ["BAM_sample1"], 
+                         "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
+                
+        Example:
+            >>> gs.set_sample_mapping({
+            ...     "NA12878": ["NA12878_run1", "NA12878_run2"],
+            ...     "NA12879": ["NA12879"]
+            ... })
+        """
+        self._sample_mapping = mapping
+    
+    def get_sample_mapping(self) -> dict:
+        """
+        Returns the current VCF-to-BAM sample mapping.
+        
+        Returns:
+            dict: The sample mapping dictionary.
+        """
+        return self._sample_mapping
+    
+    def get_bam_samples_for_vcf_samples(self, vcf_samples: List[str]) -> List[str]:
+        """
+        Converts VCF sample names to BAM sample names using the sample mapping.
+        
+        If no mapping is set, assumes 1:1 identity mapping (VCF name == BAM name).
+        
+        Args:
+            vcf_samples (List[str]): List of VCF sample names to convert.
+            
+        Returns:
+            List[str]: List of unique BAM sample names corresponding to the
+                given VCF samples.
+        """
+        bam_samples = set()
+        for vcf_sample in vcf_samples:
+            if self._sample_mapping and vcf_sample in self._sample_mapping:
+                # Use mapping
+                bam_samples.update(self._sample_mapping[vcf_sample])
+            else:
+                # Identity mapping (VCF name == BAM name)
+                bam_samples.add(vcf_sample)
+        return list(bam_samples)
+    
+    def get_bam_sample_names(self) -> List[str]:
+        """
+        Get sample names from attached BAM file headers.
+        
+        Returns a list of unique sample names extracted from the SM field
+        in @RG (read group) headers of all attached BAM files.
+        
+        This is useful for debugging sample name mismatches between VCF
+        and BAM files.
+        
+        Returns:
+            List[str]: Sorted list of unique sample names from BAM headers.
+        """
+        return self._session.get_bam_sample_names()
 
     def stage(self, use_cache: bool = True):
         """
@@ -889,6 +976,10 @@ class GenomeShader:
         region_str = f"{ref_chr}:{ref_start}-{ref_end}"
         hash_input = f"{region_str}:{self.genome_build}"
         run_id = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()[:8]
+        
+        # Store view_id and locus for use in show() method and on-demand loading
+        self._last_view_id = run_id
+        self._last_locus = region_str
 
         # Create run directory structure
         try:
@@ -1230,8 +1321,11 @@ class GenomeShader:
         # Load template HTML
         template_html = self._load_template_html()
 
-        # Get manifest URL using localhost server
-        manifest_url = self._get_manifest_url(manifest_path)
+        # Get manifest URL using localhost server (available if needed later)
+        _ = self._get_manifest_url(manifest_path)
+
+        # Check if comms are available for bidirectional communication
+        comm_available = COMM_AVAILABLE
 
         # Build config dict first, then JSON-encode it
         config = {
@@ -1249,6 +1343,7 @@ class GenomeShader:
                 'start': data_start,
                 'end': data_end,
             },
+            'comm_available': comm_available,  # Indicates if Jupyter comms are available
         }
 
         # Get Jupyter origin for constructing absolute URLs
@@ -1265,10 +1360,8 @@ class GenomeShader:
                 # Default to localhost:8888 (common Jupyter port)
                 jupyter_origin = "http://localhost:8888"
         
-        # Build bootstrap snippet with manifest URL, config, and view ID
-        # Data will be fetched lazily via postMessage (not embedded)
+        # Build bootstrap snippet with config and view ID
         bootstrap = f"""<script>
-window.GENOMESHADER_MANIFEST_URL = {json.dumps(manifest_url)};
 window.GENOMESHADER_CONFIG = {json.dumps(config)};
 window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
 window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
@@ -1301,12 +1394,10 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         bootstrap_script = f"""
 <script type="text/javascript">
 // Bootstrap: Set window variables before template scripts run
-window.GENOMESHADER_MANIFEST_URL = {json.dumps(manifest_url)};
 window.GENOMESHADER_CONFIG = {json.dumps(config)};
 window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
 window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
 console.log('Genomeshader: Bootstrap variables set', {{
-  manifestUrl: window.GENOMESHADER_MANIFEST_URL,
   hasConfig: !!window.GENOMESHADER_CONFIG,
   viewId: window.GENOMESHADER_VIEW_ID
 }});
@@ -1364,12 +1455,12 @@ console.log('Genomeshader: Bootstrap variables set', {{
         # The container needs to have a defined height for the app to render correctly
         # Override html/body height rules to work within container
         inline_html = f"""
-<div id="{container_id}" style="width: 100%; height: 700px; position: relative; overflow: visible; background: var(--bg, #0b0d10); font-family: ui-sans-serif, system-ui; isolation: isolate;">
+<div id="{container_id}" style="width: 100%; height: 600px; position: relative; overflow: visible; background: var(--bg, #0b0d10); font-family: ui-sans-serif, system-ui; isolation: isolate;">
 <style>
 {styles}
 /* Override html/body height rules for container embedding */
 #{container_id} {{
-  height: 700px;
+  height: 600px;
   display: block;
   position: relative;
 }}
@@ -1396,7 +1487,8 @@ console.log('Genomeshader: Bootstrap variables set', {{
   bottom: 0 !important;
   width: var(--sidebar-w, 240px) !important;
   z-index: 100 !important;
-  overflow: visible !important;
+  overflow-y: auto !important;
+  overflow-x: visible !important;
   pointer-events: auto !important;
   transition: width 0.2s ease;
 }}
@@ -1434,10 +1526,13 @@ console.log('Genomeshader: Bootstrap variables set', {{
   pointer-events: auto !important;
   opacity: 1 !important;
 }}
-/* Ensure sidebar toggle border is clickable */
+/* Ensure sidebar toggle border is clickable - but only on the right edge */
 #{container_id} .sidebar::after {{
-  z-index: 2147483000 !important;
+  z-index: 5 !important;
   pointer-events: auto !important;
+  width: 4px !important;
+  left: auto !important;
+  right: 0 !important;
 }}
 /* Ensure gear button is clickable and above everything in sidebar */
 #{container_id} .gearBtn {{
@@ -1458,6 +1553,63 @@ console.log('Genomeshader: Bootstrap variables set', {{
 #{container_id} .group {{
   pointer-events: auto !important;
   opacity: 1 !important;
+}}
+/* Ensure all form elements in sidebar are clickable and interactive */
+#{container_id} .sidebar select,
+#{container_id} .sidebar input,
+#{container_id} .sidebar button,
+#{container_id} .sidebar label {{
+  pointer-events: auto !important;
+  position: relative !important;
+  z-index: 200 !important;
+}}
+/* Style for select dropdown to ensure it's visible */
+#{container_id} .sidebar select {{
+  -webkit-appearance: menulist !important;
+  -moz-appearance: menulist !important;
+  appearance: menulist !important;
+  cursor: pointer !important;
+}}
+/* Style for range input to ensure it's interactive */
+#{container_id} .sidebar input[type="range"] {{
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+  cursor: pointer !important;
+}}
+/* Style for number input */
+#{container_id} .sidebar input[type="number"] {{
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+}}
+/* Style for text input */
+#{container_id} .sidebar input[type="text"] {{
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+  cursor: text !important;
+}}
+/* Fix for nested elements in sample selection section */
+#{container_id} #sampleStrategySection,
+#{container_id} #sampleStrategySection *,
+#{container_id} #sampleSearchSection,
+#{container_id} #sampleSearchSection *,
+#{container_id} #sampleContext,
+#{container_id} #sampleContext * {{
+  pointer-events: auto !important;
+}}
+/* Ensure sample strategy section has proper stacking context */
+#{container_id} #sampleStrategySection {{
+  position: relative !important;
+  z-index: 200 !important;
+}}
+#{container_id} #sampleSearchSection {{
+  position: relative !important;
+  z-index: 200 !important;
+}}
+/* Ensure sidebar content is above any potential overlays */
+#{container_id} .sidebar .sidebarHeader,
+#{container_id} .sidebar .group {{
+  position: relative !important;
+  z-index: 200 !important;
 }}
 /* Ensure menu is above everything - use fixed positioning set by JS */
 #{container_id} .menu {{
@@ -1523,11 +1675,155 @@ console.log('Genomeshader: Bootstrap variables set', {{
 
     def show(
         self,
-        locus_or_dataframe: Union[str, pl.DataFrame],
+        locus: str,
     ):
-        html_script = self.render(locus_or_dataframe)
+        """
+        Visualizes variant data for a genomic locus by fetching variant data
+        and rendering a graphical representation.
 
-        # Display the HTML and JavaScript
+        Parameters:
+            locus (str): The genomic locus to visualize, in the format
+                'chromosome:start-stop' or 'chromosome:position'
+                (e.g., 'chr1:1000000-2000000' or 'chr1:1000000').
+
+        Returns:
+            None: Displays the visualization in the notebook.
+        """
+        # Fetch variant data for the locus
+        variants_df = self.get_locus_variants(locus)
+        html_script = self.render(variants_df)
+        # view_id available via self._last_view_id if needed
+
+        # Register comm target for JavaScript to connect to
+        if COMM_AVAILABLE:
+            try:
+                from IPython import get_ipython
+                ip = get_ipython()
+                if ip is not None and hasattr(ip, 'kernel') and ip.kernel is not None:
+                    gs_instance = self
+                    
+                    def handle_comm_open(comm, msg):
+                        """Handle comm open from JavaScript."""
+                        print(f"Genomeshader: Comm opened, id: {comm.comm_id}")
+                        
+                        @comm.on_msg
+                        def _recv(msg):
+                            data = msg['content']['data']
+                            msg_type = data.get('type')
+                            request_id = data.get('request_id')
+                            
+                            if msg_type == 'test':
+                                comm.send({
+                                    'type': 'test_response',
+                                    'request_id': request_id,
+                                    'message': f'Hello from Python! Got: {data.get("message", "")}',
+                                })
+                            
+                            elif msg_type == 'fetch_reads':
+                                # Fetch reads for the current locus from attached BAM files
+                                try:
+                                    print(f"Genomeshader: fetch_reads message received, request_id: {request_id}")
+                                    locus = gs_instance._last_locus
+                                    if locus is None:
+                                        print("Genomeshader: Error - No locus available")
+                                        comm.send({
+                                            'type': 'fetch_reads_error',
+                                            'request_id': request_id,
+                                            'error': 'No locus available',
+                                        })
+                                        return
+                                    
+                                    print(f"Genomeshader: Fetching reads for locus: {locus}")
+                                    
+                                    # Get Smart track parameters (optional)
+                                    strategy = data.get('strategy', None)
+                                    selected_alleles = data.get('selected_alleles', None)
+                                    sample_id = data.get('sample_id', None)
+                                    
+                                    if strategy:
+                                        print(f"Genomeshader: Smart track strategy: {strategy}")
+                                    if selected_alleles:
+                                        print(f"Genomeshader: Selected alleles: {selected_alleles}")
+                                    if sample_id:
+                                        print(f"Genomeshader: Sample ID: {sample_id}")
+                                    
+                                    # Get sample filter from message (optional)
+                                    # For Smart tracks, sample_id takes precedence over samples array
+                                    vcf_samples = data.get('samples', None)
+                                    if sample_id and not vcf_samples:
+                                        # Use sample_id if provided
+                                        vcf_samples = [sample_id]
+                                    print(f"Genomeshader: VCF samples from message: {vcf_samples}")
+                                    
+                                    # Apply sample mapping if samples are provided
+                                    # Note: fetch_reads_for_locus only accepts locus parameter
+                                    # It uses the first attached BAM file, so we can't filter by specific BAM URLs here
+                                    bam_urls = None  # BAM file URLs (for reference, but not used in fetch)
+                                    if vcf_samples:
+                                        mapped = gs_instance.get_bam_samples_for_vcf_samples(vcf_samples)
+                                        print(f"Genomeshader: Mapped to: {mapped}")
+                                        
+                                        # Check if the mapping contains file paths (BAM URLs) or sample names
+                                        if mapped and any(s.startswith('gs://') or s.startswith('s3://') or s.startswith('http') or s.endswith('.bam') or s.endswith('.cram') for s in mapped):
+                                            # Mapped values are BAM file URLs
+                                            bam_urls = mapped
+                                            print(f"Genomeshader: Note - Would load from {len(bam_urls)} BAM file(s), but fetch_reads_for_locus uses first attached file")
+                                        else:
+                                            # Mapped values are sample names - this case not fully supported yet
+                                            print(f"Genomeshader: Mapped values are sample names: {mapped}. Loading from first attached file.")
+                                    
+                                    # TODO: Implement strategy-based sample selection logic
+                                    # TODO: Add support for filtering by specific BAM URLs in fetch_reads_for_locus
+                                    # For now, we use the first attached BAM file
+                                    
+                                    # Use the Rust-based fetch (only accepts locus parameter)
+                                    print("Genomeshader: Calling fetch_reads_for_locus...")
+                                    reads_df = gs_instance._session.fetch_reads_for_locus(locus)
+                                    print(f"Genomeshader: fetch_reads_for_locus returned {len(reads_df)} reads")
+                                    
+                                    # TODO: Filter reads based on selected_alleles if provided
+                                    # This would require matching reads to specific alleles
+                                    
+                                    # Debug: show unique sample names in the result
+                                    if len(reads_df) > 0 and 'sample_name' in reads_df.columns:
+                                        unique_samples = reads_df['sample_name'].unique().to_list()
+                                        print(f"Genomeshader: Unique sample names in result: {unique_samples}")
+                                    elif len(reads_df) == 0:
+                                        print("Genomeshader: WARNING - No reads found. Check that the BAM files contain reads for this locus.")
+                                    
+                                    # Convert to JSON-serializable format
+                                    reads_data = reads_df.to_dict(as_series=False)
+                                    
+                                    print(f"Genomeshader: Sending fetch_reads_response with {len(reads_df)} reads")
+                                    comm.send({
+                                        'type': 'fetch_reads_response',
+                                        'request_id': request_id,
+                                        'locus': locus,
+                                        'reads': reads_data,
+                                        'count': len(reads_df),
+                                        'bam_urls': bam_urls,  # Include which BAM files were loaded from
+                                        'vcf_samples': vcf_samples,  # Include which VCF samples were requested
+                                        'sample_id': sample_id,  # Include sample_id if provided
+                                        'strategy': strategy,  # Include strategy if provided
+                                    })
+                                    print("Genomeshader: fetch_reads_response sent")
+                                except Exception as e:
+                                    print(f"Genomeshader: Error in fetch_reads: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                                    comm.send({
+                                        'type': 'fetch_reads_error',
+                                        'request_id': request_id,
+                                        'error': str(e),
+                                    })
+                        
+                        gs_instance._comm = comm
+                    
+                    ip.kernel.comm_manager.register_target('genomeshader', handle_comm_open)
+            except Exception as e:
+                print(f"Genomeshader: Failed to register comm target: {e}")
+        
+        # Display the HTML
         display(HTML(html_script))
 
 

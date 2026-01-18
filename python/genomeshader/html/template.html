@@ -134,10 +134,18 @@
       position: relative;
       background: var(--panel);
       border-right: 1px solid var(--border2);
-      padding: 12px;
-      overflow: visible;
-      padding-bottom: 56px; /* space for gear button */
+      padding: 0;
+      overflow: hidden;
       transition: opacity 0.2s ease;
+      display: flex;
+      flex-direction: column;
+    }
+    .sidebarContent {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: visible;
+      padding: 12px;
+      padding-bottom: 12px;
     }
     .sidebar::after {
       content: "";
@@ -160,6 +168,10 @@
       overflow: visible;
     }
     .app.sidebar-collapsed .sidebar > * {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .app.sidebar-collapsed .sidebarContent {
       opacity: 0;
       pointer-events: none;
     }
@@ -243,8 +255,7 @@
       position: absolute !important;
       left: 12px !important;
       bottom: 12px !important;
-      top: auto !important;
-      right: auto !important;
+      z-index: 10 !important;
       border: 1px solid var(--border2);
       background: var(--panel2);
       color: var(--text);
@@ -295,6 +306,126 @@
     }
     .menuItem:hover { background: var(--panel2); }
     .menuRight { color: var(--muted); font-size: 12px; }
+    .menuHotkey {
+      color: var(--muted2);
+      font-size: 11px;
+      font-family: monospace;
+      background: var(--panel2);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 8px;
+    }
+    
+    /* Selection controls in sidebar */
+    .selectionBtn {
+      padding: 9px 10px;
+      border-radius: 10px;
+      background: var(--panel2);
+      border: 1px solid var(--border2);
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.2s ease;
+      text-align: left;
+    }
+    .selectionBtn:hover {
+      background: var(--panel);
+      border-color: var(--border);
+    }
+    .selectionBtn:active {
+      transform: scale(0.98);
+    }
+    .selectionBtn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    /* Combine toggle (AND/OR) */
+    .combineToggle.active {
+      background: var(--blue) !important;
+      color: white !important;
+    }
+    
+    /* Sample search results */
+    #sampleSearchResults {
+      font-size: 11px;
+    }
+    .sampleSearchResult {
+      padding: 6px 8px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--border2);
+    }
+    .sampleSearchResult:last-child {
+      border-bottom: none;
+    }
+    .sampleSearchResult:hover {
+      background: var(--panel2);
+    }
+    
+    /* Ensure all form elements in sidebar are clickable and interactive */
+    .sidebar select,
+    .sidebar input,
+    .sidebar button,
+    .sidebar label {
+      pointer-events: auto !important;
+      position: relative !important;
+      z-index: 200 !important;
+    }
+    
+    /* Style for select dropdown to ensure it's visible */
+    .sidebar select {
+      -webkit-appearance: menulist !important;
+      -moz-appearance: menulist !important;
+      appearance: menulist !important;
+      cursor: pointer !important;
+    }
+    
+    /* Style for range input to ensure it's interactive */
+    .sidebar input[type="range"] {
+      -webkit-appearance: auto !important;
+      appearance: auto !important;
+      cursor: pointer !important;
+    }
+    
+    /* Style for number input */
+    .sidebar input[type="number"] {
+      -webkit-appearance: auto !important;
+      appearance: auto !important;
+    }
+    
+    /* Style for text input */
+    .sidebar input[type="text"] {
+      -webkit-appearance: auto !important;
+      appearance: auto !important;
+      cursor: text !important;
+    }
+    
+    /* Fix for nested elements in sample selection section */
+    #sampleStrategySection,
+    #sampleStrategySection *,
+    #sampleSearchSection,
+    #sampleSearchSection *,
+    #sampleContext,
+    #sampleContext * {
+      pointer-events: auto !important;
+    }
+    
+    /* Ensure sample strategy section has proper stacking context */
+    #sampleStrategySection {
+      position: relative !important;
+      z-index: 200 !important;
+    }
+    #sampleSearchSection {
+      position: relative !important;
+      z-index: 200 !important;
+    }
+    /* Ensure sidebar content is above any potential overlays */
+    .sidebar .sidebarHeader,
+    .sidebar .group {
+      position: relative !important;
+      z-index: 200 !important;
+    }
 
     .main {
       position: relative;
@@ -455,6 +586,12 @@
       z-index: 10;
       cursor: move;
     }
+    /* Smart track controls should allow button clicks */
+    .track-controls button,
+    .track-controls select {
+      pointer-events: auto;
+      z-index: 20;
+    }
     .main.vertical .track-controls {
       top: auto;
     }
@@ -485,6 +622,14 @@
       color: var(--muted);
       user-select: none;
       pointer-events: none;
+    }
+    /* Smart track labels are clickable */
+    .track-controls[data-track-id^="smart-track-"] .track-label {
+      pointer-events: auto;
+      cursor: text;
+    }
+    .track-controls[data-track-id^="smart-track-"] .track-label:hover {
+      color: var(--text);
     }
 
     /* Vertical mode: track controls at bottom, vertically oriented */
@@ -529,6 +674,120 @@
       order: 2;
       margin-top: 0;
       margin-bottom: 0;
+    }
+
+    /* Smart track controls */
+    .smart-track-label-input {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      padding: 2px 4px;
+      outline: none;
+    }
+    .smart-track-label-input:focus {
+      border-color: var(--blue);
+      color: var(--text);
+    }
+    
+    .smart-track-strategy-select {
+      font-size: 11px;
+      padding: 2px 4px;
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      outline: none;
+    }
+    .smart-track-strategy-select:hover {
+      background: var(--panel2);
+      border-color: var(--border);
+    }
+    .smart-track-strategy-select:focus {
+      border-color: var(--blue);
+    }
+    
+    .smart-track-reload-btn,
+    .smart-track-shuffle-btn,
+    .smart-track-close-btn {
+      font-size: 16px;
+      padding: 0;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      outline: none;
+      transition: color 0.15s ease;
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+    .smart-track-reload-btn:hover,
+    .smart-track-shuffle-btn:hover {
+      color: var(--text);
+    }
+    .smart-track-close-btn:hover {
+      color: var(--text);
+    }
+    .smart-track-reload-btn:active,
+    .smart-track-shuffle-btn:active {
+      transform: scale(0.95);
+    }
+    .smart-track-close-btn:active {
+      opacity: 0.7;
+    }
+    
+    .smart-track-container {
+      position: absolute;
+      width: 100%;
+      pointer-events: none;
+      z-index: 5; /* above tracksWebGPU (z-index 1) */
+    }
+    .smart-track-container.scrollable {
+      pointer-events: none;
+      /* Firefox scrollbar styling */
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.2) rgba(0, 0, 0, 0.05);
+      /* Ensure scrollbar is always visible when scrollable */
+      overflow-y: auto !important;
+      overflow-x: hidden !important;
+      /* Ensure scrollbar area is visible */
+      z-index: 30;
+      /* Make sure scrollbar has space - don't let content overlap scrollbar */
+      box-sizing: border-box;
+      /* Force scrollbar to be visible - reserve space for it */
+      scrollbar-gutter: stable;
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar {
+      width: 14px;
+      height: 14px;
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.1);
+      border-radius: 7px;
+      border: 1px solid rgba(0, 0, 0, 0.05);
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar-thumb {
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 7px;
+      border: 2px solid rgba(0, 0, 0, 0.1);
+      min-height: 20px;
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 0, 0, 0.5);
+    }
+    .smart-track-container.scrollable::-webkit-scrollbar-thumb:active {
+      background: rgba(0, 0, 0, 0.6);
+    }
+    .smart-track-container canvas {
+      pointer-events: none;
     }
 
     .track-resize-handle {
@@ -583,37 +842,101 @@
 <body>
   <div class="app" style="position: relative; display: block;">
     <div class="sidebar" id="sidebar" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
-      <div class="sidebarHeader">
-        <h3>Participant groups</h3>
+      <div class="sidebarContent">
+      <div style="display: none;">
+        <div class="sidebarHeader">
+          <h3>Participant groups</h3>
+        </div>
+
+        <div class="group"><span>AFR</span><span class="pill">2634</span></div>
+        <div class="group"><span>AMR</span><span class="pill">603</span></div>
+        <div class="group"><span>EAS</span><span class="pill">1095</span></div>
+        <div class="group"><span>EUR</span><span class="pill">5340</span></div>
+        <div class="group"><span>SAS</span><span class="pill">328</span></div>
       </div>
 
-      <div class="group"><span>AFR</span><span class="pill">2634</span></div>
-      <div class="group"><span>AMR</span><span class="pill">603</span></div>
-      <div class="group"><span>EAS</span><span class="pill">1095</span></div>
-      <div class="group"><span>EUR</span><span class="pill">5340</span></div>
-      <div class="group"><span>SAS</span><span class="pill">328</span></div>
+      <!-- Sample Search Section -->
+      <div class="sidebarHeader" style="margin-top: 20px;">
+        <h3>Sample Search</h3>
+      </div>
 
-      <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
+      <div id="sampleSearchSection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); margin-bottom: 20px;">
+        <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;">
+        <div id="sampleSearchResults" style="display: none; margin-top: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel);"></div>
+      </div>
+
+      <div class="sidebarHeader" style="margin-top: 20px;">
+        <h3>Selection</h3>
+      </div>
+
+      <!-- Context Indicator -->
+      <div id="sampleContext" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); font-size: 11px; color: var(--muted); display: none;">
+      </div>
+
+      <!-- Strategy Selection Section -->
+      <div id="sampleStrategySection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); display: none;">
+        <!-- Strategy Dropdown -->
+        <div style="margin-bottom: 8px;">
+          <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;">Strategy</label>
+          <select id="sampleStrategy" disabled style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px;">
+            <option value="best_evidence">Best evidence</option>
+            <option value="most_diverse">Most diverse</option>
+            <option value="compare_branches">Compare branches</option>
+            <option value="carriers_controls">Carriers + controls</option>
+            <option value="random">Random</option>
+          </select>
+        </div>
+        
+        <!-- Combine Selection Toggle (AND/OR) -->
+        <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+          <label style="font-size: 11px; color: var(--muted);">Combine selection:</label>
+          <div style="display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--border2); border-radius: 6px; padding: 2px;">
+            <button id="combineAnd" class="combineToggle active" style="padding: 4px 8px; font-size: 11px; border: none; background: transparent; color: var(--text); border-radius: 4px; cursor: pointer;">AND</button>
+            <button id="combineOr" class="combineToggle" style="padding: 4px 8px; font-size: 11px; border: none; background: transparent; color: var(--muted); border-radius: 4px; cursor: pointer;">OR</button>
+          </div>
+        </div>
+        
+        <!-- Number of Samples Input -->
+        <div style="margin-bottom: 8px;">
+          <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;"># samples</label>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="range" id="sampleCountSlider" min="1" max="20" value="1" disabled style="flex: 1;">
+            <input type="number" id="sampleCountInput" min="1" max="20" value="1" disabled style="width: 50px; padding: 4px 6px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font-size: 12px; text-align: center;">
+          </div>
+        </div>
+        
+        <!-- Load Buttons -->
+        <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+          <button id="loadSamplesReplace" disabled class="selectionBtn" style="flex: 1; padding: 6px 10px; font-size: 12px;">Load</button>
+          <button id="loadSamplesAdd" disabled class="selectionBtn" style="flex: 1; padding: 6px 10px; font-size: 12px; display: none;">Load (add)</button>
+        </div>
+        
+        <!-- Preview -->
+        <div id="samplePreview" style="font-size: 11px; color: var(--muted); padding-top: 8px; border-top: 1px solid var(--border2); display: none;">
+          <div style="margin-bottom: 4px; color: var(--text);">Will load:</div>
+          <div id="samplePreviewList" style="color: var(--text);"></div>
+        </div>
+      </div>
 
       <div class="menu" id="ctxMenu" role="menu" aria-hidden="true">
         <div class="menuTitle">Display</div>
         <div class="menuItem" id="themeItem" role="menuitem">
-          <span>Theme</span>
+          <span>Theme<span class="menuHotkey">T</span></span>
           <span class="menuRight" id="themeLabel">Auto</span>
         </div>
 
         <div class="menuItem" id="orientationItem" role="menuitem">
-          <span>Orientation</span>
+          <span>Orientation<span class="menuHotkey">O</span></span>
           <span class="menuRight" id="orientationLabel">Horizontal</span>
         </div>
 
         <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
-          <span>Variant Layout</span>
+          <span>Variant Layout<span class="menuHotkey">V</span></span>
           <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
         </div>
 
         <div class="menuItem" id="fullscreenItem" role="menuitem">
-          <span>Full screen</span>
+          <span>Full screen<span class="menuHotkey">F</span></span>
           <span class="menuRight" id="fullscreenLabel">Enter full screen</span>
         </div>
 
@@ -623,6 +946,9 @@
           <span class="menuRight">Super-pop</span>
         </div>
       </div>
+      </div>
+
+      <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
     </div>
 
     <div class="main" id="main" style="position: absolute; left: 240px; top: 0; right: 0; bottom: 0; z-index: 1;">
@@ -638,18 +964,23 @@
         <svg class="overlay" id="flowOverlay"></svg>
       </div>
 
-      <div class="reads" id="reads">
-        <canvas class="canvas" id="readsCanvas"></canvas>
-        <canvas id="readsWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
-        <svg class="overlay" id="readsOverlay"></svg>
-      </div>
-
       <div class="hud" id="hud"></div>
       <div class="tooltip" id="tooltip"></div>
     </div>
   </div>
 
 <script type="module">
+  // -----------------------------
+  // Clean up any stale overlays from previous sessions
+  // -----------------------------
+  (function cleanupStaleOverlays() {
+    const staleOverlays = document.querySelectorAll('[id^="genomeshader-overlay-"]');
+    staleOverlays.forEach(overlay => {
+      console.log(`Cleaning up stale overlay: ${overlay.id}`);
+      overlay.remove();
+    });
+  })();
+
   // -----------------------------
   // WebGPU Classes (inlined to avoid module import issues with blob URLs)
   // -----------------------------
@@ -1551,140 +1882,553 @@
   // -----------------------------
   // Genomeshader bootstrap
   // -----------------------------
-  // Store lazy loading status to display in HUD
-  window._genomeshaderLazyStatus = null;
-  
-  function showError(message) {
-    window._genomeshaderLazyStatus = { type: 'error', message };
-    updateHUDWithStatus();
-  }
-  
-  function showInfo(message) {
-    window._genomeshaderLazyStatus = { type: 'info', message };
-    updateHUDWithStatus();
-  }
-  
-  function updateHUDWithStatus() {
-    const hudEl = document.getElementById('hud');
-    if (!hudEl || !window._genomeshaderLazyStatus) return;
-    
-    const status = window._genomeshaderLazyStatus;
-    const statusColor = status.type === 'error' ? 'var(--accent)' : 'var(--text)';
-    const statusBorder = status.type === 'error' ? 'var(--accent)' : 'var(--border)';
-    
-    // Get current locus text if state is available
-    // Note: state is defined later in the script, so we'll update HUD with locus later
-    // For now, just show the status message
-    hudEl.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span>`;
-  }
-  
   // Determine host mode (inline or popup)
   const hostMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode) || 'inline';
-  
-  // True lazy loading via postMessage
-  const manifestUrl = window.GENOMESHADER_MANIFEST_URL;
-  
-  if (!manifestUrl) {
-    showError('Missing GENOMESHADER_MANIFEST_URL');
-  } else {
-    
-    // Request manifest via postMessage to opener (Jupyter notebook window)
-    // The opener can fetch from localhost, avoiding CORS issues
-    let requestId = 0;
-    const pendingRequests = new Map();
-    
-    function requestData(url) {
-      return new Promise((resolve, reject) => {
-        // Inline mode: use direct fetch
-        if (hostMode === 'inline') {
-          fetch(url)
-            .then(response => {
-              if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-              }
-              return response.json();
-            })
-            .then(data => {
-              resolve(data);
-            })
-            .catch(error => {
-              reject(error);
-            });
-          return;
-        }
 
-        // Popup mode: use postMessage
-        const id = `req_${Date.now()}_${++requestId}`;
-        pendingRequests.set(id, { resolve, reject });
+  // -----------------------------
+  // Jupyter Comms (Classic Notebook) - Optimized
+  // -----------------------------
+  // Python registers a comm target 'genomeshader'
+  // We create a comm from JS to connect to it (lazy initialization)
+  
+  let genomeshaderComm = null;
+  let jupyterKernel = null; // Cache kernel reference
+  const pendingCommRequests = new Map();
+  let commInitialized = false;
+  
+  // Lazy initialization: only set up comm when actually needed
+  function ensureCommReady() {
+    if (commInitialized || genomeshaderComm) {
+      return Promise.resolve(genomeshaderComm);
+    }
+    
+    return new Promise(function(resolve, reject) {
+      const commAvailable = window.GENOMESHADER_CONFIG?.comm_available;
+      if (!commAvailable) {
+        reject(new Error('Comms not available'));
+        return;
+      }
+      
+      // Use cached kernel if available
+      if (jupyterKernel) {
+        setupComm(jupyterKernel).then(resolve).catch(reject);
+        return;
+      }
+      
+      // Try to get kernel (cached or load)
+      if (typeof Jupyter !== 'undefined' && Jupyter.notebook && Jupyter.notebook.kernel) {
+        jupyterKernel = Jupyter.notebook.kernel;
+        setupComm(jupyterKernel).then(resolve).catch(reject);
+      } else if (typeof require !== 'undefined') {
+        // Load Jupyter namespace once and cache it
+        require(['base/js/namespace'], function(Jupyter) {
+          if (Jupyter && Jupyter.notebook && Jupyter.notebook.kernel) {
+            jupyterKernel = Jupyter.notebook.kernel;
+            setupComm(jupyterKernel).then(resolve).catch(reject);
+          } else {
+            reject(new Error('Kernel not available'));
+          }
+        }, reject);
+      } else {
+        reject(new Error('Jupyter not available'));
+      }
+    });
+  }
+  
+  function setupComm(kernel) {
+    return new Promise(function(resolve, reject) {
+      try {
+        const comm = kernel.comm_manager.new_comm('genomeshader', {
+          view_id: window.GENOMESHADER_VIEW_ID
+        });
         
-        // Send request to opener
-        window.opener.postMessage({
-          type: 'genomeshader_fetch',
-          requestId: id,
-          url: url
-        }, '*');
+        comm.on_msg(function(msg) {
+          const data = msg.content.data;
+          
+          // Handle pending requests
+          const request = pendingCommRequests.get(data.request_id);
+          if (request) {
+            pendingCommRequests.delete(data.request_id);
+            request.resolve(data);
+          }
+          
+          // Dispatch event for other listeners
+          document.dispatchEvent(new CustomEvent('genomeshader_msg', { detail: data }));
+        });
         
-        // Set timeout
-        setTimeout(() => {
-          if (pendingRequests.has(id)) {
-            pendingRequests.delete(id);
+        genomeshaderComm = comm;
+        commInitialized = true;
+        resolve(comm);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+  
+  function sendCommMessage(type, data, timeoutMs) {
+    return ensureCommReady().then(function(comm) {
+      return new Promise(function(resolve, reject) {
+        const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        pendingCommRequests.set(requestId, { resolve: resolve, reject: reject });
+        
+        comm.send({
+          type: type,
+          request_id: requestId,
+          ...data
+        });
+        
+        // Timeout - use longer timeout for fetch_reads (120 seconds), default 30 seconds
+        const timeout = timeoutMs || (type === 'fetch_reads' ? 120000 : 30000);
+        setTimeout(function() {
+          if (pendingCommRequests.has(requestId)) {
+            pendingCommRequests.delete(requestId);
             reject(new Error('Request timeout'));
           }
-        }, 30000); // 30 second timeout
+        }, timeout);
       });
+    });
+  }
+  
+  // Defer comm initialization until after visualization renders
+  // Use requestAnimationFrame to ensure rendering happens first
+  function initCommLazy() {
+    // Wait for visualization to render first
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        // Initialize comm in background (non-blocking)
+        ensureCommReady().catch(function() {
+          // Silently fail - comm is optional
+        });
+      });
+    });
+  }
+  
+  // Start lazy initialization after a short delay
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+      setTimeout(initCommLazy, 1000); // Wait 1s for visualization to render
+    });
+  } else {
+    setTimeout(initCommLazy, 1000);
+  }
+  
+  // -----------------------------
+  // Smart Tracks
+  // -----------------------------
+  
+  // Process raw reads data into a layout structure (used by Smart Tracks)
+  function processReadsData(rawReads) {
+    if (!rawReads || !rawReads.query_name) return null;
+    
+    // Convert column-oriented data to row-oriented
+    const numRows = rawReads.query_name.length;
+    const reads = [];
+    
+    // Group by query_name to get unique reads (element_type 0 = READ)
+    const readMap = new Map();
+    for (let i = 0; i < numRows; i++) {
+      if (rawReads.element_type[i] === 0) { // READ element
+        const name = rawReads.query_name[i];
+        if (!readMap.has(name)) {
+          readMap.set(name, {
+            name: name,
+            start: rawReads.reference_start[i],
+            end: rawReads.reference_end[i],
+            isForward: rawReads.is_forward[i],
+            haplotype: rawReads.haplotype[i],
+            sample: rawReads.sample_name[i],
+            elements: []
+          });
+        }
+      }
     }
     
-    // Listen for responses from opener (only in popup mode)
-    if (hostMode === 'popup') {
-      window.addEventListener('message', function(event) {
-        // Only accept messages from opener
-        if (event.source !== window.opener) {
-          return;
-        }
-        
-        const data = event.data;
-        if (data && data.type === 'genomeshader_fetch_response') {
-          const request = pendingRequests.get(data.requestId);
-          if (request) {
-            pendingRequests.delete(data.requestId);
-            if (data.success) {
-              request.resolve(data.data);
-            } else {
-              request.reject(new Error(data.error || 'Fetch failed'));
-            }
+    // Add non-read elements (insertions, deletions, etc.)
+    for (let i = 0; i < numRows; i++) {
+      const name = rawReads.query_name[i];
+      const read = readMap.get(name);
+      if (read && rawReads.element_type[i] !== 0) {
+        read.elements.push({
+          type: rawReads.element_type[i],
+          start: rawReads.reference_start[i],
+          end: rawReads.reference_end[i],
+          sequence: rawReads.sequence[i]
+        });
+      }
+    }
+    
+    // Convert to array and sort by start position
+    const readArray = Array.from(readMap.values());
+    readArray.sort((a, b) => a.start - b.start);
+    
+    // Improved greedy packing: assign reads to rows, checking if read fits anywhere in each row
+    const rows = [];
+    for (const read of readArray) {
+      let placed = false;
+      // Try to place in existing rows
+      for (let r = 0; r < rows.length; r++) {
+        // Check if read can fit in this row (doesn't overlap with any existing read)
+        let canFit = true;
+        for (const existingRead of rows[r]) {
+          // Check for overlap: read overlaps if it starts before existing ends and ends after existing starts
+          if (!(read.end < existingRead.start - 10 || read.start > existingRead.end + 10)) {
+            canFit = false;
+            break;
           }
         }
-      });
+        if (canFit) {
+          read.row = r;
+          rows[r].push(read);
+          // Keep row sorted by start position for better packing
+          rows[r].sort((a, b) => a.start - b.start);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        read.row = rows.length;
+        rows.push([read]);
+      }
     }
     
-    // Request manifest
-    requestData(manifestUrl)
-      .then(manifest => {
-        console.log('Loaded manifest via postMessage:', manifest);
-        
-        // Compute track URL
-        const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/') + 1);
-        const trackUrl = baseUrl + manifest.tracks.demo.url;
-        
-        // Request track file
-        return requestData(trackUrl)
-          .then(trackData => {
-            const recordCount = Array.isArray(trackData) ? trackData.length : 0;
-            showInfo(`Run ID: ${manifest.run_id}<br>Loaded ${recordCount} records`);
-          })
-          .catch(error => {
-            showError(`Failed to load track: ${error.message}`);
-          });
+    // Only log in debug mode or for first few calls to avoid console spam
+    // console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
+    return { reads: readArray, rowCount: rows.length };
+  }
+  
+  // Create a new Smart track
+  function createSmartTrack(strategy, selectedAlleles) {
+    const timestamp = Date.now();
+    const index = state.smartTracks.length;
+    const trackId = `smart-track-${timestamp}-${index}`;
+    
+    // Check if track with this ID already exists (shouldn't happen, but guard against it)
+    if (state.smartTracks.find(t => t.id === trackId)) {
+      console.warn(`Smart track ${trackId} already exists, skipping creation`);
+      return state.smartTracks.find(t => t.id === trackId);
+    }
+    
+    // console.log(`Creating Smart track ${trackId} (total tracks: ${state.smartTracks.length})`);
+    
+    // Create track object
+    const track = {
+      id: trackId,
+      label: `Smart Track ${index + 1}`,
+      collapsed: false,
+      height: 220,
+      minHeight: 50,
+      strategy: strategy,
+      selectedAlleles: new Set(selectedAlleles),
+      sampleId: null,
+      readsData: null,
+      readsLayout: null,
+      loading: false
+    };
+    
+    // Add to smartTracks array
+    state.smartTracks.push(track);
+    
+    // Insert after the flow track
+    const flowIndex = state.tracks.findIndex(t => t.id === "flow");
+    const insertIndex = flowIndex >= 0 ? flowIndex + 1 : state.tracks.length;
+    state.tracks.splice(insertIndex, 0, track);
+    
+    // Initialize WebGPU renderer (async, but don't await - it will complete in background)
+    initSmartTrackWebGPU(trackId);
+    
+    // Update layout
+    updateTracksHeight();
+    renderAll();
+    
+    return track;
+  }
+  
+  // Initialize WebGPU renderer for a Smart track
+  async function initSmartTrackWebGPU(trackId) {
+    // Check if renderer already exists - prevent re-initialization
+    if (state.smartTrackRenderers.has(trackId)) {
+      // console.log(`Smart track ${trackId}: WebGPU already initialized, skipping`);
+      return;
+    }
+    
+    if (!webgpuSupported || !navigator.gpu) {
+      console.warn('WebGPU not supported, Smart track will use Canvas2D fallback');
+      return;
+    }
+    
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    // Find tracks container
+    const tracksContainer = document.getElementById('tracksContainer');
+    if (!tracksContainer) return;
+    
+    // Create container div for this Smart track
+    const container = document.createElement('div');
+    container.className = 'smart-track-container';
+    container.id = `smart-track-container-${trackId}`;
+    container.dataset.trackId = trackId;
+    container.style.position = 'absolute';
+    container.style.width = '100%';
+    container.style.height = '100%';
+    container.style.pointerEvents = 'none';
+    
+    // Create Canvas2D canvas
+    const canvas = document.createElement('canvas');
+    canvas.className = 'canvas';
+    canvas.id = `smart-track-canvas-${trackId}`;
+    canvas.style.position = 'absolute';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.pointerEvents = 'none';
+    
+    // Create WebGPU canvas
+    const webgpuCanvas = document.createElement('canvas');
+    webgpuCanvas.className = 'webgpu-canvas';
+    webgpuCanvas.id = `smart-track-webgpu-${trackId}`;
+    webgpuCanvas.style.position = 'absolute';
+    webgpuCanvas.style.top = '0';
+    webgpuCanvas.style.left = '0';
+    webgpuCanvas.style.width = '100%';
+    webgpuCanvas.style.height = '100%';
+    webgpuCanvas.style.pointerEvents = 'none';
+    
+    container.appendChild(canvas);
+    container.appendChild(webgpuCanvas);
+    tracksContainer.appendChild(container);
+    
+    try {
+      // Wait for canvas to have dimensions
+      const checkDimensions = () => {
+        const rect = webgpuCanvas.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      
+      // Wait up to 2 seconds for dimensions
+      for (let i = 0; i < 40; i++) {
+        if (checkDimensions()) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      
+      if (!checkDimensions()) {
+        console.warn(`Smart track ${trackId}: Canvas dimensions not ready`);
+        return;
+      }
+      
+      // Initialize WebGPU
+      const webgpuCore = new WebGPUCore();
+      await webgpuCore.init(webgpuCanvas);
+      const instancedRenderer = new InstancedRenderer(webgpuCore);
+      
+      // Store renderer objects
+      state.smartTrackRenderers.set(trackId, {
+        webgpuCore,
+        instancedRenderer,
+        canvas,
+        webgpuCanvas,
+        container
+      });
+      
+      // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
+      // But we need a basic scroll handler for re-rendering
+      container.addEventListener("scroll", () => {
+        renderSmartTrack(trackId);
+      });
+      
+      console.log(`Smart track ${trackId}: WebGPU initialized`);
+    } catch (error) {
+      console.warn(`Smart track ${trackId}: Failed to initialize WebGPU:`, error);
+      // Continue without WebGPU - will use Canvas2D fallback
+      
+      // Still store the renderer objects (without WebGPU)
+      state.smartTrackRenderers.set(trackId, {
+        webgpuCore: null,
+        instancedRenderer: null,
+        canvas,
+        webgpuCanvas: null,
+        container
+      });
+      
+      // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
+      // But we need a basic scroll handler for re-rendering
+      container.addEventListener("scroll", () => {
+        renderSmartTrack(trackId);
+      });
+    }
+  }
+  
+  // Remove WebGPU renderer for a Smart track
+  function removeSmartTrackWebGPU(trackId) {
+    const renderer = state.smartTrackRenderers.get(trackId);
+    if (renderer) {
+      // Clean up WebGPU resources
+      if (renderer.webgpuCore && renderer.webgpuCore.device) {
+        // WebGPU cleanup is handled automatically when canvas is removed
+      }
+      
+      // Remove DOM elements
+      if (renderer.container) {
+        if (renderer.container.parentNode) {
+          renderer.container.parentNode.removeChild(renderer.container);
+        }
+        // Also try to remove by ID as fallback
+        const containerById = document.getElementById(`smart-track-container-${trackId}`);
+        if (containerById && containerById.parentNode) {
+          containerById.parentNode.removeChild(containerById);
+        }
+      }
+      
+      // Remove from Map
+      state.smartTrackRenderers.delete(trackId);
+    }
+  }
+  
+  // Fetch reads for a Smart track
+  function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) {
+      console.error(`Smart track ${trackId} not found`);
+      return Promise.reject(new Error('Track not found'));
+    }
+    
+    track.loading = true;
+    renderAll();
+    
+    // Convert selectedAlleles Set to array
+    const allelesArray = Array.from(selectedAlleles);
+    
+    return sendCommMessage('fetch_reads', {
+      strategy: strategy,
+      selected_alleles: allelesArray,
+      sample_id: sampleId || null
+    })
+      .then(function(response) {
+        track.loading = false;
+        if (response.type === 'fetch_reads_response') {
+          // console.log(`Smart track ${trackId}: Received ${response.count} read elements`);
+          track.readsData = response.reads;
+          track.readsLayout = processReadsData(response.reads);
+          track.sampleId = sampleId || response.sample_id || null;
+          renderAll();
+          return track.readsLayout;
+        } else if (response.type === 'fetch_reads_error') {
+          throw new Error(response.error);
+        }
+        return null;
       })
-      .catch(error => {
-        showError(`Failed to load manifest: ${error.message}`);
+      .catch(function(err) {
+        track.loading = false;
+        console.error(`Smart track ${trackId}: Failed to fetch reads:`, err);
+        renderAll();
+        throw err;
       });
   }
-
-  // -----------------------------
-  // Jupyter Comms Test - REMOVED
-  // This test code has been removed as it was showing unwanted dialogs
-  // -----------------------------
+  
+  // Remove a Smart track
+  function removeSmartTrack(trackId) {
+    // Remove from tracks array
+    const trackIndex = state.tracks.findIndex(t => t.id === trackId);
+    if (trackIndex >= 0) {
+      state.tracks.splice(trackIndex, 1);
+    }
+    
+    // Remove from smartTracks array
+    const smartIndex = state.smartTracks.findIndex(t => t.id === trackId);
+    if (smartIndex >= 0) {
+      state.smartTracks.splice(smartIndex, 1);
+    }
+    
+    // Clean up WebGPU renderer
+    removeSmartTrackWebGPU(trackId);
+    
+    // Update layout and re-render
+    updateTracksHeight();
+    renderAll();
+  }
+  
+  // Update Smart track strategy and reload
+  function updateSmartTrackStrategy(trackId, newStrategy) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    track.strategy = newStrategy;
+    
+    // Get candidate samples based on new strategy
+    const candidates = state.sampleSelection.candidateSamples;
+    const sampleId = candidates && candidates.length > 0 ? candidates[0] : null;
+    
+    // Fetch reads with new strategy
+    fetchReadsForSmartTrack(trackId, newStrategy, track.selectedAlleles, sampleId)
+      .catch(err => {
+        console.error(`Failed to update strategy for track ${trackId}:`, err);
+      });
+  }
+  
+  // Reload Smart track (reload with current sample)
+  function reloadSmartTrack(trackId) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    // Reload with the same sample ID
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId)
+      .catch(err => {
+        console.error(`Failed to reload track ${trackId}:`, err);
+      });
+  }
+  
+  // Shuffle Smart track (choose a new/different sample)
+  function shuffleSmartTrack(trackId) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    // Recompute candidate samples based on current strategy
+    const candidates = state.sampleSelection.candidateSamples;
+    let sampleId = null;
+    
+    if (candidates && candidates.length > 0) {
+      if (candidates.length === 1) {
+        // Only one candidate, use it
+        sampleId = candidates[0];
+      } else {
+        // If we have a current sample, try to get a different one
+        if (track.sampleId && candidates.includes(track.sampleId)) {
+          const currentIndex = candidates.indexOf(track.sampleId);
+          // Pick a random different sample
+          let nextIndex;
+          do {
+            nextIndex = Math.floor(Math.random() * candidates.length);
+          } while (nextIndex === currentIndex && candidates.length > 1);
+          sampleId = candidates[nextIndex];
+        } else {
+          // No current sample or it's not in candidates, pick a random one
+          sampleId = candidates[Math.floor(Math.random() * candidates.length)];
+        }
+      }
+    }
+    
+    // Fetch reads with new sample
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
+      .catch(err => {
+        console.error(`Failed to shuffle track ${trackId}:`, err);
+      });
+  }
+  
+  // Update Smart track label
+  function editSmartTrackLabel(trackId, newLabel) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    // Also update in tracks array
+    const trackInArray = state.tracks.find(t => t.id === trackId);
+    if (trackInArray) {
+      trackInArray.label = newLabel;
+    }
+    
+    track.label = newLabel;
+    renderAll();
+  }
 
   // -----------------------------
   // Theme + menu
@@ -1694,15 +2438,40 @@
                 (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
                 document.body; // Fallback to body if not found
   
+  // Dynamic root lookup - finds the current container (overlay modal or original root)
+  // This is needed because the viewer moves to an overlay modal in full-screen mode
+  function getCurrentRoot() {
+    // Check if we're in overlay mode by looking for the app element in an overlay
+    const appEl = document.querySelector('.app');
+    if (appEl) {
+      // Check if app is inside an overlay modal
+      const overlayModal = appEl.closest('[id^="genomeshader-modal-"]');
+      if (overlayModal) {
+        return overlayModal;
+      }
+      // Check if app is inside a genomeshader-root
+      const gsRoot = appEl.closest('[id^="genomeshader-root-"]');
+      if (gsRoot) {
+        return gsRoot;
+      }
+    }
+    return root;
+  }
+  
   // Root-scoped element lookup helpers
-  function byId(root, id) {
-    const el = root.querySelector(`#${CSS.escape(id)}`);
+  function byId(rootEl, id) {
+    const el = rootEl.querySelector(`#${CSS.escape(id)}`);
     return el;
   }
 
-  function $(root, selector) {
-    const el = root.querySelector(selector);
+  function $(rootEl, selector) {
+    const el = rootEl.querySelector(selector);
     return el;
+  }
+  
+  // Dynamic version that uses current root
+  function byIdDynamic(id) {
+    return byId(getCurrentRoot(), id);
   }
   
   // Use root-scoped queries in inline mode, document queries in popup mode
@@ -1764,14 +2533,17 @@
   // Make sidebar border clickable - always bind regardless of hostMode
   if (sidebar) {
     const handleSidebarToggle = (e) => {
-      // Don't toggle if clicking on menu button or menu - check this FIRST before stopping propagation
+      // Don't toggle if clicking on menu button or menu
       if ((menuBtn && (menuBtn === e.target || menuBtn.contains(e.target))) ||
           (ctxMenu && (ctxMenu === e.target || ctxMenu.contains(e.target)))) {
-        return; // Don't stop propagation - let menu button handler fire
+        return; // Let menu button handler fire
       }
       
-      e.preventDefault();
-      e.stopPropagation();
+      // Don't intercept clicks on form elements or their containers
+      const target = e.target;
+      if (target.closest('select, input, button, label, .sampleStrategyControls, .sampleSearchControls, #samplePreview, #sampleContext')) {
+        return; // Let form element handlers fire
+      }
       
       const collapsed = getSidebarCollapsed();
       const rect = sidebar.getBoundingClientRect();
@@ -1780,11 +2552,16 @@
       // Check if click is within 12px of the right edge (or anywhere if collapsed)
       if (collapsed) {
         // When collapsed, the entire 12px strip is clickable
+        e.preventDefault();
+        e.stopPropagation();
         setSidebarCollapsed(false);
       } else if (clickX >= rect.width - 12) {
         // When open, only the right 12px edge is clickable
+        e.preventDefault();
+        e.stopPropagation();
         setSidebarCollapsed(true);
       }
+      // For clicks elsewhere in the sidebar, don't stop propagation
     };
     
     // Use multiple event types with capturing phase (like debug buttons)
@@ -1856,36 +2633,63 @@
       document.body.appendChild(ctxMenu);
     }
     
+    // Temporarily show menu to measure its actual dimensions
+    ctxMenu.style.position = 'fixed';
+    ctxMenu.style.visibility = 'hidden';
+    ctxMenu.style.display = 'block';
+    ctxMenu.classList.add("open");
+    ctxMenu.setAttribute("aria-hidden", "false");
+    
+    // Get actual menu dimensions
+    const menuRect = ctxMenu.getBoundingClientRect();
+    const menuHeight = menuRect.height;
+    const menuWidth = menuRect.width;
+    
     // Use fixed positioning so menu appears over everything (including Jupyter UI)
     const r = menuBtn.getBoundingClientRect();
-    // Position menu above the gear button, or below if not enough space above
-    const menuHeight = 220; // Approximate menu height
-    let top = r.top - menuHeight - 8;
-    let left = r.left;
+    const padding = 8;
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
     
-    // If not enough space above, position below
-    if (top < 8) {
-      top = r.bottom + 8;
+    // Calculate positions for above and below the button
+    const spaceAbove = r.top;
+    const spaceBelow = viewportHeight - r.bottom;
+    const topIfAbove = r.top - menuHeight - padding;
+    const topIfBelow = r.bottom + padding;
+    
+    // Determine best position: prefer above, but use below if not enough space above
+    // However, if below would extend off screen, position above even with limited space
+    let top, left = r.left;
+    
+    // Check if positioning below would extend off screen
+    const wouldExtendBelow = (topIfBelow + menuHeight) > (viewportHeight - padding);
+    
+    if (spaceAbove >= menuHeight + padding && !wouldExtendBelow) {
+      // Enough space above, position above
+      top = topIfAbove;
+    } else if (spaceBelow >= menuHeight + padding && !wouldExtendBelow) {
+      // Not enough space above, but enough below, position below
+      top = topIfBelow;
+    } else {
+      // Not enough space in either direction, position above and adjust to fit
+      // This ensures menu never extends below viewport
+      top = Math.max(padding, viewportHeight - menuHeight - padding);
     }
     
     // Ensure menu doesn't go off right edge
-    const menuWidth = 220;
-    if (left + menuWidth > window.innerWidth - 8) {
-      left = window.innerWidth - menuWidth - 8;
+    if (left + menuWidth > viewportWidth - padding) {
+      left = Math.max(padding, viewportWidth - menuWidth - padding);
     }
     
-    // Ensure menu doesn't go off bottom edge
-    if (top + menuHeight > window.innerHeight - 8) {
-      top = Math.max(8, window.innerHeight - menuHeight - 8);
+    // Final check: ensure menu never extends below viewport
+    if (top + menuHeight > viewportHeight - padding) {
+      top = Math.max(padding, viewportHeight - menuHeight - padding);
     }
     
-    ctxMenu.style.position = 'fixed';
+    // Apply final positioning
     ctxMenu.style.left = `${left}px`;
     ctxMenu.style.top = `${top}px`;
     ctxMenu.style.zIndex = '2147483647';
-    ctxMenu.classList.add("open");
-    ctxMenu.setAttribute("aria-hidden", "false");
-    ctxMenu.style.display = 'block';
     ctxMenu.style.visibility = 'visible';
     ctxMenu.style.pointerEvents = 'auto';
     ctxMenu.style.opacity = '1';
@@ -1937,7 +2741,8 @@
     menuBtn.style.pointerEvents = "auto";
     menuBtn.style.cursor = "pointer";
     menuBtn.style.zIndex = "150";
-    menuBtn.style.position = "relative";
+    // Keep absolute positioning for bottom-left placement
+    menuBtn.style.position = "absolute";
     
     // Also set onclick as fallback
     menuBtn.onclick = handleMenuButtonClick;
@@ -2006,6 +2811,29 @@
     });
   }
 
+  // Load Reads button in settings menu
+  const loadReadsItem = getElementById("loadReadsItem");
+  const loadReadsLabel = getElementById("loadReadsLabel");
+  
+  if (loadReadsItem) {
+    loadReadsItem.addEventListener("click", () => {
+      if (readsLoading) return; // Already loading
+      
+      loadReadsLabel.textContent = "⏳";
+      fetchReadsFromPython()
+        .then(() => {
+          loadReadsLabel.textContent = "✓";
+          setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
+        })
+        .catch((err) => {
+          loadReadsLabel.textContent = "✗";
+          console.error("Failed to load reads:", err);
+          setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
+        });
+    });
+  }
+
+
   // Fullscreen mode setup
   const fullscreenItem = getElementById("fullscreenItem");
   const fullscreenLabel = getElementById("fullscreenLabel");
@@ -2044,8 +2872,21 @@
     const modalId = `genomeshader-modal-${viewId}`;
     const topbarId = `genomeshader-topbar-${viewId}`;
     const placeholderId = `genomeshader-placeholder-${viewId}`;
+    
+    // Clean up any stale overlays from previous sessions on initialization
+    const staleOverlay = document.getElementById(overlayId);
+    if (staleOverlay) {
+      console.log(`Cleaning up stale overlay: ${overlayId}`);
+      staleOverlay.remove();
+    }
 
     function createOverlay() {
+      // Remove any existing overlay with this ID first
+      const existingOverlay = document.getElementById(overlayId);
+      if (existingOverlay) {
+        existingOverlay.remove();
+      }
+      
       overlay = document.createElement('div');
       overlay.id = overlayId;
       overlay.style.cssText = `
@@ -2141,9 +2982,38 @@
         }
       });
 
+      // Close menu when clicking on modal body in full-screen mode
+      const handleModalBodyClick = (e) => {
+        // Check if menu is open and click is outside menu and menu button
+        const menuBtn = document.getElementById('menuBtn');
+        const ctxMenu = document.getElementById('ctxMenu');
+        if (ctxMenu && ctxMenu.classList.contains('open') &&
+            !ctxMenu.contains(e.target) && 
+            menuBtn && !menuBtn.contains(e.target)) {
+          // Close the menu
+          if (typeof closeMenu === 'function') {
+            closeMenu();
+          }
+        }
+      };
+      modalBody.addEventListener('click', handleModalBodyClick, true);
+      overlay._menuCloseHandler = handleModalBodyClick;
+      overlay._modalBody = modalBody;
+
       const handleEscape = (e) => {
-        if (e.key === 'Escape' && isActive) {
-          exit();
+        if (e.key === 'Escape') {
+          // First check if menu is open, close it if so
+          const ctxMenu = document.getElementById('ctxMenu');
+          if (ctxMenu && ctxMenu.classList.contains('open') && typeof closeMenu === 'function') {
+            closeMenu();
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          // Otherwise exit full-screen mode
+          if (isActive) {
+            exit();
+          }
         }
       };
       document.addEventListener('keydown', handleEscape);
@@ -2216,6 +3086,11 @@
         document.removeEventListener('keydown', overlay._escapeHandler);
       }
 
+      // Remove menu close handler from modal body
+      if (overlay && overlay._menuCloseHandler && overlay._modalBody) {
+        overlay._modalBody.removeEventListener('click', overlay._menuCloseHandler, true);
+      }
+
       if (placeholder && originalParent) {
         if (originalNextSibling) {
           originalParent.insertBefore(viewerEl, originalNextSibling);
@@ -2284,15 +3159,94 @@
   let interactionBinding = null;
   
   const viewId = window.GENOMESHADER_VIEW_ID || document.querySelector('[data-view-id]')?.dataset.viewId || 'default';
+  let focusModeController = null;
   if (fullscreenItem && app) {
-    installFocusMode({
+    focusModeController = installFocusMode({
       viewerEl: app,
       toggleEl: fullscreenItem,
       viewId: viewId,
       onEnter: triggerResize,
       onExit: triggerResize
     });
+
   }
+
+  // Hotkeys for Settings menu items
+  const handleSettingsHotkeys = (e) => {
+    // Check if we're in an input field (to avoid interfering with typing)
+    const isInputField = e.target.tagName === 'INPUT' || 
+                        e.target.tagName === 'TEXTAREA' || 
+                        e.target.isContentEditable;
+    
+    // Only process if not in input field and no modifier keys are pressed
+    if (isInputField || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) {
+      return;
+    }
+
+    const key = e.key.toLowerCase();
+    
+    // Theme toggle: 't'
+    if (key === 't' && themeItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cur = document.documentElement.getAttribute("data-theme") || "auto";
+      const next = cur === "dark" ? "light" : (cur === "light" ? "auto" : "dark");
+      setTheme(next);
+      renderAll();
+      return;
+    }
+
+    // Orientation toggle: 'o'
+    if (key === 'o' && orientationItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cur = getStoredOrientation() ?? "horizontal";
+      const next = (cur === "horizontal") ? "vertical" : "horizontal";
+      setOrientation(next);
+      renderAll();
+      return;
+    }
+
+    // Variant Layout toggle: 'v'
+    if (key === 'v' && variantLayoutModeItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cur = getVariantLayoutMode();
+      const next = (cur === "equidistant") ? "genomic" : "equidistant";
+      setVariantLayoutMode(next);
+      renderAll();
+      return;
+    }
+
+    // Full screen toggle: 'f'
+    if (key === 'f' && fullscreenItem && focusModeController && !focusModeController.isActive()) {
+      e.preventDefault();
+      e.stopPropagation();
+      focusModeController.enter();
+      return;
+    }
+
+    // Load Reads: 'r'
+    if (key === 'r' && loadReadsItem && !readsLoading) {
+      e.preventDefault();
+      e.stopPropagation();
+      loadReadsLabel.textContent = "⏳";
+      fetchReadsFromPython()
+        .then(() => {
+          loadReadsLabel.textContent = "✓";
+          setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
+        })
+        .catch((err) => {
+          loadReadsLabel.textContent = "✗";
+          console.error("Failed to load reads:", err);
+          setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
+        });
+      return;
+    }
+  };
+
+  // Add hotkey listener for all Settings menu items
+  document.addEventListener('keydown', handleSettingsHotkeys, true);
 
   const mq = window.matchMedia?.("(prefers-color-scheme: light)");
   mq?.addEventListener?.("change", () => {
@@ -2317,6 +3271,7 @@
     expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
     hoveredRepeatTooltip: null, // { text, x, y } or null
     hoveredVariantLabelTooltip: null, // { text, x, y } or null
+    locusVariantElements: new Map(), // Map of variant index -> { lineEl, circleEl } for Locus track
 
     // interaction
     dragging: false,
@@ -2332,12 +3287,11 @@
     // track management
     tracks: [
       { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
-      { id: "genes", label: "Genes", collapsed: false, height: 110, minHeight: 30 },
-      { id: "repeats", label: "RepeatMasker", collapsed: false, height: 50, minHeight: 30 },
+      { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
+      { id: "repeats", label: "RepeatMasker", collapsed: false, height: 40, minHeight: 30 },
       { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
       { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
-      { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 100 },
-      { id: "reads", label: "Reads", collapsed: false, height: 220, minHeight: 50 }
+      { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 130, minHeight: 100 }
     ],
     trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
     trackResizeState: null, // { trackId, startX, startY, startHeight }
@@ -2358,7 +3312,26 @@
     pinnedAlleleLabels: new Set(),
     
     // pinned variant labels: Set of variant IDs (strings)
-    pinnedVariantLabels: new Set()
+    pinnedVariantLabels: new Set(),
+    
+    // selected alleles for multi-select: Set of strings like "variantId:alleleIndex"
+    selectedAlleles: new Set(),
+    
+    // sample selection state
+    sampleSelection: {
+      strategy: 'best_evidence',
+      numSamples: 1,
+      combineMode: 'AND', // 'AND' or 'OR'
+      candidateSamples: [], // Will be populated when selection changes
+      allSampleIds: [] // All available sample IDs (populated from data)
+    },
+    
+    // Smart tracks state
+    smartTracks: [], // Array of Smart track instances
+    smartTrackRenderers: new Map(), // Map<trackId, { webgpuCore, instancedRenderer, canvas, webgpuCanvas, container }>
+    
+    // allele context menu state: { x, y, visible } or null
+    alleleContextMenu: null
   };
 
   // Initialize variant layout mode
@@ -2452,14 +3425,12 @@
   const main = byId(root, "main");
   const tracksSvg = byId(root, "tracksSvg");
   const flow = byId(root, "flow");
-  const reads = byId(root, "reads");
   const flowCanvas = byId(root, "flowCanvas");
-  const readsCanvas = byId(root, "readsCanvas");
+  const flowOverlay = byId(root, "flowOverlay");
   const hud = byId(root, "hud");
   const tooltip = byId(root, "tooltip");
   const tracksWebGPU = byId(root, "tracksWebGPU");
   const flowWebGPU = byId(root, "flowWebGPU");
-  const readsWebGPU = byId(root, "readsWebGPU");
 
   // Initialize WebGPU infrastructure
   let webgpuCore = null;
@@ -2467,10 +3438,25 @@
   let flowWebGPUCore = null;
   let flowInstancedRenderer = null;
   let flowRibbonRenderer = null;
-  let readsWebGPUCore = null;
-  let readsInstancedRenderer = null;
   let webgpuSupported = false;
   let repeatHitTestData = []; // For tooltip hit testing
+  
+  // Cache for ribbon transition data (keyed by variant pair IDs)
+  // This avoids recalculating transitions on every pan/zoom
+  const ribbonTransitionCache = new Map();
+  const MAX_CACHE_SIZE = 1000; // Limit cache size to prevent unbounded growth
+  let cachedVisibleVariantIds = null; // Track which variants were used for cache
+  let cachedViewportRange = null; // Track the viewport range used for cache (with padding)
+  
+  // Expanded variant window with padding to reduce cache invalidation during pan/zoom
+  // Returns variants within viewport + padding (e.g., 30% on each side)
+  function expandedVariantWindow(paddingFraction = 0.3) {
+    const span = state.endBp - state.startBp;
+    const padding = span * paddingFraction;
+    const expandedStart = Math.max(0, state.startBp - padding);
+    const expandedEnd = state.endBp + padding;
+    return variants.filter(v => v.pos >= expandedStart && v.pos <= expandedEnd);
+  }
 
   async function initWebGPU() {
     if (!navigator.gpu) {
@@ -2515,13 +3501,6 @@
         flowRibbonRenderer = new BezierRibbonRenderer(flowWebGPUCore, { segments: 44 });
       }
 
-      // Reads WebGPU (separate canvas)
-      if (readsWebGPU) {
-        readsWebGPUCore = new WebGPUCore();
-        await readsWebGPUCore.init(readsWebGPU);
-        readsInstancedRenderer = new InstancedRenderer(readsWebGPUCore);
-      }
-
       webgpuSupported = true;
       return true;
     } catch (error) {
@@ -2559,8 +3538,6 @@
   }
   function flowWidthPx()   { return rectW(flow); }
   function flowHeightPx()  { return rectH(flow); }
-  function readsWidthPx()  { return rectW(reads); }
-  function readsHeightPx() { return rectH(reads); }
 
   function cssVar(name) {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -3177,6 +4154,8 @@
   
   function renderTracks() {
     clearSvg(tracksSvg);
+    // Clear variant element references
+    state.locusVariantElements.clear();
     // Clear WebGPU renderer instances
     if (instancedRenderer) {
       instancedRenderer.clear();
@@ -3221,8 +4200,10 @@
     
     // Coordinate mapping functions based on orientation
     const genomePos = isVertical ? yGenome.bind(null) : xGenome.bind(null);
+    // In vertical mode, use tracksHeightPx() for Y coordinate (genomic axis is vertical)
+    // In horizontal mode, use W (tracksWidthPx()) for X coordinate (genomic axis is horizontal)
     const genomePosCanonical = isVertical 
-      ? (bp) => yGenomeCanonical(bp, H)
+      ? (bp) => yGenomeCanonical(bp, tracksHeightPx())
       : (bp) => xGenomeCanonical(bp, W);
     
     // Find track positions (needed to exclude ideogram from shading)
@@ -3232,7 +4213,6 @@
     const rulerLayout = layout.find(l => l.track.id === "ruler");
     const referenceLayout = layout.find(l => l.track.id === "reference");
     const flowLayout = layout.find(l => l.track.id === "flow");
-    const readsLayout = layout.find(l => l.track.id === "reads");
     
     // Calculate ideogram track bounds to exclude from shading (including track controls header)
     let ideogramTrackStart = 0;
@@ -3370,7 +4350,7 @@
       }
     }
 
-    if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout || !readsLayout) return;
+    if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout) return;
 
     // Ideogram layout
     if (!ideogramLayout.track.collapsed) {
@@ -4394,7 +5374,8 @@
           y1: pos, y2: pos,
           stroke: strokeColor,
           "stroke-width": strokeWidth,
-          style: "cursor: pointer;"
+          style: "cursor: pointer;",
+          "data-variant-id": v.id
         });
       } else {
         lineEl = el("line", {
@@ -4402,16 +5383,17 @@
           y1: baseY - 18, y2: baseY + 18,
           stroke: strokeColor,
           "stroke-width": strokeWidth,
-          style: "cursor: pointer;"
+          style: "cursor: pointer;",
+          "data-variant-id": v.id
         });
       }
       lineEl.addEventListener("mouseenter", () => {
         state.hoveredVariantIndex = idx;
-        renderAll();
+        renderHoverOnly();
       });
       lineEl.addEventListener("mouseleave", () => {
         state.hoveredVariantIndex = null;
-        renderAll();
+        renderHoverOnly();
       });
       
       // For insertions, add pointerdown handler to the line itself
@@ -4429,6 +5411,12 @@
         });
       }
       tracksSvg.appendChild(lineEl);
+      
+      // Store reference to variant elements for hover updates
+      if (!state.locusVariantElements.has(idx)) {
+        state.locusVariantElements.set(idx, { lineEl: null, circleEl: null });
+      }
+      state.locusVariantElements.get(idx).lineEl = lineEl;
       
       // For insertions, add a larger invisible clickable area AFTER the line (so it's on top)
       if (isInsertion(v)) {
@@ -4474,7 +5462,8 @@
           fill: "none",
           stroke: circleStrokeColor,
           "stroke-width": circleStrokeWidth,
-          style: "cursor: pointer;"
+          style: "cursor: pointer;",
+          "data-variant-id": v.id
         });
       } else {
         circleEl = el("circle", {
@@ -4482,16 +5471,17 @@
           fill: "none",
           stroke: circleStrokeColor,
           "stroke-width": circleStrokeWidth,
-          style: "cursor: pointer;"
+          style: "cursor: pointer;",
+          "data-variant-id": v.id
         });
       }
       circleEl.addEventListener("mouseenter", () => {
         state.hoveredVariantIndex = idx;
-        renderAll();
+        renderHoverOnly();
       });
       circleEl.addEventListener("mouseleave", () => {
         state.hoveredVariantIndex = null;
-        renderAll();
+        renderHoverOnly();
       });
       // Pointerdown handler to toggle insertion expansion
       if (isInsertion(v)) {
@@ -4508,6 +5498,12 @@
         });
       }
       tracksSvg.appendChild(circleEl);
+      
+      // Store reference to circle element for hover updates
+      if (!state.locusVariantElements.has(idx)) {
+        state.locusVariantElements.set(idx, { lineEl: null, circleEl: null });
+      }
+      state.locusVariantElements.get(idx).circleEl = circleEl;
       
       // Draw expanded insertion sequence if expanded
       if (state.expandedInsertions.has(v.id) && isInsertion(v)) {
@@ -4726,8 +5722,9 @@
         const visibleBases = [];
         for (let i = 0; i < refSeq.length; i++) {
           // Calculate the actual genomic position for this base
-          // refSeq[i] corresponds to genomic position refSeqStartBp + i
-          const bp = refSeqStartBp + i;
+          // UCSC uses 0-based coordinates, but genomic positions are 1-based
+          // refSeq[i] corresponds to genomic position refSeqStartBp + i + 1 (1-based)
+          const bp = refSeqStartBp + i + 1;
           
           // Only render bases that are within the visible view
           if (bp < state.startBp || bp > state.endBp) continue;
@@ -6082,9 +7079,19 @@
             ctx.fill();
           }
           
+          // Check if this allele is selected
+          const selectionKey = `${v.id}:${order.indexOf(label)}`;
+          const isSelected = state.selectedAlleles.has(selectionKey);
+          
           // Stroke always uses Canvas2D (minimal overhead for borders)
-          ctx.strokeStyle = colors.strokeColor;
-          ctx.lineWidth = isDragging ? 2 : 1;
+          // Use highlight color and thicker stroke for selected alleles
+          if (isSelected) {
+            ctx.strokeStyle = "rgba(255, 215, 0, 1)"; // Gold highlight for selected
+            ctx.lineWidth = 3;
+          } else {
+            ctx.strokeStyle = colors.strokeColor;
+            ctx.lineWidth = isDragging ? 2 : 1;
+          }
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.stroke();
@@ -6096,7 +7103,7 @@
             state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
           const isPinned = state.pinnedAlleleLabels.has(labelKey);
           
-          if (isHovered || isPinned) {
+          if (isHovered || isPinned || isSelected) {
             allLabelsToDraw.push({
               label: label,
               nodeX: nodeX,
@@ -6115,7 +7122,8 @@
             x: nodeX,
             y: nodeY,
             w: nodeW,
-            h: nodeH
+            h: nodeH,
+            isSelected: isSelected
           });
           
           // Store node info for ribbon drawing
@@ -6126,6 +7134,7 @@
             x: nodeX,
             y: nodeY,
             w: nodeW,
+            isSelected: isSelected,
             h: nodeH,
             top: nodeY,
             bottom: nodeY + nodeH,
@@ -6316,9 +7325,19 @@
             ctx.fill();
           }
           
+          // Check if this allele is selected
+          const selectionKey = `${v.id}:${order.indexOf(label)}`;
+          const isSelected = state.selectedAlleles.has(selectionKey);
+          
           // Stroke always uses Canvas2D (minimal overhead for borders)
-          ctx.strokeStyle = colors.strokeColor;
-          ctx.lineWidth = isDragging ? 2 : 1;
+          // Use highlight color and thicker stroke for selected alleles
+          if (isSelected) {
+            ctx.strokeStyle = "rgba(255, 215, 0, 1)"; // Gold highlight for selected
+            ctx.lineWidth = 3;
+          } else {
+            ctx.strokeStyle = colors.strokeColor;
+            ctx.lineWidth = isDragging ? 2 : 1;
+          }
           ctx.beginPath();
           roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
           ctx.stroke();
@@ -6330,7 +7349,7 @@
             state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
           const isPinned = state.pinnedAlleleLabels.has(labelKey);
           
-          if (isHovered || isPinned) {
+          if (isHovered || isPinned || isSelected) {
             allLabelsToDraw.push({
               label: label,
               nodeX: nodeX,
@@ -6349,7 +7368,8 @@
             x: nodeX,
             y: nodeY,
             w: nodeW,
-            h: nodeH
+            h: nodeH,
+            isSelected: isSelected
           });
           
           // Store node info for ribbon drawing
@@ -6364,7 +7384,8 @@
             top: nodeY,
             bottom: nodeY + nodeH,
             left: nodeX,
-            right: nodeX + nodeW
+            right: nodeX + nodeW,
+            isSelected: isSelected
           });
           
           // Update position for next node
@@ -6428,53 +7449,68 @@
       // Get the actual variant list (sorted for vertical mode, original order for horizontal)
       const variantList = isVertical ? [...win].sort((a, b) => a.pos - b.pos) : win;
       
-      for (let i = 0; i < sortedVariantIdxs.length - 1; i++) {
-        const srcIdx = sortedVariantIdxs[i];
-        const dstIdx = sortedVariantIdxs[i + 1];
-        const srcNodes = nodeInfoByVariant.get(srcIdx);
-        const dstNodes = nodeInfoByVariant.get(dstIdx);
-        
-        if (!srcNodes || !dstNodes) continue;
-        
-        // Get the variant objects
-        const srcVariant = variantList[srcIdx];
-        const dstVariant = variantList[dstIdx];
-        if (!srcVariant || !dstVariant) continue;
-        
-        // Helper to get allele label from genotype index for a variant
-        function getAlleleLabelForIndex(variant, alleleIdx) {
-          if (alleleIdx === null || alleleIdx === undefined || alleleIdx === "." || isNaN(alleleIdx)) {
-            return formatAlleleLabel(".");
-          }
-          if (alleleIdx === 0) {
-            // Reference allele
-            return variant.refAllele ? formatAlleleLabel(variant.refAllele) : formatAlleleLabel(".");
-          }
-          // Alt allele (1-indexed in genotype, but 0-indexed in altAlleles array)
-          if (variant.altAlleles && variant.altAlleles[alleleIdx - 1]) {
-            return formatAlleleLabel(variant.altAlleles[alleleIdx - 1]);
-          }
+      // Use expanded variant window for caching (includes padding to reduce cache invalidation)
+      // This way, small pan movements don't invalidate the cache
+      const expandedWin = expandedVariantWindow(0.3); // 30% padding on each side
+      const expandedVariantList = isVertical ? [...expandedWin].sort((a, b) => a.pos - b.pos) : expandedWin;
+      
+      // Check if viewport has moved beyond cached range (cache invalidation)
+      // Only invalidate if viewport has moved significantly (beyond padding zone)
+      const currentViewportRange = { start: state.startBp, end: state.endBp };
+      const span = currentViewportRange.end - currentViewportRange.start;
+      const padding = span * 0.3; // Same as expandedVariantWindow padding
+      
+      const viewportMovedBeyondCache = cachedViewportRange && (
+        currentViewportRange.start < cachedViewportRange.start - padding ||
+        currentViewportRange.end > cachedViewportRange.end + padding
+      );
+      
+      if (viewportMovedBeyondCache || cachedVisibleVariantIds === null) {
+        // Clear cache when viewport moves significantly beyond cached range
+        // This happens less frequently now because we cache an expanded set
+        ribbonTransitionCache.clear();
+        cachedVisibleVariantIds = expandedVariantList.map(v => v.id).join(',');
+        cachedViewportRange = { 
+          start: currentViewportRange.start - padding, 
+          end: currentViewportRange.end + padding 
+        };
+      }
+      
+      // Helper to get allele label from genotype index for a variant
+      function getAlleleLabelForIndex(variant, alleleIdx) {
+        if (alleleIdx === null || alleleIdx === undefined || alleleIdx === "." || isNaN(alleleIdx)) {
           return formatAlleleLabel(".");
         }
-        
-        // Helper to get actual allele string from label for a variant
-        function getActualAlleleFromLabel(variant, label) {
-          const noCallLabel = formatAlleleLabel(".");
-          if (label === noCallLabel) return ".";
-          if (variant.refAllele && label === formatAlleleLabel(variant.refAllele)) {
-            return variant.refAllele;
-          }
-          if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
-            for (const alt of variant.altAlleles) {
-              if (label === formatAlleleLabel(alt)) {
-                return alt;
-              }
+        if (alleleIdx === 0) {
+          // Reference allele
+          return variant.refAllele ? formatAlleleLabel(variant.refAllele) : formatAlleleLabel(".");
+        }
+        // Alt allele (1-indexed in genotype, but 0-indexed in altAlleles array)
+        if (variant.altAlleles && variant.altAlleles[alleleIdx - 1]) {
+          return formatAlleleLabel(variant.altAlleles[alleleIdx - 1]);
+        }
+        return formatAlleleLabel(".");
+      }
+      
+      // Helper to get actual allele string from label for a variant
+      function getActualAlleleFromLabel(variant, label) {
+        const noCallLabel = formatAlleleLabel(".");
+        if (label === noCallLabel) return ".";
+        if (variant.refAllele && label === formatAlleleLabel(variant.refAllele)) {
+          return variant.refAllele;
+        }
+        if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+          for (const alt of variant.altAlleles) {
+            if (label === formatAlleleLabel(alt)) {
+              return alt;
             }
           }
-          return ".";
         }
-        
-        // Compute transitions: Map<srcLabel, Map<dstLabel, count>>
+        return ".";
+      }
+      
+      // Helper function to compute transitions for a variant pair
+      function computeTransitions(srcVariant, dstVariant) {
         const transitions = new Map();
         const srcGenotypes = srcVariant.sampleGenotypes || {};
         const dstGenotypes = dstVariant.sampleGenotypes || {};
@@ -6511,6 +7547,53 @@
             const srcTransitions = transitions.get(srcLabel);
             srcTransitions.set(dstLabel, (srcTransitions.get(dstLabel) || 0) + 1);
           }
+        }
+        
+        return transitions;
+      }
+      
+      for (let i = 0; i < sortedVariantIdxs.length - 1; i++) {
+        const srcIdx = sortedVariantIdxs[i];
+        const dstIdx = sortedVariantIdxs[i + 1];
+        const srcNodes = nodeInfoByVariant.get(srcIdx);
+        const dstNodes = nodeInfoByVariant.get(dstIdx);
+        
+        if (!srcNodes || !dstNodes) continue;
+        
+        // Get the variant objects from visible list (nodes only exist for visible variants)
+        const srcVariant = variantList[srcIdx];
+        const dstVariant = variantList[dstIdx];
+        if (!srcVariant || !dstVariant) continue;
+        
+        // Cache key: variant pair IDs (variant objects are the same regardless of which list they come from)
+        const cacheKey = `${srcVariant.id}-${dstVariant.id}`;
+        
+        // Get or compute transitions (cached to avoid recalculating on every pan/zoom)
+        // The cache includes transitions for variants in the expanded window, so when variants
+        // move slightly off-screen and back, we don't need to recalculate
+        let transitions = ribbonTransitionCache.get(cacheKey);
+        if (!transitions) {
+          transitions = computeTransitions(srcVariant, dstVariant);
+          // Store as serializable Map structure (convert nested Maps to objects for storage)
+          const serialized = Array.from(transitions.entries()).map(([srcLabel, dstMap]) => [
+            srcLabel,
+            Array.from(dstMap.entries())
+          ]);
+          
+          // Limit cache size: remove oldest entries if cache is too large
+          if (ribbonTransitionCache.size >= MAX_CACHE_SIZE) {
+            // Remove first (oldest) entry
+            const firstKey = ribbonTransitionCache.keys().next().value;
+            ribbonTransitionCache.delete(firstKey);
+          }
+          
+          ribbonTransitionCache.set(cacheKey, serialized);
+        } else {
+          // Deserialize cached transitions back to Map structure
+          transitions = new Map(transitions.map(([srcLabel, dstEntries]) => [
+            srcLabel,
+            new Map(dstEntries)
+          ]));
         }
         
         // If no transition data (no samples), fall back to connecting all src nodes to all dst nodes
@@ -6654,12 +7737,49 @@
         ribbonData.sort((a, b) => (b.isRefFlow ? 1 : 0) - (a.isRefFlow ? 1 : 0));
         
         // Draw all ribbons with sqrt-scaled opacity
+        // Add viewport clipping: skip ribbons where both nodes are completely off-screen
+        const viewportLeft = 0;
+        const viewportRight = W;
+        const viewportTop = 0;
+        const viewportBottom = H;
+        
         for (const ribbon of ribbonData) {
           const { srcNode, dstNode, src0, src1, dst0, dst1, srcLabel, count, isRefFlow } = ribbon;
+          
+          // Viewport clipping: skip if both nodes are completely off-screen
+          // This avoids rendering ribbons that are outside the visible area
+          if (isVertical) {
+            // Vertical mode: check X coordinates (horizontal position)
+            const srcRight = Math.max(srcNode.left, srcNode.right);
+            const srcLeft = Math.min(srcNode.left, srcNode.right);
+            const dstRight = Math.max(dstNode.left, dstNode.right);
+            const dstLeft = Math.min(dstNode.left, dstNode.right);
+            
+            // Skip if both nodes are completely outside viewport
+            if ((srcRight < viewportLeft && dstRight < viewportLeft) ||
+                (srcLeft > viewportRight && dstLeft > viewportRight)) {
+              continue;
+            }
+          } else {
+            // Horizontal mode: check Y coordinates (vertical position)
+            const srcBottom = Math.max(srcNode.top, srcNode.bottom);
+            const srcTop = Math.min(srcNode.top, srcNode.bottom);
+            const dstBottom = Math.max(dstNode.top, dstNode.bottom);
+            const dstTop = Math.min(dstNode.top, dstNode.bottom);
+            
+            // Skip if both nodes are completely outside viewport
+            if ((srcBottom < viewportTop && dstBottom < viewportTop) ||
+                (srcTop > viewportBottom && dstTop > viewportBottom)) {
+              continue;
+            }
+          }
           
           // Get color from source allele
           const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
           const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
+          
+          // Check if source or destination node is selected
+          const isEdgeSelected = srcNode.isSelected || dstNode.isSelected;
           
           // Sqrt-scaled opacity: prevents dominant flows from drowning minor ones
           const frac = count / Math.max(1, totalHaplotypes);
@@ -6670,7 +7790,18 @@
             alpha *= 0.6; // 40% reduction for background persistence flows
           }
           
-          const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha.toFixed(3)})`);
+          // Boost opacity for edges connected to selected alleles
+          if (isEdgeSelected) {
+            alpha = Math.min(1.0, alpha * 3.0); // Triple the opacity for selected edges
+          }
+          
+          let ribbonColor;
+          if (isEdgeSelected) {
+            // Use gold highlight color for selected edges
+            ribbonColor = `rgba(255, 215, 0, ${alpha.toFixed(3)})`;
+          } else {
+            ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha.toFixed(3)})`);
+          }
           
           if (isVertical) {
             // Vertical mode: src0/src1/dst0/dst1 are X positions
@@ -6815,47 +7946,210 @@
   }
 
   // -----------------------------
-  // Reads placeholder (IGV-style area)
+  // Render a Smart track
   // -----------------------------
-  function renderReadsCanvas() {
+
+  // Render a Smart track
+  function renderSmartTrack(trackId) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
     const layout = getTrackLayout();
-    const readsLayout = layout.find(l => l.track.id === "reads");
-    if (!readsLayout || readsLayout.track.collapsed) {
-      // Clear WebGPU renderer instances if collapsed
-      if (readsInstancedRenderer) {
-        readsInstancedRenderer.clear();
+    const trackLayout = layout.find(l => l.track.id === trackId);
+    if (!trackLayout || trackLayout.track.collapsed) {
+      // Hide container and clear renderer instances if collapsed
+      const renderer = state.smartTrackRenderers.get(trackId);
+      if (renderer) {
+        // Hide the container
+        if (renderer.container) {
+          renderer.container.style.display = "none";
+        }
+        // Clear WebGPU renderer instances
+        if (renderer.instancedRenderer) {
+          renderer.instancedRenderer.clear();
+        }
+        // Clear Canvas2D canvas
+        if (renderer.canvas) {
+          const ctx = renderer.canvas.getContext("2d");
+          if (ctx) {
+            ctx.clearRect(0, 0, renderer.canvas.width, renderer.canvas.height);
+          }
+        }
       }
-      return; // Don't render if collapsed
+      return;
     }
-
-    const dpr = resizeCanvasTo(reads, readsCanvas);
-    const ctx = readsCanvas.getContext("2d");
-
+    
+    const renderer = state.smartTrackRenderers.get(trackId);
+    if (!renderer) return;
+    
+    const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore } = renderer;
+    
+    // Position container based on layout
+    const isVertical = isVerticalMode();
+    if (isVertical) {
+      container.style.left = `${trackLayout.contentLeft}px`;
+      container.style.width = `${trackLayout.contentWidth}px`;
+      container.style.top = "0";
+      container.style.height = "100%";
+    } else {
+      container.style.top = `${trackLayout.contentTop}px`;
+      container.style.left = "0";
+      container.style.width = "100%";
+      container.style.height = `${trackLayout.contentHeight}px`;
+    }
+    // Ensure container is visible when track is expanded (we know it's not collapsed here)
+    container.style.display = "block";
+    
+    if (!canvas || !webgpuCanvas) return;
+    
+    const dpr = window.devicePixelRatio || 1;
+    const W = isVertical ? trackLayout.contentHeight : trackLayout.contentWidth;
+    let H = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+    
+    // Calculate total content height if reads are loaded (horizontal mode)
+    let totalContentHeight = H;
+    if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+      const top = 8;
+      const rowH = 18;
+      const totalRows = track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1;
+      totalContentHeight = top + totalRows * rowH + 12;
+      
+      // Set up grid layout for scrolling
+      // CRITICAL: Set explicit height FIRST (this overrides the CSS height: 100%)
+      // Add scrollable class first so CSS height: auto takes effect
+      if (totalContentHeight > H) {
+        container.classList.add('scrollable');
+      }
+      
+      // Set height with !important to override CSS height: 100%
+      container.style.setProperty('height', `${trackLayout.contentHeight}px`, 'important');
+      container.style.maxHeight = `${trackLayout.contentHeight}px`;
+      container.style.minHeight = `${trackLayout.contentHeight}px`;
+      container.style.overflowX = 'hidden';
+      container.style.boxSizing = 'border-box';
+      
+      // Set up grid AFTER height is set
+      container.style.display = 'grid';
+      container.style.gridTemplateRows = '1fr';
+      container.style.gridTemplateColumns = '1fr';
+      
+      // Set canvas dimensions - these need to be larger than container for scrolling
+      canvas.height = totalContentHeight * dpr;
+      canvas.style.height = totalContentHeight + 'px';
+      canvas.style.width = W + 'px';
+      canvas.style.gridRow = '1';
+      canvas.style.gridColumn = '1';
+      canvas.style.position = 'static';
+      canvas.style.inset = 'auto';
+      canvas.width = W * dpr;
+      
+      webgpuCanvas.style.height = totalContentHeight + 'px';
+      webgpuCanvas.style.width = W + 'px';
+      webgpuCanvas.style.gridRow = '1';
+      webgpuCanvas.style.gridColumn = '1';
+      webgpuCanvas.style.position = 'static';
+      webgpuCanvas.style.inset = 'auto';
+      
+      // Enable overflow for scrolling when content exceeds container height
+      if (totalContentHeight > H) {
+        container.style.overflowY = 'auto';
+        
+        // Attach scroll and wheel handlers when container becomes scrollable
+        // Check if handlers are already attached to avoid duplicates
+        const renderer = state.smartTrackRenderers.get(trackId);
+        if (renderer && !renderer.scrollHandlerAttached) {
+          // Add scroll event listener
+          const scrollHandler = () => {
+            renderSmartTrack(trackId);
+          };
+          container.addEventListener("scroll", scrollHandler);
+          
+          // Add wheel event handler to allow native scrolling
+          const smartTrackWheelHandler = (e) => {
+            // Stop propagation to prevent main wheel handler from intercepting
+            e.stopPropagation();
+            // Allow native scrolling - don't prevent default
+            // The scroll will happen naturally, and we'll re-render via scroll event
+          };
+          container.addEventListener("wheel", smartTrackWheelHandler, { passive: false });
+          canvas.addEventListener("wheel", smartTrackWheelHandler, { passive: false });
+          if (webgpuCanvas) {
+            webgpuCanvas.addEventListener("wheel", smartTrackWheelHandler, { passive: false });
+          }
+          
+          // Store handlers in renderer for cleanup
+          renderer.scrollHandler = scrollHandler;
+          renderer.wheelHandler = smartTrackWheelHandler;
+          renderer.scrollHandlerAttached = true;
+        }
+      } else {
+        container.classList.remove('scrollable');
+        container.style.overflowY = 'hidden';
+      }
+      
+      // Force a reflow to ensure layout is calculated
+      void container.offsetHeight;
+      
+      // Verify container is scrollable after layout (only if we expect it to be scrollable)
+      // Only check after a delay to ensure layout has settled
+      if (totalContentHeight > H) {
+        // Use setTimeout to check after layout has fully settled
+        setTimeout(() => {
+          const actualScrollHeight = container.scrollHeight;
+          const actualClientHeight = container.clientHeight;
+          // Only log error if container has dimensions but isn't scrollable
+          // Don't log if dimensions are 0 - that means layout hasn't settled yet
+          if (actualClientHeight > 0 && actualScrollHeight > 0) {
+            if (actualScrollHeight <= actualClientHeight) {
+              console.warn(`Smart track ${trackId}: Container should be scrollable but scrollHeight (${actualScrollHeight}) <= clientHeight (${actualClientHeight}). Total content: ${totalContentHeight}, container H: ${H}`);
+            }
+          }
+        }, 100);
+      }
+    } else {
+      // Ensure container is visible (for vertical mode or when no reads are loaded)
+      container.style.display = "block";
+      container.style.gridTemplateRows = '';
+      container.style.gridTemplateColumns = '';
+      container.classList.remove('scrollable');
+      canvas.style.gridRow = '';
+      canvas.style.gridColumn = '';
+      webgpuCanvas.style.gridRow = '';
+      webgpuCanvas.style.gridColumn = '';
+      resizeCanvasTo(container, canvas);
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+    }
+    
+    const ctx = canvas.getContext("2d");
     ctx.setTransform(1,0,0,1,0,0);
-    ctx.clearRect(0,0,readsCanvas.width,readsCanvas.height);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.scale(dpr, dpr);
     
     // Clear WebGPU renderer instances
-    if (readsInstancedRenderer) {
-      readsInstancedRenderer.clear();
+    if (instancedRenderer) {
+      instancedRenderer.clear();
     }
-
-    const isVertical = isVerticalMode();
-    const W = readsWidthPx(), H = readsHeightPx();
+    
     const colText = cssVar("--muted");
     const grid = cssVar("--grid2");
-
-    // soft background
+    
+    const bgHeight = (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) ? totalContentHeight : H;
     ctx.fillStyle = "rgba(127,127,127,0.02)";
-    ctx.fillRect(0,0,W,H);
-
+    ctx.fillRect(0,0,W,bgHeight);
+    
     if (isVertical) {
-      // a few columns to suggest lanes (vertical mode)
-      ctx.strokeStyle = grid;
-      ctx.lineWidth = 1;
+      const coordHeight = H;
       const left = 8;
       const colW = 18;
       const cols = Math.floor((W - left - 12) / colW);
+      
+      // Draw column lines
+      ctx.strokeStyle = grid;
+      ctx.lineWidth = 1;
       for (let i=0; i<cols; i++) {
         const x = left + i*colW + colW/2;
         ctx.beginPath();
@@ -6863,61 +8157,113 @@
         ctx.lineTo(x, H-16);
         ctx.stroke();
       }
-
-      // placeholder "reads" as rounded rects aligned in genome space
-      function drawRead(bpStart, bpEnd, col, alpha=0.20) {
-        const y1 = yGenomeCanonical(bpStart, H);
-        const y2 = yGenomeCanonical(bpEnd, H);
-        const x = left + col*colW + 2;
-        const w = colW - 6;
-        const y = Math.min(y1, y2);
-        const h = Math.max(6, Math.abs(y2-y1));
-
-        // Use WebGPU for fill if available, otherwise fall back to Canvas2D
-        const devicePixelRatio = window.devicePixelRatio || 1;
-        const useWebGPU = webgpuSupported && readsInstancedRenderer;
-        
-        if (useWebGPU) {
-          // Add rectangle to WebGPU renderer
-          readsInstancedRenderer.addRect(
-            x * devicePixelRatio,
-            y * devicePixelRatio,
-            w * devicePixelRatio,
-            h * devicePixelRatio,
-            [120/255, 180/255, 255/255, alpha]
-          );
-        } else {
-          // Fallback to Canvas2D
-          ctx.fillStyle = `rgba(120,180,255,${alpha})`;
-          ctx.beginPath();
-          roundRect(ctx, x, y, w, h, 6);
-          ctx.fill();
+      
+      // Draw reads if available
+      if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+        const maxCols = Math.floor((W - left - 12) / colW);
+        for (const read of track.readsLayout.reads) {
+          if (read.row >= maxCols) continue;
+          if (read.end < state.startBp || read.start > state.endBp) continue;
+          
+          let color, alpha;
+          if (read.haplotype === 1) {
+            color = [255, 100, 100];
+            alpha = 0.5;
+          } else if (read.haplotype === 2) {
+            color = [100, 100, 255];
+            alpha = 0.5;
+          } else {
+            color = [150, 150, 150];
+            alpha = 0.35;
+          }
+          if (!read.isForward) alpha *= 0.7;
+          
+          const y1 = yGenomeCanonical(read.start, coordHeight);
+          const y2 = yGenomeCanonical(read.end, coordHeight);
+          const x = left + read.row * colW + 2;
+          const w = colW - 4;
+          const y = Math.min(y1, y2);
+          const h = Math.max(4, Math.abs(y2 - y1));
+          
+          if (instancedRenderer && webgpuSupported) {
+            instancedRenderer.addRect(
+              x * dpr, y * dpr,
+              w * dpr, h * dpr,
+              [color[0]/255, color[1]/255, color[2]/255, alpha]
+            );
+          } else {
+            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+            ctx.beginPath();
+            roundRect(ctx, x, y, w, h, 3);
+            ctx.fill();
+          }
+          
+          // Draw insertion/deletion/diff markers (vertical mode)
+          if (read.elements && read.elements.length > 0) {
+            for (const elem of read.elements) {
+              if (elem.start < state.startBp || elem.start > state.endBp) continue;
+              const ey = yGenomeCanonical(elem.start, coordHeight);
+              const ex = x;
+              const ew = w;
+              
+              if (elem.type === 2) { // Insertion - purple tick
+                ctx.fillStyle = 'rgba(200,100,255,0.9)';
+                ctx.fillRect(ex, ey - 1, ew, 2);
+              } else if (elem.type === 3) { // Deletion - black gap
+                const ey2 = yGenomeCanonical(elem.end, coordHeight);
+                const delY = Math.min(ey, ey2);
+                const delH = Math.max(2, Math.abs(ey2 - ey));
+                ctx.fillStyle = 'rgba(0,0,0,0.4)';
+                ctx.fillRect(ex + ew/4, delY, ew/2, delH);
+              } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
+                // Calculate actual base height
+                const nextBp = elem.start + 1;
+                const nextY = (nextBp <= state.endBp ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(state.endBp, coordHeight));
+                const actualBaseHeight = Math.max(2, Math.abs(nextY - ey));
+                
+                // Color based on nucleotide
+                const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
+                const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
+                const bgColor = nucColors[nuc] || '#9C27B0';
+                
+                // Draw background
+                const drawHeight = Math.max(2, actualBaseHeight);
+                ctx.fillStyle = bgColor;
+                ctx.fillRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight);
+                
+                // Draw nucleotide letter only if there's enough space
+                if (actualBaseHeight >= 8) {
+                  ctx.save();
+                  ctx.fillStyle = 'white';
+                  ctx.font = `bold ${Math.min(10, ew - 4)}px monospace`;
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  // Rotate text -90 degrees for vertical mode
+                  ctx.translate(ex + ew/2, ey);
+                  ctx.rotate(-Math.PI / 2);
+                  ctx.fillText(nuc, 0, 0);
+                  ctx.restore();
+                }
+              }
+            }
+          }
         }
-        
-        // Stroke always uses Canvas2D (minimal overhead for borders)
-        ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
-        ctx.beginPath();
-        roundRect(ctx, x, y, w, h, 6);
-        ctx.stroke();
+      } else if (track.loading) {
+        ctx.fillStyle = cssVar("--muted");
+        ctx.font = "14px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Loading...", W/2, H/2);
       }
-
-      // a few fake reads
-      drawRead(100_030, 100_160, 1, 0.10);
-      drawRead(100_090, 100_240, 2, 0.12);
-      drawRead(100_210, 100_420, 3, 0.10);
-      drawRead(100_380, 100_610, 4, 0.11);
-      drawRead(100_590, 100_820, 5, 0.10);
-      drawRead(100_700, 100_900, 6, 0.11);
-
-      // variant guide lines (gray, blue when hovered)
+      
+      // Draw variant markers
       for (let idx = 0; idx < variants.length; idx++) {
         const v = variants[idx];
         if (v.pos < state.startBp || v.pos > state.endBp) continue;
         const isHovered = state.hoveredVariantIndex === idx;
-        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.5)";
-        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.3;
         ctx.lineWidth = isHovered ? 2.5 : 1;
-        const y = yGenomeCanonical(v.pos, H);
+        const y = yGenomeCanonical(v.pos, coordHeight);
         ctx.beginPath();
         ctx.moveTo(left, y);
         ctx.lineTo(W-10, y);
@@ -6925,166 +8271,209 @@
       }
       ctx.globalAlpha = 1.0;
     } else {
-      // a few rows to suggest lanes
-      ctx.strokeStyle = grid;
-      ctx.lineWidth = 1;
+      // Horizontal mode
       const top = 8;
       const rowH = 18;
-      const rows = Math.floor((H - top - 12) / rowH);
-      for (let i=0; i<rows; i++) {
-        const y = top + i*rowH + rowH/2;
-        ctx.beginPath();
-        ctx.moveTo(16, y);
-        ctx.lineTo(W-16, y);
-        ctx.stroke();
-      }
-
-      // placeholder "reads" as rounded rects aligned in genome space
-      function drawRead(bpStart, bpEnd, row, alpha=0.20) {
-        const x1 = xGenomeCanonical(bpStart, W);
-        const x2 = xGenomeCanonical(bpEnd, W);
-        const y = top + row*rowH + 2;
-        const h = rowH - 6;
-        const x = x1;
-        const w = Math.max(6, x2-x1);
-
-        // Use WebGPU for fill if available, otherwise fall back to Canvas2D
-        const devicePixelRatio = window.devicePixelRatio || 1;
-        const useWebGPU = webgpuSupported && readsInstancedRenderer;
+      
+      let totalRows = Math.floor((H - top - 12) / rowH);
+      if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+        totalRows = track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1;
+        const scrollTop = container.scrollTop || 0;
         
-        if (useWebGPU) {
-          // Add rectangle to WebGPU renderer
-          readsInstancedRenderer.addRect(
-            x * devicePixelRatio,
-            y * devicePixelRatio,
-            w * devicePixelRatio,
-            h * devicePixelRatio,
-            [120/255, 180/255, 255/255, alpha]
-          );
-        } else {
-          // Fallback to Canvas2D
-          ctx.fillStyle = `rgba(120,180,255,${alpha})`;
-          ctx.beginPath();
-          roundRect(ctx, x, y, w, h, 6);
-          ctx.fill();
+        const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
+        const endRow = Math.min(totalRows, Math.ceil((scrollTop + H) / rowH) + 1);
+        
+        ctx.strokeStyle = grid;
+        ctx.lineWidth = 1;
+        for (let i = startRow; i < endRow; i++) {
+          const y = top + i*rowH + rowH/2 - scrollTop;
+          if (y >= -rowH && y <= totalContentHeight + rowH) {
+            ctx.beginPath();
+            ctx.moveTo(16, y);
+            ctx.lineTo(W-16, y);
+            ctx.stroke();
+          }
         }
-        
-        // Stroke always uses Canvas2D (minimal overhead for borders)
-        ctx.strokeStyle = `rgba(120,180,255,${alpha + 0.15})`;
-        ctx.beginPath();
-        roundRect(ctx, x, y, w, h, 6);
-        ctx.stroke();
+      } else {
+        ctx.strokeStyle = grid;
+        ctx.lineWidth = 1;
+        const rows = Math.floor((H - top - 12) / rowH);
+        for (let i=0; i<rows; i++) {
+          const y = top + i*rowH + rowH/2;
+          ctx.beginPath();
+          ctx.moveTo(16, y);
+          ctx.lineTo(W-16, y);
+          ctx.stroke();
+        }
       }
-
-      // a few fake reads
-      drawRead(100_030, 100_160, 1, 0.10);
-      drawRead(100_090, 100_240, 2, 0.12);
-      drawRead(100_210, 100_420, 3, 0.10);
-      drawRead(100_380, 100_610, 4, 0.11);
-      drawRead(100_590, 100_820, 5, 0.10);
-      drawRead(100_700, 100_900, 6, 0.11);
-
-      // variant guide lines (gray, blue when hovered)
+      
+      // Draw reads if available
+      if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+        const scrollTop = container.scrollTop || 0;
+        for (const read of track.readsLayout.reads) {
+          if (read.end < state.startBp || read.start > state.endBp) continue;
+          
+          let color, alpha;
+          if (read.haplotype === 1) {
+            color = [255, 100, 100];
+            alpha = 0.5;
+          } else if (read.haplotype === 2) {
+            color = [100, 100, 255];
+            alpha = 0.5;
+          } else {
+            color = [150, 150, 150];
+            alpha = 0.35;
+          }
+          if (!read.isForward) alpha *= 0.7;
+          
+          const x1 = xGenomeCanonical(read.start, W);
+          const x2 = xGenomeCanonical(read.end, W);
+          const y = top + read.row * rowH + 2 - scrollTop;
+          const h = rowH - 4;
+          const x = Math.max(0, x1);
+          const w = Math.max(4, Math.min(x2, W) - x);
+          
+          if (y + h < 0 || y > totalContentHeight) continue;
+          
+          if (instancedRenderer && webgpuSupported) {
+            instancedRenderer.addRect(
+              x * dpr, y * dpr,
+              w * dpr, h * dpr,
+              [color[0]/255, color[1]/255, color[2]/255, alpha]
+            );
+          } else {
+            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+            ctx.beginPath();
+            roundRect(ctx, x, y, w, h, 3);
+            ctx.fill();
+          }
+          
+          // Draw direction arrow
+          ctx.fillStyle = `rgba(255,255,255,0.6)`;
+          const arrowSize = Math.min(6, w * 0.2);
+          if (read.isForward) {
+            // Arrow pointing right
+            ctx.beginPath();
+            ctx.moveTo(x + w - arrowSize - 2, y + h/2 - arrowSize/2);
+            ctx.lineTo(x + w - 2, y + h/2);
+            ctx.lineTo(x + w - arrowSize - 2, y + h/2 + arrowSize/2);
+            ctx.fill();
+          } else {
+            // Arrow pointing left
+            ctx.beginPath();
+            ctx.moveTo(x + arrowSize + 2, y + h/2 - arrowSize/2);
+            ctx.lineTo(x + 2, y + h/2);
+            ctx.lineTo(x + arrowSize + 2, y + h/2 + arrowSize/2);
+            ctx.fill();
+          }
+          
+          // Draw insertion/deletion/diff markers (horizontal mode)
+          if (read.elements && read.elements.length > 0) {
+            for (const elem of read.elements) {
+              if (elem.start < state.startBp || elem.start > state.endBp) continue;
+              const ex = xGenomeCanonical(elem.start, W);
+              const ey = y;
+              const eh = h;
+              
+              if (elem.type === 2) { // Insertion - purple tick
+                ctx.fillStyle = 'rgba(200,100,255,0.9)';
+                ctx.fillRect(ex - 1, ey, 2, eh);
+              } else if (elem.type === 3) { // Deletion - black gap
+                const ex2 = xGenomeCanonical(elem.end, W);
+                ctx.fillStyle = 'rgba(0,0,0,0.4)';
+                ctx.fillRect(ex, ey + eh/4, ex2 - ex, eh/2);
+              } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
+                // Calculate actual base width
+                const nextBp = elem.start + 1;
+                const nextX = nextBp <= state.endBp ? xGenomeCanonical(nextBp, W) : xGenomeCanonical(state.endBp, W);
+                const actualBaseWidth = Math.max(2, Math.abs(nextX - ex));
+                
+                // Color based on nucleotide
+                const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
+                const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
+                const bgColor = nucColors[nuc] || '#9C27B0';
+                
+                // Draw background
+                const drawWidth = Math.max(2, actualBaseWidth);
+                ctx.fillStyle = bgColor;
+                ctx.fillRect(ex, ey + 1, drawWidth, eh - 2);
+                
+                // Draw nucleotide letter only if there's enough space
+                if (actualBaseWidth >= 8) {
+                  ctx.fillStyle = 'white';
+                  ctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  ctx.fillText(nuc, ex + drawWidth/2, ey + eh/2);
+                }
+              }
+            }
+          }
+        }
+      } else if (track.loading) {
+        ctx.fillStyle = cssVar("--muted");
+        ctx.font = "14px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Loading...", W/2, H/2);
+      }
+      
+      // Draw variant markers
       for (let idx = 0; idx < variants.length; idx++) {
         const v = variants[idx];
         if (v.pos < state.startBp || v.pos > state.endBp) continue;
         const isHovered = state.hoveredVariantIndex === idx;
-        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.5)";
-        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.3;
         ctx.lineWidth = isHovered ? 2.5 : 1;
         const x = xGenomeCanonical(v.pos, W);
         ctx.beginPath();
         ctx.moveTo(x, top);
-        ctx.lineTo(x, H-10);
+        ctx.lineTo(x, totalContentHeight || H-10);
         ctx.stroke();
       }
       ctx.globalAlpha = 1.0;
     }
-
-    // connectors from Sankey columns down to Reads track (diagonal lines)
-    // Disabled for now - makes display too busy
-    /*
-    const win = visibleVariantWindow();
-    const trackLayoutForConnectors = getTrackLayout();
-    const flowLayoutItem = trackLayoutForConnectors.find(l => l.track.id === "flow");
-    const readsLayoutItem = trackLayoutForConnectors.find(l => l.track.id === "reads");
     
-    if (flowLayoutItem && readsLayoutItem && !flowLayoutItem.track.collapsed && !readsLayoutItem.track.collapsed) {
-      ctx.strokeStyle = cssVar("--blue");
-      ctx.globalAlpha = 0.5;
-      ctx.lineWidth = 1;
-      
-      // Draw diagonal lines from Sankey columns to variant positions in Reads track
-      // Similar to how Locus connects to Sankey, but in reverse direction
-      for (let i=0; i<win.length; i++) {
-        const v = win[i];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        
-        // Calculate column x position in Reads canvas coordinates
-        // Use the same logic as xColumn but with Reads canvas width
-        const margin = 60;
-        const innerW = Math.max(10, W - 2*margin);
-        let columnX;
-        if (state.K <= 1) {
-          columnX = margin;
-        } else {
-          columnX = margin + (i / (state.K - 1)) * innerW;
-        }
-        
-        // Variant position x in Reads track (genomic coordinate mapping)
-        const variantX = xGenomeCanonical(v.pos, W);
-        
-        // Draw diagonal line from column position to variant position
-        ctx.beginPath();
-        ctx.moveTo(columnX, 0); // top of reads canvas, at column x position
-        ctx.lineTo(variantX, top); // connect to variant position at top of read lanes
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1.0;
-    }
-    */
-
-    // Execute WebGPU render pass after read rectangles are added
-    // Render to readsWebGPU canvas (separate from tracksWebGPU)
-    const hasReadsInstances = readsInstancedRenderer && 
-        (readsInstancedRenderer.rectInstances.length > 0 || readsInstancedRenderer.lineInstances.length > 0);
-    if (webgpuSupported && readsInstancedRenderer && hasReadsInstances) {
+    // Execute WebGPU render pass
+    if (webgpuSupported && instancedRenderer && 
+        (instancedRenderer.rectInstances.length > 0 || instancedRenderer.lineInstances.length > 0)) {
       try {
-        // Update projection matrix for current canvas size
-        const devicePixelRatio = window.devicePixelRatio || 1;
-        const width = readsWebGPU.clientWidth * devicePixelRatio;
-        const height = readsWebGPU.clientHeight * devicePixelRatio;
-        
-        if (readsWebGPU.width !== width || readsWebGPU.height !== height) {
-          readsWebGPU.width = width;
-          readsWebGPU.height = height;
-          readsWebGPUCore.handleResize();
+        const width = webgpuCanvas.clientWidth * dpr;
+        let height = webgpuCanvas.clientHeight * dpr;
+        if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+          height = totalContentHeight * dpr;
+          webgpuCanvas.height = height;
         }
         
-        const encoder = readsWebGPUCore.createCommandEncoder();
-        const texture = readsWebGPUCore.getCurrentTexture();
+        if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
+          webgpuCanvas.width = width;
+          webgpuCanvas.height = height;
+          webgpuCore.handleResize();
+        }
+        
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
         const renderPass = encoder.beginRenderPass({
           colorAttachments: [{
             view: texture.createView(),
             clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear', // Clear canvas on each render
+            loadOp: 'clear',
             storeOp: 'store',
           }],
         });
         
-        readsInstancedRenderer.render(encoder, renderPass);
+        instancedRenderer.render(encoder, renderPass);
         renderPass.end();
-        readsWebGPUCore.submit([encoder.finish()]);
+        webgpuCore.submit([encoder.finish()]);
       } catch (error) {
-        console.error("Reads WebGPU render error:", error);
-        // Fallback: clear instances and continue with Canvas2D only
-        readsInstancedRenderer.clear();
+        console.error(`Smart track ${trackId} WebGPU render error:`, error);
+        if (instancedRenderer) instancedRenderer.clear();
       }
-    } else if (webgpuSupported && readsInstancedRenderer) {
-      // Clear WebGPU canvas if no instances to render
+    } else if (webgpuSupported && instancedRenderer) {
+      // Clear WebGPU canvas if no instances
       try {
-        const encoder = readsWebGPUCore.createCommandEncoder();
-        const texture = readsWebGPUCore.getCurrentTexture();
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
         const renderPass = encoder.beginRenderPass({
           colorAttachments: [{
             view: texture.createView(),
@@ -7094,7 +8483,7 @@
           }],
         });
         renderPass.end();
-        readsWebGPUCore.submit([encoder.finish()]);
+        webgpuCore.submit([encoder.finish()]);
       } catch (error) {
         // Ignore errors when clearing
       }
@@ -7152,40 +8541,251 @@
 
       const label = document.createElement("div");
       label.className = "track-label";
-      // For the Locus track, append the extent in parentheses
-      if (track.id === "ruler") {
-        const extent = Math.floor(state.endBp) - Math.floor(state.startBp);
-        label.textContent = `${track.label} (${extent.toLocaleString()} bp)`;
-      } else {
+      
+      // Check if this is a Smart track
+      const isSmartTrack = track.id.startsWith("smart-track-");
+      
+      if (isSmartTrack) {
+        // Make label editable for Smart tracks
+        label.style.cursor = "text";
+        label.contentEditable = false;
+        label.title = "Click to edit label";
+        
+        // Create input field for editing (hidden initially)
+        const labelInput = document.createElement("input");
+        labelInput.type = "text";
+        labelInput.className = "smart-track-label-input";
+        labelInput.value = track.label;
+        labelInput.style.display = "none";
+        labelInput.style.fontSize = "12px";
+        labelInput.style.fontWeight = "600";
+        labelInput.style.color = "var(--muted)";
+        labelInput.style.background = "transparent";
+        labelInput.style.border = "1px solid var(--border2)";
+        labelInput.style.borderRadius = "4px";
+        labelInput.style.padding = "2px 4px";
+        labelInput.style.width = "auto";
+        labelInput.style.minWidth = "100px";
+        labelInput.style.maxWidth = "200px";
+        
+        // Click handler to start editing
+        label.addEventListener("click", (e) => {
+          e.stopPropagation();
+          label.style.display = "none";
+          labelInput.style.display = "inline-block";
+          labelInput.focus();
+          labelInput.select();
+        });
+        
+        // Save on blur or Enter
+        const saveLabel = () => {
+          const newLabel = labelInput.value.trim() || track.label;
+          label.textContent = newLabel;
+          label.style.display = "";
+          labelInput.style.display = "none";
+          editSmartTrackLabel(track.id, newLabel);
+        };
+        
+        labelInput.addEventListener("blur", saveLabel);
+        labelInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            saveLabel();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            labelInput.value = track.label;
+            label.style.display = "";
+            labelInput.style.display = "none";
+          }
+        });
+        
         label.textContent = track.label;
+        controls.appendChild(labelInput);
+      } else {
+        // For the Locus track, append the extent in parentheses
+        if (track.id === "ruler") {
+          const extent = Math.floor(state.endBp) - Math.floor(state.startBp);
+          label.textContent = `${track.label} (${extent.toLocaleString()} bp)`;
+        } else {
+          label.textContent = track.label;
+        }
       }
 
-      // In vertical mode, reverse order: label on top, button on bottom
-      if (isVertical) {
-        controls.appendChild(label);
-        controls.appendChild(collapseBtn);
-        container.appendChild(controls);
-        // After appending, measure the label's width and adjust transform
-        // With transform-origin: left center, the first character stays at bottom
-        // We need to translate right by half width to center it horizontally
-        setTimeout(() => {
-          try {
-            const width = label.offsetWidth || label.getBoundingClientRect().width;
-            if (width > 0) {
-              // After -90deg rotation:
-              // - translateX moves vertically (negative = up, positive = down)
-              // - translateY moves horizontally (negative = left, positive = right)
-              // Use translateX(12px) to position vertically and translateY(0.0px) for horizontal
-              label.style.transform = `rotate(-90deg) translateX(12px) translateY(0.0px)`;
-            }
-          } catch (e) {
-            console.error('Error adjusting label transform:', e);
+      // Add Smart track controls if needed
+      if (isSmartTrack) {
+        // Strategy dropdown
+        const strategySelect = document.createElement("select");
+        strategySelect.className = "smart-track-strategy-select";
+        strategySelect.id = `smart-track-strategy-${track.id}`;
+        strategySelect.name = `smart-track-strategy-${track.id}`;
+        strategySelect.style.fontSize = "11px";
+        strategySelect.style.padding = "2px 4px";
+        strategySelect.style.border = "1px solid var(--border2)";
+        strategySelect.style.borderRadius = "4px";
+        strategySelect.style.background = "var(--panel)";
+        strategySelect.style.color = "var(--text)";
+        strategySelect.style.marginLeft = "6px";
+        strategySelect.style.cursor = "pointer";
+        
+        const strategies = [
+          { value: "best_evidence", label: "Best evidence" },
+          { value: "most_diverse", label: "Most diverse" },
+          { value: "compare_branches", label: "Compare branches" },
+          { value: "carriers_controls", label: "Carriers + controls" },
+          { value: "random", label: "Random" }
+        ];
+        
+        strategies.forEach(s => {
+          const option = document.createElement("option");
+          option.value = s.value;
+          option.textContent = s.label;
+          if (s.value === track.strategy) {
+            option.selected = true;
           }
-        }, 10);
+          strategySelect.appendChild(option);
+        });
+        
+        strategySelect.addEventListener("change", (e) => {
+          e.stopPropagation();
+          updateSmartTrackStrategy(track.id, e.target.value);
+        });
+        strategySelect.style.pointerEvents = "auto";
+        strategySelect.style.zIndex = "20";
+        
+        // Reload button (reload current sample)
+        const reloadBtn = document.createElement("button");
+        reloadBtn.className = "smart-track-reload-btn";
+        reloadBtn.textContent = "↻";
+        reloadBtn.title = "Reload sample";
+        reloadBtn.type = "button";
+        reloadBtn.style.fontSize = "16px";
+        reloadBtn.style.padding = "0";
+        reloadBtn.style.border = "none";
+        reloadBtn.style.borderRadius = "0";
+        reloadBtn.style.background = "transparent";
+        reloadBtn.style.color = "var(--muted)";
+        reloadBtn.style.cursor = "pointer";
+        reloadBtn.style.marginLeft = "6px";
+        reloadBtn.style.width = "18px";
+        reloadBtn.style.height = "18px";
+        reloadBtn.style.display = "flex";
+        reloadBtn.style.alignItems = "center";
+        reloadBtn.style.justifyContent = "center";
+        reloadBtn.style.lineHeight = "1";
+        reloadBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          reloadSmartTrack(track.id);
+        });
+        reloadBtn.style.pointerEvents = "auto";
+        reloadBtn.style.zIndex = "20";
+        
+        // Shuffle button (choose new sample)
+        const shuffleBtn = document.createElement("button");
+        shuffleBtn.className = "smart-track-shuffle-btn";
+        shuffleBtn.textContent = "⇆";
+        shuffleBtn.title = "Shuffle to new sample";
+        shuffleBtn.type = "button";
+        shuffleBtn.style.fontSize = "16px";
+        shuffleBtn.style.padding = "0";
+        shuffleBtn.style.border = "none";
+        shuffleBtn.style.borderRadius = "0";
+        shuffleBtn.style.background = "transparent";
+        shuffleBtn.style.color = "var(--muted)";
+        shuffleBtn.style.cursor = "pointer";
+        shuffleBtn.style.marginLeft = "6px";
+        shuffleBtn.style.width = "18px";
+        shuffleBtn.style.height = "18px";
+        shuffleBtn.style.display = "flex";
+        shuffleBtn.style.alignItems = "center";
+        shuffleBtn.style.justifyContent = "center";
+        shuffleBtn.style.lineHeight = "1";
+        shuffleBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          shuffleSmartTrack(track.id);
+        });
+        shuffleBtn.style.pointerEvents = "auto";
+        shuffleBtn.style.zIndex = "20";
+        
+        // Close button
+        const closeBtn = document.createElement("button");
+        closeBtn.className = "smart-track-close-btn";
+        closeBtn.textContent = "×";
+        closeBtn.title = "Close track";
+        closeBtn.type = "button";
+        closeBtn.style.fontSize = "16px";
+        closeBtn.style.padding = "0";
+        closeBtn.style.border = "none";
+        closeBtn.style.borderRadius = "0";
+        closeBtn.style.background = "transparent";
+        closeBtn.style.color = "var(--muted)";
+        closeBtn.style.cursor = "pointer";
+        closeBtn.style.marginLeft = "6px";
+        closeBtn.style.width = "18px";
+        closeBtn.style.height = "18px";
+        closeBtn.style.display = "flex";
+        closeBtn.style.alignItems = "center";
+        closeBtn.style.justifyContent = "center";
+        closeBtn.style.lineHeight = "1";
+        closeBtn.style.pointerEvents = "auto";
+        closeBtn.style.zIndex = "20";
+        closeBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          // Verify track still exists before removing
+          const trackExists = state.smartTracks.find(t => t.id === track.id);
+          if (trackExists) {
+            removeSmartTrack(track.id);
+          }
+        });
+        
+        // In vertical mode, reverse order: label on top, button on bottom
+        if (isVertical) {
+          controls.appendChild(label);
+          controls.appendChild(strategySelect);
+          controls.appendChild(reloadBtn);
+          controls.appendChild(shuffleBtn);
+          controls.appendChild(closeBtn);
+          controls.appendChild(collapseBtn);
+          container.appendChild(controls);
+        } else {
+          controls.appendChild(collapseBtn);
+          controls.appendChild(label);
+          controls.appendChild(strategySelect);
+          controls.appendChild(reloadBtn);
+          controls.appendChild(shuffleBtn);
+          controls.appendChild(closeBtn);
+          container.appendChild(controls);
+        }
       } else {
-        controls.appendChild(collapseBtn);
-        controls.appendChild(label);
-        container.appendChild(controls);
+        // In vertical mode, reverse order: label on top, button on bottom
+        if (isVertical) {
+          controls.appendChild(label);
+          controls.appendChild(collapseBtn);
+          container.appendChild(controls);
+          // After appending, measure the label's width and adjust transform
+          // With transform-origin: left center, the first character stays at bottom
+          // We need to translate right by half width to center it horizontally
+          setTimeout(() => {
+            try {
+              const width = label.offsetWidth || label.getBoundingClientRect().width;
+              if (width > 0) {
+                // After -90deg rotation:
+                // - translateX moves vertically (negative = up, positive = down)
+                // - translateY moves horizontally (negative = left, positive = right)
+                // Use translateX(12px) to position vertically and translateY(0.0px) for horizontal
+                label.style.transform = `rotate(-90deg) translateX(12px) translateY(0.0px)`;
+              }
+            } catch (e) {
+              console.error('Error adjusting label transform:', e);
+            }
+          }, 10);
+        } else {
+          controls.appendChild(collapseBtn);
+          controls.appendChild(label);
+          container.appendChild(controls);
+        }
       }
 
       if (!track.collapsed) {
@@ -7206,15 +8806,7 @@
 
   function renderHUD() {
     const locusText = `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
-
-    // Preserve lazy loading status if it exists
-    if (window._genomeshaderLazyStatus) {
-      const status = window._genomeshaderLazyStatus;
-      const statusColor = status.type === 'error' ? 'var(--accent)' : 'var(--text)';
-      hud.innerHTML = `<span style="color: ${statusColor}; font-weight: 500;">${status.message}</span> | ${locusText}`;
-    } else {
-      hud.textContent = locusText;
-    }
+    hud.textContent = locusText;
 
     // In inline mode, show HUD and auto-hide after 3 seconds
     if (hostMode === 'inline') {
@@ -7289,12 +8881,193 @@
     };
   }
 
+  // Update Locus track variant element hover styles
+  function updateLocusTrackHover() {
+    state.locusVariantElements.forEach((elements, idx) => {
+      const isHovered = state.hoveredVariantIndex === idx;
+      const strokeWidth = isHovered ? 2.5 : 1.2;
+      const circleStrokeWidth = isHovered ? 2.2 : 1.4;
+      const strokeColor = isHovered ? "var(--blue)" : "rgba(127,127,127,0.5)";
+      
+      if (elements.lineEl) {
+        elements.lineEl.setAttribute("stroke", strokeColor);
+        elements.lineEl.setAttribute("stroke-width", strokeWidth);
+      }
+      if (elements.circleEl) {
+        elements.circleEl.setAttribute("stroke", strokeColor);
+        elements.circleEl.setAttribute("stroke-width", circleStrokeWidth);
+      }
+    });
+  }
+
+  // Set up variant hover areas in canvas overlays
+  function setupVariantHoverAreas() {
+    if (!flowOverlay) return;
+    
+    const isVertical = isVerticalMode();
+    const clearSvg = (svg) => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
+    
+    // Shared click handler for variant selection
+    const handleVariantRectClick = (e, variantId) => {
+      e.stopPropagation();
+      
+      // Find variant by ID
+      const variant = variants.find(v => String(v.id) === String(variantId));
+      if (!variant) return;
+      
+      // Get all alleles for this variant
+      const { labels } = getFormattedLabelsForVariant(variant);
+      let order = state.variantAlleleOrder.get(variant.id);
+      if (!order || order.length !== labels.length) {
+        order = [...labels];
+        state.variantAlleleOrder.set(variant.id, order);
+      }
+      
+      // Create label keys for all alleles: "variantId:alleleIndex"
+      const variantAlleleKeys = order.map((label, alleleIndex) => `${variant.id}:${alleleIndex}`);
+      
+      // Handle selection with Ctrl/Cmd for multi-select
+      if (e.ctrlKey || e.metaKey) {
+        // Multi-select: toggle all alleles for this variant
+        const allSelected = variantAlleleKeys.every(key => state.selectedAlleles.has(key));
+        if (allSelected) {
+          // All are selected, deselect all
+          variantAlleleKeys.forEach(key => state.selectedAlleles.delete(key));
+        } else {
+          // Not all are selected, select all
+          variantAlleleKeys.forEach(key => state.selectedAlleles.add(key));
+        }
+      } else {
+        // Single-select: replace selection with all alleles for this variant
+        // If clicking on already-selected variant (all alleles selected), deselect it
+        const allSelected = variantAlleleKeys.every(key => state.selectedAlleles.has(key));
+        if (allSelected && state.selectedAlleles.size === variantAlleleKeys.length) {
+          state.selectedAlleles.clear();
+        } else {
+          state.selectedAlleles.clear();
+          variantAlleleKeys.forEach(key => state.selectedAlleles.add(key));
+        }
+      }
+      
+      renderFlowCanvas();
+      if (window.updateSelectionDisplay) window.updateSelectionDisplay();
+    };
+    
+    // Clear existing hover areas
+    clearSvg(flowOverlay);
+    
+    // Set overlay dimensions to match containers
+    const flowW = flowWidthPx();
+    const flowH = flowHeightPx();
+    
+    flowOverlay.setAttribute("width", flowW);
+    flowOverlay.setAttribute("height", flowH);
+    flowOverlay.setAttribute("viewBox", `0 0 ${flowW} ${flowH}`);
+    
+    // Create hover areas for Variants/Haplotypes track
+    const win = visibleVariantWindow();
+    const variantMode = getVariantLayoutMode();
+    
+    if (isVertical) {
+      const junctionX = 70;
+      const left = 8;
+      
+      for (let i = 0; i < win.length; i++) {
+        const v = win[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        if (variantIdx === -1) continue;
+        
+        const cy = variantMode === "genomic"
+          ? yGenomeCanonical(v.pos, flowH)
+          : yColumn(i, win.length);
+        
+        // Create hover rectangle for the column
+        const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        hoverRect.setAttribute("x", junctionX);
+        hoverRect.setAttribute("y", cy - 8);
+        hoverRect.setAttribute("width", Math.max(0, flowW - junctionX - 10));
+        hoverRect.setAttribute("height", 16);
+        hoverRect.setAttribute("fill", "transparent");
+        hoverRect.setAttribute("data-variant-id", v.id);
+        hoverRect.style.cursor = "pointer";
+        hoverRect.style.pointerEvents = "auto";
+        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
+        flowOverlay.appendChild(hoverRect);
+      }
+    } else {
+      const junctionY = 40;
+      
+      for (let i = 0; i < win.length; i++) {
+        const v = win[i];
+        const variantIdx = state.firstVariantIndex + i;
+        if (variantIdx >= variants.length) continue;
+        const variant = variants[variantIdx];
+        
+        const cx = variantMode === "genomic"
+          ? xGenomeCanonical(v.pos, flowW)
+          : xColumn(i, win.length);
+        
+        // Create hover rectangle for the column
+        const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        hoverRect.setAttribute("x", cx - 8);
+        hoverRect.setAttribute("y", junctionY);
+        hoverRect.setAttribute("width", 16);
+        hoverRect.setAttribute("height", Math.max(0, flowH - junctionY - 10));
+        hoverRect.setAttribute("fill", "transparent");
+        hoverRect.setAttribute("data-variant-id", variant.id);
+        hoverRect.style.cursor = "pointer";
+        hoverRect.style.pointerEvents = "auto";
+        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, variant.id));
+        flowOverlay.appendChild(hoverRect);
+      }
+    }
+    
+    // Set up event delegation for hover detection
+    // Use a single handler for all hover areas
+    const handleVariantHover = (e) => {
+      const target = e.target;
+      const variantId = target.getAttribute("data-variant-id");
+      if (!variantId) return;
+      
+      // Find variant index by ID
+      const variantIdx = variants.findIndex(v => String(v.id) === String(variantId));
+      if (variantIdx === -1) return;
+      
+      if (state.hoveredVariantIndex !== variantIdx) {
+        state.hoveredVariantIndex = variantIdx;
+        renderHoverOnly();
+      }
+    };
+    
+    const handleVariantLeave = (e) => {
+      const target = e.target;
+      if (target.hasAttribute("data-variant-id")) {
+        if (state.hoveredVariantIndex !== null) {
+          state.hoveredVariantIndex = null;
+          renderHoverOnly();
+        }
+      }
+    };
+    
+    // Remove old listeners if they exist (for hover only, clicks are now on rectangles)
+    if (flowOverlay._variantHoverHandler) {
+      flowOverlay.removeEventListener("mouseenter", flowOverlay._variantHoverHandler, true);
+      flowOverlay.removeEventListener("mouseleave", flowOverlay._variantHoverHandler, true);
+    }
+    
+    // Add new listeners with capture phase to catch events on child elements (hover only)
+    flowOverlay._variantHoverHandler = handleVariantHover;
+    flowOverlay._variantLeaveHandler = handleVariantLeave;
+    flowOverlay.addEventListener("mouseenter", handleVariantHover, true);
+    flowOverlay.addEventListener("mouseleave", handleVariantLeave, true);
+  }
+
   // Selective rendering for hover-only state changes (no SVG rebuild)
   function renderHoverOnly() {
     // Only redraw canvas elements affected by hover state
     // Skip expensive SVG rebuilds and layout recalculations
+    updateLocusTrackHover(); // Update Locus track SVG hover styles
     renderFlowCanvas();
-    renderReadsCanvas();
     updateTooltip();
   }
 
@@ -7305,10 +9078,14 @@
     renderTrackControls();
     updateFlowAndReadsPosition();
     renderFlowCanvas();
-    renderReadsCanvas();
+    // Render all Smart tracks
+    state.smartTracks.forEach(track => {
+      renderSmartTrack(track.id);
+    });
     renderHUD();
     updateTooltip();
     setupCanvasHover();
+    setupVariantHoverAreas(); // Set up ID-based hover areas
     updateDocumentTitle();
   }
 
@@ -7396,18 +9173,12 @@
   // Setup hover detection for canvas elements
   let flowHoverHandler = null;
   let flowLeaveHandler = null;
-  let readsHoverHandler = null;
-  let readsLeaveHandler = null;
 
   function setupCanvasHover() {
     // Remove existing listeners to avoid duplicates
     if (flowHoverHandler) {
       flow.removeEventListener("mousemove", flowHoverHandler);
       flow.removeEventListener("mouseleave", flowLeaveHandler);
-    }
-    if (readsHoverHandler) {
-      reads.removeEventListener("mousemove", readsHoverHandler);
-      reads.removeEventListener("mouseleave", readsLeaveHandler);
     }
 
     // Flow canvas hover detection
@@ -7731,6 +9502,9 @@
             ? [...win].sort((a, b) => a.pos - b.pos).find(v => v.id === dragState.variantId)
             : win.find(v => v.id === dragState.variantId);
           
+          // Declare newIndex in this scope so it's accessible after the if (v) block
+          let newIndex = -1;
+          
           if (v) {
             // Get track dimension for size calculation
             const layout = getTrackLayout();
@@ -7768,8 +9542,6 @@
             const marginPercent = 0.1;
             const minMargin = 10;
             const margin = Math.max(minMargin, trackDimension * marginPercent);
-            
-            let newIndex = -1;
             if (isVertical) {
               const left = 70;
               const W = flowWidthPx();
@@ -7921,17 +9693,32 @@
         
         // Check if this was a click (not a drag)
         if (dragState.isClick) {
-          // Toggle pinned state for this label
           const labelKey = `${dragState.variantId}:${dragState.alleleIndex}`;
-          if (state.pinnedAlleleLabels.has(labelKey)) {
-            state.pinnedAlleleLabels.delete(labelKey);
+          
+          // Handle selection with Ctrl/Cmd for multi-select
+          if (e.ctrlKey || e.metaKey) {
+            // Multi-select: toggle this allele in selection
+            if (state.selectedAlleles.has(labelKey)) {
+              state.selectedAlleles.delete(labelKey);
+            } else {
+              state.selectedAlleles.add(labelKey);
+            }
           } else {
-            state.pinnedAlleleLabels.add(labelKey);
+            // Single-select: replace selection with this allele
+            // If clicking on already-selected single allele, deselect it
+            if (state.selectedAlleles.size === 1 && state.selectedAlleles.has(labelKey)) {
+              state.selectedAlleles.clear();
+            } else {
+              state.selectedAlleles.clear();
+              state.selectedAlleles.add(labelKey);
+            }
           }
+          
           state.alleleDragState = null;
           flowCanvas.style.cursor = "";
           if (flowWebGPU) flowWebGPU.style.cursor = "";
           renderFlowCanvas();
+          if (window.updateSelectionDisplay) window.updateSelectionDisplay();
           return;
         }
         
@@ -8044,70 +9831,388 @@
     }
     
     setupAlleleDragDrop();
-
-    // Reads canvas hover detection
-    readsHoverHandler = (e) => {
-      const rect = reads.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const isVertical = isVerticalMode();
+    
+    // -----------------------------
+    // Sample Selection Strategy UI
+    // -----------------------------
+    
+    // Get information about selected alleles for loading reads
+    function getSelectedAlleleInfo() {
+      const selectedInfo = [];
+      for (const key of state.selectedAlleles) {
+        const [variantId, alleleIndexStr] = key.split(':');
+        const alleleIndex = parseInt(alleleIndexStr, 10);
+        
+        // Find the variant
+        const variant = variants.find(v => v.id === variantId);
+        if (!variant) continue;
+        
+        // Find the node position info to get the label
+        const nodeInfo = window._alleleNodePositions?.find(n => 
+          n.variantId === variantId && n.alleleIndex === alleleIndex
+        );
+        
+        selectedInfo.push({
+          variantId,
+          alleleIndex,
+          label: nodeInfo?.label || `Allele ${alleleIndex}`,
+          variant
+        });
+      }
+      return selectedInfo;
+    }
+    
+    // Update context indicator (shows what's selected)
+    function updateSampleContext() {
+      const currentRoot = getCurrentRoot();
+      const contextEl = byId(currentRoot, 'sampleContext');
       
-      if (isVertical) {
-        const H = readsHeightPx();
-        const left = 8;
-        
-        // Check if mouse is near a variant line (horizontal in vertical mode)
-        for (let idx = 0; idx < variants.length; idx++) {
-          const v = variants[idx];
-          if (v.pos < state.startBp || v.pos > state.endBp) continue;
-          const vy = yGenomeCanonical(v.pos, H);
-          
-          if (Math.abs(y - vy) < 10 && x >= left) {
-            if (state.hoveredVariantIndex !== idx) {
-              state.hoveredVariantIndex = idx;
-              renderHoverOnly();
-            }
-            return;
-          }
-        }
-      } else {
-        const W = readsWidthPx();
-        const top = 8;
-        
-        // Check if mouse is near a variant line
-        for (let idx = 0; idx < variants.length; idx++) {
-          const v = variants[idx];
-          if (v.pos < state.startBp || v.pos > state.endBp) continue;
-          const vx = xGenomeCanonical(v.pos, W);
-          
-          if (Math.abs(x - vx) < 10 && y >= top) {
-            if (state.hoveredVariantIndex !== idx) {
-              state.hoveredVariantIndex = idx;
-              renderHoverOnly();
-            }
-            return;
-          }
-        }
+      if (!contextEl) return;
+      
+      if (state.selectedAlleles.size === 0) {
+        contextEl.style.display = 'none';
+        return;
       }
       
-      // No variant hovered
-      if (state.hoveredVariantIndex !== null) {
-        state.hoveredVariantIndex = null;
-        renderHoverOnly();
-      }
-    };
+      // Count selected alleles
+      const alleleCount = state.selectedAlleles.size;
+      
+      // Show allele count directly in the context div
+      contextEl.textContent = `${alleleCount} ${alleleCount === 1 ? 'allele' : 'alleles'} selected`;
+      contextEl.style.display = 'block';
+    }
     
-    readsLeaveHandler = () => {
-      if (state.hoveredVariantIndex !== null) {
-        state.hoveredVariantIndex = null;
-        renderHoverOnly();
+    // Update strategy section state (enable/disable controls)
+    function updateSampleStrategySection() {
+      const hasSelection = state.selectedAlleles.size > 0;
+      const currentRoot = getCurrentRoot();
+      const strategySectionEl = byId(currentRoot, 'sampleStrategySection');
+      const strategyEl = byId(currentRoot, 'sampleStrategy');
+      const sliderEl = byId(currentRoot, 'sampleCountSlider');
+      const inputEl = byId(currentRoot, 'sampleCountInput');
+      const replaceBtn = byId(currentRoot, 'loadSamplesReplace');
+      const addBtn = byId(currentRoot, 'loadSamplesAdd');
+      
+      // Show/hide entire strategy section based on selection
+      if (strategySectionEl) {
+        strategySectionEl.style.display = hasSelection ? 'block' : 'none';
       }
-    };
+      
+      // Enable/disable controls based on selection
+      const disabled = !hasSelection;
+      if (strategyEl) strategyEl.disabled = disabled;
+      if (sliderEl) sliderEl.disabled = disabled;
+      if (inputEl) inputEl.disabled = disabled;
+      if (replaceBtn) replaceBtn.disabled = disabled;
+      if (addBtn) addBtn.disabled = disabled;
+      
+      // Update "Compare branches" option enablement
+      if (strategyEl) {
+        const compareOption = strategyEl.querySelector('option[value="compare_branches"]');
+        if (compareOption) {
+          // Enable only when 2+ branches selected
+          compareOption.disabled = state.selectedAlleles.size < 2;
+        }
+      }
+      
+      // Update preview
+      updateSamplePreview();
+    }
     
-    // Throttle mousemove handler to 16ms (60fps)
-    const throttledReadsHoverHandler = throttle(readsHoverHandler, 16);
-    reads.addEventListener("mousemove", throttledReadsHoverHandler);
-    reads.addEventListener("mouseleave", readsLeaveHandler);
+    // Update sample preview
+    function updateSamplePreview() {
+      const currentRoot = getCurrentRoot();
+      const previewEl = byId(currentRoot, 'samplePreview');
+      const previewListEl = byId(currentRoot, 'samplePreviewList');
+      const candidates = state.sampleSelection.candidateSamples;
+      
+      if (!previewEl || !previewListEl) return;
+      
+      if (candidates.length === 0) {
+        previewEl.style.display = 'none';
+        return;
+      }
+      
+      // Show first 5 samples + count of remaining
+      const displayCount = Math.min(5, candidates.length);
+      const remaining = candidates.length - displayCount;
+      
+      let text = candidates.slice(0, displayCount).join(', ');
+      if (remaining > 0) {
+        text += `, +${remaining} more`;
+      }
+      
+      previewListEl.textContent = text;
+      previewEl.style.display = 'block';
+    }
+    
+    // Recompute candidate samples based on strategy and selection
+    function recomputeCandidateSamples() {
+      // TODO: Implement actual sample selection logic
+      // For now, just placeholder
+      state.sampleSelection.candidateSamples = [];
+      updateSamplePreview();
+    }
+    
+    // Strategy change handler
+    function onStrategyChange() {
+      const currentRoot = getCurrentRoot();
+      const strategyEl = byId(currentRoot, 'sampleStrategy');
+      if (strategyEl) {
+        state.sampleSelection.strategy = strategyEl.value;
+      }
+      recomputeCandidateSamples();
+    }
+    
+    // Setup sample search with autocomplete
+    function setupSampleSearch() {
+      const currentRoot = getCurrentRoot();
+      const searchInput = byId(currentRoot, 'sampleSearchInput');
+      const resultsEl = byId(currentRoot, 'sampleSearchResults');
+      
+      if (!searchInput || !resultsEl) return;
+      
+      let searchTimeout = null;
+      
+      searchInput.addEventListener('input', (e) => {
+        clearTimeout(searchTimeout);
+        const query = e.target.value.trim().toLowerCase();
+        
+        if (query.length === 0) {
+          resultsEl.style.display = 'none';
+          return;
+        }
+        
+        searchTimeout = setTimeout(() => {
+          // Filter sample IDs by prefix/substring match
+          const matches = state.sampleSelection.allSampleIds
+            .filter(id => id.toLowerCase().includes(query))
+            .slice(0, 8); // Top 8 matches
+          
+          if (matches.length === 0) {
+            resultsEl.style.display = 'none';
+            return;
+          }
+          
+          // Render results
+          resultsEl.innerHTML = '';
+          matches.forEach(sampleId => {
+            const resultEl = document.createElement('div');
+            resultEl.className = 'sampleSearchResult';
+            resultEl.textContent = sampleId;
+            resultEl.addEventListener('click', () => {
+              // TODO: Load reads for this sample
+              console.log('Load sample:', sampleId);
+              searchInput.value = '';
+              resultsEl.style.display = 'none';
+            });
+            resultsEl.appendChild(resultEl);
+          });
+          
+          resultsEl.style.display = 'block';
+        }, 150); // Debounce search
+      });
+      
+      // Hide results when clicking outside
+      document.addEventListener('click', (e) => {
+        if (!searchInput.contains(e.target) && !resultsEl.contains(e.target)) {
+          resultsEl.style.display = 'none';
+        }
+      });
+      
+      // Handle Enter key
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          const firstResult = resultsEl.querySelector('.sampleSearchResult');
+          if (firstResult) {
+            firstResult.click();
+          }
+        }
+      });
+    }
+    
+    // Main update function for selection display
+    function updateSelectionDisplay() {
+      updateSampleContext();
+      updateSampleStrategySection();
+      recomputeCandidateSamples();
+    }
+    
+    // Setup sample selection strategy controls
+    const strategyEl = byId(root, 'sampleStrategy');
+    const sliderEl = byId(root, 'sampleCountSlider');
+    const sampleCountInputEl = byId(root, 'sampleCountInput');
+    const combineAndBtn = byId(root, 'combineAnd');
+    const combineOrBtn = byId(root, 'combineOr');
+    const replaceBtn = byId(root, 'loadSamplesReplace');
+    const addBtn = byId(root, 'loadSamplesAdd');
+    
+    // Strategy dropdown
+    if (strategyEl) {
+      strategyEl.addEventListener('change', onStrategyChange);
+    }
+    
+    // Sample count sync between slider and input
+    if (sliderEl) {
+      sliderEl.addEventListener('input', (e) => {
+        if (sampleCountInputEl) sampleCountInputEl.value = e.target.value;
+        state.sampleSelection.numSamples = parseInt(e.target.value);
+        recomputeCandidateSamples();
+      });
+    }
+    
+    if (sampleCountInputEl) {
+      sampleCountInputEl.addEventListener('change', (e) => {
+        const value = Math.max(1, Math.min(20, parseInt(e.target.value) || 1));
+        if (sliderEl) sliderEl.value = value;
+        sampleCountInputEl.value = value;
+        state.sampleSelection.numSamples = value;
+        recomputeCandidateSamples();
+      });
+    }
+    
+    // Combine mode toggle
+    if (combineAndBtn) {
+      combineAndBtn.addEventListener('click', () => {
+        state.sampleSelection.combineMode = 'AND';
+        combineAndBtn.classList.add('active');
+        if (combineOrBtn) {
+          combineOrBtn.classList.remove('active');
+          combineOrBtn.style.color = 'var(--muted)';
+        }
+        combineAndBtn.style.color = 'white';
+        updateSampleContext();
+        recomputeCandidateSamples();
+      });
+    }
+    
+    if (combineOrBtn) {
+      combineOrBtn.addEventListener('click', () => {
+        state.sampleSelection.combineMode = 'OR';
+        combineOrBtn.classList.add('active');
+        if (combineAndBtn) {
+          combineAndBtn.classList.remove('active');
+          combineAndBtn.style.color = 'var(--muted)';
+        }
+        combineOrBtn.style.color = 'white';
+        updateSampleContext();
+        recomputeCandidateSamples();
+      });
+    }
+    
+    // Load buttons
+    if (replaceBtn && !replaceBtn._listenerAttached) {
+      replaceBtn._listenerAttached = true;
+      replaceBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Use button's disabled state as the loading flag
+        if (replaceBtn.disabled) {
+          return; // Prevent multiple simultaneous loads
+        }
+        
+        if (state.selectedAlleles.size === 0) {
+          console.warn('No alleles selected');
+          return;
+        }
+        
+        replaceBtn.disabled = true;
+        
+        const strategy = state.sampleSelection.strategy;
+        const candidates = state.sampleSelection.candidateSamples;
+        const selectedAlleles = Array.from(state.selectedAlleles);
+        const numSamples = state.sampleSelection.numSamples || 1;
+        
+        // Remove all existing Smart tracks
+        const smartTrackIds = state.smartTracks.map(t => t.id);
+        smartTrackIds.forEach(id => removeSmartTrack(id));
+        
+        // Create Smart tracks based on numSamples
+        const trackPromises = [];
+        for (let i = 0; i < numSamples; i++) {
+          const track = createSmartTrack(strategy, selectedAlleles);
+          
+          // Get sample ID from candidates (cycle through if fewer candidates than requested)
+          let sampleId = null;
+          if (candidates && candidates.length > 0) {
+            sampleId = candidates[i % candidates.length];
+          }
+          
+          // Fetch reads
+          trackPromises.push(
+            fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+              .catch(err => {
+                console.error('Failed to load reads for Smart track:', err);
+              })
+          );
+        }
+        
+        // Re-enable button after all tracks are created (reads may still be loading)
+        Promise.all(trackPromises).finally(() => {
+          replaceBtn.disabled = false;
+        });
+      });
+    }
+    
+    if (addBtn && !addBtn._listenerAttached) {
+      addBtn._listenerAttached = true;
+      addBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Use button's disabled state as the loading flag
+        if (addBtn.disabled) {
+          return; // Prevent multiple simultaneous loads
+        }
+        
+        if (state.selectedAlleles.size === 0) {
+          console.warn('No alleles selected');
+          return;
+        }
+        
+        addBtn.disabled = true;
+        
+        const strategy = state.sampleSelection.strategy;
+        const candidates = state.sampleSelection.candidateSamples;
+        const selectedAlleles = Array.from(state.selectedAlleles);
+        const numSamples = state.sampleSelection.numSamples || 1;
+        
+        // Create Smart tracks based on numSamples (add, don't replace)
+        const trackPromises = [];
+        for (let i = 0; i < numSamples; i++) {
+          const track = createSmartTrack(strategy, selectedAlleles);
+          
+          // Get sample ID from candidates (cycle through if fewer candidates than requested)
+          let sampleId = null;
+          if (candidates && candidates.length > 0) {
+            sampleId = candidates[i % candidates.length];
+          }
+          
+          // Fetch reads
+          trackPromises.push(
+            fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+              .catch(err => {
+                console.error('Failed to load reads for Smart track:', err);
+              })
+          );
+        }
+        
+        // Re-enable button after all tracks are created (reads may still be loading)
+        Promise.all(trackPromises).finally(() => {
+          addBtn.disabled = false;
+        });
+      });
+    }
+    
+    // Setup search
+    setupSampleSearch();
+    
+    // Initial update
+    updateSelectionDisplay();
+    
+    // Export updateSelectionDisplay so it can be called after selection changes
+    window.updateSelectionDisplay = updateSelectionDisplay;
   }
 
   function updateFlowAndReadsPosition() {
@@ -8115,7 +10220,7 @@
     const isVertical = isVerticalMode();
     
     const flowLayout = layout.find(l => l.track.id === "flow");
-    if (flowLayout) {
+    if (flowLayout && flow) {
       if (isVertical) {
         flow.style.left = `${flowLayout.contentLeft}px`;
         flow.style.width = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentWidth}px`;
@@ -8130,23 +10235,17 @@
       flow.style.display = flowLayout.track.collapsed ? "none" : "block";
     }
     
-    const readsLayout = layout.find(l => l.track.id === "reads");
-    if (readsLayout) {
-      if (isVertical) {
-        reads.style.left = `${readsLayout.contentLeft}px`;
-        // Extend Reads track to the right edge of the main container
-        const mainWidth = rectW(main);
-        reads.style.width = readsLayout.track.collapsed ? "0px" : `${mainWidth - readsLayout.contentLeft}px`;
-        reads.style.top = "0";
-        reads.style.height = "100%";
-      } else {
-        reads.style.top = `${readsLayout.contentTop}px`;
-        reads.style.height = readsLayout.track.collapsed ? "0px" : `${readsLayout.contentHeight}px`;
-        reads.style.left = "0";
-        reads.style.width = "100%";
+    // Update Smart track container positions (actual rendering is done in renderSmartTrack)
+    // This is just for initial positioning
+    state.smartTracks.forEach(track => {
+      const trackLayout = layout.find(l => l.track.id === track.id);
+      if (trackLayout) {
+        const renderer = state.smartTrackRenderers.get(track.id);
+        if (renderer && renderer.container) {
+          // Position is handled in renderSmartTrack, but we ensure container exists
+        }
       }
-      reads.style.display = readsLayout.track.collapsed ? "none" : "block";
-    }
+    });
   }
 
   // -----------------------------
@@ -8249,6 +10348,72 @@
       const path = e.composedPath ? e.composedPath() : [];
       if (!path.includes(main)) return;
 
+      // Allow scrolling in reads container - don't intercept wheel events there
+      const readsEl = byId(root, "reads");
+      if (readsEl) {
+        // Check if event target is within reads container (including canvas children)
+        const target = e.target;
+        if (readsEl.contains(target) || path.includes(readsEl)) {
+          // Check if reads container is scrollable and has overflow
+          if (readsEl.scrollHeight > readsEl.clientHeight) {
+            // Allow native scrolling - don't prevent default
+            return;
+          }
+        }
+      }
+
+      // Allow scrolling in Smart Tracks even if container has pointer-events:none
+      // Determine if wheel event is over a Smart Track content area
+      const smartTracks = state.smartTracks || [];
+      if (smartTracks.length > 0) {
+        const layout = getTrackLayout();
+        const svgRect = tracksSvg.getBoundingClientRect();
+        const isVertical = isVerticalMode();
+        const clientX = e.clientX;
+        const clientY = e.clientY;
+        const xInPane = clientX - svgRect.left;
+        const yInPane = clientY - svgRect.top;
+        for (const track of smartTracks) {
+          const layoutItem = layout.find(l => l.track.id === track.id);
+          if (!layoutItem) continue;
+          const inTrack = isVertical
+            ? (xInPane >= layoutItem.contentLeft && xInPane <= layoutItem.contentLeft + layoutItem.contentWidth)
+            : (yInPane >= layoutItem.contentTop && yInPane <= layoutItem.contentTop + layoutItem.contentHeight);
+          if (!inTrack) continue;
+
+          const renderer = state.smartTrackRenderers.get(track.id);
+          if (!renderer || !renderer.container) continue;
+          const container = renderer.container;
+          if (!container.classList.contains('scrollable')) continue;
+
+          // Scroll the Smart Track container directly
+          e.preventDefault();
+          e.stopPropagation();
+          const delta = isVertical ? e.deltaX : e.deltaY;
+          const maxScroll = container.scrollHeight - container.clientHeight;
+          if (maxScroll > 0) {
+            const next = Math.max(0, Math.min(maxScroll, container.scrollTop + delta));
+            if (next !== container.scrollTop) {
+              container.scrollTop = next;
+              renderSmartTrack(track.id);
+            }
+          }
+          return;
+        }
+      }
+
+      // Allow scrolling in Smart Track containers - don't intercept wheel events there
+      const target = e.target;
+      for (const [trackId, renderer] of state.smartTrackRenderers.entries()) {
+        const smartContainer = renderer.container;
+        if (smartContainer && (smartContainer.contains(target) || path.includes(smartContainer))) {
+          // If smart track is scrollable, allow native scrolling
+          if (smartContainer.classList.contains('scrollable')) {
+            return;
+          }
+        }
+      }
+
       const isPinchZoom = e.ctrlKey === true || e.metaKey === true;
       const isVertical = isVerticalMode();
       const dx = e.deltaX;
@@ -8295,7 +10460,7 @@
           e.preventDefault();
           e.stopPropagation(); // Prevent bubbling to window/document
           const panDx = e.shiftKey ? dy : dx;
-          panByPixels(panDx, 0);
+          panByPixels(-panDx, 0);
           return;
         }
 
@@ -8384,7 +10549,7 @@
         if (isVertical) {
           panByPixels(0, -dy);
         } else {
-          panByPixels(-dx, 0);
+          panByPixels(dx, 0);
         }
       }
     };
@@ -8470,8 +10635,16 @@
   // -----------------------------
   if (trackControls) {
   trackControls.addEventListener("pointerdown", (e) => {
-    // Don't start drag if clicking on collapse button
-    if (e.target.closest(".track-collapse-btn")) {
+    // Don't start drag if clicking on buttons or interactive elements
+    if (e.target.closest(".track-collapse-btn") ||
+        e.target.closest(".smart-track-close-btn") ||
+        e.target.closest(".smart-track-reload-btn") ||
+        e.target.closest(".smart-track-shuffle-btn") ||
+        e.target.closest(".smart-track-strategy-select") ||
+        e.target.closest(".smart-track-label-input") ||
+        e.target.closest("button") ||
+        e.target.closest("select") ||
+        e.target.closest("input")) {
       e.stopPropagation();
       return;
     }
@@ -8653,7 +10826,6 @@
     }
     renderAll();
   }, 100)).observe(flow);
-  new ResizeObserver(debounce(() => renderAll(), 100)).observe(reads);
   new ResizeObserver(debounce(() => {
     // Handle WebGPU canvas resize when tracks container resizes
     if (webgpuCore && webgpuSupported) {

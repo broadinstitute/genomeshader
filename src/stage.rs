@@ -13,7 +13,7 @@ use rust_htslib::bam::IndexedReader;
 use crate::alignment::extract_reads;
 use crate::env::{ gcs_authorize_data_access, local_guess_curl_ca_bundle };
 
-fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader> {
+pub fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader> {
     env::set_current_dir(cache_path).unwrap();
 
     let bam = match IndexedReader::from_url(reads_url) {
@@ -162,6 +162,25 @@ fn locus_should_be_fetched(
     }
 
     false
+}
+
+/// Fetch reads from a single BAM file for a given locus.
+/// This is a lightweight function for on-demand loading.
+pub fn fetch_reads_from_first_bam(
+    reads_url: &Url,
+    cohort: &String,
+    chr: &String,
+    start: &u64,
+    stop: &u64,
+    cache_path: &PathBuf
+) -> Result<DataFrame> {
+    // Disable stderr from trying to open an IndexedReader
+    let _stderr_gag = Gag::stderr().unwrap();
+    
+    let mut bam = open_bam(reads_url, cache_path)?;
+    let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop)?;
+    
+    Ok(df)
 }
 
 pub fn stage_data(
