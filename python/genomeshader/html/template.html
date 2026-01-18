@@ -10204,7 +10204,7 @@
     const isVertical = isVerticalMode();
     
     const flowLayout = layout.find(l => l.track.id === "flow");
-    if (flowLayout) {
+    if (flowLayout && flow) {
       if (isVertical) {
         flow.style.left = `${flowLayout.contentLeft}px`;
         flow.style.width = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentWidth}px`;
