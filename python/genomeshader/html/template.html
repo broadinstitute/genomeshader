@@ -10460,7 +10460,7 @@
           e.preventDefault();
           e.stopPropagation(); // Prevent bubbling to window/document
           const panDx = e.shiftKey ? dy : dx;
-          panByPixels(panDx, 0);
+          panByPixels(-panDx, 0);
           return;
         }
 
@@ -10549,7 +10549,7 @@
         if (isVertical) {
           panByPixels(0, -dy);
         } else {
-          panByPixels(-dx, 0);
+          panByPixels(dx, 0);
         }
       }
     };
