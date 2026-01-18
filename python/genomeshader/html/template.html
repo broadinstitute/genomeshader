@@ -586,6 +586,12 @@
       z-index: 10;
       cursor: move;
     }
+    /* Smart track controls should allow button clicks */
+    .track-controls button,
+    .track-controls select {
+      pointer-events: auto;
+      z-index: 20;
+    }
     .main.vertical .track-controls {
       top: auto;
     }
@@ -616,6 +622,14 @@
       color: var(--muted);
       user-select: none;
       pointer-events: none;
+    }
+    /* Smart track labels are clickable */
+    .track-controls[data-track-id^="smart-track-"] .track-label {
+      pointer-events: auto;
+      cursor: text;
+    }
+    .track-controls[data-track-id^="smart-track-"] .track-label:hover {
+      color: var(--text);
     }
 
     /* Vertical mode: track controls at bottom, vertically oriented */
@@ -660,6 +674,81 @@
       order: 2;
       margin-top: 0;
       margin-bottom: 0;
+    }
+
+    /* Smart track controls */
+    .smart-track-label-input {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      padding: 2px 4px;
+      outline: none;
+    }
+    .smart-track-label-input:focus {
+      border-color: var(--blue);
+      color: var(--text);
+    }
+    
+    .smart-track-strategy-select {
+      font-size: 11px;
+      padding: 2px 4px;
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      outline: none;
+    }
+    .smart-track-strategy-select:hover {
+      background: var(--panel2);
+      border-color: var(--border);
+    }
+    .smart-track-strategy-select:focus {
+      border-color: var(--blue);
+    }
+    
+    .smart-track-refresh-btn,
+    .smart-track-close-btn {
+      font-size: 16px;
+      padding: 0;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      outline: none;
+      transition: color 0.15s ease;
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+    .smart-track-refresh-btn:hover {
+      color: var(--text);
+    }
+    .smart-track-close-btn:hover {
+      color: var(--text);
+    }
+    .smart-track-refresh-btn:active {
+      transform: scale(0.95);
+    }
+    .smart-track-close-btn:active {
+      opacity: 0.7;
+    }
+    
+    .smart-track-container {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .smart-track-container canvas {
+      pointer-events: none;
     }
 
     .track-resize-handle {
@@ -755,6 +844,7 @@
             <option value="most_diverse">Most diverse</option>
             <option value="compare_branches">Compare branches</option>
             <option value="carriers_controls">Carriers + controls</option>
+            <option value="random">Random</option>
           </select>
         </div>
         
@@ -2015,6 +2105,308 @@
   window.genomeshader_fetchReads = fetchReadsFromPython;
 
   // -----------------------------
+  // Smart Tracks
+  // -----------------------------
+  
+  // Create a new Smart track
+  function createSmartTrack(strategy, selectedAlleles) {
+    const timestamp = Date.now();
+    const index = state.smartTracks.length;
+    const trackId = `smart-track-${timestamp}-${index}`;
+    
+    // Create track object
+    const track = {
+      id: trackId,
+      label: `Smart Track ${index + 1}`,
+      collapsed: false,
+      height: 220,
+      minHeight: 50,
+      strategy: strategy,
+      selectedAlleles: new Set(selectedAlleles),
+      sampleId: null,
+      readsData: null,
+      readsLayout: null,
+      loading: false
+    };
+    
+    // Add to smartTracks array
+    state.smartTracks.push(track);
+    
+    // Find Reads track index and insert after it
+    const readsIndex = state.tracks.findIndex(t => t.id === "reads");
+    const insertIndex = readsIndex >= 0 ? readsIndex + 1 : state.tracks.length;
+    state.tracks.splice(insertIndex, 0, track);
+    
+    // Initialize WebGPU renderer
+    initSmartTrackWebGPU(trackId);
+    
+    // Update layout
+    updateTracksHeight();
+    renderAll();
+    
+    return track;
+  }
+  
+  // Initialize WebGPU renderer for a Smart track
+  async function initSmartTrackWebGPU(trackId) {
+    if (!webgpuSupported || !navigator.gpu) {
+      console.warn('WebGPU not supported, Smart track will use Canvas2D fallback');
+      return;
+    }
+    
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    // Find tracks container
+    const tracksContainer = document.getElementById('tracksContainer');
+    if (!tracksContainer) return;
+    
+    // Create container div for this Smart track
+    const container = document.createElement('div');
+    container.className = 'smart-track-container';
+    container.id = `smart-track-container-${trackId}`;
+    container.dataset.trackId = trackId;
+    container.style.position = 'absolute';
+    container.style.width = '100%';
+    container.style.height = '100%';
+    container.style.pointerEvents = 'none';
+    
+    // Create Canvas2D canvas
+    const canvas = document.createElement('canvas');
+    canvas.className = 'canvas';
+    canvas.id = `smart-track-canvas-${trackId}`;
+    canvas.style.position = 'absolute';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.pointerEvents = 'none';
+    
+    // Create WebGPU canvas
+    const webgpuCanvas = document.createElement('canvas');
+    webgpuCanvas.className = 'webgpu-canvas';
+    webgpuCanvas.id = `smart-track-webgpu-${trackId}`;
+    webgpuCanvas.style.position = 'absolute';
+    webgpuCanvas.style.top = '0';
+    webgpuCanvas.style.left = '0';
+    webgpuCanvas.style.width = '100%';
+    webgpuCanvas.style.height = '100%';
+    webgpuCanvas.style.pointerEvents = 'none';
+    
+    container.appendChild(canvas);
+    container.appendChild(webgpuCanvas);
+    tracksContainer.appendChild(container);
+    
+    try {
+      // Wait for canvas to have dimensions
+      const checkDimensions = () => {
+        const rect = webgpuCanvas.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      
+      // Wait up to 2 seconds for dimensions
+      for (let i = 0; i < 40; i++) {
+        if (checkDimensions()) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      
+      if (!checkDimensions()) {
+        console.warn(`Smart track ${trackId}: Canvas dimensions not ready`);
+        return;
+      }
+      
+      // Initialize WebGPU
+      const webgpuCore = new WebGPUCore();
+      await webgpuCore.init(webgpuCanvas);
+      const instancedRenderer = new InstancedRenderer(webgpuCore);
+      
+      // Store renderer objects
+      state.smartTrackRenderers.set(trackId, {
+        webgpuCore,
+        instancedRenderer,
+        canvas,
+        webgpuCanvas,
+        container
+      });
+      
+      // Add scroll event listener for horizontal mode
+      container.addEventListener("scroll", () => {
+        renderSmartTrack(trackId);
+      });
+      
+      console.log(`Smart track ${trackId}: WebGPU initialized`);
+    } catch (error) {
+      console.warn(`Smart track ${trackId}: Failed to initialize WebGPU:`, error);
+      // Continue without WebGPU - will use Canvas2D fallback
+      
+      // Still store the renderer objects (without WebGPU)
+      state.smartTrackRenderers.set(trackId, {
+        webgpuCore: null,
+        instancedRenderer: null,
+        canvas,
+        webgpuCanvas: null,
+        container
+      });
+      
+      // Add scroll event listener even without WebGPU
+      container.addEventListener("scroll", () => {
+        renderSmartTrack(trackId);
+      });
+    }
+  }
+  
+  // Remove WebGPU renderer for a Smart track
+  function removeSmartTrackWebGPU(trackId) {
+    const renderer = state.smartTrackRenderers.get(trackId);
+    if (renderer) {
+      // Clean up WebGPU resources
+      if (renderer.webgpuCore && renderer.webgpuCore.device) {
+        // WebGPU cleanup is handled automatically when canvas is removed
+      }
+      
+      // Remove DOM elements
+      if (renderer.container) {
+        if (renderer.container.parentNode) {
+          renderer.container.parentNode.removeChild(renderer.container);
+        }
+        // Also try to remove by ID as fallback
+        const containerById = document.getElementById(`smart-track-container-${trackId}`);
+        if (containerById && containerById.parentNode) {
+          containerById.parentNode.removeChild(containerById);
+        }
+      }
+      
+      // Remove from Map
+      state.smartTrackRenderers.delete(trackId);
+    }
+  }
+  
+  // Fetch reads for a Smart track
+  function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) {
+      console.error(`Smart track ${trackId} not found`);
+      return Promise.reject(new Error('Track not found'));
+    }
+    
+    track.loading = true;
+    renderAll();
+    
+    // Convert selectedAlleles Set to array
+    const allelesArray = Array.from(selectedAlleles);
+    
+    return sendCommMessage('fetch_reads', {
+      strategy: strategy,
+      selected_alleles: allelesArray,
+      sample_id: sampleId || null
+    })
+      .then(function(response) {
+        track.loading = false;
+        if (response.type === 'fetch_reads_response') {
+          console.log(`Smart track ${trackId}: Received ${response.count} read elements`);
+          track.readsData = response.reads;
+          track.readsLayout = processReadsData(response.reads);
+          track.sampleId = sampleId || response.sample_id || null;
+          renderAll();
+          return track.readsLayout;
+        } else if (response.type === 'fetch_reads_error') {
+          throw new Error(response.error);
+        }
+        return null;
+      })
+      .catch(function(err) {
+        track.loading = false;
+        console.error(`Smart track ${trackId}: Failed to fetch reads:`, err);
+        renderAll();
+        throw err;
+      });
+  }
+  
+  // Remove a Smart track
+  function removeSmartTrack(trackId) {
+    // Remove from tracks array
+    const trackIndex = state.tracks.findIndex(t => t.id === trackId);
+    if (trackIndex >= 0) {
+      state.tracks.splice(trackIndex, 1);
+    }
+    
+    // Remove from smartTracks array
+    const smartIndex = state.smartTracks.findIndex(t => t.id === trackId);
+    if (smartIndex >= 0) {
+      state.smartTracks.splice(smartIndex, 1);
+    }
+    
+    // Clean up WebGPU renderer
+    removeSmartTrackWebGPU(trackId);
+    
+    // Update layout and re-render
+    updateTracksHeight();
+    renderAll();
+  }
+  
+  // Update Smart track strategy and reload
+  function updateSmartTrackStrategy(trackId, newStrategy) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    track.strategy = newStrategy;
+    
+    // Get candidate samples based on new strategy
+    const candidates = state.sampleSelection.candidateSamples;
+    const sampleId = candidates && candidates.length > 0 ? candidates[0] : null;
+    
+    // Fetch reads with new strategy
+    fetchReadsForSmartTrack(trackId, newStrategy, track.selectedAlleles, sampleId)
+      .catch(err => {
+        console.error(`Failed to update strategy for track ${trackId}:`, err);
+      });
+  }
+  
+  // Refresh Smart track (reload with new sample)
+  function refreshSmartTrack(trackId) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    // Recompute candidate samples based on current strategy
+    // For now, just get a new sample from candidates
+    const candidates = state.sampleSelection.candidateSamples;
+    let sampleId = null;
+    
+    if (candidates && candidates.length > 0) {
+      // If we have a current sample, try to get a different one
+      if (track.sampleId && candidates.includes(track.sampleId)) {
+        const currentIndex = candidates.indexOf(track.sampleId);
+        const nextIndex = (currentIndex + 1) % candidates.length;
+        sampleId = candidates[nextIndex];
+      } else {
+        // Just use the first candidate
+        sampleId = candidates[0];
+      }
+    }
+    
+    // Fetch reads again
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
+      .catch(err => {
+        console.error(`Failed to refresh track ${trackId}:`, err);
+      });
+  }
+  
+  // Update Smart track label
+  function editSmartTrackLabel(trackId, newLabel) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    // Also update in tracks array
+    const trackInArray = state.tracks.find(t => t.id === trackId);
+    if (trackInArray) {
+      trackInArray.label = newLabel;
+    }
+    
+    track.label = newLabel;
+    renderAll();
+  }
+
+  // -----------------------------
   // Theme + menu
   // -----------------------------
   // Find root container for scoping event handlers in inline mode
@@ -2910,6 +3302,10 @@
       candidateSamples: [], // Will be populated when selection changes
       allSampleIds: [] // All available sample IDs (populated from data)
     },
+    
+    // Smart tracks state
+    smartTracks: [], // Array of Smart track instances
+    smartTrackRenderers: new Map(), // Map<trackId, { webgpuCore, instancedRenderer, canvas, webgpuCanvas, container }>
     
     // allele context menu state: { x, y, visible } or null
     alleleContextMenu: null
@@ -8186,6 +8582,458 @@
     }
   }
 
+  // Render a Smart track
+  function renderSmartTrack(trackId) {
+    const track = state.smartTracks.find(t => t.id === trackId);
+    if (!track) return;
+    
+    const layout = getTrackLayout();
+    const trackLayout = layout.find(l => l.track.id === trackId);
+    if (!trackLayout || trackLayout.track.collapsed) {
+      // Clear WebGPU renderer instances if collapsed
+      const renderer = state.smartTrackRenderers.get(trackId);
+      if (renderer && renderer.instancedRenderer) {
+        renderer.instancedRenderer.clear();
+      }
+      return;
+    }
+    
+    const renderer = state.smartTrackRenderers.get(trackId);
+    if (!renderer) return;
+    
+    const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore } = renderer;
+    
+    // Position container based on layout
+    const isVertical = isVerticalMode();
+    if (isVertical) {
+      container.style.left = `${trackLayout.contentLeft}px`;
+      container.style.width = `${trackLayout.contentWidth}px`;
+      container.style.top = "0";
+      container.style.height = "100%";
+    } else {
+      container.style.top = `${trackLayout.contentTop}px`;
+      container.style.left = "0";
+      container.style.width = "100%";
+      container.style.height = `${trackLayout.contentHeight}px`;
+    }
+    container.style.display = trackLayout.track.collapsed ? "none" : "block";
+    
+    if (!canvas || !webgpuCanvas) return;
+    
+    const dpr = window.devicePixelRatio || 1;
+    const W = isVertical ? trackLayout.contentHeight : trackLayout.contentWidth;
+    let H = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+    
+    // Calculate total content height if reads are loaded (horizontal mode)
+    let totalContentHeight = H;
+    if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+      const top = 8;
+      const rowH = 18;
+      const totalRows = track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1;
+      totalContentHeight = top + totalRows * rowH + 12;
+      
+      container.style.display = 'grid';
+      container.style.gridTemplateRows = '1fr';
+      container.style.gridTemplateColumns = '1fr';
+      container.style.height = `${trackLayout.contentHeight}px`;
+      container.style.overflowY = 'auto';
+      container.style.overflowX = 'hidden';
+      
+      canvas.height = totalContentHeight * dpr;
+      canvas.style.height = totalContentHeight + 'px';
+      canvas.style.width = W + 'px';
+      canvas.style.gridRow = '1';
+      canvas.style.gridColumn = '1';
+      canvas.style.position = 'static';
+      canvas.width = W * dpr;
+      
+      webgpuCanvas.style.height = totalContentHeight + 'px';
+      webgpuCanvas.style.width = W + 'px';
+      webgpuCanvas.style.gridRow = '1';
+      webgpuCanvas.style.gridColumn = '1';
+      webgpuCanvas.style.position = 'static';
+    } else {
+      container.style.display = '';
+      container.style.gridTemplateRows = '';
+      container.style.gridTemplateColumns = '';
+      canvas.style.gridRow = '';
+      canvas.style.gridColumn = '';
+      webgpuCanvas.style.gridRow = '';
+      webgpuCanvas.style.gridColumn = '';
+      resizeCanvasTo(container, canvas);
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+    }
+    
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.scale(dpr, dpr);
+    
+    // Clear WebGPU renderer instances
+    if (instancedRenderer) {
+      instancedRenderer.clear();
+    }
+    
+    const colText = cssVar("--muted");
+    const grid = cssVar("--grid2");
+    
+    const bgHeight = (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) ? totalContentHeight : H;
+    ctx.fillStyle = "rgba(127,127,127,0.02)";
+    ctx.fillRect(0,0,W,bgHeight);
+    
+    if (isVertical) {
+      const coordHeight = H;
+      const left = 8;
+      const colW = 18;
+      const cols = Math.floor((W - left - 12) / colW);
+      
+      // Draw column lines
+      ctx.strokeStyle = grid;
+      ctx.lineWidth = 1;
+      for (let i=0; i<cols; i++) {
+        const x = left + i*colW + colW/2;
+        ctx.beginPath();
+        ctx.moveTo(x, 16);
+        ctx.lineTo(x, H-16);
+        ctx.stroke();
+      }
+      
+      // Draw reads if available
+      if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+        const maxCols = Math.floor((W - left - 12) / colW);
+        for (const read of track.readsLayout.reads) {
+          if (read.row >= maxCols) continue;
+          if (read.end < state.startBp || read.start > state.endBp) continue;
+          
+          let color, alpha;
+          if (read.haplotype === 1) {
+            color = [255, 100, 100];
+            alpha = 0.5;
+          } else if (read.haplotype === 2) {
+            color = [100, 100, 255];
+            alpha = 0.5;
+          } else {
+            color = [150, 150, 150];
+            alpha = 0.35;
+          }
+          if (!read.isForward) alpha *= 0.7;
+          
+          const y1 = yGenomeCanonical(read.start, coordHeight);
+          const y2 = yGenomeCanonical(read.end, coordHeight);
+          const x = left + read.row * colW + 2;
+          const w = colW - 4;
+          const y = Math.min(y1, y2);
+          const h = Math.max(4, Math.abs(y2 - y1));
+          
+          if (instancedRenderer && webgpuSupported) {
+            instancedRenderer.addRect(
+              x * dpr, y * dpr,
+              w * dpr, h * dpr,
+              [color[0]/255, color[1]/255, color[2]/255, alpha]
+            );
+          } else {
+            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+            ctx.beginPath();
+            roundRect(ctx, x, y, w, h, 3);
+            ctx.fill();
+          }
+          
+          // Draw insertion/deletion/diff markers (vertical mode)
+          if (read.elements && read.elements.length > 0) {
+            for (const elem of read.elements) {
+              if (elem.start < state.startBp || elem.start > state.endBp) continue;
+              const ey = yGenomeCanonical(elem.start, coordHeight);
+              const ex = x;
+              const ew = w;
+              
+              if (elem.type === 2) { // Insertion - purple tick
+                ctx.fillStyle = 'rgba(200,100,255,0.9)';
+                ctx.fillRect(ex, ey - 1, ew, 2);
+              } else if (elem.type === 3) { // Deletion - black gap
+                const ey2 = yGenomeCanonical(elem.end, coordHeight);
+                const delY = Math.min(ey, ey2);
+                const delH = Math.max(2, Math.abs(ey2 - ey));
+                ctx.fillStyle = 'rgba(0,0,0,0.4)';
+                ctx.fillRect(ex + ew/4, delY, ew/2, delH);
+              } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
+                // Calculate actual base height
+                const nextBp = elem.start + 1;
+                const nextY = (nextBp <= state.endBp ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(state.endBp, coordHeight));
+                const actualBaseHeight = Math.max(2, Math.abs(nextY - ey));
+                
+                // Color based on nucleotide
+                const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
+                const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
+                const bgColor = nucColors[nuc] || '#9C27B0';
+                
+                // Draw background
+                const drawHeight = Math.max(2, actualBaseHeight);
+                ctx.fillStyle = bgColor;
+                ctx.fillRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight);
+                
+                // Draw nucleotide letter only if there's enough space
+                if (actualBaseHeight >= 8) {
+                  ctx.save();
+                  ctx.fillStyle = 'white';
+                  ctx.font = `bold ${Math.min(10, ew - 4)}px monospace`;
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  // Rotate text -90 degrees for vertical mode
+                  ctx.translate(ex + ew/2, ey);
+                  ctx.rotate(-Math.PI / 2);
+                  ctx.fillText(nuc, 0, 0);
+                  ctx.restore();
+                }
+              }
+            }
+          }
+        }
+      } else if (track.loading) {
+        ctx.fillStyle = cssVar("--muted");
+        ctx.font = "14px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Loading...", W/2, H/2);
+      }
+      
+      // Draw variant markers
+      for (let idx = 0; idx < variants.length; idx++) {
+        const v = variants[idx];
+        if (v.pos < state.startBp || v.pos > state.endBp) continue;
+        const isHovered = state.hoveredVariantIndex === idx;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.3;
+        ctx.lineWidth = isHovered ? 2.5 : 1;
+        const y = yGenomeCanonical(v.pos, coordHeight);
+        ctx.beginPath();
+        ctx.moveTo(left, y);
+        ctx.lineTo(W-10, y);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    } else {
+      // Horizontal mode
+      const top = 8;
+      const rowH = 18;
+      
+      let totalRows = Math.floor((H - top - 12) / rowH);
+      if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+        totalRows = track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1;
+        const scrollTop = container.scrollTop || 0;
+        
+        const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
+        const endRow = Math.min(totalRows, Math.ceil((scrollTop + H) / rowH) + 1);
+        
+        ctx.strokeStyle = grid;
+        ctx.lineWidth = 1;
+        for (let i = startRow; i < endRow; i++) {
+          const y = top + i*rowH + rowH/2 - scrollTop;
+          if (y >= -rowH && y <= totalContentHeight + rowH) {
+            ctx.beginPath();
+            ctx.moveTo(16, y);
+            ctx.lineTo(W-16, y);
+            ctx.stroke();
+          }
+        }
+      } else {
+        ctx.strokeStyle = grid;
+        ctx.lineWidth = 1;
+        const rows = Math.floor((H - top - 12) / rowH);
+        for (let i=0; i<rows; i++) {
+          const y = top + i*rowH + rowH/2;
+          ctx.beginPath();
+          ctx.moveTo(16, y);
+          ctx.lineTo(W-16, y);
+          ctx.stroke();
+        }
+      }
+      
+      // Draw reads if available
+      if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+        const scrollTop = container.scrollTop || 0;
+        for (const read of track.readsLayout.reads) {
+          if (read.end < state.startBp || read.start > state.endBp) continue;
+          
+          let color, alpha;
+          if (read.haplotype === 1) {
+            color = [255, 100, 100];
+            alpha = 0.5;
+          } else if (read.haplotype === 2) {
+            color = [100, 100, 255];
+            alpha = 0.5;
+          } else {
+            color = [150, 150, 150];
+            alpha = 0.35;
+          }
+          if (!read.isForward) alpha *= 0.7;
+          
+          const x1 = xGenomeCanonical(read.start, W);
+          const x2 = xGenomeCanonical(read.end, W);
+          const y = top + read.row * rowH + 2 - scrollTop;
+          const h = rowH - 4;
+          const x = Math.max(0, x1);
+          const w = Math.max(4, Math.min(x2, W) - x);
+          
+          if (y + h < 0 || y > totalContentHeight) continue;
+          
+          if (instancedRenderer && webgpuSupported) {
+            instancedRenderer.addRect(
+              x * dpr, y * dpr,
+              w * dpr, h * dpr,
+              [color[0]/255, color[1]/255, color[2]/255, alpha]
+            );
+          } else {
+            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+            ctx.beginPath();
+            roundRect(ctx, x, y, w, h, 3);
+            ctx.fill();
+          }
+          
+          // Draw direction arrow
+          ctx.fillStyle = `rgba(255,255,255,0.6)`;
+          const arrowSize = Math.min(6, w * 0.2);
+          if (read.isForward) {
+            // Arrow pointing right
+            ctx.beginPath();
+            ctx.moveTo(x + w - arrowSize - 2, y + h/2 - arrowSize/2);
+            ctx.lineTo(x + w - 2, y + h/2);
+            ctx.lineTo(x + w - arrowSize - 2, y + h/2 + arrowSize/2);
+            ctx.fill();
+          } else {
+            // Arrow pointing left
+            ctx.beginPath();
+            ctx.moveTo(x + arrowSize + 2, y + h/2 - arrowSize/2);
+            ctx.lineTo(x + 2, y + h/2);
+            ctx.lineTo(x + arrowSize + 2, y + h/2 + arrowSize/2);
+            ctx.fill();
+          }
+          
+          // Draw insertion/deletion/diff markers (horizontal mode)
+          if (read.elements && read.elements.length > 0) {
+            for (const elem of read.elements) {
+              if (elem.start < state.startBp || elem.start > state.endBp) continue;
+              const ex = xGenomeCanonical(elem.start, W);
+              const ey = y;
+              const eh = h;
+              
+              if (elem.type === 2) { // Insertion - purple tick
+                ctx.fillStyle = 'rgba(200,100,255,0.9)';
+                ctx.fillRect(ex - 1, ey, 2, eh);
+              } else if (elem.type === 3) { // Deletion - black gap
+                const ex2 = xGenomeCanonical(elem.end, W);
+                ctx.fillStyle = 'rgba(0,0,0,0.4)';
+                ctx.fillRect(ex, ey + eh/4, ex2 - ex, eh/2);
+              } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
+                // Calculate actual base width
+                const nextBp = elem.start + 1;
+                const nextX = nextBp <= state.endBp ? xGenomeCanonical(nextBp, W) : xGenomeCanonical(state.endBp, W);
+                const actualBaseWidth = Math.max(2, Math.abs(nextX - ex));
+                
+                // Color based on nucleotide
+                const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
+                const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
+                const bgColor = nucColors[nuc] || '#9C27B0';
+                
+                // Draw background
+                const drawWidth = Math.max(2, actualBaseWidth);
+                ctx.fillStyle = bgColor;
+                ctx.fillRect(ex, ey + 1, drawWidth, eh - 2);
+                
+                // Draw nucleotide letter only if there's enough space
+                if (actualBaseWidth >= 8) {
+                  ctx.fillStyle = 'white';
+                  ctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  ctx.fillText(nuc, ex + drawWidth/2, ey + eh/2);
+                }
+              }
+            }
+          }
+        }
+      } else if (track.loading) {
+        ctx.fillStyle = cssVar("--muted");
+        ctx.font = "14px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Loading...", W/2, H/2);
+      }
+      
+      // Draw variant markers
+      for (let idx = 0; idx < variants.length; idx++) {
+        const v = variants[idx];
+        if (v.pos < state.startBp || v.pos > state.endBp) continue;
+        const isHovered = state.hoveredVariantIndex === idx;
+        ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
+        ctx.globalAlpha = isHovered ? 0.7 : 0.3;
+        ctx.lineWidth = isHovered ? 2.5 : 1;
+        const x = xGenomeCanonical(v.pos, W);
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, totalContentHeight || H-10);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    }
+    
+    // Execute WebGPU render pass
+    if (webgpuSupported && instancedRenderer && 
+        (instancedRenderer.rectInstances.length > 0 || instancedRenderer.lineInstances.length > 0)) {
+      try {
+        const width = webgpuCanvas.clientWidth * dpr;
+        let height = webgpuCanvas.clientHeight * dpr;
+        if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+          height = totalContentHeight * dpr;
+          webgpuCanvas.height = height;
+        }
+        
+        if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
+          webgpuCanvas.width = width;
+          webgpuCanvas.height = height;
+          webgpuCore.handleResize();
+        }
+        
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        
+        instancedRenderer.render(encoder, renderPass);
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        console.error(`Smart track ${trackId} WebGPU render error:`, error);
+        if (instancedRenderer) instancedRenderer.clear();
+      }
+    } else if (webgpuSupported && instancedRenderer) {
+      // Clear WebGPU canvas if no instances
+      try {
+        const encoder = webgpuCore.createCommandEncoder();
+        const texture = webgpuCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        renderPass.end();
+        webgpuCore.submit([encoder.finish()]);
+      } catch (error) {
+        // Ignore errors when clearing
+      }
+    }
+  }
+
   // -----------------------------
   // Track controls rendering
   // -----------------------------
@@ -8237,40 +9085,221 @@
 
       const label = document.createElement("div");
       label.className = "track-label";
-      // For the Locus track, append the extent in parentheses
-      if (track.id === "ruler") {
-        const extent = Math.floor(state.endBp) - Math.floor(state.startBp);
-        label.textContent = `${track.label} (${extent.toLocaleString()} bp)`;
-      } else {
+      
+      // Check if this is a Smart track
+      const isSmartTrack = track.id.startsWith("smart-track-");
+      
+      if (isSmartTrack) {
+        // Make label editable for Smart tracks
+        label.style.cursor = "text";
+        label.contentEditable = false;
+        label.title = "Click to edit label";
+        
+        // Create input field for editing (hidden initially)
+        const labelInput = document.createElement("input");
+        labelInput.type = "text";
+        labelInput.className = "smart-track-label-input";
+        labelInput.value = track.label;
+        labelInput.style.display = "none";
+        labelInput.style.fontSize = "12px";
+        labelInput.style.fontWeight = "600";
+        labelInput.style.color = "var(--muted)";
+        labelInput.style.background = "transparent";
+        labelInput.style.border = "1px solid var(--border2)";
+        labelInput.style.borderRadius = "4px";
+        labelInput.style.padding = "2px 4px";
+        labelInput.style.width = "auto";
+        labelInput.style.minWidth = "100px";
+        labelInput.style.maxWidth = "200px";
+        
+        // Click handler to start editing
+        label.addEventListener("click", (e) => {
+          e.stopPropagation();
+          label.style.display = "none";
+          labelInput.style.display = "inline-block";
+          labelInput.focus();
+          labelInput.select();
+        });
+        
+        // Save on blur or Enter
+        const saveLabel = () => {
+          const newLabel = labelInput.value.trim() || track.label;
+          label.textContent = newLabel;
+          label.style.display = "";
+          labelInput.style.display = "none";
+          editSmartTrackLabel(track.id, newLabel);
+        };
+        
+        labelInput.addEventListener("blur", saveLabel);
+        labelInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            saveLabel();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            labelInput.value = track.label;
+            label.style.display = "";
+            labelInput.style.display = "none";
+          }
+        });
+        
         label.textContent = track.label;
+        controls.appendChild(labelInput);
+      } else {
+        // For the Locus track, append the extent in parentheses
+        if (track.id === "ruler") {
+          const extent = Math.floor(state.endBp) - Math.floor(state.startBp);
+          label.textContent = `${track.label} (${extent.toLocaleString()} bp)`;
+        } else {
+          label.textContent = track.label;
+        }
       }
 
-      // In vertical mode, reverse order: label on top, button on bottom
-      if (isVertical) {
-        controls.appendChild(label);
-        controls.appendChild(collapseBtn);
-        container.appendChild(controls);
-        // After appending, measure the label's width and adjust transform
-        // With transform-origin: left center, the first character stays at bottom
-        // We need to translate right by half width to center it horizontally
-        setTimeout(() => {
-          try {
-            const width = label.offsetWidth || label.getBoundingClientRect().width;
-            if (width > 0) {
-              // After -90deg rotation:
-              // - translateX moves vertically (negative = up, positive = down)
-              // - translateY moves horizontally (negative = left, positive = right)
-              // Use translateX(12px) to position vertically and translateY(0.0px) for horizontal
-              label.style.transform = `rotate(-90deg) translateX(12px) translateY(0.0px)`;
-            }
-          } catch (e) {
-            console.error('Error adjusting label transform:', e);
+      // Add Smart track controls if needed
+      if (isSmartTrack) {
+        // Strategy dropdown
+        const strategySelect = document.createElement("select");
+        strategySelect.className = "smart-track-strategy-select";
+        strategySelect.id = `smart-track-strategy-${track.id}`;
+        strategySelect.name = `smart-track-strategy-${track.id}`;
+        strategySelect.style.fontSize = "11px";
+        strategySelect.style.padding = "2px 4px";
+        strategySelect.style.border = "1px solid var(--border2)";
+        strategySelect.style.borderRadius = "4px";
+        strategySelect.style.background = "var(--panel)";
+        strategySelect.style.color = "var(--text)";
+        strategySelect.style.marginLeft = "6px";
+        strategySelect.style.cursor = "pointer";
+        
+        const strategies = [
+          { value: "best_evidence", label: "Best evidence" },
+          { value: "most_diverse", label: "Most diverse" },
+          { value: "compare_branches", label: "Compare branches" },
+          { value: "carriers_controls", label: "Carriers + controls" },
+          { value: "random", label: "Random" }
+        ];
+        
+        strategies.forEach(s => {
+          const option = document.createElement("option");
+          option.value = s.value;
+          option.textContent = s.label;
+          if (s.value === track.strategy) {
+            option.selected = true;
           }
-        }, 10);
+          strategySelect.appendChild(option);
+        });
+        
+        strategySelect.addEventListener("change", (e) => {
+          e.stopPropagation();
+          updateSmartTrackStrategy(track.id, e.target.value);
+        });
+        strategySelect.style.pointerEvents = "auto";
+        strategySelect.style.zIndex = "20";
+        
+        // Refresh button
+        const refreshBtn = document.createElement("button");
+        refreshBtn.className = "smart-track-refresh-btn";
+        refreshBtn.textContent = "↻";
+        refreshBtn.title = "Refresh sample";
+        refreshBtn.type = "button";
+        refreshBtn.style.fontSize = "16px";
+        refreshBtn.style.padding = "0";
+        refreshBtn.style.border = "none";
+        refreshBtn.style.borderRadius = "0";
+        refreshBtn.style.background = "transparent";
+        refreshBtn.style.color = "var(--muted)";
+        refreshBtn.style.cursor = "pointer";
+        refreshBtn.style.marginLeft = "6px";
+        refreshBtn.style.width = "18px";
+        refreshBtn.style.height = "18px";
+        refreshBtn.style.display = "flex";
+        refreshBtn.style.alignItems = "center";
+        refreshBtn.style.justifyContent = "center";
+        refreshBtn.style.lineHeight = "1";
+        refreshBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          refreshSmartTrack(track.id);
+        });
+        refreshBtn.style.pointerEvents = "auto";
+        refreshBtn.style.zIndex = "20";
+        
+        // Close button
+        const closeBtn = document.createElement("button");
+        closeBtn.className = "smart-track-close-btn";
+        closeBtn.textContent = "×";
+        closeBtn.title = "Close track";
+        closeBtn.type = "button";
+        closeBtn.style.fontSize = "16px";
+        closeBtn.style.padding = "0";
+        closeBtn.style.border = "none";
+        closeBtn.style.borderRadius = "0";
+        closeBtn.style.background = "transparent";
+        closeBtn.style.color = "var(--muted)";
+        closeBtn.style.cursor = "pointer";
+        closeBtn.style.marginLeft = "6px";
+        closeBtn.style.width = "18px";
+        closeBtn.style.height = "18px";
+        closeBtn.style.display = "flex";
+        closeBtn.style.alignItems = "center";
+        closeBtn.style.justifyContent = "center";
+        closeBtn.style.lineHeight = "1";
+        closeBtn.style.pointerEvents = "auto";
+        closeBtn.style.zIndex = "20";
+        closeBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          // Verify track still exists before removing
+          const trackExists = state.smartTracks.find(t => t.id === track.id);
+          if (trackExists) {
+            removeSmartTrack(track.id);
+          }
+        });
+        
+        // In vertical mode, reverse order: label on top, button on bottom
+        if (isVertical) {
+          controls.appendChild(label);
+          controls.appendChild(strategySelect);
+          controls.appendChild(refreshBtn);
+          controls.appendChild(closeBtn);
+          controls.appendChild(collapseBtn);
+          container.appendChild(controls);
+        } else {
+          controls.appendChild(collapseBtn);
+          controls.appendChild(label);
+          controls.appendChild(strategySelect);
+          controls.appendChild(refreshBtn);
+          controls.appendChild(closeBtn);
+          container.appendChild(controls);
+        }
       } else {
-        controls.appendChild(collapseBtn);
-        controls.appendChild(label);
-        container.appendChild(controls);
+        // In vertical mode, reverse order: label on top, button on bottom
+        if (isVertical) {
+          controls.appendChild(label);
+          controls.appendChild(collapseBtn);
+          container.appendChild(controls);
+          // After appending, measure the label's width and adjust transform
+          // With transform-origin: left center, the first character stays at bottom
+          // We need to translate right by half width to center it horizontally
+          setTimeout(() => {
+            try {
+              const width = label.offsetWidth || label.getBoundingClientRect().width;
+              if (width > 0) {
+                // After -90deg rotation:
+                // - translateX moves vertically (negative = up, positive = down)
+                // - translateY moves horizontally (negative = left, positive = right)
+                // Use translateX(12px) to position vertically and translateY(0.0px) for horizontal
+                label.style.transform = `rotate(-90deg) translateX(12px) translateY(0.0px)`;
+              }
+            } catch (e) {
+              console.error('Error adjusting label transform:', e);
+            }
+          }, 10);
+        } else {
+          controls.appendChild(collapseBtn);
+          controls.appendChild(label);
+          container.appendChild(controls);
+        }
       }
 
       if (!track.collapsed) {
@@ -8627,6 +9656,10 @@
     updateFlowAndReadsPosition();
     renderFlowCanvas();
     renderReadsCanvas();
+    // Render all Smart tracks
+    state.smartTracks.forEach(track => {
+      renderSmartTrack(track.id);
+    });
     renderHUD();
     updateTooltip();
     setupCanvasHover();
@@ -9655,18 +10688,58 @@
       });
     }
     
-    // Load buttons (placeholders for now)
+    // Load buttons
     if (replaceBtn) {
       replaceBtn.addEventListener('click', () => {
-        console.log('Load samples (replace):', state.sampleSelection.candidateSamples);
-        const selectedInfo = getSelectedAlleleInfo();
-        console.log('Selected alleles:', selectedInfo);
+        if (state.selectedAlleles.size === 0) {
+          console.warn('No alleles selected');
+          return;
+        }
+        
+        const strategy = state.sampleSelection.strategy;
+        const candidates = state.sampleSelection.candidateSamples;
+        const selectedAlleles = Array.from(state.selectedAlleles);
+        
+        // Remove all existing Smart tracks
+        const smartTrackIds = state.smartTracks.map(t => t.id);
+        smartTrackIds.forEach(id => removeSmartTrack(id));
+        
+        // Create new Smart track
+        const track = createSmartTrack(strategy, selectedAlleles);
+        
+        // Get sample ID from candidates
+        const sampleId = candidates && candidates.length > 0 ? candidates[0] : null;
+        
+        // Fetch reads
+        fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+          .catch(err => {
+            console.error('Failed to load reads for Smart track:', err);
+          });
       });
     }
     
     if (addBtn) {
       addBtn.addEventListener('click', () => {
-        console.log('Load samples (add):', state.sampleSelection.candidateSamples);
+        if (state.selectedAlleles.size === 0) {
+          console.warn('No alleles selected');
+          return;
+        }
+        
+        const strategy = state.sampleSelection.strategy;
+        const candidates = state.sampleSelection.candidateSamples;
+        const selectedAlleles = Array.from(state.selectedAlleles);
+        
+        // Create new Smart track (add, don't replace)
+        const track = createSmartTrack(strategy, selectedAlleles);
+        
+        // Get sample ID from candidates
+        const sampleId = candidates && candidates.length > 0 ? candidates[0] : null;
+        
+        // Fetch reads
+        fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+          .catch(err => {
+            console.error('Failed to load reads for Smart track:', err);
+          });
       });
     }
     
@@ -9807,6 +10880,18 @@
       }
       reads.style.display = readsLayout.track.collapsed ? "none" : "block";
     }
+    
+    // Update Smart track container positions (actual rendering is done in renderSmartTrack)
+    // This is just for initial positioning
+    state.smartTracks.forEach(track => {
+      const trackLayout = layout.find(l => l.track.id === track.id);
+      if (trackLayout) {
+        const renderer = state.smartTrackRenderers.get(track.id);
+        if (renderer && renderer.container) {
+          // Position is handled in renderSmartTrack, but we ensure container exists
+        }
+      }
+    });
   }
 
   // -----------------------------
@@ -10144,8 +11229,15 @@
   // -----------------------------
   if (trackControls) {
   trackControls.addEventListener("pointerdown", (e) => {
-    // Don't start drag if clicking on collapse button
-    if (e.target.closest(".track-collapse-btn")) {
+    // Don't start drag if clicking on buttons or interactive elements
+    if (e.target.closest(".track-collapse-btn") ||
+        e.target.closest(".smart-track-close-btn") ||
+        e.target.closest(".smart-track-refresh-btn") ||
+        e.target.closest(".smart-track-strategy-select") ||
+        e.target.closest(".smart-track-label-input") ||
+        e.target.closest("button") ||
+        e.target.closest("select") ||
+        e.target.closest("input")) {
       e.stopPropagation();
       return;
     }

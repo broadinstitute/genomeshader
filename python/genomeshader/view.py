@@ -1735,29 +1735,54 @@ console.log('Genomeshader: Bootstrap variables set', {{
                                     
                                     print(f"Genomeshader: Fetching reads for locus: {locus}")
                                     
+                                    # Get Smart track parameters (optional)
+                                    strategy = data.get('strategy', None)
+                                    selected_alleles = data.get('selected_alleles', None)
+                                    sample_id = data.get('sample_id', None)
+                                    
+                                    if strategy:
+                                        print(f"Genomeshader: Smart track strategy: {strategy}")
+                                    if selected_alleles:
+                                        print(f"Genomeshader: Selected alleles: {selected_alleles}")
+                                    if sample_id:
+                                        print(f"Genomeshader: Sample ID: {sample_id}")
+                                    
                                     # Get sample filter from message (optional)
+                                    # For Smart tracks, sample_id takes precedence over samples array
                                     vcf_samples = data.get('samples', None)
+                                    if sample_id and not vcf_samples:
+                                        # Use sample_id if provided
+                                        vcf_samples = [sample_id]
                                     print(f"Genomeshader: VCF samples from message: {vcf_samples}")
                                     
                                     # Apply sample mapping if samples are provided
-                                    bam_urls = None  # BAM file URLs to load from
+                                    # Note: fetch_reads_for_locus only accepts locus parameter
+                                    # It uses the first attached BAM file, so we can't filter by specific BAM URLs here
+                                    bam_urls = None  # BAM file URLs (for reference, but not used in fetch)
                                     if vcf_samples:
                                         mapped = gs_instance.get_bam_samples_for_vcf_samples(vcf_samples)
                                         print(f"Genomeshader: Mapped to: {mapped}")
                                         
                                         # Check if the mapping contains file paths (BAM URLs) or sample names
                                         if mapped and any(s.startswith('gs://') or s.startswith('s3://') or s.startswith('http') or s.endswith('.bam') or s.endswith('.cram') for s in mapped):
-                                            # Mapped values are BAM file URLs - load from those specific files
+                                            # Mapped values are BAM file URLs
                                             bam_urls = mapped
-                                            print(f"Genomeshader: Will load reads from {len(bam_urls)} BAM file(s): {bam_urls[:3]}{'...' if len(bam_urls) > 3 else ''}")
+                                            print(f"Genomeshader: Note - Would load from {len(bam_urls)} BAM file(s), but fetch_reads_for_locus uses first attached file")
                                         else:
                                             # Mapped values are sample names - this case not fully supported yet
-                                            print(f"Genomeshader: Mapped values are sample names: {mapped}. Loading from all attached files.")
+                                            print(f"Genomeshader: Mapped values are sample names: {mapped}. Loading from first attached file.")
                                     
-                                    # Use the Rust-based fetch with optional BAM URL filter
+                                    # TODO: Implement strategy-based sample selection logic
+                                    # TODO: Add support for filtering by specific BAM URLs in fetch_reads_for_locus
+                                    # For now, we use the first attached BAM file
+                                    
+                                    # Use the Rust-based fetch (only accepts locus parameter)
                                     print("Genomeshader: Calling fetch_reads_for_locus...")
-                                    reads_df = gs_instance._session.fetch_reads_for_locus(locus, bam_urls=bam_urls)
+                                    reads_df = gs_instance._session.fetch_reads_for_locus(locus)
                                     print(f"Genomeshader: fetch_reads_for_locus returned {len(reads_df)} reads")
+                                    
+                                    # TODO: Filter reads based on selected_alleles if provided
+                                    # This would require matching reads to specific alleles
                                     
                                     # Debug: show unique sample names in the result
                                     if len(reads_df) > 0 and 'sample_name' in reads_df.columns:
@@ -1778,6 +1803,8 @@ console.log('Genomeshader: Bootstrap variables set', {{
                                         'count': len(reads_df),
                                         'bam_urls': bam_urls,  # Include which BAM files were loaded from
                                         'vcf_samples': vcf_samples,  # Include which VCF samples were requested
+                                        'sample_id': sample_id,  # Include sample_id if provided
+                                        'strategy': strategy,  # Include strategy if provided
                                     })
                                     print("Genomeshader: fetch_reads_response sent")
                                 except Exception as e:
