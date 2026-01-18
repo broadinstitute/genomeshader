@@ -1455,12 +1455,12 @@ console.log('Genomeshader: Bootstrap variables set', {{
         # The container needs to have a defined height for the app to render correctly
         # Override html/body height rules to work within container
         inline_html = f"""
-<div id="{container_id}" style="width: 100%; height: 700px; position: relative; overflow: visible; background: var(--bg, #0b0d10); font-family: ui-sans-serif, system-ui; isolation: isolate;">
+<div id="{container_id}" style="width: 100%; height: 600px; position: relative; overflow: visible; background: var(--bg, #0b0d10); font-family: ui-sans-serif, system-ui; isolation: isolate;">
 <style>
 {styles}
 /* Override html/body height rules for container embedding */
 #{container_id} {{
-  height: 700px;
+  height: 600px;
   display: block;
   position: relative;
 }}
