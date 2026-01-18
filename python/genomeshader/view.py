@@ -64,6 +64,11 @@ class GenomeShader:
         
         # Store last rendered locus for on-demand loading
         self._last_locus = None
+        
+        # Sample mapping: VCF sample names -> BAM sample names
+        # Format: {"VCF_sample1": ["BAM_sample1"], "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
+        # If empty, assumes 1:1 identity mapping (VCF sample name == BAM sample name)
+        self._sample_mapping: dict = {}
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
@@ -217,6 +222,74 @@ class GenomeShader:
                 self._session.attach_variants(bcfs)
                 self._session.attach_variants(vcfs)
                 self._session.attach_variants(vcf_gzs)
+
+    def set_sample_mapping(self, mapping: dict):
+        """
+        Sets the mapping between VCF sample names and BAM sample names.
+        
+        This is useful when VCF samples have different names than BAM samples,
+        or when one VCF sample corresponds to multiple BAM files.
+        
+        Args:
+            mapping (dict): A dictionary mapping VCF sample names to lists of
+                BAM sample names.
+                Format: {"VCF_sample1": ["BAM_sample1"], 
+                         "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
+                
+        Example:
+            >>> gs.set_sample_mapping({
+            ...     "NA12878": ["NA12878_run1", "NA12878_run2"],
+            ...     "NA12879": ["NA12879"]
+            ... })
+        """
+        self._sample_mapping = mapping
+    
+    def get_sample_mapping(self) -> dict:
+        """
+        Returns the current VCF-to-BAM sample mapping.
+        
+        Returns:
+            dict: The sample mapping dictionary.
+        """
+        return self._sample_mapping
+    
+    def get_bam_samples_for_vcf_samples(self, vcf_samples: List[str]) -> List[str]:
+        """
+        Converts VCF sample names to BAM sample names using the sample mapping.
+        
+        If no mapping is set, assumes 1:1 identity mapping (VCF name == BAM name).
+        
+        Args:
+            vcf_samples (List[str]): List of VCF sample names to convert.
+            
+        Returns:
+            List[str]: List of unique BAM sample names corresponding to the
+                given VCF samples.
+        """
+        bam_samples = set()
+        for vcf_sample in vcf_samples:
+            if self._sample_mapping and vcf_sample in self._sample_mapping:
+                # Use mapping
+                bam_samples.update(self._sample_mapping[vcf_sample])
+            else:
+                # Identity mapping (VCF name == BAM name)
+                bam_samples.add(vcf_sample)
+        return list(bam_samples)
+    
+    def get_bam_sample_names(self) -> List[str]:
+        """
+        Get sample names from attached BAM file headers.
+        
+        Returns a list of unique sample names extracted from the SM field
+        in @RG (read group) headers of all attached BAM files.
+        
+        This is useful for debugging sample name mismatches between VCF
+        and BAM files.
+        
+        Returns:
+            List[str]: Sorted list of unique sample names from BAM headers.
+        """
+        return self._session.get_bam_sample_names()
 
     def stage(self, use_cache: bool = True):
         """
@@ -1647,10 +1720,12 @@ console.log('Genomeshader: Bootstrap variables set', {{
                                 })
                             
                             elif msg_type == 'fetch_reads':
-                                # Fetch reads for the current locus from the first attached BAM
+                                # Fetch reads for the current locus from attached BAM files
                                 try:
+                                    print(f"Genomeshader: fetch_reads message received, request_id: {request_id}")
                                     locus = gs_instance._last_locus
                                     if locus is None:
+                                        print("Genomeshader: Error - No locus available")
                                         comm.send({
                                             'type': 'fetch_reads_error',
                                             'request_id': request_id,
@@ -1658,30 +1733,57 @@ console.log('Genomeshader: Bootstrap variables set', {{
                                         })
                                         return
                                     
-                                    # Get the file path that will be used for loading reads
-                                    attached_reads = gs_instance._session.get_attached_reads()
-                                    reads_file = None
-                                    if attached_reads:
-                                        reads_file = attached_reads[0]
-                                        print(f"Genomeshader: Loading reads from: {reads_file}")
-                                    else:
-                                        print("Genomeshader: Warning - No read files attached")
+                                    print(f"Genomeshader: Fetching reads for locus: {locus}")
                                     
-                                    # Use the Rust-based fetch
-                                    reads_df = gs_instance._session.fetch_reads_for_locus(locus)
+                                    # Get sample filter from message (optional)
+                                    vcf_samples = data.get('samples', None)
+                                    print(f"Genomeshader: VCF samples from message: {vcf_samples}")
+                                    
+                                    # Apply sample mapping if samples are provided
+                                    bam_urls = None  # BAM file URLs to load from
+                                    if vcf_samples:
+                                        mapped = gs_instance.get_bam_samples_for_vcf_samples(vcf_samples)
+                                        print(f"Genomeshader: Mapped to: {mapped}")
+                                        
+                                        # Check if the mapping contains file paths (BAM URLs) or sample names
+                                        if mapped and any(s.startswith('gs://') or s.startswith('s3://') or s.startswith('http') or s.endswith('.bam') or s.endswith('.cram') for s in mapped):
+                                            # Mapped values are BAM file URLs - load from those specific files
+                                            bam_urls = mapped
+                                            print(f"Genomeshader: Will load reads from {len(bam_urls)} BAM file(s): {bam_urls[:3]}{'...' if len(bam_urls) > 3 else ''}")
+                                        else:
+                                            # Mapped values are sample names - this case not fully supported yet
+                                            print(f"Genomeshader: Mapped values are sample names: {mapped}. Loading from all attached files.")
+                                    
+                                    # Use the Rust-based fetch with optional BAM URL filter
+                                    print("Genomeshader: Calling fetch_reads_for_locus...")
+                                    reads_df = gs_instance._session.fetch_reads_for_locus(locus, bam_urls=bam_urls)
+                                    print(f"Genomeshader: fetch_reads_for_locus returned {len(reads_df)} reads")
+                                    
+                                    # Debug: show unique sample names in the result
+                                    if len(reads_df) > 0 and 'sample_name' in reads_df.columns:
+                                        unique_samples = reads_df['sample_name'].unique().to_list()
+                                        print(f"Genomeshader: Unique sample names in result: {unique_samples}")
+                                    elif len(reads_df) == 0:
+                                        print("Genomeshader: WARNING - No reads found. Check that the BAM files contain reads for this locus.")
                                     
                                     # Convert to JSON-serializable format
                                     reads_data = reads_df.to_dict(as_series=False)
                                     
+                                    print(f"Genomeshader: Sending fetch_reads_response with {len(reads_df)} reads")
                                     comm.send({
                                         'type': 'fetch_reads_response',
                                         'request_id': request_id,
                                         'locus': locus,
                                         'reads': reads_data,
                                         'count': len(reads_df),
-                                        'reads_file': reads_file,  # Include file path in response
+                                        'bam_urls': bam_urls,  # Include which BAM files were loaded from
+                                        'vcf_samples': vcf_samples,  # Include which VCF samples were requested
                                     })
+                                    print("Genomeshader: fetch_reads_response sent")
                                 except Exception as e:
+                                    print(f"Genomeshader: Error in fetch_reads: {e}")
+                                    import traceback
+                                    traceback.print_exc()
                                     comm.send({
                                         'type': 'fetch_reads_error',
                                         'request_id': request_id,
