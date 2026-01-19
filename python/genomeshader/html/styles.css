@@ -1,0 +1,827 @@
+:root {
+  --sidebar-w: 240px;
+  --tracks-h: 280px;   /* ideogram + genes + repeats + ruler */
+  --flow-h: 500px;     /* sankey placeholder */
+  --reads-h: 220px;    /* IGV-style reads area placeholder */
+
+  --bg: #0b0d10;
+  --panel: #11151b;
+  --panel2: rgba(255,255,255,0.03);
+
+  --border: rgba(255,255,255,0.10);
+  --border2: rgba(255,255,255,0.08);
+
+  --text: rgba(255,255,255,0.92);
+  --muted: rgba(255,255,255,0.65);
+  --muted2: rgba(255,255,255,0.45);
+
+  --grid: rgba(255,255,255,0.12);
+  --grid2: rgba(255,255,255,0.07);
+
+  --accent: #ff4d4d;
+
+  --blue: rgba(120,180,255,0.9);
+  --blueFill: rgba(120,180,255,0.18);
+
+  --shadow: 0 10px 30px rgba(0,0,0,0.35);
+  --hudBg: rgba(0,0,0,0.35);
+}
+
+html[data-theme="light"] {
+  --bg: #f7f8fb;
+  --panel: #ffffff;
+  --panel2: rgba(0,0,0,0.03);
+
+  --border: rgba(0,0,0,0.12);
+  --border2: rgba(0,0,0,0.10);
+
+  --text: rgba(0,0,0,0.90);
+  --muted: rgba(0,0,0,0.62);
+  --muted2: rgba(0,0,0,0.45);
+
+  --grid: rgba(0,0,0,0.12);
+  --grid2: rgba(0,0,0,0.07);
+
+  --accent: #d81b1b;
+
+  --blue: rgba(18, 110, 255, 0.85);
+  --blueFill: rgba(18, 110, 255, 0.14);
+
+  --shadow: 0 10px 30px rgba(0,0,0,0.12);
+  --hudBg: rgba(255,255,255,0.78);
+}
+
+@media (prefers-color-scheme: light) {
+  html[data-theme="auto"] {
+    --bg: #f7f8fb;
+    --panel: #ffffff;
+    --panel2: rgba(0,0,0,0.03);
+
+    --border: rgba(0,0,0,0.12);
+    --border2: rgba(0,0,0,0.10);
+
+    --text: rgba(0,0,0,0.90);
+    --muted: rgba(0,0,0,0.62);
+    --muted2: rgba(0,0,0,0.45);
+
+    --grid: rgba(0,0,0,0.12);
+    --grid2: rgba(0,0,0,0.07);
+
+    --accent: #d81b1b;
+
+    --blue: rgba(18, 110, 255, 0.85);
+    --blueFill: rgba(18, 110, 255, 0.14);
+
+    --shadow: 0 10px 30px rgba(0,0,0,0.12);
+    --hudBg: rgba(255,255,255,0.78);
+  }
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] {
+    --bg: #0b0d10;
+    --panel: #11151b;
+    --panel2: rgba(255,255,255,0.03);
+
+    --border: rgba(255,255,255,0.10);
+    --border2: rgba(255,255,255,0.08);
+
+    --text: rgba(255,255,255,0.92);
+    --muted: rgba(255,255,255,0.65);
+    --muted2: rgba(255,255,255,0.45);
+
+    --grid: rgba(255,255,255,0.12);
+    --grid2: rgba(255,255,255,0.07);
+
+    --accent: #ff4d4d;
+
+    --blue: rgba(120,180,255,0.9);
+    --blueFill: rgba(120,180,255,0.18);
+
+    --shadow: 0 10px 30px rgba(0,0,0,0.35);
+    --hudBg: rgba(0,0,0,0.35);
+  }
+}
+
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui; }
+* { box-sizing: border-box; }
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  height: 100%;
+  overflow: hidden;
+  transition: grid-template-columns 0.2s ease;
+}
+.app.sidebar-collapsed {
+  grid-template-columns: 12px 1fr;
+}
+.app.sidebar-collapsed .sidebar {
+  width: 12px !important;
+  min-width: 12px;
+}
+
+.sidebar {
+  position: relative;
+  background: var(--panel);
+  border-right: 1px solid var(--border2);
+  padding: 0;
+  overflow: hidden;
+  transition: opacity 0.2s ease;
+  display: flex;
+  flex-direction: column;
+}
+.sidebarContent {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: visible;
+  padding: 12px;
+  padding-bottom: 12px;
+}
+.sidebar::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
+  z-index: 10;
+}
+.sidebar:hover::after {
+  background: var(--blue);
+  width: 6px;
+  box-shadow: 0 0 8px rgba(120, 180, 255, 0.4);
+}
+.app.sidebar-collapsed .sidebar {
+  padding: 0;
+  overflow: visible;
+}
+.app.sidebar-collapsed .sidebar > * {
+  opacity: 0;
+  pointer-events: none;
+}
+.app.sidebar-collapsed .sidebarContent {
+  opacity: 0;
+  pointer-events: none;
+}
+.app.sidebar-collapsed .sidebar::after {
+  pointer-events: auto;
+  opacity: 1 !important;
+  right: 0;
+  width: 12px;
+  background: rgba(127, 127, 127, 0.08);
+  border-right: 1px solid var(--border2);
+}
+.app.sidebar-collapsed .sidebar:hover::after {
+  width: 14px;
+  background: var(--blue);
+  border-right: none;
+  box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
+}
+/* Adjust main panel position when sidebar is collapsed */
+.app.sidebar-collapsed .main {
+  left: 12px !important;
+}
+
+.sidebarHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 8px;
+}
+
+.sidebarToggle {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border2);
+  background: var(--panel2);
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  padding: 0;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.sidebarToggle:hover {
+  background: var(--panel);
+  border-color: var(--border);
+}
+.sidebarToggle:active {
+  transform: scale(0.95);
+}
+
+.sidebarHeader h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 10px;
+  margin: 7px 0;
+  border-radius: 10px;
+  background: var(--panel2);
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid transparent;
+}
+.group:hover { border-color: var(--border2); }
+.pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,0.16); color: var(--muted); }
+
+/* Gear button bottom-left (requested) */
+.gearBtn {
+  position: absolute !important;
+  left: 12px !important;
+  bottom: 12px !important;
+  z-index: 10 !important;
+  border: 1px solid var(--border2);
+  background: var(--panel2);
+  color: var(--text);
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  line-height: 1;
+}
+.gearBtn:hover { filter: brightness(1.06); }
+.gearBtn:active { transform: translateY(1px); }
+
+/* Context menu */
+.menu {
+  position: absolute;
+  min-width: 220px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  z-index: 50;
+  display: none;
+}
+.menu.open { display: block; }
+.menuTitle {
+  font-size: 11px;
+  color: var(--muted2);
+  padding: 6px 8px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.menuItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text);
+  font-size: 13px;
+}
+.menuItem:hover { background: var(--panel2); }
+.menuRight { color: var(--muted); font-size: 12px; }
+.menuHotkey {
+  color: var(--muted2);
+  font-size: 11px;
+  font-family: monospace;
+  background: var(--panel2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+}
+
+/* Selection controls in sidebar */
+.selectionBtn {
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+.selectionBtn:hover {
+  background: var(--panel);
+  border-color: var(--border);
+}
+.selectionBtn:active {
+  transform: scale(0.98);
+}
+.selectionBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Combine toggle (AND/OR) */
+.combineToggle.active {
+  background: var(--blue) !important;
+  color: white !important;
+}
+
+/* Sample search results */
+#sampleSearchResults {
+  font-size: 11px;
+}
+.sampleSearchResult {
+  padding: 6px 8px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border2);
+}
+.sampleSearchResult:last-child {
+  border-bottom: none;
+}
+.sampleSearchResult:hover {
+  background: var(--panel2);
+}
+
+/* Ensure all form elements in sidebar are clickable and interactive */
+.sidebar select,
+.sidebar input,
+.sidebar button,
+.sidebar label {
+  pointer-events: auto !important;
+  position: relative !important;
+  z-index: 200 !important;
+}
+
+/* Style for select dropdown to ensure it's visible */
+.sidebar select {
+  -webkit-appearance: menulist !important;
+  -moz-appearance: menulist !important;
+  appearance: menulist !important;
+  cursor: pointer !important;
+}
+
+/* Style for range input to ensure it's interactive */
+.sidebar input[type="range"] {
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+  cursor: pointer !important;
+}
+
+/* Style for number input */
+.sidebar input[type="number"] {
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+}
+
+/* Style for text input */
+.sidebar input[type="text"] {
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+  cursor: text !important;
+}
+
+/* Fix for nested elements in sample selection section */
+#sampleStrategySection,
+#sampleStrategySection *,
+#sampleSearchSection,
+#sampleSearchSection *,
+#sampleContext,
+#sampleContext * {
+  pointer-events: auto !important;
+}
+
+/* Ensure sample strategy section has proper stacking context */
+#sampleStrategySection {
+  position: relative !important;
+  z-index: 200 !important;
+}
+#sampleSearchSection {
+  position: relative !important;
+  z-index: 200 !important;
+}
+/* Ensure sidebar content is above any potential overlays */
+.sidebar .sidebarHeader,
+.sidebar .group {
+  position: relative !important;
+  z-index: 200 !important;
+}
+
+.main {
+  position: relative;
+  overflow: hidden;
+  touch-action: none; /* we own pan/zoom gestures on right pane */
+}
+
+.tracks {
+  position: absolute;
+  left: 0; top: 0; right: 0;
+  height: var(--tracks-h);
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(to bottom, rgba(127,127,127,0.08), rgba(127,127,127,0.00));
+}
+#trackControls {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.flow {
+  position: absolute;
+  left: 0; right: 0;
+  background: rgba(127,127,127,0.04);
+}
+
+.reads {
+  position: absolute;
+  left: 0; right: 0;
+  background: rgba(127,127,127,0.02);
+}
+
+/* Vertical mode: tracks laid out side-by-side */
+.main.vertical .tracks {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+  left: 0;
+  top: 0;
+  right: auto;
+  bottom: 0;
+  border-bottom: none;
+  border-right: 1px solid var(--border);
+}
+
+.main.vertical .flow,
+.main.vertical .reads {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  height: 100%;
+}
+
+canvas.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+canvas.webgpu-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: auto;
+  z-index: 1; /* Above SVG, below controls */
+}
+
+svg.overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Locus indicator lower-right */
+.hud {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--hudBg);
+  border: 1px solid var(--border2);
+  font-size: 12px;
+  color: var(--muted);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: var(--shadow);
+  display: none;
+  transition: opacity 0.3s ease;
+}
+/* In vertical mode, position HUD in upper right */
+.main.vertical .hud {
+  bottom: auto;
+  top: 10px;
+}
+.hud.visible {
+  display: block;
+}
+
+/* Tooltip */
+.tooltip {
+  position: fixed;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+  pointer-events: none;
+  z-index: 1000;
+  white-space: pre-line;
+  box-shadow: var(--shadow);
+  display: none;
+  line-height: 1.4;
+}
+.tooltip.visible {
+  display: block;
+}
+
+/* SVG text classes */
+.svg-label { fill: var(--muted); font-size: 12px; font-weight: 600; }
+.svg-small { fill: var(--muted2); font-size: 10px; }
+.svg-chr   { fill: var(--text); font-size: 12px; font-weight: 650; }
+
+.svg-geneName { fill: rgba(180,220,255,0.92); font-size: 11px; font-weight: 650; }
+html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
+@media (prefers-color-scheme: light) {
+  html[data-theme="auto"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .svg-geneName { fill: rgba(180,220,255,0.92); }
+}
+
+.svg-trackHint { fill: var(--muted2); font-size: 11px; }
+
+/* Track controls */
+.track-controls {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  background: rgba(127,127,127,0.03);
+  border-bottom: 1px solid var(--border2);
+  z-index: 10;
+  cursor: move;
+}
+/* Smart track controls should allow button clicks */
+.track-controls button,
+.track-controls select {
+  pointer-events: auto;
+  z-index: 20;
+}
+.main.vertical .track-controls {
+  top: auto;
+}
+.track-controls:hover { background: rgba(127,127,127,0.06); }
+
+.track-collapse-btn {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  padding: 0;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.track-collapse-btn:hover { background: var(--panel2); color: var(--text); }
+.track-collapse-btn:active { transform: scale(0.95); }
+
+.track-label {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  user-select: none;
+  pointer-events: none;
+}
+/* Smart track labels are clickable */
+.track-controls[data-track-id^="smart-track-"] .track-label {
+  pointer-events: auto;
+  cursor: text;
+}
+.track-controls[data-track-id^="smart-track-"] .track-label:hover {
+  color: var(--text);
+}
+
+/* Vertical mode: track controls at bottom, vertically oriented */
+.main.vertical .track-control-container {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-start;
+}
+.main.vertical .track-controls {
+  width: 24px;
+  height: 100%;
+  flex-direction: column;
+  padding: 0;
+  border-bottom: none;
+  border-right: 1px solid var(--border2);
+  position: relative;
+  left: 0;
+  right: auto;
+  transform: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 0;
+}
+.main.vertical .track-label {
+  order: 1;
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
+  margin: 0;
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform-origin: left center;
+  flex-shrink: 0;
+  /* Default transform to prevent flash of unstyled content */
+  transform: rotate(-90deg) translateX(12px) translateY(0.0px);
+}
+.main.vertical .track-collapse-btn {
+  align-self: center;
+  order: 2;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* Smart track controls */
+.smart-track-label-input {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 2px 4px;
+  outline: none;
+}
+.smart-track-label-input:focus {
+  border-color: var(--blue);
+  color: var(--text);
+}
+
+.smart-track-strategy-select {
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+}
+.smart-track-strategy-select:hover {
+  background: var(--panel2);
+  border-color: var(--border);
+}
+.smart-track-strategy-select:focus {
+  border-color: var(--blue);
+}
+
+.smart-track-reload-btn,
+.smart-track-shuffle-btn,
+.smart-track-close-btn {
+  font-size: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  outline: none;
+  transition: color 0.15s ease;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.smart-track-reload-btn:hover,
+.smart-track-shuffle-btn:hover {
+  color: var(--text);
+}
+.smart-track-close-btn:hover {
+  color: var(--text);
+}
+.smart-track-reload-btn:active,
+.smart-track-shuffle-btn:active {
+  transform: scale(0.95);
+}
+.smart-track-close-btn:active {
+  opacity: 0.7;
+}
+
+.smart-track-container {
+  position: absolute;
+  width: 100%;
+  pointer-events: none;
+  z-index: 5; /* above tracksWebGPU (z-index 1) */
+}
+.smart-track-container.scrollable {
+  pointer-events: none;
+  /* Firefox scrollbar styling */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) rgba(0, 0, 0, 0.05);
+  /* Ensure scrollbar is always visible when scrollable */
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  /* Ensure scrollbar area is visible */
+  z-index: 30;
+  /* Make sure scrollbar has space - don't let content overlap scrollbar */
+  box-sizing: border-box;
+  /* Force scrollbar to be visible - reserve space for it */
+  scrollbar-gutter: stable;
+}
+.smart-track-container.scrollable::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+.smart-track-container.scrollable::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+.smart-track-container.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 7px;
+  border: 2px solid rgba(0, 0, 0, 0.1);
+  min-height: 20px;
+}
+.smart-track-container.scrollable::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.5);
+}
+.smart-track-container.scrollable::-webkit-scrollbar-thumb:active {
+  background: rgba(0, 0, 0, 0.6);
+}
+.smart-track-container canvas {
+  pointer-events: none;
+}
+
+.track-resize-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 15;
+  background: transparent;
+  pointer-events: auto;
+}
+.track-resize-handle:hover {
+  background: var(--accent);
+  opacity: 0.3;
+}
+.track-resize-handle:active {
+  background: var(--accent);
+  opacity: 0.6;
+}
+.main.vertical .track-resize-handle {
+  left: auto;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+}
+
+.track-content {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 24px;
+  bottom: 0;
+  overflow: hidden;
+}
+
+.track-control-container {
+  pointer-events: none;
+}
+.track-control-container .track-controls,
+.track-control-container .track-resize-handle {
+  pointer-events: auto;
+}

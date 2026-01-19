@@ -98,36 +98,83 @@ class GenomeShader:
 
     def _load_template_html(self) -> str:
         """
-        Load the template.html file from the package or fallback to relative path.
+        Load and assemble template from modular components.
         
         Returns:
             str: The template HTML content as a string
         """
-        # Try to load from package resources first (when installed via pip)
+        from pathlib import Path
+        
+        # Determine base directory for HTML files
+        base_dir = None
+        
+        # Try to get base directory from package resources first (when installed via pip)
         try:
             template_path = importlib.resources.files("genomeshader").joinpath("html", "template.html")
             if template_path.is_file():
-                return template_path.read_text(encoding='utf-8')
+                base_dir = template_path.parent
         except (AttributeError, FileNotFoundError, TypeError):
             pass
         
         # Fallback 1: Try relative path from this file (when installed via pip, html is in package)
-        try:
-            template_path = os.path.join(
-                os.path.dirname(__file__), 'html', 'template.html'
-            )
-            if os.path.exists(template_path):
-                with open(template_path, 'r', encoding='utf-8') as f:
-                    return f.read()
-        except (FileNotFoundError, OSError):
-            pass
+        if base_dir is None:
+            try:
+                template_path = Path(__file__).parent / 'html' / 'template.html'
+                if template_path.exists():
+                    base_dir = template_path.parent
+            except (FileNotFoundError, OSError):
+                pass
         
         # Fallback 2: Try relative path from project root (for development)
-        template_path = os.path.join(
-            os.path.dirname(__file__), '..', '..', 'html', 'template.html'
+        if base_dir is None:
+            template_path = Path(__file__).parent.parent.parent / 'html' / 'template.html'
+            if template_path.exists():
+                base_dir = template_path.parent
+            else:
+                # Last resort: use current file's directory
+                base_dir = Path(__file__).parent / 'html'
+        
+        # Load template skeleton
+        template_path = base_dir / "template.html"
+        template = template_path.read_text(encoding='utf-8')
+        
+        # Load CSS
+        css_path = base_dir / "styles.css"
+        css_content = css_path.read_text(encoding='utf-8')
+        
+        # Load body
+        body_path = base_dir / "body.html"
+        body_content = body_path.read_text(encoding='utf-8')
+        
+        # Load and concatenate JavaScript files in explicit order
+        scripts_dir = base_dir / "scripts"
+        script_order = [
+            "cleanup.js",
+            "webgpu-core.js",
+            "webgpu-renderer.js",
+            "webgpu-bezier.js",
+            "jupyter-comms.js",
+            "dom-utils.js",
+            "ui-state.js",
+            "view-state.js",
+            "smart-tracks.js",
+            "rendering.js",
+            "tracks.js",
+            "interaction.js",
+            "main.js"
+        ]
+        js_content = "\n".join(
+            (scripts_dir / name).read_text(encoding='utf-8')
+            for name in script_order
+            if (scripts_dir / name).exists()
         )
-        with open(template_path, 'r', encoding='utf-8') as f:
-            return f.read()
+        
+        # Replace placeholders in template
+        template = template.replace("<!--__GENOMESHADER_STYLES__-->", f"<style>\n{css_content}\n</style>")
+        template = template.replace("<!--__GENOMESHADER_BODY__-->", body_content)
+        template = template.replace("<!--__GENOMESHADER_SCRIPTS__-->", f"<script type=\"module\">\n{js_content}\n</script>")
+        
+        return template
 
     def session_name(self):
         """
@@ -1378,298 +1425,149 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         style_match = re.search(r'<style[^>]*>(.*?)</style>', final_html, re.DOTALL)
         styles = style_match.group(1) if style_match else ""
         
-        # Extract body content
+        # Extract body content and scripts separately to avoid f-string issues with JavaScript curly braces
         body_match = re.search(r'<body[^>]*>(.*?)</body>', final_html, re.DOTALL)
         if body_match:
-            body_content = body_match.group(1)
+            full_body_content = body_match.group(1)
+            # Extract script tag content separately (the entire script tag, not just content)
+            script_match = re.search(r'(<script[^>]*type=["\']module["\'][^>]*>.*?</script>)', full_body_content, re.DOTALL)
+            if script_match:
+                script_tag = script_match.group(1)
+                # Remove script tag from body content
+                body_content = re.sub(r'<script[^>]*type=["\']module["\'][^>]*>.*?</script>', '', full_body_content, flags=re.DOTALL)
+            else:
+                body_content = full_body_content
+                script_tag = None
         else:
             # Fallback: if no body tag found, use entire template
             body_content = final_html
+            script_tag = None
 
         # Generate inline HTML with container div, styles, and bootstrap script
         container_id = f"genomeshader-root-{run_id}"
         
         # Bootstrap script must run FIRST to set window variables before template scripts execute
         # The bootstrap is already injected into final_html, but we need to include it in inline output
-        bootstrap_script = f"""
-<script type="text/javascript">
-// Bootstrap: Set window variables before template scripts run
-window.GENOMESHADER_CONFIG = {json.dumps(config)};
-window.GENOMESHADER_JUPYTER_ORIGIN = {json.dumps(jupyter_origin)};
-window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
-console.log('Genomeshader: Bootstrap variables set', {{
-  hasConfig: !!window.GENOMESHADER_CONFIG,
-  viewId: window.GENOMESHADER_VIEW_ID
-}});
-</script>"""
+        # Use string formatting instead of f-strings to avoid issues with curly braces
+        config_json = json.dumps(config)
+        jupyter_origin_json = json.dumps(jupyter_origin)
+        run_id_json = json.dumps(run_id)
+        bootstrap_script = (
+            "<script type=\"text/javascript\">\n"
+            "// Bootstrap: Set window variables before template scripts run\n"
+            f"window.GENOMESHADER_CONFIG = {config_json};\n"
+            f"window.GENOMESHADER_JUPYTER_ORIGIN = {jupyter_origin_json};\n"
+            f"window.GENOMESHADER_VIEW_ID = {run_id_json};\n"
+            "console.log('Genomeshader: Bootstrap variables set', {\n"
+            "  hasConfig: !!window.GENOMESHADER_CONFIG,\n"
+            "  viewId: window.GENOMESHADER_VIEW_ID\n"
+            "});\n"
+            "</script>"
+        )
         
         # Mount script that initializes container after DOM is ready
-        mount_script = f"""
-<script type="text/javascript">
-(function() {{
-  // Wait for DOM to be ready
-  if (document.readyState === 'loading') {{
-    document.addEventListener('DOMContentLoaded', init);
-  }} else {{
-    // Use requestAnimationFrame to ensure layout has happened
-    requestAnimationFrame(() => {{
-      requestAnimationFrame(init);
-    }});
-  }}
-  
-  function init() {{
-    const containerId = {json.dumps(container_id)};
-    const root = document.getElementById(containerId);
-    if (!root) {{
-      console.error('Genomeshader: Container element not found:', containerId);
-      return;
-    }}
-    
-    // Store run_id in container dataset for easy access
-    root.dataset.viewId = {json.dumps(run_id)};
-    
-    // Ensure container has dimensions before rendering
-    const checkDimensions = () => {{
-      const rect = root.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) {{
-        console.warn('Genomeshader: Container has zero dimensions, retrying...');
-        // Wait a bit for layout to settle
-        setTimeout(checkDimensions, 50);
-        return;
-      }}
-      console.log('Genomeshader: Container dimensions:', rect.width, 'x', rect.height);
-      
-      // Trigger a resize event to ensure renderAll() runs with correct dimensions
-      // This is especially important for WebGPU canvas initialization
-      if (window.dispatchEvent) {{
-        window.dispatchEvent(new Event('resize'));
-      }}
-    }};
-    
-    checkDimensions();
-  }}
-}})();
-</script>"""
+        # Use string formatting instead of f-strings to avoid issues with curly braces
+        container_id_json = json.dumps(container_id)
+        mount_script = (
+            "<script type=\"text/javascript\">\n"
+            "(function() {\n"
+            "  // Wait for DOM to be ready\n"
+            "  if (document.readyState === 'loading') {\n"
+            "    document.addEventListener('DOMContentLoaded', init);\n"
+            "  } else {\n"
+            "    // Use requestAnimationFrame to ensure layout has happened\n"
+            "    requestAnimationFrame(() => {\n"
+            "      requestAnimationFrame(init);\n"
+            "    });\n"
+            "  }\n"
+            "  \n"
+            "  function init() {\n"
+            f"    const containerId = {container_id_json};\n"
+            "    const root = document.getElementById(containerId);\n"
+            "    if (!root) {\n"
+            "      console.error('Genomeshader: Container element not found:', containerId);\n"
+            "      return;\n"
+            "    }\n"
+            "    \n"
+            "    // Store run_id in container dataset for easy access\n"
+            f"    root.dataset.viewId = {run_id_json};\n"
+            "    \n"
+            "    // Ensure container has dimensions before rendering\n"
+            "    const checkDimensions = () => {\n"
+            "      const rect = root.getBoundingClientRect();\n"
+            "      if (rect.width === 0 || rect.height === 0) {\n"
+            "        console.warn('Genomeshader: Container has zero dimensions, retrying...');\n"
+            "        // Wait a bit for layout to settle\n"
+            "        setTimeout(checkDimensions, 50);\n"
+            "        return;\n"
+            "      }\n"
+            "      console.log('Genomeshader: Container dimensions:', rect.width, 'x', rect.height);\n"
+            "      \n"
+            "      // Trigger a resize event to ensure renderAll() runs with correct dimensions\n"
+            "      // This is especially important for WebGPU canvas initialization\n"
+            "      if (window.dispatchEvent) {\n"
+            "        window.dispatchEvent(new Event('resize'));\n"
+            "      }\n"
+            "    };\n"
+            "    \n"
+            "    checkDimensions();\n"
+            "  }\n"
+            "})();\n"
+            "</script>"
+        )
 
         # Wrap everything in container div with styles
         # The container needs to have a defined height for the app to render correctly
         # Override html/body height rules to work within container
-        inline_html = f"""
-<div id="{container_id}" style="width: 100%; height: 600px; position: relative; overflow: visible; background: var(--bg, #0b0d10); font-family: ui-sans-serif, system-ui; isolation: isolate;">
-<style>
-{styles}
-/* Override html/body height rules for container embedding */
-#{container_id} {{
-  height: 600px;
-  display: block;
-  position: relative;
-}}
-/* Reset html/body styles within container - use :root for CSS variables */
-#{container_id} {{
-  --sidebar-w: 240px;
-  --tracks-h: 280px;
-  --flow-h: 500px;
-  --reads-h: 220px;
-}}
-/* Use explicit positioning instead of grid for better Jupyter compatibility */
-#{container_id} .app {{
-  height: 100% !important;
-  width: 100% !important;
-  display: block !important; /* Override grid */
-  position: relative !important;
-  overflow: hidden;
-}}
-/* Sidebar: fixed width on the left */
-#{container_id} .sidebar {{
-  position: absolute !important;
-  left: 0 !important;
-  top: 0 !important;
-  bottom: 0 !important;
-  width: var(--sidebar-w, 240px) !important;
-  z-index: 100 !important;
-  overflow-y: auto !important;
-  overflow-x: visible !important;
-  pointer-events: auto !important;
-  transition: width 0.2s ease;
-}}
-/* Sidebar collapsed state */
-#{container_id} .app.sidebar-collapsed .sidebar {{
-  width: 12px !important;
-  padding: 0 !important;
-}}
-#{container_id} .app.sidebar-collapsed .sidebar > * {{
-  opacity: 0 !important;
-  pointer-events: none !important;
-}}
-#{container_id} .app.sidebar-collapsed .sidebar::after {{
-  pointer-events: auto !important;
-  opacity: 1 !important;
-  width: 12px !important;
-}}
-/* Main: takes remaining space to the right of sidebar */
-#{container_id} .main {{
-  position: absolute !important;
-  left: var(--sidebar-w, 240px) !important;
-  top: 0 !important;
-  right: 0 !important;
-  bottom: 0 !important;
-  z-index: 1 !important;
-  overflow: hidden;
-  transition: left 0.2s ease;
-}}
-/* Main adjusted when sidebar is collapsed */
-#{container_id} .app.sidebar-collapsed .main {{
-  left: 12px !important;
-}}
-/* Ensure all sidebar children are clickable */
-#{container_id} .sidebar > * {{
-  pointer-events: auto !important;
-  opacity: 1 !important;
-}}
-/* Ensure sidebar toggle border is clickable - but only on the right edge */
-#{container_id} .sidebar::after {{
-  z-index: 5 !important;
-  pointer-events: auto !important;
-  width: 4px !important;
-  left: auto !important;
-  right: 0 !important;
-}}
-/* Ensure gear button is clickable and above everything in sidebar */
-#{container_id} .gearBtn {{
-  z-index: 150 !important;
-  position: absolute !important;
-  left: 12px !important;
-  bottom: 12px !important;
-  pointer-events: auto !important;
-  cursor: pointer !important;
-  opacity: 1 !important;
-}}
-/* Ensure sidebar header is visible and clickable */
-#{container_id} .sidebarHeader {{
-  pointer-events: auto !important;
-  opacity: 1 !important;
-}}
-/* Ensure participant groups are visible and clickable */
-#{container_id} .group {{
-  pointer-events: auto !important;
-  opacity: 1 !important;
-}}
-/* Ensure all form elements in sidebar are clickable and interactive */
-#{container_id} .sidebar select,
-#{container_id} .sidebar input,
-#{container_id} .sidebar button,
-#{container_id} .sidebar label {{
-  pointer-events: auto !important;
-  position: relative !important;
-  z-index: 200 !important;
-}}
-/* Style for select dropdown to ensure it's visible */
-#{container_id} .sidebar select {{
-  -webkit-appearance: menulist !important;
-  -moz-appearance: menulist !important;
-  appearance: menulist !important;
-  cursor: pointer !important;
-}}
-/* Style for range input to ensure it's interactive */
-#{container_id} .sidebar input[type="range"] {{
-  -webkit-appearance: auto !important;
-  appearance: auto !important;
-  cursor: pointer !important;
-}}
-/* Style for number input */
-#{container_id} .sidebar input[type="number"] {{
-  -webkit-appearance: auto !important;
-  appearance: auto !important;
-}}
-/* Style for text input */
-#{container_id} .sidebar input[type="text"] {{
-  -webkit-appearance: auto !important;
-  appearance: auto !important;
-  cursor: text !important;
-}}
-/* Fix for nested elements in sample selection section */
-#{container_id} #sampleStrategySection,
-#{container_id} #sampleStrategySection *,
-#{container_id} #sampleSearchSection,
-#{container_id} #sampleSearchSection *,
-#{container_id} #sampleContext,
-#{container_id} #sampleContext * {{
-  pointer-events: auto !important;
-}}
-/* Ensure sample strategy section has proper stacking context */
-#{container_id} #sampleStrategySection {{
-  position: relative !important;
-  z-index: 200 !important;
-}}
-#{container_id} #sampleSearchSection {{
-  position: relative !important;
-  z-index: 200 !important;
-}}
-/* Ensure sidebar content is above any potential overlays */
-#{container_id} .sidebar .sidebarHeader,
-#{container_id} .sidebar .group {{
-  position: relative !important;
-  z-index: 200 !important;
-}}
-/* Ensure menu is above everything - use fixed positioning set by JS */
-#{container_id} .menu {{
-  z-index: 2147483647 !important;
-  display: none !important;
-  visibility: hidden !important;
-  background: var(--panel) !important;
-  border: 1px solid var(--border) !important;
-  box-shadow: var(--shadow) !important;
-  opacity: 1 !important;
-}}
-#{container_id} .menu.open {{
-  display: block !important;
-  visibility: visible !important;
-  position: fixed !important;
-  pointer-events: auto !important;
-  opacity: 1 !important;
-}}
-/* Ensure container doesn't clip the menu */
-#{container_id} {{
-  overflow: visible !important;
-}}
-/* Note: .main styles moved above with grid-column assignment */
-/* Ensure tracks have proper dimensions within main area */
-#{container_id} .tracks {{
-  position: absolute !important;
-  left: 0 !important;
-  right: 0 !important;
-  top: 0 !important;
-  height: var(--tracks-h, 280px) !important;
-  width: 100% !important;
-}}
-/* Ensure tracksContainer is positioned relatively for absolute children */
-#{container_id} #tracksContainer {{
-  position: relative !important;
-  width: 100% !important;
-  height: 100% !important;
-}}
-/* Ensure SVG fills tracks container */
-#{container_id} #tracksSvg {{
-  width: 100% !important;
-  height: 100% !important;
-  display: block !important;
-}}
-/* Ensure WebGPU canvas fills tracks container */
-#{container_id} #tracksWebGPU {{
-  position: absolute !important;
-  inset: 0 !important;
-  width: 100% !important;
-  height: 100% !important;
-  display: block !important;
-  pointer-events: auto !important;
-  z-index: 1 !important;
-}}
-</style>
-{bootstrap_script}
-{body_content}
-{mount_script}
-</div>"""
-
+        # Use string concatenation instead of f-strings to avoid issues with curly braces in content
+        inline_html_parts = [
+            f'<div id="{container_id}" style="width: 100%; height: 600px; position: relative; overflow: visible; background: var(--bg, #0b0d10); font-family: ui-sans-serif, system-ui; isolation: isolate;">',
+            '<style>',
+            styles,  # Insert styles directly (no f-string interpolation)
+            f'/* Override html/body height rules for container embedding */\n#{container_id} {{\n  height: 600px;\n  display: block;\n  position: relative;\n}}',
+            f'/* Reset html/body styles within container - use :root for CSS variables */\n#{container_id} {{\n  --sidebar-w: 240px;\n  --tracks-h: 280px;\n  --flow-h: 500px;\n  --reads-h: 220px;\n}}',
+            f'/* Use explicit positioning instead of grid for better Jupyter compatibility */\n#{container_id} .app {{\n  height: 100% !important;\n  width: 100% !important;\n  display: block !important; /* Override grid */\n  position: relative !important;\n  overflow: hidden;\n}}',
+            f'/* Sidebar: fixed width on the left */\n#{container_id} .sidebar {{\n  position: absolute !important;\n  left: 0 !important;\n  top: 0 !important;\n  bottom: 0 !important;\n  width: var(--sidebar-w, 240px) !important;\n  z-index: 100 !important;\n  overflow-y: auto !important;\n  overflow-x: visible !important;\n  pointer-events: auto !important;\n  transition: width 0.2s ease;\n}}',
+            f'/* Sidebar collapsed state */\n#{container_id} .app.sidebar-collapsed .sidebar {{\n  width: 12px !important;\n  padding: 0 !important;\n}}\n#{container_id} .app.sidebar-collapsed .sidebar > * {{\n  opacity: 0 !important;\n  pointer-events: none !important;\n}}\n#{container_id} .app.sidebar-collapsed .sidebar::after {{\n  pointer-events: auto !important;\n  opacity: 1 !important;\n  width: 12px !important;\n}}',
+            f'/* Main: takes remaining space to the right of sidebar */\n#{container_id} .main {{\n  position: absolute !important;\n  left: var(--sidebar-w, 240px) !important;\n  top: 0 !important;\n  right: 0 !important;\n  bottom: 0 !important;\n  z-index: 1 !important;\n  overflow: hidden;\n  transition: left 0.2s ease;\n}}',
+            f'/* Main adjusted when sidebar is collapsed */\n#{container_id} .app.sidebar-collapsed .main {{\n  left: 12px !important;\n}}',
+            f'/* Ensure all sidebar children are clickable */\n#{container_id} .sidebar > * {{\n  pointer-events: auto !important;\n  opacity: 1 !important;\n}}',
+            f'/* Ensure sidebar toggle border is clickable - but only on the right edge */\n#{container_id} .sidebar::after {{\n  z-index: 5 !important;\n  pointer-events: auto !important;\n  width: 4px !important;\n  left: auto !important;\n  right: 0 !important;\n}}',
+            f'/* Ensure gear button is clickable and above everything in sidebar */\n#{container_id} .gearBtn {{\n  z-index: 150 !important;\n  position: absolute !important;\n  left: 12px !important;\n  bottom: 12px !important;\n  pointer-events: auto !important;\n  cursor: pointer !important;\n  opacity: 1 !important;\n}}',
+            f'/* Ensure sidebar header is visible and clickable */\n#{container_id} .sidebarHeader {{\n  pointer-events: auto !important;\n  opacity: 1 !important;\n}}',
+            f'/* Ensure participant groups are visible and clickable */\n#{container_id} .group {{\n  pointer-events: auto !important;\n  opacity: 1 !important;\n}}',
+            f'/* Ensure all form elements in sidebar are clickable and interactive */\n#{container_id} .sidebar select,\n#{container_id} .sidebar input,\n#{container_id} .sidebar button,\n#{container_id} .sidebar label {{\n  pointer-events: auto !important;\n  position: relative !important;\n  z-index: 200 !important;\n}}',
+            f'/* Style for select dropdown to ensure it\'s visible */\n#{container_id} .sidebar select {{\n  -webkit-appearance: menulist !important;\n  -moz-appearance: menulist !important;\n  appearance: menulist !important;\n  cursor: pointer !important;\n}}',
+            f'/* Style for range input to ensure it\'s interactive */\n#{container_id} .sidebar input[type="range"] {{\n  -webkit-appearance: auto !important;\n  appearance: auto !important;\n  cursor: pointer !important;\n}}',
+            f'/* Style for number input */\n#{container_id} .sidebar input[type="number"] {{\n  -webkit-appearance: auto !important;\n  appearance: auto !important;\n}}',
+            f'/* Style for text input */\n#{container_id} .sidebar input[type="text"] {{\n  -webkit-appearance: auto !important;\n  appearance: auto !important;\n  cursor: text !important;\n}}',
+            f'/* Fix for nested elements in sample selection section */\n#{container_id} #sampleStrategySection,\n#{container_id} #sampleStrategySection *,\n#{container_id} #sampleSearchSection,\n#{container_id} #sampleSearchSection *,\n#{container_id} #sampleContext,\n#{container_id} #sampleContext * {{\n  pointer-events: auto !important;\n}}',
+            f'/* Ensure sample strategy section has proper stacking context */\n#{container_id} #sampleStrategySection {{\n  position: relative !important;\n  z-index: 200 !important;\n}}\n#{container_id} #sampleSearchSection {{\n  position: relative !important;\n  z-index: 200 !important;\n}}',
+            f'/* Ensure sidebar content is above any potential overlays */\n#{container_id} .sidebar .sidebarHeader,\n#{container_id} .sidebar .group {{\n  position: relative !important;\n  z-index: 200 !important;\n}}',
+            f'/* Ensure menu is above everything - use fixed positioning set by JS */\n#{container_id} .menu {{\n  z-index: 2147483647 !important;\n  display: none !important;\n  visibility: hidden !important;\n  background: var(--panel) !important;\n  border: 1px solid var(--border) !important;\n  box-shadow: var(--shadow) !important;\n  opacity: 1 !important;\n}}\n#{container_id} .menu.open {{\n  display: block !important;\n  visibility: visible !important;\n  position: fixed !important;\n  pointer-events: auto !important;\n  opacity: 1 !important;\n}}',
+            f'/* Ensure container doesn\'t clip the menu */\n#{container_id} {{\n  overflow: visible !important;\n}}',
+            f'/* Note: .main styles moved above with grid-column assignment */\n/* Ensure tracks have proper dimensions within main area */\n#{container_id} .tracks {{\n  position: absolute !important;\n  left: 0 !important;\n  right: 0 !important;\n  top: 0 !important;\n  height: var(--tracks-h, 280px) !important;\n  width: 100% !important;\n}}',
+            f'/* Ensure tracksContainer is positioned relatively for absolute children */\n#{container_id} #tracksContainer {{\n  position: relative !important;\n  width: 100% !important;\n  height: 100% !important;\n}}',
+            f'/* Ensure SVG fills tracks container */\n#{container_id} #tracksSvg {{\n  width: 100% !important;\n  height: 100% !important;\n  display: block !important;\n}}',
+            f'/* Ensure WebGPU canvas fills tracks container */\n#{container_id} #tracksWebGPU {{\n  position: absolute !important;\n  inset: 0 !important;\n  width: 100% !important;\n  height: 100% !important;\n  display: block !important;\n  pointer-events: auto !important;\n  z-index: 1 !important;\n}}',
+            '</style>',
+            bootstrap_script,  # Insert bootstrap script directly (no f-string interpolation)
+            body_content,  # Insert body content directly (no f-string interpolation)
+            mount_script,  # Insert mount script directly (no f-string interpolation)
+        ]
+        
+        # Add script tag if present
+        if script_tag:
+            inline_html_parts.append(script_tag)
+        
+        inline_html_parts.append('</div>')
+        
+        # Filter out None values and ensure all parts are strings
+        inline_html_parts = [str(part) for part in inline_html_parts if part is not None]
+        
+        # Join all parts
+        inline_html = '\n'.join(inline_html_parts)
+        
         return inline_html
 
 
