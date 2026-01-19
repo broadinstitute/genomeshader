@@ -9,3 +9,4 @@
 python/genomeshader/__pycache__/
 *.so
 *.ipynb
+genomeshader_runs/

@@ -1,0 +1,128 @@
+<div class="app" style="position: relative; display: block;">
+  <div class="sidebar" id="sidebar" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
+    <div class="sidebarContent">
+    <div style="display: none;">
+      <div class="sidebarHeader">
+        <h3>Participant groups</h3>
+      </div>
+
+      <div class="group"><span>AFR</span><span class="pill">2634</span></div>
+      <div class="group"><span>AMR</span><span class="pill">603</span></div>
+      <div class="group"><span>EAS</span><span class="pill">1095</span></div>
+      <div class="group"><span>EUR</span><span class="pill">5340</span></div>
+      <div class="group"><span>SAS</span><span class="pill">328</span></div>
+    </div>
+
+    <!-- Sample Search Section -->
+    <div class="sidebarHeader" style="margin-top: 20px;">
+      <h3>Sample Search</h3>
+    </div>
+
+    <div id="sampleSearchSection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); margin-bottom: 20px;">
+      <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;">
+      <div id="sampleSearchResults" style="display: none; margin-top: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel);"></div>
+    </div>
+
+    <div class="sidebarHeader" style="margin-top: 20px;">
+      <h3>Selection</h3>
+    </div>
+
+    <!-- Context Indicator -->
+    <div id="sampleContext" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); font-size: 11px; color: var(--muted); display: none;">
+    </div>
+
+    <!-- Strategy Selection Section -->
+    <div id="sampleStrategySection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); display: none;">
+      <!-- Strategy Dropdown -->
+      <div style="margin-bottom: 8px;">
+        <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;">Strategy</label>
+        <select id="sampleStrategy" disabled style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px;">
+          <option value="best_evidence">Best evidence</option>
+          <option value="most_diverse">Most diverse</option>
+          <option value="compare_branches">Compare branches</option>
+          <option value="carriers_controls">Carriers + controls</option>
+          <option value="random">Random</option>
+        </select>
+      </div>
+      
+      <!-- Combine Selection Toggle (AND/OR) -->
+      <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+        <label style="font-size: 11px; color: var(--muted);">Combine selection:</label>
+        <div style="display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--border2); border-radius: 6px; padding: 2px;">
+          <button id="combineAnd" class="combineToggle active" style="padding: 4px 8px; font-size: 11px; border: none; background: transparent; color: var(--text); border-radius: 4px; cursor: pointer;">AND</button>
+          <button id="combineOr" class="combineToggle" style="padding: 4px 8px; font-size: 11px; border: none; background: transparent; color: var(--muted); border-radius: 4px; cursor: pointer;">OR</button>
+        </div>
+      </div>
+      
+      <!-- Number of Samples Input -->
+      <div style="margin-bottom: 8px;">
+        <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;"># samples</label>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input type="range" id="sampleCountSlider" min="1" max="20" value="1" disabled style="flex: 1;">
+          <input type="number" id="sampleCountInput" min="1" max="20" value="1" disabled style="width: 50px; padding: 4px 6px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font-size: 12px; text-align: center;">
+        </div>
+      </div>
+      
+      <!-- Load Buttons -->
+      <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+        <button id="loadSamplesReplace" disabled class="selectionBtn" style="flex: 1; padding: 6px 10px; font-size: 12px;">Load</button>
+        <button id="loadSamplesAdd" disabled class="selectionBtn" style="flex: 1; padding: 6px 10px; font-size: 12px; display: none;">Load (add)</button>
+      </div>
+      
+      <!-- Preview -->
+      <div id="samplePreview" style="font-size: 11px; color: var(--muted); padding-top: 8px; border-top: 1px solid var(--border2); display: none;">
+        <div style="margin-bottom: 4px; color: var(--text);">Will load:</div>
+        <div id="samplePreviewList" style="color: var(--text);"></div>
+      </div>
+    </div>
+
+    <div class="menu" id="ctxMenu" role="menu" aria-hidden="true">
+      <div class="menuTitle">Display</div>
+      <div class="menuItem" id="themeItem" role="menuitem">
+        <span>Theme<span class="menuHotkey">T</span></span>
+        <span class="menuRight" id="themeLabel">Auto</span>
+      </div>
+
+      <div class="menuItem" id="orientationItem" role="menuitem">
+        <span>Orientation<span class="menuHotkey">O</span></span>
+        <span class="menuRight" id="orientationLabel">Horizontal</span>
+      </div>
+
+      <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
+        <span>Variant Layout<span class="menuHotkey">V</span></span>
+        <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
+      </div>
+
+      <div class="menuItem" id="fullscreenItem" role="menuitem">
+        <span>Full screen<span class="menuHotkey">F</span></span>
+        <span class="menuRight" id="fullscreenLabel">Enter full screen</span>
+      </div>
+
+      <div class="menuTitle">Grouping</div>
+      <div class="menuItem" role="menuitem">
+        <span>Variable</span>
+        <span class="menuRight">Super-pop</span>
+      </div>
+    </div>
+    </div>
+
+    <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
+  </div>
+
+  <div class="main" id="main" style="position: absolute; left: 240px; top: 0; right: 0; bottom: 0; z-index: 1;">
+    <div class="tracks" id="tracksContainer">
+      <svg id="tracksSvg" width="100%" height="100%"></svg>
+      <canvas id="tracksWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
+      <div id="trackControls"></div>
+    </div>
+
+    <div class="flow" id="flow">
+      <canvas class="canvas" id="flowCanvas"></canvas>
+      <canvas id="flowWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
+      <svg class="overlay" id="flowOverlay"></svg>
+    </div>
+
+    <div class="hud" id="hud"></div>
+    <div class="tooltip" id="tooltip"></div>
+  </div>
+</div>
