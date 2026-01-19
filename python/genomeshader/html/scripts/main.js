@@ -1967,8 +1967,9 @@ function setupCanvasHover() {
       }
     }
     
-    // Update preview
+    // Update preview and button text
     updateSamplePreview();
+    updateLoadButtonText();
   }
   
   // Update sample preview
@@ -1996,14 +1997,194 @@ function setupCanvasHover() {
     
     previewListEl.textContent = text;
     previewEl.style.display = 'block';
+    
+    // Update Load button text
+    updateLoadButtonText();
+  }
+  
+  // Update Load button text to show sample count
+  function updateLoadButtonText() {
+    const currentRoot = getCurrentRoot();
+    const replaceBtn = byId(currentRoot, 'loadSamplesReplace');
+    const addBtn = byId(currentRoot, 'loadSamplesAdd');
+    const candidates = state.sampleSelection.candidateSamples;
+    const numSamples = state.sampleSelection.numSamples || 1;
+    
+    const totalCandidates = candidates.length;
+    const samplesToLoad = Math.min(numSamples, totalCandidates);
+    
+    if (replaceBtn) {
+      if (totalCandidates === 0) {
+        replaceBtn.textContent = 'Load';
+      } else {
+        replaceBtn.textContent = `Load (${samplesToLoad} of ${totalCandidates})`;
+      }
+    }
+    
+    if (addBtn) {
+      if (totalCandidates === 0) {
+        addBtn.textContent = 'Load (add)';
+      } else {
+        addBtn.textContent = `Load (add ${samplesToLoad} of ${totalCandidates})`;
+      }
+    }
   }
   
   // Recompute candidate samples based on strategy and selection
   function recomputeCandidateSamples() {
-    // TODO: Implement actual sample selection logic
-    // For now, just placeholder
+    // Clear previous candidates
     state.sampleSelection.candidateSamples = [];
+    
+    // If no alleles selected, no candidates
+    if (state.selectedAlleles.size === 0) {
+      updateSamplePreview();
+      return;
+    }
+    
+    // Parse selected alleles into variant/allele pairs
+    const selectedAllelePairs = [];
+    for (const key of state.selectedAlleles) {
+      const [variantId, alleleIndexStr] = key.split(':');
+      const alleleIndex = parseInt(alleleIndexStr, 10);
+      
+      const variant = variants.find(v => v.id === variantId);
+      if (!variant) continue;
+      
+      selectedAllelePairs.push({
+        variantId,
+        alleleIndex,
+        variant
+      });
+    }
+    
+    if (selectedAllelePairs.length === 0) {
+      updateSamplePreview();
+      return;
+    }
+    
+    // Collect all sample IDs from variant data (for allSampleIds if not populated)
+    const allSamplesSet = new Set();
+    for (const pair of selectedAllelePairs) {
+      const sampleGenotypes = pair.variant.sampleGenotypes || {};
+      Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
+    }
+    
+    // Populate allSampleIds if empty
+    if (state.sampleSelection.allSampleIds.length === 0) {
+      state.sampleSelection.allSampleIds = Array.from(allSamplesSet).sort();
+    }
+    
+    // Find samples that match the selection criteria
+    const candidateSamplesSet = new Set();
+    const combineMode = state.sampleSelection.combineMode;
+    
+    if (combineMode === 'AND') {
+      // Sample must have ALL selected alleles
+      // Start with samples from first variant, then filter by others
+      const firstPair = selectedAllelePairs[0];
+      const firstGenotypes = firstPair.variant.sampleGenotypes || {};
+      const firstGenotypeIndex = alleleIndexToGenotypeIndex(firstPair.alleleIndex);
+      
+      // Only process if first allele is valid
+      if (firstGenotypeIndex !== null) {
+        for (const sampleId of Object.keys(firstGenotypes)) {
+          const genotype = firstGenotypes[sampleId];
+          
+          // Check if this sample has the first allele
+          if (hasAlleleInGenotype(genotype, firstGenotypeIndex)) {
+            // Check if this sample has ALL other selected alleles
+            let hasAllAlleles = true;
+            for (let i = 1; i < selectedAllelePairs.length; i++) {
+              const pair = selectedAllelePairs[i];
+              const pairGenotypes = pair.variant.sampleGenotypes || {};
+              const pairGenotype = pairGenotypes[sampleId];
+              
+              if (!pairGenotype) {
+                hasAllAlleles = false;
+                break;
+              }
+              
+              const pairGenotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+              if (pairGenotypeIndex === null || !hasAlleleInGenotype(pairGenotype, pairGenotypeIndex)) {
+                hasAllAlleles = false;
+                break;
+              }
+            }
+            
+            if (hasAllAlleles) {
+              candidateSamplesSet.add(sampleId);
+            }
+          }
+        }
+      }
+    } else {
+      // OR mode: Sample must have ANY of the selected alleles
+      // Iterate through each variant's samples directly (more efficient than collecting all first)
+      for (const pair of selectedAllelePairs) {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+        
+        // Skip no-call alleles (alleleIndex 0)
+        if (genotypeIndex === null) continue;
+        
+        // Iterate through samples that have genotype data for this variant
+        for (const sampleId of Object.keys(sampleGenotypes)) {
+          const genotype = sampleGenotypes[sampleId];
+          if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+            candidateSamplesSet.add(sampleId);
+          }
+        }
+      }
+    }
+    
+    // Convert to sorted array
+    state.sampleSelection.candidateSamples = Array.from(candidateSamplesSet).sort();
+    
     updateSamplePreview();
+  }
+  
+  // Helper: Convert allele index to genotype index
+  // The labels array from getFormattedLabelsForVariant has:
+  //   Index 0: "." (no-call)
+  //   Index 1: ref allele (genotype 0)
+  //   Index 2: first alt allele (genotype 1)
+  //   Index 3: second alt allele (genotype 2), etc.
+  // So: genotypeIndex = alleleIndex - 1 (for alleleIndex >= 1)
+  function alleleIndexToGenotypeIndex(alleleIndex) {
+    // alleleIndex 0 is no-call, which doesn't map to a genotype
+    // alleleIndex 1 is ref (genotype 0)
+    // alleleIndex 2 is first alt (genotype 1), etc.
+    if (alleleIndex === 0) {
+      return null; // No-call doesn't map to a genotype index
+    }
+    return alleleIndex - 1;
+  }
+  
+  // Helper: Check if a genotype string contains a specific allele index
+  // Genotype format: "0/1", "1/1", "./.", "0|1", etc.
+  // Note: alleleIndex here is the genotype index (0=ref, 1=first alt, 2=second alt, etc.)
+  function hasAlleleInGenotype(genotype, alleleIndex) {
+    if (!genotype || genotype === './.' || genotype === '.') {
+      return false;
+    }
+    
+    // Split by / or | to get individual alleles
+    const alleles = genotype.split(/[\/|]/);
+    
+    // Check if any allele matches the target index
+    for (const allele of alleles) {
+      const alleleStr = allele.trim();
+      // Handle missing alleles
+      if (alleleStr === '.' || alleleStr === '') {
+        continue;
+      }
+      const idx = parseInt(alleleStr, 10);
+      if (!isNaN(idx) && idx === alleleIndex) {
+        return true;
+      }
+    }
+    
+    return false;
   }
   
   // Strategy change handler
@@ -2110,6 +2291,7 @@ function setupCanvasHover() {
       if (sampleCountInputEl) sampleCountInputEl.value = e.target.value;
       state.sampleSelection.numSamples = parseInt(e.target.value);
       recomputeCandidateSamples();
+      updateLoadButtonText();
     });
   }
   
@@ -2120,6 +2302,7 @@ function setupCanvasHover() {
       sampleCountInputEl.value = value;
       state.sampleSelection.numSamples = value;
       recomputeCandidateSamples();
+      updateLoadButtonText();
     });
   }
   
