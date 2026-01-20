@@ -107,7 +107,8 @@ function createSmartTrack(strategy, selectedAlleles) {
     sampleId: null,
     readsData: null,
     readsLayout: null,
-    loading: false
+    loading: false,
+    bamUrls: []
   };
   
   // Add to smartTracks array
@@ -295,6 +296,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         track.readsData = response.reads;
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
+        track.bamUrls = response.bam_urls || [];
         renderAll();
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {

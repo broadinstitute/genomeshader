@@ -95,12 +95,20 @@ function renderSmartTrack(trackId) {
     canvas.style.inset = 'auto';
     canvas.width = W * dpr;
     
+    // Set WebGPU canvas dimensions to match regular canvas
+    webgpuCanvas.width = W * dpr;
+    webgpuCanvas.height = totalContentHeight * dpr;
     webgpuCanvas.style.height = totalContentHeight + 'px';
     webgpuCanvas.style.width = W + 'px';
     webgpuCanvas.style.gridRow = '1';
     webgpuCanvas.style.gridColumn = '1';
     webgpuCanvas.style.position = 'static';
     webgpuCanvas.style.inset = 'auto';
+    
+    // Notify WebGPU core of resize if dimensions changed
+    if (webgpuCore && (webgpuCanvas.width !== W * dpr || webgpuCanvas.height !== totalContentHeight * dpr)) {
+      webgpuCore.handleResize();
+    }
     
     // Enable overflow for scrolling when content exceeds container height
     if (totalContentHeight > H) {
@@ -173,15 +181,23 @@ function renderSmartTrack(trackId) {
     if (rect.width > 0 && rect.height > 0) {
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
+      // Also set WebGPU canvas dimensions
+      webgpuCanvas.width = rect.width * dpr;
+      webgpuCanvas.height = rect.height * dpr;
+      if (webgpuCore) {
+        webgpuCore.handleResize();
+      }
     }
   }
   
   const ctx = canvas.getContext("2d");
   ctx.setTransform(1,0,0,1,0,0);
-  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // Clear canvas - use the actual current dimensions to ensure full clear
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.scale(dpr, dpr);
   
-  // Clear WebGPU renderer instances
+  // Clear WebGPU renderer instances BEFORE drawing new content
+  // This is critical when shuffling - old reads must be removed
   if (instancedRenderer) {
     instancedRenderer.clear();
   }
@@ -378,12 +394,42 @@ function renderSmartTrack(trackId) {
         }
         if (!read.isForward) alpha *= 0.7;
         
-        const x1 = xGenomeCanonical(read.start, W);
-        const x2 = xGenomeCanonical(read.end, W);
+        // Calculate genomic positions - xGenomeCanonical clamps to visible region,
+        // but we need to handle reads that extend beyond the visible bounds correctly
+        const leftPad = 16;
+        const rightPad = 16;
+        const innerW = W - leftPad - rightPad;
+        
+        // Calculate unclamped positions to get accurate width for reads extending off-screen
+        const span = state.endBp - state.startBp;
+        const totalGapPx = getTotalInsertionGapWidth();
+        const totalGapBp = totalGapPx / state.pxPerBp;
+        const effectiveSpan = span + totalGapBp;
+        
+        // Calculate x1 and x2 without clamping
+        const accumulatedGapPx1 = getAccumulatedGapPx(read.start, state.expandedInsertions);
+        const bpOffset1 = read.start - state.startBp;
+        const accumulatedGapBp1 = accumulatedGapPx1 / state.pxPerBp;
+        const normalizedPos1 = (bpOffset1 + accumulatedGapBp1) / effectiveSpan;
+        const x1Unclamped = leftPad + normalizedPos1 * innerW;
+        
+        const accumulatedGapPx2 = getAccumulatedGapPx(read.end, state.expandedInsertions);
+        const bpOffset2 = read.end - state.startBp;
+        const accumulatedGapBp2 = accumulatedGapPx2 / state.pxPerBp;
+        const normalizedPos2 = (bpOffset2 + accumulatedGapBp2) / effectiveSpan;
+        const x2Unclamped = leftPad + normalizedPos2 * innerW;
+        
+        // Now clamp to visible bounds for drawing
+        const x1 = Math.max(leftPad, Math.min(x1Unclamped, leftPad + innerW));
+        const x2 = Math.max(leftPad, Math.min(x2Unclamped, leftPad + innerW));
+        
         const y = top + read.row * rowH + 2 - scrollTop;
         const h = rowH - 4;
-        const x = Math.max(0, x1);
-        const w = Math.max(4, Math.min(x2, W) - x);
+        
+        // Calculate drawing position and width from clamped values
+        // This ensures reads that extend off-screen are drawn correctly
+        const x = x1;
+        const w = Math.max(4, x2 - x1);
         
         if (y + h < 0 || y > totalContentHeight) continue;
         
@@ -490,17 +536,38 @@ function renderSmartTrack(trackId) {
   if (webgpuSupported && instancedRenderer && 
       (instancedRenderer.rectInstances.length > 0 || instancedRenderer.lineInstances.length > 0)) {
     try {
-      const width = webgpuCanvas.clientWidth * dpr;
-      let height = webgpuCanvas.clientHeight * dpr;
-      if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
-        height = totalContentHeight * dpr;
-        webgpuCanvas.height = height;
+      // Use the dimensions we already calculated and set above
+      // For horizontal mode with reads, we already set webgpuCanvas.width and height above
+      const width = webgpuCanvas.width || W * dpr;
+      const height = webgpuCanvas.height || (isVertical ? H * dpr : totalContentHeight * dpr);
+      
+      // Ensure dimensions are valid
+      if (width <= 0 || height <= 0 || isNaN(width) || isNaN(height)) {
+        console.warn(`Smart track ${trackId}: Invalid WebGPU canvas dimensions (${width}x${height}), skipping render`);
+        return;
       }
       
-      if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
+      // Check if canvas needs resize notification (dimensions might have changed)
+      // Only call handleResize if dimensions actually changed from what WebGPU core knows
+      const needsResize = webgpuCanvas.width !== width || webgpuCanvas.height !== height;
+      if (needsResize && webgpuCore) {
         webgpuCanvas.width = width;
         webgpuCanvas.height = height;
         webgpuCore.handleResize();
+        
+        // Clear the canvas after resize to remove any leftover content from old dimensions
+        const clearEncoder = webgpuCore.createCommandEncoder();
+        const clearTexture = webgpuCore.getCurrentTexture();
+        const clearPass = clearEncoder.beginRenderPass({
+          colorAttachments: [{
+            view: clearTexture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        clearPass.end();
+        webgpuCore.submit([clearEncoder.finish()]);
       }
       
       const encoder = webgpuCore.createCommandEncoder();
@@ -524,6 +591,19 @@ function renderSmartTrack(trackId) {
   } else if (webgpuSupported && instancedRenderer) {
     // Clear WebGPU canvas if no instances
     try {
+      // Ensure dimensions are correct before clearing
+      const width = webgpuCanvas.clientWidth * dpr;
+      let height = webgpuCanvas.clientHeight * dpr;
+      if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+        height = totalContentHeight * dpr;
+      }
+      
+      if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
+        webgpuCanvas.width = width;
+        webgpuCanvas.height = height;
+        webgpuCore.handleResize();
+      }
+      
       const encoder = webgpuCore.createCommandEncoder();
       const texture = webgpuCore.getCurrentTexture();
       const renderPass = encoder.beginRenderPass({
@@ -545,6 +625,52 @@ function renderSmartTrack(trackId) {
 // -----------------------------
 // Track controls rendering
 // -----------------------------
+
+// Helper function to truncate long paths by removing middle portion
+function truncatePath(path, maxLength = 60) {
+  if (!path || path.length <= maxLength) {
+    return path;
+  }
+  
+  const ellipsis = "[...]";
+  const ellipsisLength = ellipsis.length;
+  
+  // Calculate how much space we have for start and end after ellipsis
+  const availableLength = maxLength - ellipsisLength;
+  const startLength = Math.floor(availableLength * 0.4);
+  const endLength = Math.floor(availableLength * 0.6); // Give slightly more to end (filename)
+  
+  if (startLength + endLength + ellipsisLength >= path.length) {
+    return path; // Can't truncate meaningfully
+  }
+  
+  const start = path.substring(0, startLength);
+  const end = path.substring(path.length - endLength);
+  return `${start}${ellipsis}${end}`;
+}
+
+// Helper function to extract basename from a path or URL
+function getBasename(path) {
+  if (!path) return '';
+  
+  // Handle URLs (gs://, http://, https://, file://)
+  let pathPart = path;
+  if (path.includes('://')) {
+    // For URLs, get the part after the protocol and domain
+    const urlMatch = path.match(/:\/\/[^\/]+(\/.+)$/);
+    if (urlMatch) {
+      pathPart = urlMatch[1];
+    } else {
+      // If no path part, return the full URL
+      return path;
+    }
+  }
+  
+  // Extract basename (last part after last /)
+  const parts = pathPart.split('/');
+  return parts[parts.length - 1] || path;
+}
+
 const trackControls = document.getElementById("trackControls");
 function renderTrackControls() {
   trackControls.innerHTML = "";
@@ -625,6 +751,7 @@ function renderTrackControls() {
         e.stopPropagation();
         label.style.display = "none";
         labelInput.style.display = "inline-block";
+        collapseBtn.style.display = "none"; // Hide collapse button during editing
         labelInput.focus();
         labelInput.select();
       });
@@ -632,9 +759,53 @@ function renderTrackControls() {
       // Save on blur or Enter
       const saveLabel = () => {
         const newLabel = labelInput.value.trim() || track.label;
-        label.textContent = newLabel;
+        
+        // Rebuild label with sample name
+        label.innerHTML = "";
+        const labelText = document.createTextNode(newLabel);
+        label.appendChild(labelText);
+        
+        // Add sample name in parentheses with smaller font if available
+        if (track.sampleId) {
+          const sampleNameSpan = document.createElement("span");
+          sampleNameSpan.textContent = ` (${track.sampleId})`;
+          sampleNameSpan.style.fontSize = "10px";
+          sampleNameSpan.style.fontWeight = "400";
+          sampleNameSpan.style.color = "var(--muted2)";
+          sampleNameSpan.style.marginLeft = "4px";
+          label.appendChild(sampleNameSpan);
+        } else if (track.bamUrls && track.bamUrls.length > 0) {
+          // Fallback to BAM basenames if sampleId not available
+          const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
+          
+          let displayPath;
+          if (isInlineMode) {
+            // In inline mode: show only basename(s)
+            if (track.bamUrls.length === 1) {
+              displayPath = getBasename(track.bamUrls[0]);
+            } else {
+              displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
+            }
+          } else {
+            // In overlay mode: show full path(s) with truncation if needed
+            const bamPath = track.bamUrls.length === 1 
+              ? track.bamUrls[0] 
+              : track.bamUrls.join(", ");
+            displayPath = truncatePath(bamPath, 80);
+          }
+          
+          const pathSpan = document.createElement("span");
+          pathSpan.textContent = ` (${displayPath})`;
+          pathSpan.style.fontSize = "10px";
+          pathSpan.style.fontWeight = "400";
+          pathSpan.style.color = "var(--muted2)";
+          pathSpan.style.marginLeft = "4px";
+          label.appendChild(pathSpan);
+        }
+        
         label.style.display = "";
         labelInput.style.display = "none";
+        collapseBtn.style.display = ""; // Show collapse button again
         editSmartTrackLabel(track.id, newLabel);
       };
       
@@ -646,12 +817,99 @@ function renderTrackControls() {
         } else if (e.key === "Escape") {
           e.preventDefault();
           labelInput.value = track.label;
+          
+          // Rebuild label with sample name
+          label.innerHTML = "";
+          const labelText = document.createTextNode(track.label);
+          label.appendChild(labelText);
+          
+          // Add sample name in parentheses with smaller font if available
+          if (track.sampleId) {
+            const sampleNameSpan = document.createElement("span");
+            sampleNameSpan.textContent = ` (${track.sampleId})`;
+            sampleNameSpan.style.fontSize = "10px";
+            sampleNameSpan.style.fontWeight = "400";
+            sampleNameSpan.style.color = "var(--muted2)";
+            sampleNameSpan.style.marginLeft = "4px";
+            label.appendChild(sampleNameSpan);
+          } else if (track.bamUrls && track.bamUrls.length > 0) {
+            // Fallback to BAM basenames if sampleId not available
+            const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
+            
+            let displayPath;
+            if (isInlineMode) {
+              // In inline mode: show only basename(s)
+              if (track.bamUrls.length === 1) {
+                displayPath = getBasename(track.bamUrls[0]);
+              } else {
+                displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
+              }
+            } else {
+              // In overlay mode: show full path(s) with truncation if needed
+              const bamPath = track.bamUrls.length === 1 
+                ? track.bamUrls[0] 
+                : track.bamUrls.join(", ");
+              displayPath = truncatePath(bamPath, 80);
+            }
+            
+            const pathSpan = document.createElement("span");
+            pathSpan.textContent = ` (${displayPath})`;
+            pathSpan.style.fontSize = "10px";
+            pathSpan.style.fontWeight = "400";
+            pathSpan.style.color = "var(--muted2)";
+            pathSpan.style.marginLeft = "4px";
+            label.appendChild(pathSpan);
+          }
+          
           label.style.display = "";
           labelInput.style.display = "none";
+          collapseBtn.style.display = ""; // Show collapse button again
         }
       });
       
-      label.textContent = track.label;
+      // Create label content with sample name
+      const labelText = document.createTextNode(track.label);
+      label.appendChild(labelText);
+      
+      // Add sample name in parentheses with smaller font if available
+      // Use sampleId (VCF sample name from sample mapping) if available
+      if (track.sampleId) {
+        const sampleNameSpan = document.createElement("span");
+        sampleNameSpan.textContent = ` (${track.sampleId})`;
+        sampleNameSpan.style.fontSize = "10px";
+        sampleNameSpan.style.fontWeight = "400";
+        sampleNameSpan.style.color = "var(--muted2)";
+        sampleNameSpan.style.marginLeft = "4px";
+        label.appendChild(sampleNameSpan);
+      } else if (track.bamUrls && track.bamUrls.length > 0) {
+        // Fallback to BAM basenames if sampleId not available
+        const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
+        
+        let displayPath;
+        if (isInlineMode) {
+          // In inline mode: show only basename(s)
+          if (track.bamUrls.length === 1) {
+            displayPath = getBasename(track.bamUrls[0]);
+          } else {
+            displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
+          }
+        } else {
+          // In overlay mode: show full path(s) with truncation if needed
+          const bamPath = track.bamUrls.length === 1 
+            ? track.bamUrls[0] 
+            : track.bamUrls.join(", ");
+          displayPath = truncatePath(bamPath, 80);
+        }
+        
+        const pathSpan = document.createElement("span");
+        pathSpan.textContent = ` (${displayPath})`;
+        pathSpan.style.fontSize = "10px";
+        pathSpan.style.fontWeight = "400";
+        pathSpan.style.color = "var(--muted2)";
+        pathSpan.style.marginLeft = "4px";
+        label.appendChild(pathSpan);
+      }
+      
       controls.appendChild(labelInput);
     } else {
       // For the Locus track, append the extent in parentheses
@@ -1120,6 +1378,10 @@ function renderHoverOnly() {
   // Skip expensive SVG rebuilds and layout recalculations
   updateLocusTrackHover(); // Update Locus track SVG hover styles
   renderFlowCanvas();
+  // Render all Smart tracks to update variant highlights
+  state.smartTracks.forEach(track => {
+    renderSmartTrack(track.id);
+  });
   updateTooltip();
 }
 
@@ -2992,12 +3254,16 @@ interactionBinding = bindInteractions(root, state, main);
 if (trackControls) {
 trackControls.addEventListener("pointerdown", (e) => {
   // Don't start drag if clicking on buttons or interactive elements
+  const trackLabel = e.target.closest(".track-label");
+  const isSmartTrackLabel = trackLabel && trackLabel.closest(".track-controls[data-track-id^='smart-track-']");
+  
   if (e.target.closest(".track-collapse-btn") ||
       e.target.closest(".smart-track-close-btn") ||
       e.target.closest(".smart-track-reload-btn") ||
       e.target.closest(".smart-track-shuffle-btn") ||
       e.target.closest(".smart-track-strategy-select") ||
       e.target.closest(".smart-track-label-input") ||
+      isSmartTrackLabel ||
       e.target.closest("button") ||
       e.target.closest("select") ||
       e.target.closest("input")) {
