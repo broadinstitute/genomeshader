@@ -292,20 +292,20 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     .then(function(response) {
       track.loading = false;
       if (response.type === 'fetch_reads_response') {
-        // console.log(`Smart track ${trackId}: Received ${response.count} read elements`);
         track.readsData = response.reads;
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
         renderAll();
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
+        console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
         throw new Error(response.error);
       }
       return null;
     })
     .catch(function(err) {
       track.loading = false;
-      console.error(`Smart track ${trackId}: Failed to fetch reads:`, err);
+      console.error(`Failed to fetch reads for Smart track ${trackId}:`, err);
       renderAll();
       throw err;
     });
@@ -368,36 +368,60 @@ function shuffleSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
   
-  // Recompute candidate samples based on current strategy
-  const candidates = state.sampleSelection.candidateSamples;
+  // Compute candidate samples for this track's specific alleles
+  // Use the track's strategy and the current combine mode
+  const combineMode = state.sampleSelection.combineMode;
+  const candidates = window.computeCandidateSamplesForAlleles 
+    ? window.computeCandidateSamplesForAlleles(track.selectedAlleles, combineMode)
+    : [];
+  
+  if (!candidates || candidates.length === 0) {
+    console.warn(`No candidate samples found for track ${trackId}`);
+    return;
+  }
+  
+  // Select a new sample based on the track's strategy
   let sampleId = null;
   
-  if (candidates && candidates.length > 0) {
+  if (window.selectSamplesForStrategy && track.strategy) {
+    // Use the strategy-based selection (for Random, this will pick a random sample)
+    const selectedSamples = window.selectSamplesForStrategy(track.strategy, candidates, 1);
+    if (selectedSamples.length > 0) {
+      sampleId = selectedSamples[0];
+      
+      // If we got the same sample and there are other candidates, try to get a different one
+      if (sampleId === track.sampleId && candidates.length > 1) {
+        // Filter out the current sample and pick randomly from the rest
+        const otherCandidates = candidates.filter(s => s !== track.sampleId);
+        if (otherCandidates.length > 0) {
+          sampleId = otherCandidates[Math.floor(Math.random() * otherCandidates.length)];
+        }
+      }
+    }
+  } else {
+    // Fallback: pick a random different sample
     if (candidates.length === 1) {
-      // Only one candidate, use it
       sampleId = candidates[0];
     } else {
-      // If we have a current sample, try to get a different one
-      if (track.sampleId && candidates.includes(track.sampleId)) {
-        const currentIndex = candidates.indexOf(track.sampleId);
-        // Pick a random different sample
-        let nextIndex;
-        do {
-          nextIndex = Math.floor(Math.random() * candidates.length);
-        } while (nextIndex === currentIndex && candidates.length > 1);
-        sampleId = candidates[nextIndex];
+      // Try to get a different sample
+      const otherCandidates = track.sampleId 
+        ? candidates.filter(s => s !== track.sampleId)
+        : candidates;
+      if (otherCandidates.length > 0) {
+        sampleId = otherCandidates[Math.floor(Math.random() * otherCandidates.length)];
       } else {
-        // No current sample or it's not in candidates, pick a random one
         sampleId = candidates[Math.floor(Math.random() * candidates.length)];
       }
     }
   }
   
   // Fetch reads with new sample
-  fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
-    .catch(err => {
-      console.error(`Failed to shuffle track ${trackId}:`, err);
-    });
+  if (sampleId) {
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
+      .catch(err => {
+        console.error(`Failed to shuffle track ${trackId}:`, err);
+      });
+  }
 }
 
 // Update Smart track label

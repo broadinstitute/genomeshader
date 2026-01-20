@@ -2187,6 +2187,135 @@ function setupCanvasHover() {
     return false;
   }
   
+  // Helper: Compute candidate samples for a specific set of alleles
+  // This is used by shuffle to get candidates for a track's specific alleles
+  function computeCandidateSamplesForAlleles(selectedAllelesSet, combineMode) {
+    const selectedAlleles = Array.from(selectedAllelesSet);
+    if (selectedAlleles.length === 0) {
+      return [];
+    }
+    
+    // Parse selected alleles into variant/allele pairs
+    const selectedAllelePairs = [];
+    for (const key of selectedAlleles) {
+      const [variantId, alleleIndexStr] = key.split(':');
+      const alleleIndex = parseInt(alleleIndexStr, 10);
+      
+      const variant = variants.find(v => v.id === variantId);
+      if (!variant) continue;
+      
+      selectedAllelePairs.push({
+        variantId,
+        alleleIndex,
+        variant
+      });
+    }
+    
+    if (selectedAllelePairs.length === 0) {
+      return [];
+    }
+    
+    // Find samples that match the selection criteria
+    const candidateSamplesSet = new Set();
+    
+    if (combineMode === 'AND') {
+      // Sample must have ALL selected alleles
+      const firstPair = selectedAllelePairs[0];
+      const firstGenotypes = firstPair.variant.sampleGenotypes || {};
+      const firstGenotypeIndex = alleleIndexToGenotypeIndex(firstPair.alleleIndex);
+      
+      if (firstGenotypeIndex !== null) {
+        for (const sampleId of Object.keys(firstGenotypes)) {
+          const genotype = firstGenotypes[sampleId];
+          
+          if (hasAlleleInGenotype(genotype, firstGenotypeIndex)) {
+            let hasAllAlleles = true;
+            for (let i = 1; i < selectedAllelePairs.length; i++) {
+              const pair = selectedAllelePairs[i];
+              const pairGenotypes = pair.variant.sampleGenotypes || {};
+              const pairGenotype = pairGenotypes[sampleId];
+              
+              if (!pairGenotype) {
+                hasAllAlleles = false;
+                break;
+              }
+              
+              const pairGenotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+              if (pairGenotypeIndex === null || !hasAlleleInGenotype(pairGenotype, pairGenotypeIndex)) {
+                hasAllAlleles = false;
+                break;
+              }
+            }
+            
+            if (hasAllAlleles) {
+              candidateSamplesSet.add(sampleId);
+            }
+          }
+        }
+      }
+    } else {
+      // OR mode: Sample must have ANY of the selected alleles
+      for (const pair of selectedAllelePairs) {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+        
+        if (genotypeIndex === null) continue;
+        
+        for (const sampleId of Object.keys(sampleGenotypes)) {
+          const genotype = sampleGenotypes[sampleId];
+          if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+            candidateSamplesSet.add(sampleId);
+          }
+        }
+      }
+    }
+    
+    return Array.from(candidateSamplesSet).sort();
+  }
+  
+  // Export for use in smart-tracks.js
+  window.computeCandidateSamplesForAlleles = computeCandidateSamplesForAlleles;
+  
+  // Helper: Select samples based on strategy
+  // Returns an array of sample IDs to use for creating Smart Tracks
+  function selectSamplesForStrategy(strategy, candidates, numSamples) {
+    if (!candidates || candidates.length === 0) {
+      return [];
+    }
+    
+    if (strategy === 'random') {
+      // Random strategy: select N random samples from candidates
+      const selectedSamples = [];
+      const candidatesCopy = [...candidates]; // Copy to avoid mutating original
+      
+      for (let i = 0; i < numSamples; i++) {
+        if (candidatesCopy.length === 0) {
+          // If we've exhausted unique samples, allow duplicates by resetting
+          candidatesCopy.push(...candidates);
+        }
+        
+        // Pick a random index
+        const randomIndex = Math.floor(Math.random() * candidatesCopy.length);
+        selectedSamples.push(candidatesCopy[randomIndex]);
+        
+        // Remove the selected sample to avoid duplicates (if possible)
+        candidatesCopy.splice(randomIndex, 1);
+      }
+      
+      return selectedSamples;
+    } else {
+      // For other strategies, cycle through candidates (current behavior)
+      const selectedSamples = [];
+      for (let i = 0; i < numSamples; i++) {
+        selectedSamples.push(candidates[i % candidates.length]);
+      }
+      return selectedSamples;
+    }
+  }
+  
+  // Export for use in smart-tracks.js
+  window.selectSamplesForStrategy = selectSamplesForStrategy;
+  
   // Strategy change handler
   function onStrategyChange() {
     const currentRoot = getCurrentRoot();
@@ -2359,20 +2488,14 @@ function setupCanvasHover() {
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
-      // Remove all existing Smart tracks
-      const smartTrackIds = state.smartTracks.map(t => t.id);
-      smartTrackIds.forEach(id => removeSmartTrack(id));
+      // Select samples based on strategy (will pick new random samples each time for Random strategy)
+      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
       
-      // Create Smart tracks based on numSamples
+      // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
-      for (let i = 0; i < numSamples; i++) {
+      for (let i = 0; i < selectedSamples.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
-        
-        // Get sample ID from candidates (cycle through if fewer candidates than requested)
-        let sampleId = null;
-        if (candidates && candidates.length > 0) {
-          sampleId = candidates[i % candidates.length];
-        }
+        const sampleId = selectedSamples[i];
         
         // Fetch reads
         trackPromises.push(
@@ -2413,16 +2536,14 @@ function setupCanvasHover() {
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
-      // Create Smart tracks based on numSamples (add, don't replace)
+      // Select samples based on strategy
+      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
+      
+      // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
-      for (let i = 0; i < numSamples; i++) {
+      for (let i = 0; i < selectedSamples.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
-        
-        // Get sample ID from candidates (cycle through if fewer candidates than requested)
-        let sampleId = null;
-        if (candidates && candidates.length > 0) {
-          sampleId = candidates[i % candidates.length];
-        }
+        const sampleId = selectedSamples[i];
         
         // Fetch reads
         trackPromises.push(

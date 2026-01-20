@@ -183,6 +183,59 @@ pub fn fetch_reads_from_first_bam(
     Ok(df)
 }
 
+/// Fetch reads from multiple BAM/CRAM files for a given locus.
+/// Merges results from all specified files.
+pub fn fetch_reads_from_bam_urls(
+    reads_urls: &Vec<Url>,
+    cohort: &String,
+    chr: &String,
+    start: &u64,
+    stop: &u64,
+    cache_path: &PathBuf
+) -> Result<DataFrame> {
+    let _stderr_gag = Gag::stderr().unwrap();
+    
+    if reads_urls.is_empty() {
+        return Ok(DataFrame::default());
+    }
+    
+    let mut all_dfs = Vec::new();
+    
+    for reads_url in reads_urls {
+        match open_bam(reads_url, cache_path) {
+            Ok(mut bam) => {
+                match extract_reads(&mut bam, reads_url, cohort, chr, start, stop) {
+                    Ok(df) => {
+                        if df.height() > 0 {
+                            all_dfs.push(df);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to extract reads from {}: {}", reads_url, e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to open BAM file {}: {}", reads_url, e);
+            }
+        }
+    }
+    
+    if all_dfs.is_empty() {
+        // Return empty DataFrame with correct schema
+        return Ok(DataFrame::default());
+    }
+    
+    // Merge all DataFrames
+    let mut result = all_dfs[0].clone();
+    for df in all_dfs.iter().skip(1) {
+        let _ = result.vstack_mut(df);
+    }
+    
+    result.align_chunks();
+    Ok(result)
+}
+
 pub fn stage_data(
     reads_cohort: &HashSet<(Url, String)>,
     loci: &HashSet<(String, u64, u64)>,
