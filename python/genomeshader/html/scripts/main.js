@@ -923,45 +923,6 @@ function renderTrackControls() {
 
     // Add Smart track controls if needed
     if (isSmartTrack) {
-      // Strategy dropdown
-      const strategySelect = document.createElement("select");
-      strategySelect.className = "smart-track-strategy-select";
-      strategySelect.id = `smart-track-strategy-${track.id}`;
-      strategySelect.name = `smart-track-strategy-${track.id}`;
-      strategySelect.style.fontSize = "11px";
-      strategySelect.style.padding = "2px 4px";
-      strategySelect.style.border = "1px solid var(--border2)";
-      strategySelect.style.borderRadius = "4px";
-      strategySelect.style.background = "var(--panel)";
-      strategySelect.style.color = "var(--text)";
-      strategySelect.style.marginLeft = "6px";
-      strategySelect.style.cursor = "pointer";
-      
-      const strategies = [
-        { value: "best_evidence", label: "Best evidence" },
-        { value: "most_diverse", label: "Most diverse" },
-        { value: "compare_branches", label: "Compare branches" },
-        { value: "carriers_controls", label: "Carriers + controls" },
-        { value: "random", label: "Random" }
-      ];
-      
-      strategies.forEach(s => {
-        const option = document.createElement("option");
-        option.value = s.value;
-        option.textContent = s.label;
-        if (s.value === track.strategy) {
-          option.selected = true;
-        }
-        strategySelect.appendChild(option);
-      });
-      
-      strategySelect.addEventListener("change", (e) => {
-        e.stopPropagation();
-        updateSmartTrackStrategy(track.id, e.target.value);
-      });
-      strategySelect.style.pointerEvents = "auto";
-      strategySelect.style.zIndex = "20";
-      
       // Reload button (reload current sample)
       const reloadBtn = document.createElement("button");
       reloadBtn.className = "smart-track-reload-btn";
@@ -1053,7 +1014,6 @@ function renderTrackControls() {
       // In vertical mode, reverse order: label on top, button on bottom
       if (isVertical) {
         controls.appendChild(label);
-        controls.appendChild(strategySelect);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -1062,7 +1022,6 @@ function renderTrackControls() {
       } else {
         controls.appendChild(collapseBtn);
         controls.appendChild(label);
-        controls.appendChild(strategySelect);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -3261,7 +3220,6 @@ trackControls.addEventListener("pointerdown", (e) => {
       e.target.closest(".smart-track-close-btn") ||
       e.target.closest(".smart-track-reload-btn") ||
       e.target.closest(".smart-track-shuffle-btn") ||
-      e.target.closest(".smart-track-strategy-select") ||
       e.target.closest(".smart-track-label-input") ||
       isSmartTrackLabel ||
       e.target.closest("button") ||
