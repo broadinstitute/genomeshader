@@ -95,12 +95,20 @@ function renderSmartTrack(trackId) {
     canvas.style.inset = 'auto';
     canvas.width = W * dpr;
     
+    // Set WebGPU canvas dimensions to match regular canvas
+    webgpuCanvas.width = W * dpr;
+    webgpuCanvas.height = totalContentHeight * dpr;
     webgpuCanvas.style.height = totalContentHeight + 'px';
     webgpuCanvas.style.width = W + 'px';
     webgpuCanvas.style.gridRow = '1';
     webgpuCanvas.style.gridColumn = '1';
     webgpuCanvas.style.position = 'static';
     webgpuCanvas.style.inset = 'auto';
+    
+    // Notify WebGPU core of resize if dimensions changed
+    if (webgpuCore && (webgpuCanvas.width !== W * dpr || webgpuCanvas.height !== totalContentHeight * dpr)) {
+      webgpuCore.handleResize();
+    }
     
     // Enable overflow for scrolling when content exceeds container height
     if (totalContentHeight > H) {
@@ -173,15 +181,23 @@ function renderSmartTrack(trackId) {
     if (rect.width > 0 && rect.height > 0) {
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
+      // Also set WebGPU canvas dimensions
+      webgpuCanvas.width = rect.width * dpr;
+      webgpuCanvas.height = rect.height * dpr;
+      if (webgpuCore) {
+        webgpuCore.handleResize();
+      }
     }
   }
   
   const ctx = canvas.getContext("2d");
   ctx.setTransform(1,0,0,1,0,0);
-  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // Clear canvas - use the actual current dimensions to ensure full clear
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.scale(dpr, dpr);
   
-  // Clear WebGPU renderer instances
+  // Clear WebGPU renderer instances BEFORE drawing new content
+  // This is critical when shuffling - old reads must be removed
   if (instancedRenderer) {
     instancedRenderer.clear();
   }
@@ -378,12 +394,42 @@ function renderSmartTrack(trackId) {
         }
         if (!read.isForward) alpha *= 0.7;
         
-        const x1 = xGenomeCanonical(read.start, W);
-        const x2 = xGenomeCanonical(read.end, W);
+        // Calculate genomic positions - xGenomeCanonical clamps to visible region,
+        // but we need to handle reads that extend beyond the visible bounds correctly
+        const leftPad = 16;
+        const rightPad = 16;
+        const innerW = W - leftPad - rightPad;
+        
+        // Calculate unclamped positions to get accurate width for reads extending off-screen
+        const span = state.endBp - state.startBp;
+        const totalGapPx = getTotalInsertionGapWidth();
+        const totalGapBp = totalGapPx / state.pxPerBp;
+        const effectiveSpan = span + totalGapBp;
+        
+        // Calculate x1 and x2 without clamping
+        const accumulatedGapPx1 = getAccumulatedGapPx(read.start, state.expandedInsertions);
+        const bpOffset1 = read.start - state.startBp;
+        const accumulatedGapBp1 = accumulatedGapPx1 / state.pxPerBp;
+        const normalizedPos1 = (bpOffset1 + accumulatedGapBp1) / effectiveSpan;
+        const x1Unclamped = leftPad + normalizedPos1 * innerW;
+        
+        const accumulatedGapPx2 = getAccumulatedGapPx(read.end, state.expandedInsertions);
+        const bpOffset2 = read.end - state.startBp;
+        const accumulatedGapBp2 = accumulatedGapPx2 / state.pxPerBp;
+        const normalizedPos2 = (bpOffset2 + accumulatedGapBp2) / effectiveSpan;
+        const x2Unclamped = leftPad + normalizedPos2 * innerW;
+        
+        // Now clamp to visible bounds for drawing
+        const x1 = Math.max(leftPad, Math.min(x1Unclamped, leftPad + innerW));
+        const x2 = Math.max(leftPad, Math.min(x2Unclamped, leftPad + innerW));
+        
         const y = top + read.row * rowH + 2 - scrollTop;
         const h = rowH - 4;
-        const x = Math.max(0, x1);
-        const w = Math.max(4, Math.min(x2, W) - x);
+        
+        // Calculate drawing position and width from clamped values
+        // This ensures reads that extend off-screen are drawn correctly
+        const x = x1;
+        const w = Math.max(4, x2 - x1);
         
         if (y + h < 0 || y > totalContentHeight) continue;
         
@@ -490,17 +536,38 @@ function renderSmartTrack(trackId) {
   if (webgpuSupported && instancedRenderer && 
       (instancedRenderer.rectInstances.length > 0 || instancedRenderer.lineInstances.length > 0)) {
     try {
-      const width = webgpuCanvas.clientWidth * dpr;
-      let height = webgpuCanvas.clientHeight * dpr;
-      if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
-        height = totalContentHeight * dpr;
-        webgpuCanvas.height = height;
+      // Use the dimensions we already calculated and set above
+      // For horizontal mode with reads, we already set webgpuCanvas.width and height above
+      const width = webgpuCanvas.width || W * dpr;
+      const height = webgpuCanvas.height || (isVertical ? H * dpr : totalContentHeight * dpr);
+      
+      // Ensure dimensions are valid
+      if (width <= 0 || height <= 0 || isNaN(width) || isNaN(height)) {
+        console.warn(`Smart track ${trackId}: Invalid WebGPU canvas dimensions (${width}x${height}), skipping render`);
+        return;
       }
       
-      if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
+      // Check if canvas needs resize notification (dimensions might have changed)
+      // Only call handleResize if dimensions actually changed from what WebGPU core knows
+      const needsResize = webgpuCanvas.width !== width || webgpuCanvas.height !== height;
+      if (needsResize && webgpuCore) {
         webgpuCanvas.width = width;
         webgpuCanvas.height = height;
         webgpuCore.handleResize();
+        
+        // Clear the canvas after resize to remove any leftover content from old dimensions
+        const clearEncoder = webgpuCore.createCommandEncoder();
+        const clearTexture = webgpuCore.getCurrentTexture();
+        const clearPass = clearEncoder.beginRenderPass({
+          colorAttachments: [{
+            view: clearTexture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        clearPass.end();
+        webgpuCore.submit([clearEncoder.finish()]);
       }
       
       const encoder = webgpuCore.createCommandEncoder();
@@ -524,6 +591,19 @@ function renderSmartTrack(trackId) {
   } else if (webgpuSupported && instancedRenderer) {
     // Clear WebGPU canvas if no instances
     try {
+      // Ensure dimensions are correct before clearing
+      const width = webgpuCanvas.clientWidth * dpr;
+      let height = webgpuCanvas.clientHeight * dpr;
+      if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+        height = totalContentHeight * dpr;
+      }
+      
+      if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
+        webgpuCanvas.width = width;
+        webgpuCanvas.height = height;
+        webgpuCore.handleResize();
+      }
+      
       const encoder = webgpuCore.createCommandEncoder();
       const texture = webgpuCore.getCurrentTexture();
       const renderPass = encoder.beginRenderPass({
@@ -545,7 +625,56 @@ function renderSmartTrack(trackId) {
 // -----------------------------
 // Track controls rendering
 // -----------------------------
+
+// Helper function to truncate long paths by removing middle portion
+function truncatePath(path, maxLength = 60) {
+  if (!path || path.length <= maxLength) {
+    return path;
+  }
+  
+  const ellipsis = "[...]";
+  const ellipsisLength = ellipsis.length;
+  
+  // Calculate how much space we have for start and end after ellipsis
+  const availableLength = maxLength - ellipsisLength;
+  const startLength = Math.floor(availableLength * 0.4);
+  const endLength = Math.floor(availableLength * 0.6); // Give slightly more to end (filename)
+  
+  if (startLength + endLength + ellipsisLength >= path.length) {
+    return path; // Can't truncate meaningfully
+  }
+  
+  const start = path.substring(0, startLength);
+  const end = path.substring(path.length - endLength);
+  return `${start}${ellipsis}${end}`;
+}
+
+// Helper function to extract basename from a path or URL
+function getBasename(path) {
+  if (!path) return '';
+  
+  // Handle URLs (gs://, http://, https://, file://)
+  let pathPart = path;
+  if (path.includes('://')) {
+    // For URLs, get the part after the protocol and domain
+    const urlMatch = path.match(/:\/\/[^\/]+(\/.+)$/);
+    if (urlMatch) {
+      pathPart = urlMatch[1];
+    } else {
+      // If no path part, return the full URL
+      return path;
+    }
+  }
+  
+  // Extract basename (last part after last /)
+  const parts = pathPart.split('/');
+  return parts[parts.length - 1] || path;
+}
+
 const trackControls = document.getElementById("trackControls");
+// Standard tracks that have hover-only controls
+const STANDARD_TRACKS = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
+
 function renderTrackControls() {
   trackControls.innerHTML = "";
   const layout = getTrackLayout();
@@ -556,18 +685,23 @@ function renderTrackControls() {
     const container = document.createElement("div");
     container.className = "track-control-container";
     
+    // Check if this is a standard track - limit container to controls area only
+    const isStandardTrack = STANDARD_TRACKS.includes(track.id);
+    
     if (isVertical) {
       container.style.position = "absolute";
       container.style.left = `${item.left}px`;
       container.style.width = `${item.width}px`;
       container.style.top = "0";
-      container.style.height = "100%";
+      // For standard tracks, only cover controls area (24px width in vertical mode)
+      container.style.height = isStandardTrack ? "24px" : "100%";
     } else {
       container.style.position = "absolute";
       container.style.left = "0";
       container.style.right = "0";
       container.style.top = `${item.top}px`;
-      container.style.height = `${item.height}px`;
+      // For standard tracks, only cover controls area (24px height in horizontal mode)
+      container.style.height = isStandardTrack ? "24px" : `${item.height}px`;
     }
     container.dataset.trackId = track.id;
 
@@ -625,6 +759,7 @@ function renderTrackControls() {
         e.stopPropagation();
         label.style.display = "none";
         labelInput.style.display = "inline-block";
+        collapseBtn.style.display = "none"; // Hide collapse button during editing
         labelInput.focus();
         labelInput.select();
       });
@@ -632,9 +767,53 @@ function renderTrackControls() {
       // Save on blur or Enter
       const saveLabel = () => {
         const newLabel = labelInput.value.trim() || track.label;
-        label.textContent = newLabel;
+        
+        // Rebuild label with sample name
+        label.innerHTML = "";
+        const labelText = document.createTextNode(newLabel);
+        label.appendChild(labelText);
+        
+        // Add sample name in parentheses with smaller font if available
+        if (track.sampleId) {
+          const sampleNameSpan = document.createElement("span");
+          sampleNameSpan.textContent = ` (${track.sampleId})`;
+          sampleNameSpan.style.fontSize = "10px";
+          sampleNameSpan.style.fontWeight = "400";
+          sampleNameSpan.style.color = "var(--muted2)";
+          sampleNameSpan.style.marginLeft = "4px";
+          label.appendChild(sampleNameSpan);
+        } else if (track.bamUrls && track.bamUrls.length > 0) {
+          // Fallback to BAM basenames if sampleId not available
+          const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
+          
+          let displayPath;
+          if (isInlineMode) {
+            // In inline mode: show only basename(s)
+            if (track.bamUrls.length === 1) {
+              displayPath = getBasename(track.bamUrls[0]);
+            } else {
+              displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
+            }
+          } else {
+            // In overlay mode: show full path(s) with truncation if needed
+            const bamPath = track.bamUrls.length === 1 
+              ? track.bamUrls[0] 
+              : track.bamUrls.join(", ");
+            displayPath = truncatePath(bamPath, 80);
+          }
+          
+          const pathSpan = document.createElement("span");
+          pathSpan.textContent = ` (${displayPath})`;
+          pathSpan.style.fontSize = "10px";
+          pathSpan.style.fontWeight = "400";
+          pathSpan.style.color = "var(--muted2)";
+          pathSpan.style.marginLeft = "4px";
+          label.appendChild(pathSpan);
+        }
+        
         label.style.display = "";
         labelInput.style.display = "none";
+        collapseBtn.style.display = ""; // Show collapse button again
         editSmartTrackLabel(track.id, newLabel);
       };
       
@@ -646,12 +825,99 @@ function renderTrackControls() {
         } else if (e.key === "Escape") {
           e.preventDefault();
           labelInput.value = track.label;
+          
+          // Rebuild label with sample name
+          label.innerHTML = "";
+          const labelText = document.createTextNode(track.label);
+          label.appendChild(labelText);
+          
+          // Add sample name in parentheses with smaller font if available
+          if (track.sampleId) {
+            const sampleNameSpan = document.createElement("span");
+            sampleNameSpan.textContent = ` (${track.sampleId})`;
+            sampleNameSpan.style.fontSize = "10px";
+            sampleNameSpan.style.fontWeight = "400";
+            sampleNameSpan.style.color = "var(--muted2)";
+            sampleNameSpan.style.marginLeft = "4px";
+            label.appendChild(sampleNameSpan);
+          } else if (track.bamUrls && track.bamUrls.length > 0) {
+            // Fallback to BAM basenames if sampleId not available
+            const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
+            
+            let displayPath;
+            if (isInlineMode) {
+              // In inline mode: show only basename(s)
+              if (track.bamUrls.length === 1) {
+                displayPath = getBasename(track.bamUrls[0]);
+              } else {
+                displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
+              }
+            } else {
+              // In overlay mode: show full path(s) with truncation if needed
+              const bamPath = track.bamUrls.length === 1 
+                ? track.bamUrls[0] 
+                : track.bamUrls.join(", ");
+              displayPath = truncatePath(bamPath, 80);
+            }
+            
+            const pathSpan = document.createElement("span");
+            pathSpan.textContent = ` (${displayPath})`;
+            pathSpan.style.fontSize = "10px";
+            pathSpan.style.fontWeight = "400";
+            pathSpan.style.color = "var(--muted2)";
+            pathSpan.style.marginLeft = "4px";
+            label.appendChild(pathSpan);
+          }
+          
           label.style.display = "";
           labelInput.style.display = "none";
+          collapseBtn.style.display = ""; // Show collapse button again
         }
       });
       
-      label.textContent = track.label;
+      // Create label content with sample name
+      const labelText = document.createTextNode(track.label);
+      label.appendChild(labelText);
+      
+      // Add sample name in parentheses with smaller font if available
+      // Use sampleId (VCF sample name from sample mapping) if available
+      if (track.sampleId) {
+        const sampleNameSpan = document.createElement("span");
+        sampleNameSpan.textContent = ` (${track.sampleId})`;
+        sampleNameSpan.style.fontSize = "10px";
+        sampleNameSpan.style.fontWeight = "400";
+        sampleNameSpan.style.color = "var(--muted2)";
+        sampleNameSpan.style.marginLeft = "4px";
+        label.appendChild(sampleNameSpan);
+      } else if (track.bamUrls && track.bamUrls.length > 0) {
+        // Fallback to BAM basenames if sampleId not available
+        const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
+        
+        let displayPath;
+        if (isInlineMode) {
+          // In inline mode: show only basename(s)
+          if (track.bamUrls.length === 1) {
+            displayPath = getBasename(track.bamUrls[0]);
+          } else {
+            displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
+          }
+        } else {
+          // In overlay mode: show full path(s) with truncation if needed
+          const bamPath = track.bamUrls.length === 1 
+            ? track.bamUrls[0] 
+            : track.bamUrls.join(", ");
+          displayPath = truncatePath(bamPath, 80);
+        }
+        
+        const pathSpan = document.createElement("span");
+        pathSpan.textContent = ` (${displayPath})`;
+        pathSpan.style.fontSize = "10px";
+        pathSpan.style.fontWeight = "400";
+        pathSpan.style.color = "var(--muted2)";
+        pathSpan.style.marginLeft = "4px";
+        label.appendChild(pathSpan);
+      }
+      
       controls.appendChild(labelInput);
     } else {
       // For the Locus track, append the extent in parentheses
@@ -665,45 +931,6 @@ function renderTrackControls() {
 
     // Add Smart track controls if needed
     if (isSmartTrack) {
-      // Strategy dropdown
-      const strategySelect = document.createElement("select");
-      strategySelect.className = "smart-track-strategy-select";
-      strategySelect.id = `smart-track-strategy-${track.id}`;
-      strategySelect.name = `smart-track-strategy-${track.id}`;
-      strategySelect.style.fontSize = "11px";
-      strategySelect.style.padding = "2px 4px";
-      strategySelect.style.border = "1px solid var(--border2)";
-      strategySelect.style.borderRadius = "4px";
-      strategySelect.style.background = "var(--panel)";
-      strategySelect.style.color = "var(--text)";
-      strategySelect.style.marginLeft = "6px";
-      strategySelect.style.cursor = "pointer";
-      
-      const strategies = [
-        { value: "best_evidence", label: "Best evidence" },
-        { value: "most_diverse", label: "Most diverse" },
-        { value: "compare_branches", label: "Compare branches" },
-        { value: "carriers_controls", label: "Carriers + controls" },
-        { value: "random", label: "Random" }
-      ];
-      
-      strategies.forEach(s => {
-        const option = document.createElement("option");
-        option.value = s.value;
-        option.textContent = s.label;
-        if (s.value === track.strategy) {
-          option.selected = true;
-        }
-        strategySelect.appendChild(option);
-      });
-      
-      strategySelect.addEventListener("change", (e) => {
-        e.stopPropagation();
-        updateSmartTrackStrategy(track.id, e.target.value);
-      });
-      strategySelect.style.pointerEvents = "auto";
-      strategySelect.style.zIndex = "20";
-      
       // Reload button (reload current sample)
       const reloadBtn = document.createElement("button");
       reloadBtn.className = "smart-track-reload-btn";
@@ -795,7 +1022,6 @@ function renderTrackControls() {
       // In vertical mode, reverse order: label on top, button on bottom
       if (isVertical) {
         controls.appendChild(label);
-        controls.appendChild(strategySelect);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -804,7 +1030,6 @@ function renderTrackControls() {
       } else {
         controls.appendChild(collapseBtn);
         controls.appendChild(label);
-        controls.appendChild(strategySelect);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -845,6 +1070,36 @@ function renderTrackControls() {
       resizeHandle.className = "track-resize-handle";
       resizeHandle.dataset.trackId = track.id;
       container.appendChild(resizeHandle);
+    }
+
+    // Add hover listeners for standard tracks to show/hide controls
+    if (STANDARD_TRACKS.includes(track.id)) {
+      // Mark container for standard track styling
+      container.classList.add("standard-track");
+      
+      // Setup hover detection - only show controls when hovering over controls area
+      const setupHoverDetection = () => {
+        // Show controls when hovering over container (controls area - top 24px)
+        container.addEventListener("mouseenter", () => {
+          container.classList.add("track-hovered");
+        });
+        
+        container.addEventListener("mouseleave", () => {
+          container.classList.remove("track-hovered");
+        });
+        
+        // Also handle hover on controls themselves
+        controls.addEventListener("mouseenter", () => {
+          container.classList.add("track-hovered");
+        });
+        
+        controls.addEventListener("mouseleave", () => {
+          container.classList.remove("track-hovered");
+        });
+      };
+      
+      // Setup after a short delay to ensure DOM is ready
+      setTimeout(setupHoverDetection, 100);
     }
 
     trackControls.appendChild(container);
@@ -1120,6 +1375,10 @@ function renderHoverOnly() {
   // Skip expensive SVG rebuilds and layout recalculations
   updateLocusTrackHover(); // Update Locus track SVG hover styles
   renderFlowCanvas();
+  // Render all Smart tracks to update variant highlights
+  state.smartTracks.forEach(track => {
+    renderSmartTrack(track.id);
+  });
   updateTooltip();
 }
 
@@ -1967,8 +2226,9 @@ function setupCanvasHover() {
       }
     }
     
-    // Update preview
+    // Update preview and button text
     updateSamplePreview();
+    updateLoadButtonText();
   }
   
   // Update sample preview
@@ -1996,15 +2256,324 @@ function setupCanvasHover() {
     
     previewListEl.textContent = text;
     previewEl.style.display = 'block';
+    
+    // Update Load button text
+    updateLoadButtonText();
+  }
+  
+  // Update Load button text to show sample count
+  function updateLoadButtonText() {
+    const currentRoot = getCurrentRoot();
+    const replaceBtn = byId(currentRoot, 'loadSamplesReplace');
+    const addBtn = byId(currentRoot, 'loadSamplesAdd');
+    const candidates = state.sampleSelection.candidateSamples;
+    const numSamples = state.sampleSelection.numSamples || 1;
+    
+    const totalCandidates = candidates.length;
+    const samplesToLoad = Math.min(numSamples, totalCandidates);
+    
+    if (replaceBtn) {
+      if (totalCandidates === 0) {
+        replaceBtn.textContent = 'Load';
+      } else {
+        replaceBtn.textContent = `Load (${samplesToLoad} of ${totalCandidates})`;
+      }
+    }
+    
+    if (addBtn) {
+      if (totalCandidates === 0) {
+        addBtn.textContent = 'Load (add)';
+      } else {
+        addBtn.textContent = `Load (add ${samplesToLoad} of ${totalCandidates})`;
+      }
+    }
   }
   
   // Recompute candidate samples based on strategy and selection
   function recomputeCandidateSamples() {
-    // TODO: Implement actual sample selection logic
-    // For now, just placeholder
+    // Clear previous candidates
     state.sampleSelection.candidateSamples = [];
+    
+    // If no alleles selected, no candidates
+    if (state.selectedAlleles.size === 0) {
+      updateSamplePreview();
+      return;
+    }
+    
+    // Parse selected alleles into variant/allele pairs
+    const selectedAllelePairs = [];
+    for (const key of state.selectedAlleles) {
+      const [variantId, alleleIndexStr] = key.split(':');
+      const alleleIndex = parseInt(alleleIndexStr, 10);
+      
+      const variant = variants.find(v => v.id === variantId);
+      if (!variant) continue;
+      
+      selectedAllelePairs.push({
+        variantId,
+        alleleIndex,
+        variant
+      });
+    }
+    
+    if (selectedAllelePairs.length === 0) {
+      updateSamplePreview();
+      return;
+    }
+    
+    // Collect all sample IDs from variant data (for allSampleIds if not populated)
+    const allSamplesSet = new Set();
+    for (const pair of selectedAllelePairs) {
+      const sampleGenotypes = pair.variant.sampleGenotypes || {};
+      Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
+    }
+    
+    // Populate allSampleIds if empty
+    if (state.sampleSelection.allSampleIds.length === 0) {
+      state.sampleSelection.allSampleIds = Array.from(allSamplesSet).sort();
+    }
+    
+    // Find samples that match the selection criteria
+    const candidateSamplesSet = new Set();
+    const combineMode = state.sampleSelection.combineMode;
+    
+    if (combineMode === 'AND') {
+      // Sample must have ALL selected alleles
+      // Start with samples from first variant, then filter by others
+      const firstPair = selectedAllelePairs[0];
+      const firstGenotypes = firstPair.variant.sampleGenotypes || {};
+      const firstGenotypeIndex = alleleIndexToGenotypeIndex(firstPair.alleleIndex);
+      
+      // Only process if first allele is valid
+      if (firstGenotypeIndex !== null) {
+        for (const sampleId of Object.keys(firstGenotypes)) {
+          const genotype = firstGenotypes[sampleId];
+          
+          // Check if this sample has the first allele
+          if (hasAlleleInGenotype(genotype, firstGenotypeIndex)) {
+            // Check if this sample has ALL other selected alleles
+            let hasAllAlleles = true;
+            for (let i = 1; i < selectedAllelePairs.length; i++) {
+              const pair = selectedAllelePairs[i];
+              const pairGenotypes = pair.variant.sampleGenotypes || {};
+              const pairGenotype = pairGenotypes[sampleId];
+              
+              if (!pairGenotype) {
+                hasAllAlleles = false;
+                break;
+              }
+              
+              const pairGenotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+              if (pairGenotypeIndex === null || !hasAlleleInGenotype(pairGenotype, pairGenotypeIndex)) {
+                hasAllAlleles = false;
+                break;
+              }
+            }
+            
+            if (hasAllAlleles) {
+              candidateSamplesSet.add(sampleId);
+            }
+          }
+        }
+      }
+    } else {
+      // OR mode: Sample must have ANY of the selected alleles
+      // Iterate through each variant's samples directly (more efficient than collecting all first)
+      for (const pair of selectedAllelePairs) {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+        
+        // Skip no-call alleles (alleleIndex 0)
+        if (genotypeIndex === null) continue;
+        
+        // Iterate through samples that have genotype data for this variant
+        for (const sampleId of Object.keys(sampleGenotypes)) {
+          const genotype = sampleGenotypes[sampleId];
+          if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+            candidateSamplesSet.add(sampleId);
+          }
+        }
+      }
+    }
+    
+    // Convert to sorted array
+    state.sampleSelection.candidateSamples = Array.from(candidateSamplesSet).sort();
+    
     updateSamplePreview();
   }
+  
+  // Helper: Convert allele index to genotype index
+  // The labels array from getFormattedLabelsForVariant has:
+  //   Index 0: "." (no-call)
+  //   Index 1: ref allele (genotype 0)
+  //   Index 2: first alt allele (genotype 1)
+  //   Index 3: second alt allele (genotype 2), etc.
+  // So: genotypeIndex = alleleIndex - 1 (for alleleIndex >= 1)
+  function alleleIndexToGenotypeIndex(alleleIndex) {
+    // alleleIndex 0 is no-call, which doesn't map to a genotype
+    // alleleIndex 1 is ref (genotype 0)
+    // alleleIndex 2 is first alt (genotype 1), etc.
+    if (alleleIndex === 0) {
+      return null; // No-call doesn't map to a genotype index
+    }
+    return alleleIndex - 1;
+  }
+  
+  // Helper: Check if a genotype string contains a specific allele index
+  // Genotype format: "0/1", "1/1", "./.", "0|1", etc.
+  // Note: alleleIndex here is the genotype index (0=ref, 1=first alt, 2=second alt, etc.)
+  function hasAlleleInGenotype(genotype, alleleIndex) {
+    if (!genotype || genotype === './.' || genotype === '.') {
+      return false;
+    }
+    
+    // Split by / or | to get individual alleles
+    const alleles = genotype.split(/[\/|]/);
+    
+    // Check if any allele matches the target index
+    for (const allele of alleles) {
+      const alleleStr = allele.trim();
+      // Handle missing alleles
+      if (alleleStr === '.' || alleleStr === '') {
+        continue;
+      }
+      const idx = parseInt(alleleStr, 10);
+      if (!isNaN(idx) && idx === alleleIndex) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+  
+  // Helper: Compute candidate samples for a specific set of alleles
+  // This is used by shuffle to get candidates for a track's specific alleles
+  function computeCandidateSamplesForAlleles(selectedAllelesSet, combineMode) {
+    const selectedAlleles = Array.from(selectedAllelesSet);
+    if (selectedAlleles.length === 0) {
+      return [];
+    }
+    
+    // Parse selected alleles into variant/allele pairs
+    const selectedAllelePairs = [];
+    for (const key of selectedAlleles) {
+      const [variantId, alleleIndexStr] = key.split(':');
+      const alleleIndex = parseInt(alleleIndexStr, 10);
+      
+      const variant = variants.find(v => v.id === variantId);
+      if (!variant) continue;
+      
+      selectedAllelePairs.push({
+        variantId,
+        alleleIndex,
+        variant
+      });
+    }
+    
+    if (selectedAllelePairs.length === 0) {
+      return [];
+    }
+    
+    // Find samples that match the selection criteria
+    const candidateSamplesSet = new Set();
+    
+    if (combineMode === 'AND') {
+      // Sample must have ALL selected alleles
+      const firstPair = selectedAllelePairs[0];
+      const firstGenotypes = firstPair.variant.sampleGenotypes || {};
+      const firstGenotypeIndex = alleleIndexToGenotypeIndex(firstPair.alleleIndex);
+      
+      if (firstGenotypeIndex !== null) {
+        for (const sampleId of Object.keys(firstGenotypes)) {
+          const genotype = firstGenotypes[sampleId];
+          
+          if (hasAlleleInGenotype(genotype, firstGenotypeIndex)) {
+            let hasAllAlleles = true;
+            for (let i = 1; i < selectedAllelePairs.length; i++) {
+              const pair = selectedAllelePairs[i];
+              const pairGenotypes = pair.variant.sampleGenotypes || {};
+              const pairGenotype = pairGenotypes[sampleId];
+              
+              if (!pairGenotype) {
+                hasAllAlleles = false;
+                break;
+              }
+              
+              const pairGenotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+              if (pairGenotypeIndex === null || !hasAlleleInGenotype(pairGenotype, pairGenotypeIndex)) {
+                hasAllAlleles = false;
+                break;
+              }
+            }
+            
+            if (hasAllAlleles) {
+              candidateSamplesSet.add(sampleId);
+            }
+          }
+        }
+      }
+    } else {
+      // OR mode: Sample must have ANY of the selected alleles
+      for (const pair of selectedAllelePairs) {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+        
+        if (genotypeIndex === null) continue;
+        
+        for (const sampleId of Object.keys(sampleGenotypes)) {
+          const genotype = sampleGenotypes[sampleId];
+          if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+            candidateSamplesSet.add(sampleId);
+          }
+        }
+      }
+    }
+    
+    return Array.from(candidateSamplesSet).sort();
+  }
+  
+  // Export for use in smart-tracks.js
+  window.computeCandidateSamplesForAlleles = computeCandidateSamplesForAlleles;
+  
+  // Helper: Select samples based on strategy
+  // Returns an array of sample IDs to use for creating Smart Tracks
+  function selectSamplesForStrategy(strategy, candidates, numSamples) {
+    if (!candidates || candidates.length === 0) {
+      return [];
+    }
+    
+    if (strategy === 'random') {
+      // Random strategy: select N random samples from candidates
+      const selectedSamples = [];
+      const candidatesCopy = [...candidates]; // Copy to avoid mutating original
+      
+      for (let i = 0; i < numSamples; i++) {
+        if (candidatesCopy.length === 0) {
+          // If we've exhausted unique samples, allow duplicates by resetting
+          candidatesCopy.push(...candidates);
+        }
+        
+        // Pick a random index
+        const randomIndex = Math.floor(Math.random() * candidatesCopy.length);
+        selectedSamples.push(candidatesCopy[randomIndex]);
+        
+        // Remove the selected sample to avoid duplicates (if possible)
+        candidatesCopy.splice(randomIndex, 1);
+      }
+      
+      return selectedSamples;
+    } else {
+      // For other strategies, cycle through candidates (current behavior)
+      const selectedSamples = [];
+      for (let i = 0; i < numSamples; i++) {
+        selectedSamples.push(candidates[i % candidates.length]);
+      }
+      return selectedSamples;
+    }
+  }
+  
+  // Export for use in smart-tracks.js
+  window.selectSamplesForStrategy = selectSamplesForStrategy;
   
   // Strategy change handler
   function onStrategyChange() {
@@ -2110,6 +2679,7 @@ function setupCanvasHover() {
       if (sampleCountInputEl) sampleCountInputEl.value = e.target.value;
       state.sampleSelection.numSamples = parseInt(e.target.value);
       recomputeCandidateSamples();
+      updateLoadButtonText();
     });
   }
   
@@ -2120,6 +2690,7 @@ function setupCanvasHover() {
       sampleCountInputEl.value = value;
       state.sampleSelection.numSamples = value;
       recomputeCandidateSamples();
+      updateLoadButtonText();
     });
   }
   
@@ -2176,20 +2747,14 @@ function setupCanvasHover() {
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
-      // Remove all existing Smart tracks
-      const smartTrackIds = state.smartTracks.map(t => t.id);
-      smartTrackIds.forEach(id => removeSmartTrack(id));
+      // Select samples based on strategy (will pick new random samples each time for Random strategy)
+      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
       
-      // Create Smart tracks based on numSamples
+      // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
-      for (let i = 0; i < numSamples; i++) {
+      for (let i = 0; i < selectedSamples.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
-        
-        // Get sample ID from candidates (cycle through if fewer candidates than requested)
-        let sampleId = null;
-        if (candidates && candidates.length > 0) {
-          sampleId = candidates[i % candidates.length];
-        }
+        const sampleId = selectedSamples[i];
         
         // Fetch reads
         trackPromises.push(
@@ -2230,16 +2795,14 @@ function setupCanvasHover() {
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
-      // Create Smart tracks based on numSamples (add, don't replace)
+      // Select samples based on strategy
+      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
+      
+      // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
-      for (let i = 0; i < numSamples; i++) {
+      for (let i = 0; i < selectedSamples.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
-        
-        // Get sample ID from candidates (cycle through if fewer candidates than requested)
-        let sampleId = null;
-        if (candidates && candidates.length > 0) {
-          sampleId = candidates[i % candidates.length];
-        }
+        const sampleId = selectedSamples[i];
         
         // Fetch reads
         trackPromises.push(
@@ -2688,12 +3251,15 @@ interactionBinding = bindInteractions(root, state, main);
 if (trackControls) {
 trackControls.addEventListener("pointerdown", (e) => {
   // Don't start drag if clicking on buttons or interactive elements
+  const trackLabel = e.target.closest(".track-label");
+  const isSmartTrackLabel = trackLabel && trackLabel.closest(".track-controls[data-track-id^='smart-track-']");
+  
   if (e.target.closest(".track-collapse-btn") ||
       e.target.closest(".smart-track-close-btn") ||
       e.target.closest(".smart-track-reload-btn") ||
       e.target.closest(".smart-track-shuffle-btn") ||
-      e.target.closest(".smart-track-strategy-select") ||
       e.target.closest(".smart-track-label-input") ||
+      isSmartTrackLabel ||
       e.target.closest("button") ||
       e.target.closest("select") ||
       e.target.closest("input")) {
@@ -2770,19 +3336,79 @@ trackControls.addEventListener("pointermove", (e) => {
       state.trackDragState.offsetY = dy;
     }
     
-    // Visual feedback: move the dragged track
+    // Visual feedback: move the dragged track and show drop indicator
     const layout = getTrackLayout();
     const draggedItem = layout.find(l => l.track.id === state.trackDragState.trackId);
     if (draggedItem) {
       const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
       if (container) {
+        // Move the dragged track
         if (isVertical) {
           container.style.transform = `translateX(${dx}px)`;
         } else {
           container.style.transform = `translateY(${dy}px)`;
         }
-        container.style.zIndex = "100";
-        container.style.opacity = "0.8";
+        container.style.zIndex = "1000";
+        container.style.opacity = "0.7";
+        container.style.filter = "drop-shadow(0 4px 8px rgba(0,0,0,0.3))";
+        container.classList.add("track-dragging");
+        
+        // Calculate and show drop indicator
+        let dropIndex = 0;
+        if (isVertical) {
+          const newX = draggedItem.left + dx;
+          for (let i = 0; i < layout.length; i++) {
+            if (newX > layout[i].left + layout[i].width / 2) {
+              dropIndex = i + 1;
+            }
+          }
+        } else {
+          const newY = draggedItem.top + dy;
+          for (let i = 0; i < layout.length; i++) {
+            if (newY > layout[i].top + layout[i].height / 2) {
+              dropIndex = i + 1;
+            }
+          }
+        }
+        dropIndex = Math.max(0, Math.min(dropIndex, layout.length - 1));
+        
+        // Remove existing drop indicator
+        const existingIndicator = document.querySelector(".track-drop-indicator");
+        if (existingIndicator) {
+          existingIndicator.remove();
+        }
+        
+        // Create drop indicator at the calculated position
+        if (dropIndex < layout.length) {
+          const dropTarget = layout[dropIndex];
+          // Position indicator before the drop target
+          const indicatorPosition = isVertical ? dropTarget.left : dropTarget.top;
+          
+          const indicator = document.createElement("div");
+          indicator.className = "track-drop-indicator";
+          indicator.style.position = "absolute";
+          indicator.style.pointerEvents = "none";
+          indicator.style.zIndex = "999";
+          indicator.style.backgroundColor = "var(--accent)";
+          indicator.style.opacity = "0.8";
+          
+          if (isVertical) {
+            indicator.style.left = `${indicatorPosition}px`;
+            indicator.style.top = "0";
+            indicator.style.width = "2px";
+            indicator.style.height = "100%";
+          } else {
+            indicator.style.left = "0";
+            indicator.style.top = `${indicatorPosition}px`;
+            indicator.style.width = "100%";
+            indicator.style.height = "2px";
+          }
+          
+          const tracksContainer = document.getElementById("tracksContainer");
+          if (tracksContainer) {
+            tracksContainer.appendChild(indicator);
+          }
+        }
       }
     }
   }
@@ -2813,6 +3439,14 @@ function endTrackInteraction(e) {
         container.style.transform = "";
         container.style.zIndex = "";
         container.style.opacity = "";
+        container.style.filter = "";
+        container.classList.remove("track-dragging");
+      }
+      
+      // Remove drop indicator
+      const existingIndicator = document.querySelector(".track-drop-indicator");
+      if (existingIndicator) {
+        existingIndicator.remove();
       }
       
       // Find new position based on orientation

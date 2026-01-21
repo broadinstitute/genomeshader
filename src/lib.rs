@@ -7,6 +7,7 @@ pub mod variants;
 
 use stage::stage_data;
 use stage::fetch_reads_from_first_bam;
+use stage::fetch_reads_from_bam_urls;
 use storage_gcs::*;
 
 use std::{ collections::{ HashSet, HashMap }, path::PathBuf };
@@ -265,24 +266,56 @@ impl Session {
         Ok(())
     }
 
-    /// Fetch reads from the first attached BAM/CRAM for a given locus.
+    /// Fetch reads from specified BAM/CRAM files for a given locus.
     /// This is used for on-demand loading via Jupyter comms.
-    fn fetch_reads_for_locus(&self, locus: String) -> PyResult<PyDataFrame> {
+    /// 
+    /// Args:
+    ///     locus: The genomic locus (e.g., "chr1:1000-2000")
+    ///     bam_urls: List of BAM/CRAM file URLs to load from
+    fn fetch_reads_for_locus(&self, locus: String, bam_urls: Vec<String>) -> PyResult<PyDataFrame> {
         let l_fmt = self.parse_locus(locus.clone())?;
 
-        if self.reads_cohort.is_empty() {
+        if bam_urls.is_empty() {
             return Err(
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    "No read files attached. Use attach_reads() first."
+                    "No BAM file URLs provided. Cannot fetch reads without BAM files."
                 )
             );
         }
 
-        // Get the first attached BAM/CRAM
-        let (reads_url, cohort) = self.reads_cohort.iter().next().unwrap();
+        // Parse URLs
+        let mut reads_urls = Vec::new();
+        for bam_url_str in &bam_urls {
+            let read_url = if bam_url_str.starts_with("file://") || bam_url_str.starts_with("gs://") || bam_url_str.starts_with("s3://") || bam_url_str.starts_with("http") {
+                match Url::parse(bam_url_str) {
+                    Ok(url) => url,
+                    Err(e) => {
+                        return Err(
+                            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                                format!("Invalid BAM URL '{}': {}", bam_url_str, e)
+                            )
+                        );
+                    }
+                }
+            } else {
+                match Url::from_file_path(bam_url_str) {
+                    Ok(url) => url,
+                    Err(_) => {
+                        return Err(
+                            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                                format!("Invalid BAM file path '{}'", bam_url_str)
+                            )
+                        );
+                    }
+                }
+            };
+            reads_urls.push(read_url);
+        }
+
+        let cohort = String::from("all");
         let cache_path = std::env::temp_dir();
 
-        match fetch_reads_from_first_bam(reads_url, cohort, &l_fmt.0, &l_fmt.1, &l_fmt.2, &cache_path) {
+        match fetch_reads_from_bam_urls(&reads_urls, &cohort, &l_fmt.0, &l_fmt.1, &l_fmt.2, &cache_path) {
             Ok(df) => Ok(PyDataFrame(df)),
             Err(e) => Err(
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(
