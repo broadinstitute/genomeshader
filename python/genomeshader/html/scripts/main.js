@@ -672,6 +672,9 @@ function getBasename(path) {
 }
 
 const trackControls = document.getElementById("trackControls");
+// Standard tracks that have hover-only controls
+const STANDARD_TRACKS = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
+
 function renderTrackControls() {
   trackControls.innerHTML = "";
   const layout = getTrackLayout();
@@ -682,18 +685,23 @@ function renderTrackControls() {
     const container = document.createElement("div");
     container.className = "track-control-container";
     
+    // Check if this is a standard track - limit container to controls area only
+    const isStandardTrack = STANDARD_TRACKS.includes(track.id);
+    
     if (isVertical) {
       container.style.position = "absolute";
       container.style.left = `${item.left}px`;
       container.style.width = `${item.width}px`;
       container.style.top = "0";
-      container.style.height = "100%";
+      // For standard tracks, only cover controls area (24px width in vertical mode)
+      container.style.height = isStandardTrack ? "24px" : "100%";
     } else {
       container.style.position = "absolute";
       container.style.left = "0";
       container.style.right = "0";
       container.style.top = `${item.top}px`;
-      container.style.height = `${item.height}px`;
+      // For standard tracks, only cover controls area (24px height in horizontal mode)
+      container.style.height = isStandardTrack ? "24px" : `${item.height}px`;
     }
     container.dataset.trackId = track.id;
 
@@ -1062,6 +1070,36 @@ function renderTrackControls() {
       resizeHandle.className = "track-resize-handle";
       resizeHandle.dataset.trackId = track.id;
       container.appendChild(resizeHandle);
+    }
+
+    // Add hover listeners for standard tracks to show/hide controls
+    if (STANDARD_TRACKS.includes(track.id)) {
+      // Mark container for standard track styling
+      container.classList.add("standard-track");
+      
+      // Setup hover detection - only show controls when hovering over controls area
+      const setupHoverDetection = () => {
+        // Show controls when hovering over container (controls area - top 24px)
+        container.addEventListener("mouseenter", () => {
+          container.classList.add("track-hovered");
+        });
+        
+        container.addEventListener("mouseleave", () => {
+          container.classList.remove("track-hovered");
+        });
+        
+        // Also handle hover on controls themselves
+        controls.addEventListener("mouseenter", () => {
+          container.classList.add("track-hovered");
+        });
+        
+        controls.addEventListener("mouseleave", () => {
+          container.classList.remove("track-hovered");
+        });
+      };
+      
+      // Setup after a short delay to ensure DOM is ready
+      setTimeout(setupHoverDetection, 100);
     }
 
     trackControls.appendChild(container);
@@ -3298,19 +3336,79 @@ trackControls.addEventListener("pointermove", (e) => {
       state.trackDragState.offsetY = dy;
     }
     
-    // Visual feedback: move the dragged track
+    // Visual feedback: move the dragged track and show drop indicator
     const layout = getTrackLayout();
     const draggedItem = layout.find(l => l.track.id === state.trackDragState.trackId);
     if (draggedItem) {
       const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
       if (container) {
+        // Move the dragged track
         if (isVertical) {
           container.style.transform = `translateX(${dx}px)`;
         } else {
           container.style.transform = `translateY(${dy}px)`;
         }
-        container.style.zIndex = "100";
-        container.style.opacity = "0.8";
+        container.style.zIndex = "1000";
+        container.style.opacity = "0.7";
+        container.style.filter = "drop-shadow(0 4px 8px rgba(0,0,0,0.3))";
+        container.classList.add("track-dragging");
+        
+        // Calculate and show drop indicator
+        let dropIndex = 0;
+        if (isVertical) {
+          const newX = draggedItem.left + dx;
+          for (let i = 0; i < layout.length; i++) {
+            if (newX > layout[i].left + layout[i].width / 2) {
+              dropIndex = i + 1;
+            }
+          }
+        } else {
+          const newY = draggedItem.top + dy;
+          for (let i = 0; i < layout.length; i++) {
+            if (newY > layout[i].top + layout[i].height / 2) {
+              dropIndex = i + 1;
+            }
+          }
+        }
+        dropIndex = Math.max(0, Math.min(dropIndex, layout.length - 1));
+        
+        // Remove existing drop indicator
+        const existingIndicator = document.querySelector(".track-drop-indicator");
+        if (existingIndicator) {
+          existingIndicator.remove();
+        }
+        
+        // Create drop indicator at the calculated position
+        if (dropIndex < layout.length) {
+          const dropTarget = layout[dropIndex];
+          // Position indicator before the drop target
+          const indicatorPosition = isVertical ? dropTarget.left : dropTarget.top;
+          
+          const indicator = document.createElement("div");
+          indicator.className = "track-drop-indicator";
+          indicator.style.position = "absolute";
+          indicator.style.pointerEvents = "none";
+          indicator.style.zIndex = "999";
+          indicator.style.backgroundColor = "var(--accent)";
+          indicator.style.opacity = "0.8";
+          
+          if (isVertical) {
+            indicator.style.left = `${indicatorPosition}px`;
+            indicator.style.top = "0";
+            indicator.style.width = "2px";
+            indicator.style.height = "100%";
+          } else {
+            indicator.style.left = "0";
+            indicator.style.top = `${indicatorPosition}px`;
+            indicator.style.width = "100%";
+            indicator.style.height = "2px";
+          }
+          
+          const tracksContainer = document.getElementById("tracksContainer");
+          if (tracksContainer) {
+            tracksContainer.appendChild(indicator);
+          }
+        }
       }
     }
   }
@@ -3341,6 +3439,14 @@ function endTrackInteraction(e) {
         container.style.transform = "";
         container.style.zIndex = "";
         container.style.opacity = "";
+        container.style.filter = "";
+        container.classList.remove("track-dragging");
+      }
+      
+      // Remove drop indicator
+      const existingIndicator = document.querySelector(".track-drop-indicator");
+      if (existingIndicator) {
+        existingIndicator.remove();
       }
       
       // Find new position based on orientation

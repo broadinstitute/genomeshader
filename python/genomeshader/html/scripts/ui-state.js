@@ -30,8 +30,8 @@ const state = {
     { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
     { id: "repeats", label: "RepeatMasker", collapsed: false, height: 40, minHeight: 30 },
-    { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
     { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
+    { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
     { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 130, minHeight: 100 }
   ],
   trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
@@ -60,7 +60,7 @@ const state = {
   
   // sample selection state
   sampleSelection: {
-    strategy: 'best_evidence',
+    strategy: 'random',
     numSamples: 1,
     combineMode: 'AND', // 'AND' or 'OR'
     candidateSamples: [], // Will be populated when selection changes

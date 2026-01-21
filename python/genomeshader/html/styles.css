@@ -571,10 +571,25 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   align-items: center;
   gap: 6px;
   padding: 0 12px;
-  background: rgba(127,127,127,0.03);
+  background: var(--panel);
   border-bottom: 1px solid var(--border2);
   z-index: 10;
   cursor: move;
+  transition: opacity 0.2s ease;
+}
+/* Standard track controls: no transition for instant show/hide */
+.track-control-container.standard-track .track-controls {
+  transition: none; /* Instant show/hide, no fade */
+}
+/* Standard tracks: hide controls by default, show on hover */
+.track-control-container.standard-track .track-controls {
+  opacity: 0;
+  pointer-events: none;
+}
+.track-control-container.standard-track.track-hovered .track-controls {
+  opacity: 1;
+  pointer-events: auto;
+  background: var(--panel); /* Ensure opaque background when visible */
 }
 /* Smart track controls should allow button clicks */
 .track-controls button,
@@ -585,7 +600,7 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .main.vertical .track-controls {
   top: auto;
 }
-.track-controls:hover { background: rgba(127,127,127,0.06); }
+.track-controls:hover { background: var(--panel2); }
 
 .track-collapse-btn {
   width: 18px;
@@ -790,6 +805,16 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   z-index: 15;
   background: transparent;
   pointer-events: auto;
+  transition: opacity 0.2s ease;
+}
+/* Standard tracks: hide resize handle by default, show on hover */
+.track-control-container.standard-track .track-resize-handle {
+  opacity: 0;
+  pointer-events: none;
+}
+.track-control-container.standard-track.track-hovered .track-resize-handle {
+  opacity: 1;
+  pointer-events: auto;
 }
 .track-resize-handle:hover {
   background: var(--accent);
@@ -820,8 +845,45 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 
 .track-control-container {
   pointer-events: none;
+  z-index: 100;
 }
-.track-control-container .track-controls,
-.track-control-container .track-resize-handle {
+/* Standard track containers: only cover controls area (top 24px) for hover detection */
+.track-control-container.standard-track {
+  pointer-events: auto; /* Need pointer-events to detect hover */
+  /* Limit container to only cover controls area */
+}
+.track-control-container.standard-track:not(.track-hovered) * {
+  /* Children (controls) should not block when hidden */
+  pointer-events: none;
+}
+/* When hovered, only the controls themselves should block (for clicking buttons) */
+.track-control-container.standard-track.track-hovered {
   pointer-events: auto;
+}
+.track-control-container .track-controls {
+  pointer-events: auto; /* Controls can be clicked */
+}
+.track-control-container .track-resize-handle {
+  pointer-events: auto; /* Resize handle can be clicked */
+}
+/* Ensure standard track controls overlay on top of track content */
+.track-control-container.standard-track .track-controls {
+  z-index: 100;
+  background: var(--panel); /* Ensure opaque background */
+  /* Use same styling as Smart Track controls (inherits from .track-controls base) */
+}
+
+/* Track dragging visual feedback */
+.track-control-container.track-dragging {
+  cursor: grabbing !important;
+}
+.track-control-container.track-dragging .track-controls {
+  border: 2px solid var(--accent);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Drop indicator */
+.track-drop-indicator {
+  transition: none;
+  pointer-events: none;
 }

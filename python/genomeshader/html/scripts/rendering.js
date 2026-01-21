@@ -118,6 +118,13 @@ function getTrackLayout() {
   const headerH = 24;
   const padding = 8;
   const isVertical = isVerticalMode();
+  
+  // Standard tracks that should have hover-only controls (no reserved space)
+  const standardTracks = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
+  
+  function isStandardTrack(trackId) {
+    return standardTracks.includes(trackId);
+  }
 
   if (isVertical) {
     // Vertical mode: tracks side-by-side (left/width based)
@@ -127,8 +134,13 @@ function getTrackLayout() {
     const safeMainHeight = (isNaN(mainHeight) || mainHeight <= 0) ? 0 : mainHeight;
     
     for (const track of state.tracks) {
-      const effectiveWidth = track.collapsed ? headerH : (headerH + (track.height || 0));
-      const safeContentLeft = currentX + headerH;
+      // For standard tracks, don't reserve space for header (controls overlay on hover)
+      // For Smart tracks, keep the header space
+      const usesHeaderSpace = !isStandardTrack(track.id);
+      const effectiveWidth = track.collapsed 
+        ? (usesHeaderSpace ? headerH : 0)
+        : (usesHeaderSpace ? headerH + (track.height || 0) : (track.height || 0));
+      const safeContentLeft = usesHeaderSpace ? currentX + headerH : currentX;
       const safeContentWidth = track.collapsed ? 0 : (track.height || 0);
       
       // Validate all values are numbers
@@ -159,8 +171,13 @@ function getTrackLayout() {
     const safeMainWidth = (isNaN(mainWidth) || mainWidth <= 0) ? 0 : mainWidth;
     
     for (const track of state.tracks) {
-      const effectiveHeight = track.collapsed ? headerH : (headerH + (track.height || 0));
-      const safeContentTop = currentY + headerH;
+      // For standard tracks, don't reserve space for header (controls overlay on hover)
+      // For Smart tracks, keep the header space
+      const usesHeaderSpace = !isStandardTrack(track.id);
+      const effectiveHeight = track.collapsed 
+        ? (usesHeaderSpace ? headerH : 0)
+        : (usesHeaderSpace ? headerH + (track.height || 0) : (track.height || 0));
+      const safeContentTop = usesHeaderSpace ? currentY + headerH : currentY;
       const safeContentHeight = track.collapsed ? 0 : (track.height || 0);
       
       // Validate all values are numbers
