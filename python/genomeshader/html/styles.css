@@ -492,8 +492,23 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 
 /* Sample search results */
+#sampleSearchSection {
+  position: relative;
+  overflow: visible;
+  z-index: 5000;
+}
 #sampleSearchResults {
   font-size: 11px;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 5001;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  background: var(--panel) !important;
+  opacity: 1 !important;
+  mix-blend-mode: normal;
+  isolation: isolate;
 }
 .sampleSearchResult {
   padding: 6px 8px;
