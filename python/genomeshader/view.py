@@ -1391,6 +1391,7 @@ class GenomeShader:
                 'end': data_end,
             },
             'comm_available': comm_available,  # Indicates if Jupyter comms are available
+            'sample_mapping': self._sample_mapping,  # Sample mapping: VCF sample names -> BAM sample names
         }
 
         # Get Jupyter origin for constructing absolute URLs

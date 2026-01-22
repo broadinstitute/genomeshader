@@ -601,6 +601,10 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   top: auto;
 }
 .track-controls:hover { background: var(--panel2); }
+/* Smart track controls: keep opaque on hover like standard tracks */
+.track-controls[data-track-id^="smart-track-"]:hover {
+  background: var(--panel);
+}
 
 .track-collapse-btn {
   width: 18px;
@@ -630,10 +634,24 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 }
 /* Smart track labels are clickable */
 .track-controls[data-track-id^="smart-track-"] .track-label {
+  flex: 1; /* Keep flex: 1 to push buttons to the right */
+  display: flex; /* Make label a flex container */
+  align-items: center; /* Vertically center content */
+  pointer-events: none; /* Label itself doesn't capture clicks */
+  cursor: default; /* Default cursor for non-clickable area */
+}
+/* Only the text content (spans) inside Smart track labels are clickable */
+.track-controls[data-track-id^="smart-track-"] .track-label > * {
   pointer-events: auto;
   cursor: text;
 }
-.track-controls[data-track-id^="smart-track-"] .track-label:hover {
+/* Add a spacer after content to fill remaining space (non-clickable) */
+.track-controls[data-track-id^="smart-track-"] .track-label::after {
+  content: "";
+  flex: 1;
+  pointer-events: none;
+}
+.track-controls[data-track-id^="smart-track-"] .track-label:hover > * {
   color: var(--text);
 }
 
@@ -691,10 +709,17 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   border-radius: 4px;
   padding: 2px 4px;
   outline: none;
+  /* Input takes natural width, spacer handles flex space */
 }
 .smart-track-label-input:focus {
   border-color: var(--blue);
   color: var(--text);
+}
+/* Invisible spacer to maintain flex space when label is hidden */
+.smart-track-label-spacer {
+  flex: 1;
+  min-width: 0;
+  pointer-events: none;
 }
 
 .smart-track-strategy-select {
@@ -865,6 +890,10 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 }
 .track-control-container .track-resize-handle {
   pointer-events: auto; /* Resize handle can be clicked */
+}
+/* Smart Track containers: allow pointer events for dragging */
+.track-control-container[data-track-id^="smart-track-"] {
+  pointer-events: auto; /* Need pointer-events for drag detection */
 }
 /* Ensure standard track controls overlay on top of track content */
 .track-control-container.standard-track .track-controls {

@@ -731,6 +731,10 @@ function renderTrackControls() {
     // Check if this is a Smart track
     const isSmartTrack = track.id.startsWith("smart-track-");
     
+    // Declare labelInput and labelSpacer at higher scope so they're accessible in both Smart Track blocks
+    let labelInput = null;
+    let labelSpacer = null;
+    
     if (isSmartTrack) {
       // Make label editable for Smart tracks
       label.style.cursor = "text";
@@ -738,7 +742,7 @@ function renderTrackControls() {
       label.title = "Click to edit label";
       
       // Create input field for editing (hidden initially)
-      const labelInput = document.createElement("input");
+      labelInput = document.createElement("input");
       labelInput.type = "text";
       labelInput.className = "smart-track-label-input";
       labelInput.value = track.label;
@@ -754,15 +758,31 @@ function renderTrackControls() {
       labelInput.style.minWidth = "100px";
       labelInput.style.maxWidth = "200px";
       
-      // Click handler to start editing
-      label.addEventListener("click", (e) => {
-        e.stopPropagation();
-        label.style.display = "none";
-        labelInput.style.display = "inline-block";
-        collapseBtn.style.display = "none"; // Hide collapse button during editing
-        labelInput.focus();
-        labelInput.select();
-      });
+      // Create invisible spacer to maintain flex space when label is hidden
+      labelSpacer = document.createElement("span");
+      labelSpacer.className = "smart-track-label-spacer";
+      labelSpacer.style.display = "none"; // Hidden by default (label is visible)
+      labelSpacer.style.flex = "1";
+      labelSpacer.style.minWidth = "0";
+      
+      // Click handler to start editing - attach to the text span, not the label
+      // (The label has pointer-events: none, so we attach to the clickable span)
+      const attachLabelClickHandler = () => {
+        const labelTextSpan = label.querySelector(".smart-track-label-text");
+        if (labelTextSpan) {
+          labelTextSpan.addEventListener("click", (e) => {
+            e.stopPropagation();
+            label.style.display = "none"; // Hide label
+            labelSpacer.style.display = "block"; // Show spacer to maintain flex space
+            labelInput.style.display = "block"; // Show input
+            collapseBtn.style.display = "none"; // Hide collapse button during editing
+            labelInput.focus();
+            labelInput.select();
+          });
+        }
+      };
+      // Attach handler after label content is created
+      setTimeout(attachLabelClickHandler, 0);
       
       // Save on blur or Enter
       const saveLabel = () => {
@@ -770,8 +790,11 @@ function renderTrackControls() {
         
         // Rebuild label with sample name
         label.innerHTML = "";
-        const labelText = document.createTextNode(newLabel);
-        label.appendChild(labelText);
+        // Wrap main text in a span so only the text content is clickable (not the entire flex area)
+        const labelTextSpan = document.createElement("span");
+        labelTextSpan.textContent = newLabel;
+        labelTextSpan.className = "smart-track-label-text";
+        label.appendChild(labelTextSpan);
         
         // Add sample name in parentheses with smaller font if available
         if (track.sampleId) {
@@ -811,10 +834,13 @@ function renderTrackControls() {
           label.appendChild(pathSpan);
         }
         
-        label.style.display = "";
+        label.style.display = ""; // Show label again
+        labelSpacer.style.display = "none"; // Hide spacer (label is visible)
         labelInput.style.display = "none";
         collapseBtn.style.display = ""; // Show collapse button again
         editSmartTrackLabel(track.id, newLabel);
+        // Reattach click handler after rebuilding label
+        attachLabelClickHandler();
       };
       
       labelInput.addEventListener("blur", saveLabel);
@@ -828,8 +854,11 @@ function renderTrackControls() {
           
           // Rebuild label with sample name
           label.innerHTML = "";
-          const labelText = document.createTextNode(track.label);
-          label.appendChild(labelText);
+          // Wrap main text in a span so only the text content is clickable (not the entire flex area)
+          const labelTextSpan = document.createElement("span");
+          labelTextSpan.textContent = track.label;
+          labelTextSpan.className = "smart-track-label-text";
+          label.appendChild(labelTextSpan);
           
           // Add sample name in parentheses with smaller font if available
           if (track.sampleId) {
@@ -869,15 +898,21 @@ function renderTrackControls() {
             label.appendChild(pathSpan);
           }
           
-          label.style.display = "";
+          label.style.display = ""; // Show label again
+          labelSpacer.style.display = "none"; // Hide spacer (label is visible)
           labelInput.style.display = "none";
           collapseBtn.style.display = ""; // Show collapse button again
+          // Reattach click handler after rebuilding label
+          attachLabelClickHandler();
         }
       });
       
       // Create label content with sample name
-      const labelText = document.createTextNode(track.label);
-      label.appendChild(labelText);
+      // Wrap main text in a span so only the text content is clickable (not the entire flex area)
+      const labelTextSpan = document.createElement("span");
+      labelTextSpan.textContent = track.label;
+      labelTextSpan.className = "smart-track-label-text";
+      label.appendChild(labelTextSpan);
       
       // Add sample name in parentheses with smaller font if available
       // Use sampleId (VCF sample name from sample mapping) if available
@@ -917,8 +952,6 @@ function renderTrackControls() {
         pathSpan.style.marginLeft = "4px";
         label.appendChild(pathSpan);
       }
-      
-      controls.appendChild(labelInput);
     } else {
       // For the Locus track, append the extent in parentheses
       if (track.id === "ruler") {
@@ -1022,6 +1055,8 @@ function renderTrackControls() {
       // In vertical mode, reverse order: label on top, button on bottom
       if (isVertical) {
         controls.appendChild(label);
+        controls.appendChild(labelSpacer); // Spacer maintains flex space when label is hidden
+        controls.appendChild(labelInput);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -1030,6 +1065,8 @@ function renderTrackControls() {
       } else {
         controls.appendChild(collapseBtn);
         controls.appendChild(label);
+        controls.appendChild(labelSpacer); // Spacer maintains flex space when label is hidden
+        controls.appendChild(labelInput);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -2328,6 +2365,21 @@ function setupCanvasHover() {
       Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
     }
     
+    // Also add sample names from sample_mapping (both keys and values)
+    if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.sample_mapping) {
+      const sampleMapping = window.GENOMESHADER_CONFIG.sample_mapping;
+      // Add all keys (VCF sample names)
+      Object.keys(sampleMapping).forEach(sampleId => allSamplesSet.add(sampleId));
+      // Add all values (BAM sample names)
+      Object.values(sampleMapping).forEach(bamSamples => {
+        if (Array.isArray(bamSamples)) {
+          bamSamples.forEach(sampleId => allSamplesSet.add(sampleId));
+        } else if (bamSamples) {
+          allSamplesSet.add(bamSamples);
+        }
+      });
+    }
+    
     // Populate allSampleIds if empty
     if (state.sampleSelection.allSampleIds.length === 0) {
       state.sampleSelection.allSampleIds = Array.from(allSamplesSet).sort();
@@ -2622,8 +2674,7 @@ function setupCanvasHover() {
           resultEl.className = 'sampleSearchResult';
           resultEl.textContent = sampleId;
           resultEl.addEventListener('click', () => {
-            // TODO: Load reads for this sample
-            console.log('Load sample:', sampleId);
+            loadSmartTrackForSample(sampleId);
             searchInput.value = '';
             resultsEl.style.display = 'none';
           });
@@ -2644,12 +2695,47 @@ function setupCanvasHover() {
     // Handle Enter key
     searchInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
-        const firstResult = resultsEl.querySelector('.sampleSearchResult');
-        if (firstResult) {
-          firstResult.click();
+        e.preventDefault();
+        const query = searchInput.value.trim();
+        if (query.length > 0) {
+          // Check if there's a matching result
+          const firstResult = resultsEl.querySelector('.sampleSearchResult');
+          if (firstResult) {
+            firstResult.click();
+          } else {
+            // If no results shown but query exists, try to load directly if it matches a sample
+            const exactMatch = state.sampleSelection.allSampleIds.find(
+              id => id.toLowerCase() === query.toLowerCase()
+            );
+            if (exactMatch) {
+              loadSmartTrackForSample(exactMatch);
+              searchInput.value = '';
+              resultsEl.style.display = 'none';
+            }
+          }
         }
       }
     });
+  }
+  
+  // Function to load a Smart Track for a specific sample
+  function loadSmartTrackForSample(sampleId) {
+    // Use currently selected alleles if any, otherwise use empty set
+    const selectedAlleles = state.selectedAlleles.size > 0 
+      ? Array.from(state.selectedAlleles) 
+      : [];
+    
+    // Use current strategy, or 'random' as fallback
+    const strategy = state.sampleSelection.strategy || 'random';
+    
+    // Create Smart Track
+    const track = createSmartTrack(strategy, selectedAlleles);
+    
+    // Fetch reads for the specific sample
+    fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+      .catch(err => {
+        console.error('Failed to load reads for Smart track:', err);
+      });
   }
   
   // Main update function for selection display
