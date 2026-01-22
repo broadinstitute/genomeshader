@@ -105,6 +105,7 @@ function createSmartTrack(strategy, selectedAlleles) {
     strategy: strategy,
     selectedAlleles: new Set(selectedAlleles),
     sampleId: null,
+    sampleType: null, // 'carrier' or 'control' (for carriers_controls strategy)
     readsData: null,
     readsLayout: null,
     loading: false,
@@ -297,6 +298,18 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
         track.bamUrls = response.bam_urls || [];
+        
+        // Set sampleType for carriers_controls strategy if not already set
+        if (strategy === 'carriers_controls' && track.sampleId && !track.sampleType) {
+          // Determine if this sample is a carrier or control
+          const combineMode = state.sampleSelection.combineMode;
+          const carriers = window.computeCandidateSamplesForAlleles 
+            ? window.computeCandidateSamplesForAlleles(selectedAlleles, combineMode)
+            : [];
+          const carriersSet = new Set(carriers);
+          track.sampleType = carriersSet.has(track.sampleId) ? 'carrier' : 'control';
+        }
+        
         renderAll();
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
@@ -370,6 +383,59 @@ function shuffleSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
   
+  // For carriers_controls strategy, preserve the sample type (carrier vs control)
+  if (track.strategy === 'carriers_controls' && track.sampleType) {
+    // Get all available samples
+    const allSamples = state.sampleSelection.allSampleIds || [];
+    if (allSamples.length === 0) {
+      console.warn(`No samples available for shuffling track ${trackId}`);
+      return;
+    }
+    
+    // Compute candidates for this track's alleles
+    const combineMode = state.sampleSelection.combineMode;
+    const carriers = window.computeCandidateSamplesForAlleles 
+      ? window.computeCandidateSamplesForAlleles(track.selectedAlleles, combineMode)
+      : [];
+    
+    // Compute controls: samples that are NOT carriers
+    const carriersSet = new Set(carriers);
+    const controls = allSamples.filter(sampleId => !carriersSet.has(sampleId));
+    
+    // Get candidates based on sample type
+    let typeCandidates = [];
+    if (track.sampleType === 'carrier') {
+      typeCandidates = carriers.filter(s => s !== track.sampleId);
+    } else if (track.sampleType === 'control') {
+      typeCandidates = controls.filter(s => s !== track.sampleId);
+    }
+    
+    if (typeCandidates.length === 0) {
+      // If no other samples of this type, allow the same sample or fallback
+      if (track.sampleType === 'carrier' && carriers.length > 0) {
+        typeCandidates = carriers;
+      } else if (track.sampleType === 'control' && controls.length > 0) {
+        typeCandidates = controls;
+      } else {
+        console.warn(`No ${track.sampleType} samples available for shuffling track ${trackId}`);
+        return;
+      }
+    }
+    
+    // Pick a random sample from the type-specific candidates
+    const randomIndex = Math.floor(Math.random() * typeCandidates.length);
+    const sampleId = typeCandidates[randomIndex];
+    
+    // Fetch reads with new sample (preserving the sampleType)
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
+      .catch(err => {
+        console.error(`Failed to shuffle track ${trackId}:`, err);
+      });
+    
+    return;
+  }
+  
+  // For other strategies, use the original logic
   // Compute candidate samples for this track's specific alleles
   // Use the track's strategy and the current combine mode
   const combineMode = state.sampleSelection.combineMode;

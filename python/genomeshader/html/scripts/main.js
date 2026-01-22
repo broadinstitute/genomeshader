@@ -2587,9 +2587,209 @@ function setupCanvasHover() {
   // Export for use in smart-tracks.js
   window.computeCandidateSamplesForAlleles = computeCandidateSamplesForAlleles;
   
+  // Helper: Compute evidence score for a sample based on selected alleles
+  // Higher score = stronger evidence
+  // Returns a score (number) - higher is better
+  function computeEvidenceScore(sampleId, selectedAllelesSet, combineMode) {
+    const selectedAlleles = Array.from(selectedAllelesSet);
+    if (selectedAlleles.length === 0) {
+      return 0;
+    }
+    
+    // Parse selected alleles into variant/allele pairs
+    const selectedAllelePairs = [];
+    for (const key of selectedAlleles) {
+      const [variantId, alleleIndexStr] = key.split(':');
+      const alleleIndex = parseInt(alleleIndexStr, 10);
+      
+      const variant = variants.find(v => v.id === variantId);
+      if (!variant) continue;
+      
+      selectedAllelePairs.push({
+        variantId,
+        alleleIndex,
+        variant
+      });
+    }
+    
+    if (selectedAllelePairs.length === 0) {
+      return 0;
+    }
+    
+    let totalScore = 0;
+    let matchingAlleles = 0;
+    
+    if (combineMode === 'AND') {
+      // Sample must have ALL selected alleles
+      // Score based on homozygosity for each allele
+      for (const pair of selectedAllelePairs) {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        const genotype = sampleGenotypes[sampleId];
+        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+        
+        if (!genotype || genotypeIndex === null) {
+          // Missing genotype or no-call allele - penalize heavily
+          return -1000;
+        }
+        
+        if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+          matchingAlleles++;
+          
+          // Score based on homozygosity
+          // Parse genotype to count how many copies of the allele
+          const alleles = genotype.split(/[\/|]/);
+          let alleleCount = 0;
+          for (const allele of alleles) {
+            const alleleStr = allele.trim();
+            if (alleleStr === '.' || alleleStr === '') continue;
+            const idx = parseInt(alleleStr, 10);
+            if (!isNaN(idx) && idx === genotypeIndex) {
+              alleleCount++;
+            }
+          }
+          
+          // Homozygous (2 copies) scores higher than heterozygous (1 copy)
+          // Score: 10 for homozygous, 5 for heterozygous
+          if (alleleCount >= 2) {
+            totalScore += 10; // Homozygous - strongest evidence
+          } else if (alleleCount === 1) {
+            totalScore += 5;  // Heterozygous - good evidence
+          }
+        } else {
+          // Sample doesn't have this required allele - disqualify
+          return -1000;
+        }
+      }
+      
+      // Bonus for having all alleles
+      if (matchingAlleles === selectedAllelePairs.length) {
+        totalScore += 100; // Bonus for complete match
+      }
+    } else {
+      // OR mode: Sample must have ANY of the selected alleles
+      // Score based on number of matching alleles and homozygosity
+      for (const pair of selectedAllelePairs) {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        const genotype = sampleGenotypes[sampleId];
+        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+        
+        if (!genotype || genotypeIndex === null) {
+          continue; // Skip missing genotypes in OR mode
+        }
+        
+        if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+          matchingAlleles++;
+          
+          // Score based on homozygosity
+          const alleles = genotype.split(/[\/|]/);
+          let alleleCount = 0;
+          for (const allele of alleles) {
+            const alleleStr = allele.trim();
+            if (alleleStr === '.' || alleleStr === '') continue;
+            const idx = parseInt(alleleStr, 10);
+            if (!isNaN(idx) && idx === genotypeIndex) {
+              alleleCount++;
+            }
+          }
+          
+          // Homozygous scores higher than heterozygous
+          if (alleleCount >= 2) {
+            totalScore += 10; // Homozygous
+          } else if (alleleCount === 1) {
+            totalScore += 5;  // Heterozygous
+          }
+        }
+      }
+      
+      // Bonus for matching more alleles (in OR mode, more matches = better)
+      totalScore += matchingAlleles * 20;
+    }
+    
+    return totalScore;
+  }
+  
   // Helper: Select samples based on strategy
   // Returns an array of sample IDs to use for creating Smart Tracks
   function selectSamplesForStrategy(strategy, candidates, numSamples) {
+    if (strategy === 'carriers_controls') {
+      // Carriers + controls strategy: select a mix of carriers and controls
+      // Carriers are samples with selected alleles (candidates)
+      // Controls are samples without selected alleles
+      
+      // Get all available samples
+      const allSamples = state.sampleSelection.allSampleIds || [];
+      if (allSamples.length === 0) {
+        // Fallback: if allSampleIds not populated, just use candidates (or empty)
+        if (!candidates || candidates.length === 0) {
+          return [];
+        }
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Compute controls: samples that are NOT in candidates
+      const carriers = candidates || [];
+      const carriersSet = new Set(carriers);
+      const controls = allSamples.filter(sampleId => !carriersSet.has(sampleId));
+      
+      // If no controls available and no carriers, return empty
+      if (controls.length === 0 && carriers.length === 0) {
+        return [];
+      }
+      
+      // If no controls available, fall back to random from carriers
+      if (controls.length === 0) {
+        console.warn('No control samples available (all samples are carriers), falling back to random selection');
+        if (carriers.length === 0) {
+          return [];
+        }
+        return selectSamplesForStrategy('random', carriers, numSamples);
+      }
+      
+      // If no carriers available, just return controls
+      if (carriers.length === 0) {
+        console.warn('No carrier samples available, returning controls only');
+        const selectedSamples = [];
+        const controlsCopy = [...controls];
+        for (let i = 0; i < numSamples && controlsCopy.length > 0; i++) {
+          const randomIndex = Math.floor(Math.random() * controlsCopy.length);
+          selectedSamples.push(controlsCopy[randomIndex]);
+          controlsCopy.splice(randomIndex, 1);
+        }
+        return selectedSamples;
+      }
+      
+      // Split numSamples between carriers and controls
+      // Try to get roughly equal numbers, but favor carriers if odd number
+      const numCarriers = Math.ceil(numSamples / 2);
+      const numControls = Math.floor(numSamples / 2);
+      
+      const selectedSamples = [];
+      
+      // Select carriers (random from candidates)
+      const carriersCopy = [...carriers];
+      for (let i = 0; i < numCarriers && carriersCopy.length > 0; i++) {
+        const randomIndex = Math.floor(Math.random() * carriersCopy.length);
+        selectedSamples.push(carriersCopy[randomIndex]);
+        carriersCopy.splice(randomIndex, 1);
+      }
+      
+      // Select controls (random from controls)
+      const controlsCopy = [...controls];
+      for (let i = 0; i < numControls && controlsCopy.length > 0; i++) {
+        const randomIndex = Math.floor(Math.random() * controlsCopy.length);
+        selectedSamples.push(controlsCopy[randomIndex]);
+        controlsCopy.splice(randomIndex, 1);
+      }
+      
+      // Shuffle the result so carriers and controls are interleaved
+      for (let i = selectedSamples.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [selectedSamples[i], selectedSamples[j]] = [selectedSamples[j], selectedSamples[i]];
+      }
+      
+      return selectedSamples;
+    }
+    
     if (!candidates || candidates.length === 0) {
       return [];
     }
@@ -2611,6 +2811,49 @@ function setupCanvasHover() {
         
         // Remove the selected sample to avoid duplicates (if possible)
         candidatesCopy.splice(randomIndex, 1);
+      }
+      
+      return selectedSamples;
+    } else if (strategy === 'best_evidence') {
+      // Best evidence strategy: select samples with strongest evidence for selected alleles
+      // Get selected alleles and combine mode from state
+      const selectedAlleles = state.selectedAlleles || new Set();
+      const combineMode = state.sampleSelection.combineMode || 'AND';
+      
+      if (selectedAlleles.size === 0) {
+        // No alleles selected, fall back to random
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Score all candidate samples
+      const scoredSamples = candidates.map(sampleId => ({
+        sampleId,
+        score: computeEvidenceScore(sampleId, selectedAlleles, combineMode)
+      }));
+      
+      // Sort by score (descending) - highest score first
+      scoredSamples.sort((a, b) => b.score - a.score);
+      
+      // Filter out samples with negative scores (disqualified)
+      const validSamples = scoredSamples.filter(s => s.score >= 0);
+      
+      if (validSamples.length === 0) {
+        // No valid samples, fall back to random
+        console.warn('No samples with valid evidence found, falling back to random selection');
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Select top N samples
+      const selectedSamples = [];
+      for (let i = 0; i < numSamples && i < validSamples.length; i++) {
+        selectedSamples.push(validSamples[i].sampleId);
+      }
+      
+      // If we need more samples than available, cycle through top samples
+      if (selectedSamples.length < numSamples) {
+        for (let i = selectedSamples.length; i < numSamples; i++) {
+          selectedSamples.push(validSamples[i % validSamples.length].sampleId);
+        }
       }
       
       return selectedSamples;
@@ -2731,6 +2974,16 @@ function setupCanvasHover() {
     // Create Smart Track
     const track = createSmartTrack(strategy, selectedAlleles);
     
+    // Set sampleType for carriers_controls strategy
+    if (strategy === 'carriers_controls') {
+      const combineMode = state.sampleSelection.combineMode;
+      const carriers = window.computeCandidateSamplesForAlleles 
+        ? window.computeCandidateSamplesForAlleles(selectedAlleles, combineMode)
+        : [];
+      const carriersSet = new Set(carriers);
+      track.sampleType = carriersSet.has(sampleId) ? 'carrier' : 'control';
+    }
+    
     // Fetch reads for the specific sample
     fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
       .catch(err => {
@@ -2836,11 +3089,25 @@ function setupCanvasHover() {
       // Select samples based on strategy (will pick new random samples each time for Random strategy)
       const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
       
+      // For carriers_controls strategy, determine which samples are carriers vs controls
+      let sampleTypes = {};
+      if (strategy === 'carriers_controls') {
+        const carriersSet = new Set(candidates);
+        for (const sampleId of selectedSamples) {
+          sampleTypes[sampleId] = carriersSet.has(sampleId) ? 'carrier' : 'control';
+        }
+      }
+      
       // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
       for (let i = 0; i < selectedSamples.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
         const sampleId = selectedSamples[i];
+        
+        // Set sampleType for carriers_controls strategy
+        if (strategy === 'carriers_controls' && sampleTypes[sampleId]) {
+          track.sampleType = sampleTypes[sampleId];
+        }
         
         // Fetch reads
         trackPromises.push(
@@ -2884,11 +3151,25 @@ function setupCanvasHover() {
       // Select samples based on strategy
       const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
       
+      // For carriers_controls strategy, determine which samples are carriers vs controls
+      let sampleTypes = {};
+      if (strategy === 'carriers_controls') {
+        const carriersSet = new Set(candidates);
+        for (const sampleId of selectedSamples) {
+          sampleTypes[sampleId] = carriersSet.has(sampleId) ? 'carrier' : 'control';
+        }
+      }
+      
       // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
       for (let i = 0; i < selectedSamples.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
         const sampleId = selectedSamples[i];
+        
+        // Set sampleType for carriers_controls strategy
+        if (strategy === 'carriers_controls' && sampleTypes[sampleId]) {
+          track.sampleType = sampleTypes[sampleId];
+        }
         
         // Fetch reads
         trackPromises.push(
