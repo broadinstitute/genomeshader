@@ -184,9 +184,12 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   left: 12px !important;
 }
 
-/* Right sidebar styles */
+/* Right sidebar styles - always overlays on top of main panel */
 .sidebar-right {
-  position: relative;
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
   background: var(--panel);
   border-left: 1px solid var(--border2);
   padding: 0;
@@ -194,6 +197,9 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   transition: opacity 0.2s ease, width 0.2s ease;
   display: flex;
   flex-direction: column;
+  z-index: 100;
+  width: 12px;
+  min-width: 12px;
 }
 .sidebar-right .sidebarContent {
   flex: 1;
@@ -246,20 +252,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   border-left: none;
   box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
 }
-/* Adjust main panel position when right sidebar is collapsed */
-.app.sidebar-right-collapsed .main {
-  right: 12px !important;
-}
-/* Adjust main panel position when right sidebar is open */
-.app:not(.sidebar-right-collapsed) .main {
-  right: 240px !important;
-}
-/* Right sidebar default state (closed) */
-.sidebar-right {
-  width: 12px !important;
-  min-width: 12px;
-  transition: width 0.2s ease;
-}
+/* Right sidebar expanded state */
 .app:not(.sidebar-right-collapsed) .sidebar-right {
   width: 240px !important;
 }
