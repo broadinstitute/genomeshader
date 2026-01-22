@@ -3024,6 +3024,129 @@ function setupCanvasHover() {
       }
       
       return selectedSamples;
+    } else if (strategy === 'compare_branches') {
+      // Compare branches strategy: select samples representing different combinations
+      // of the selected alleles to compare different "branches" of the allele tree
+      
+      if (!candidates || candidates.length === 0) {
+        return [];
+      }
+      
+      const selectedAlleles = state.selectedAlleles || new Set();
+      if (selectedAlleles.size < 2) {
+        // Need at least 2 alleles to compare branches
+        console.warn('Compare branches requires 2+ selected alleles, falling back to random selection');
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Parse selected alleles into variant/allele pairs
+      const selectedAllelePairs = [];
+      for (const key of selectedAlleles) {
+        const [variantId, alleleIndexStr] = key.split(':');
+        const alleleIndex = parseInt(alleleIndexStr, 10);
+        
+        const variant = variants.find(v => v.id === variantId);
+        if (!variant) continue;
+        
+        selectedAllelePairs.push({
+          variantId,
+          alleleIndex,
+          variant
+        });
+      }
+      
+      if (selectedAllelePairs.length < 2) {
+        console.warn('Compare branches requires 2+ valid alleles, falling back to random selection');
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Compute which alleles each sample has
+      // For each sample, create a "branch signature" representing which selected alleles it carries
+      function computeBranchSignature(sampleId) {
+        const signature = [];
+        for (const pair of selectedAllelePairs) {
+          const sampleGenotypes = pair.variant.sampleGenotypes || {};
+          const genotype = sampleGenotypes[sampleId];
+          const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+          
+          if (genotypeIndex !== null && hasAlleleInGenotype(genotype, genotypeIndex)) {
+            signature.push(1); // Sample has this allele
+          } else {
+            signature.push(0); // Sample doesn't have this allele
+          }
+        }
+        return signature.join(''); // Binary string like "101" means has allele 0, not 1, has 2
+      }
+      
+      // Group samples by their branch signature
+      const branchGroups = new Map(); // Map<signature, sampleIds[]>
+      for (const sampleId of candidates) {
+        const signature = computeBranchSignature(sampleId);
+        if (!branchGroups.has(signature)) {
+          branchGroups.set(signature, []);
+        }
+        branchGroups.get(signature).push(sampleId);
+      }
+      
+      // Sort branch groups by signature (to get consistent ordering)
+      // Prefer groups with more unique allele combinations
+      const sortedBranches = Array.from(branchGroups.entries()).sort((a, b) => {
+        // Count how many alleles each branch has
+        const aCount = (a[0].match(/1/g) || []).length;
+        const bCount = (b[0].match(/1/g) || []).length;
+        
+        // Prefer branches with different allele counts (more diverse)
+        if (aCount !== bCount) {
+          return bCount - aCount; // Higher count first
+        }
+        
+        // If same count, prefer lexicographically different signatures
+        return a[0].localeCompare(b[0]);
+      });
+      
+      // Select samples from different branches
+      const selectedSamples = [];
+      const usedBranches = new Set();
+      
+      // First pass: try to get one sample from each unique branch
+      for (const [signature, sampleIds] of sortedBranches) {
+        if (selectedSamples.length >= numSamples) break;
+        if (usedBranches.has(signature)) continue;
+        
+        // Pick a random sample from this branch
+        const randomIndex = Math.floor(Math.random() * sampleIds.length);
+        selectedSamples.push(sampleIds[randomIndex]);
+        usedBranches.add(signature);
+      }
+      
+      // Second pass: if we need more samples, cycle through branches
+      if (selectedSamples.length < numSamples) {
+        let branchIndex = 0;
+        while (selectedSamples.length < numSamples && sortedBranches.length > 0) {
+          const [signature, sampleIds] = sortedBranches[branchIndex % sortedBranches.length];
+          
+          // Pick a different sample from this branch if possible
+          const availableSamples = sampleIds.filter(s => !selectedSamples.includes(s));
+          if (availableSamples.length > 0) {
+            const randomIndex = Math.floor(Math.random() * availableSamples.length);
+            selectedSamples.push(availableSamples[randomIndex]);
+          } else if (sampleIds.length > 0) {
+            // All samples from this branch already used, allow reuse
+            const randomIndex = Math.floor(Math.random() * sampleIds.length);
+            selectedSamples.push(sampleIds[randomIndex]);
+          }
+          
+          branchIndex++;
+        }
+      }
+      
+      // Shuffle to mix branches (optional, but makes comparison more interesting)
+      for (let i = selectedSamples.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [selectedSamples[i], selectedSamples[j]] = [selectedSamples[j], selectedSamples[i]];
+      }
+      
+      return selectedSamples;
     } else {
       // For other strategies, cycle through candidates (current behavior)
       const selectedSamples = [];
