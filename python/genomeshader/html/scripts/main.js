@@ -2857,6 +2857,173 @@ function setupCanvasHover() {
       }
       
       return selectedSamples;
+    } else if (strategy === 'most_diverse') {
+      // Most diverse strategy: select samples with maximally different genotype profiles
+      // This helps explore the full range of genetic variation in the dataset
+      
+      if (!candidates || candidates.length === 0) {
+        return [];
+      }
+      
+      // If only one sample requested, just return it
+      if (numSamples === 1) {
+        return [candidates[0]];
+      }
+      
+      // Determine which variants to consider
+      const selectedAlleles = state.selectedAlleles || new Set();
+      let variantsToConsider = [];
+      
+      if (selectedAlleles.size > 0) {
+        // If alleles are selected, only consider those variants
+        const variantIds = new Set();
+        for (const key of selectedAlleles) {
+          const [variantId] = key.split(':');
+          variantIds.add(variantId);
+        }
+        variantsToConsider = variants.filter(v => variantIds.has(v.id));
+      } else {
+        // If no alleles selected, consider all variants
+        variantsToConsider = variants;
+      }
+      
+      if (variantsToConsider.length === 0) {
+        // No variants to consider, fall back to random
+        console.warn('No variants available for diversity calculation, falling back to random selection');
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Compute genotype profile for each candidate sample
+      // Profile is a string representing genotypes across all variants
+      function computeGenotypeProfile(sampleId) {
+        const profile = [];
+        for (const variant of variantsToConsider) {
+          const sampleGenotypes = variant.sampleGenotypes || {};
+          const genotype = sampleGenotypes[sampleId];
+          // Normalize genotype: use a canonical representation
+          // Missing genotypes are represented as "."
+          if (!genotype || genotype === './.' || genotype === '.') {
+            profile.push('.');
+          } else {
+            // Normalize: sort alleles for unphased genotypes to ensure consistency
+            const alleles = genotype.split(/[\/|]/).map(a => a.trim());
+            if (alleles.length >= 2) {
+              // Check if phased (contains |) or unphased (contains /)
+              const isPhased = genotype.includes('|');
+              if (isPhased) {
+                // Keep phased order
+                profile.push(alleles.join('|'));
+              } else {
+                // Sort unphased alleles for consistency
+                const sorted = alleles.slice().sort((a, b) => {
+                  const aNum = a === '.' ? -1 : parseInt(a, 10);
+                  const bNum = b === '.' ? -1 : parseInt(b, 10);
+                  return aNum - bNum;
+                });
+                profile.push(sorted.join('/'));
+              }
+            } else {
+              profile.push(genotype);
+            }
+          }
+        }
+        return profile.join('|');
+      }
+      
+      // Compute Hamming distance between two genotype profiles
+      // Profiles are strings with genotype values separated by '|'
+      function profileDistance(profile1, profile2) {
+        const parts1 = profile1.split('|');
+        const parts2 = profile2.split('|');
+        
+        if (parts1.length !== parts2.length) {
+          // Different number of variants - use length difference as penalty
+          return Math.abs(parts1.length - parts2.length) * 10;
+        }
+        
+        let distance = 0;
+        for (let i = 0; i < parts1.length; i++) {
+          if (parts1[i] !== parts2[i]) {
+            distance++;
+          }
+        }
+        return distance;
+      }
+      
+      // Compute minimum distance from a sample to a set of already-selected samples
+      function minDistanceToSet(sampleProfile, selectedProfiles) {
+        if (selectedProfiles.length === 0) {
+          return Infinity; // First sample has infinite distance
+        }
+        
+        let minDist = Infinity;
+        for (const selectedProfile of selectedProfiles) {
+          const dist = profileDistance(sampleProfile, selectedProfile);
+          if (dist < minDist) {
+            minDist = dist;
+          }
+        }
+        return minDist;
+      }
+      
+      // Compute profiles for all candidates
+      const candidateProfiles = new Map();
+      for (const sampleId of candidates) {
+        candidateProfiles.set(sampleId, computeGenotypeProfile(sampleId));
+      }
+      
+      // Greedy algorithm: iteratively select the sample that is most different
+      // from all previously selected samples
+      const selectedSamples = [];
+      const selectedProfiles = [];
+      
+      // Start with a random sample (or first candidate)
+      const firstSample = candidates[Math.floor(Math.random() * candidates.length)];
+      selectedSamples.push(firstSample);
+      selectedProfiles.push(candidateProfiles.get(firstSample));
+      
+      // Select remaining samples
+      const remainingCandidates = candidates.filter(s => s !== firstSample);
+      
+      for (let i = 1; i < numSamples && remainingCandidates.length > 0; i++) {
+        let bestSample = null;
+        let bestDistance = -1;
+        
+        // Find the candidate that maximizes minimum distance to selected samples
+        for (const candidateId of remainingCandidates) {
+          const candidateProfile = candidateProfiles.get(candidateId);
+          const minDist = minDistanceToSet(candidateProfile, selectedProfiles);
+          
+          if (minDist > bestDistance) {
+            bestDistance = minDist;
+            bestSample = candidateId;
+          }
+        }
+        
+        if (bestSample) {
+          selectedSamples.push(bestSample);
+          selectedProfiles.push(candidateProfiles.get(bestSample));
+          // Remove from remaining candidates
+          const index = remainingCandidates.indexOf(bestSample);
+          if (index > -1) {
+            remainingCandidates.splice(index, 1);
+          }
+        } else {
+          // No more diverse samples available, break
+          break;
+        }
+      }
+      
+      // If we still need more samples, fill with remaining candidates
+      if (selectedSamples.length < numSamples && remainingCandidates.length > 0) {
+        for (let i = selectedSamples.length; i < numSamples && remainingCandidates.length > 0; i++) {
+          const randomIndex = Math.floor(Math.random() * remainingCandidates.length);
+          const sample = remainingCandidates.splice(randomIndex, 1)[0];
+          selectedSamples.push(sample);
+        }
+      }
+      
+      return selectedSamples;
     } else {
       // For other strategies, cycle through candidates (current behavior)
       const selectedSamples = [];
