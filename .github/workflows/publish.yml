@@ -6,10 +6,6 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_run:
-    workflows: ["Release Please"]
-    types:
-      - completed
 
 permissions:
   contents: read
@@ -34,17 +30,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.release.tag_name || github.ref }}
-      - name: Get latest tag for workflow_run events
-        if: github.event_name == 'workflow_run'
-        id: get_tag
-        run: |
-          git fetch --tags
-          TAG=$(git describe --tags --abbrev=0)
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-      - name: Checkout tag if triggered by workflow_run
-        if: github.event_name == 'workflow_run'
-        run: |
-          git checkout ${{ steps.get_tag.outputs.tag }}
 
       - uses: actions/setup-python@v5
         with:
@@ -85,17 +70,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.release.tag_name || github.ref }}
-      - name: Get latest tag for workflow_run events
-        if: github.event_name == 'workflow_run'
-        id: get_tag
-        run: |
-          git fetch --tags
-          TAG=$(git describe --tags --abbrev=0)
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-      - name: Checkout tag if triggered by workflow_run
-        if: github.event_name == 'workflow_run'
-        run: |
-          git checkout ${{ steps.get_tag.outputs.tag }}
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
