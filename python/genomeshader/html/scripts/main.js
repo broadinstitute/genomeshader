@@ -1426,8 +1426,12 @@ function renderAll() {
   renderTrackControls();
   updateFlowAndReadsPosition();
   renderFlowCanvas();
-  // Render all Smart tracks
-  state.smartTracks.forEach(track => {
+  // Render all Smart tracks in the order they appear in state.tracks
+  const smartTracksInOrder = state.tracks
+    .filter(t => t.id.startsWith('smart-track-'))
+    .map(t => state.smartTracks.find(st => st.id === t.id))
+    .filter(st => st !== undefined);
+  smartTracksInOrder.forEach(track => {
     renderSmartTrack(track.id);
   });
   renderHUD();
