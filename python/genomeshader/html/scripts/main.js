@@ -60,8 +60,25 @@ function renderSmartTrack(trackId) {
   if (!canvas || !webgpuCanvas) return;
   
   const dpr = window.devicePixelRatio || 1;
-  const W = isVertical ? trackLayout.contentHeight : trackLayout.contentWidth;
-  let H = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+  
+  // Get the actual rendered width of the container (not the layout width)
+  // This is critical for overlay mode where the container width may differ from layout
+  const containerRect = container.getBoundingClientRect();
+  const actualContainerWidth = containerRect.width;
+  const actualContainerHeight = containerRect.height;
+  
+  // Use actual container dimensions for both canvas sizing AND coordinate calculations
+  // This ensures consistency between inline and overlay modes
+  const W = isVertical ? actualContainerHeight : actualContainerWidth;
+  let H = isVertical ? actualContainerWidth : actualContainerHeight;
+  
+  // Fallback to layout dimensions if container has no dimensions yet
+  if (W <= 0 || isNaN(W)) {
+    const layoutW = isVertical ? trackLayout.contentHeight : trackLayout.contentWidth;
+    const layoutH = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+    // Use layout dimensions as fallback
+    return; // Skip rendering if no valid dimensions
+  }
   
   // Calculate total content height if reads are loaded (horizontal mode)
   let totalContentHeight = H;
@@ -104,6 +121,10 @@ function renderSmartTrack(trackId) {
     canvas.width = W * dpr;
     
     // Set WebGPU canvas dimensions to match regular canvas
+    // Track previous dimensions BEFORE updating
+    const prevWebGpuWidth = webgpuCanvas.width;
+    const prevWebGpuHeight = webgpuCanvas.height;
+    
     webgpuCanvas.width = W * dpr;
     webgpuCanvas.height = totalContentHeight * dpr;
     webgpuCanvas.style.height = totalContentHeight + 'px';
@@ -114,7 +135,8 @@ function renderSmartTrack(trackId) {
     webgpuCanvas.style.inset = 'auto';
     
     // Notify WebGPU core of resize if dimensions changed
-    if (webgpuCore && (webgpuCanvas.width !== W * dpr || webgpuCanvas.height !== totalContentHeight * dpr)) {
+    // Compare against PREVIOUS dimensions, not current (which we just set)
+    if (webgpuCore && (prevWebGpuWidth !== W * dpr || prevWebGpuHeight !== totalContentHeight * dpr)) {
       webgpuCore.handleResize();
     }
     
@@ -434,32 +456,12 @@ function renderSmartTrack(trackId) {
         }
         
         if (minStart !== Infinity && maxEnd !== -Infinity) {
-          // Calculate genomic positions
-          const leftPad = 16;
-          const rightPad = 16;
+          // Use simple linear transformation (self-consistent, no dependency on global state.pxPerBp)
+          const leftPad = 16, rightPad = 16;
           const innerW = W - leftPad - rightPad;
-          
-          // Calculate unclamped positions
           const span = state.endBp - state.startBp;
-          const totalGapPx = getTotalInsertionGapWidth();
-          const totalGapBp = totalGapPx / state.pxPerBp;
-          const effectiveSpan = span + totalGapBp;
-          
-          const accumulatedGapPx1 = getAccumulatedGapPx(minStart, state.expandedInsertions);
-          const bpOffset1 = minStart - state.startBp;
-          const accumulatedGapBp1 = accumulatedGapPx1 / state.pxPerBp;
-          const normalizedPos1 = (bpOffset1 + accumulatedGapBp1) / effectiveSpan;
-          const x1Unclamped = leftPad + normalizedPos1 * innerW;
-          
-          const accumulatedGapPx2 = getAccumulatedGapPx(maxEnd, state.expandedInsertions);
-          const bpOffset2 = maxEnd - state.startBp;
-          const accumulatedGapBp2 = accumulatedGapPx2 / state.pxPerBp;
-          const normalizedPos2 = (bpOffset2 + accumulatedGapBp2) / effectiveSpan;
-          const x2Unclamped = leftPad + normalizedPos2 * innerW;
-          
-          // Clamp to visible bounds
-          const x1 = Math.max(leftPad, Math.min(x1Unclamped, leftPad + innerW));
-          const x2 = Math.max(leftPad, Math.min(x2Unclamped, leftPad + innerW));
+          const x1 = leftPad + ((minStart - state.startBp) / span) * innerW;
+          const x2 = leftPad + ((maxEnd - state.startBp) / span) * innerW;
           
           const y = top + 0 * rowH + 2;
           const h = rowH - 4;
@@ -505,38 +507,17 @@ function renderSmartTrack(trackId) {
           }
           if (!read.isForward) baseAlpha *= 0.7;
           
-          // Calculate genomic positions
-          const leftPad = 16;
-          const rightPad = 16;
+          // Use simple linear transformation (self-consistent, no dependency on global state.pxPerBp)
+          const leftPad = 16, rightPad = 16;
           const innerW = W - leftPad - rightPad;
-          
-          // Calculate unclamped positions to get accurate width for reads extending off-screen
           const span = state.endBp - state.startBp;
-          const totalGapPx = getTotalInsertionGapWidth();
-          const totalGapBp = totalGapPx / state.pxPerBp;
-          const effectiveSpan = span + totalGapBp;
-          
-          // Calculate x1 and x2 without clamping
-          const accumulatedGapPx1 = getAccumulatedGapPx(read.start, state.expandedInsertions);
-          const bpOffset1 = read.start - state.startBp;
-          const accumulatedGapBp1 = accumulatedGapPx1 / state.pxPerBp;
-          const normalizedPos1 = (bpOffset1 + accumulatedGapBp1) / effectiveSpan;
-          const x1Unclamped = leftPad + normalizedPos1 * innerW;
-          
-          const accumulatedGapPx2 = getAccumulatedGapPx(read.end, state.expandedInsertions);
-          const bpOffset2 = read.end - state.startBp;
-          const accumulatedGapBp2 = accumulatedGapPx2 / state.pxPerBp;
-          const normalizedPos2 = (bpOffset2 + accumulatedGapBp2) / effectiveSpan;
-          const x2Unclamped = leftPad + normalizedPos2 * innerW;
-          
-          // Now clamp to visible bounds for drawing
-          const x1 = Math.max(leftPad, Math.min(x1Unclamped, leftPad + innerW));
-          const x2 = Math.max(leftPad, Math.min(x2Unclamped, leftPad + innerW));
+          const x1 = leftPad + ((read.start - state.startBp) / span) * innerW;
+          const x2 = leftPad + ((read.end - state.startBp) / span) * innerW;
           
           const y = top + read.row * rowH + 2;
           const h = rowH - 4;
           
-          // Calculate drawing position and width from clamped values
+          // Calculate drawing position and width
           const x = x1;
           const w = Math.max(4, x2 - x1);
           
@@ -3740,12 +3721,18 @@ function panByPixels(dxPx, dyPx) {
 }
 
 function anchorBpFromClientX(clientX) {
-  const rect = tracksSvg.getBoundingClientRect();
+  const rectSource = (typeof tracksContainer !== 'undefined' && tracksContainer)
+    ? tracksContainer
+    : tracksSvg;
+  const rect = rectSource.getBoundingClientRect();
   const xInPane = clientX - rect.left;
   return bpFromXGenome(xInPane, tracksWidthPx());
 }
 function anchorBpFromClientY(clientY) {
-  const rect = tracksSvg.getBoundingClientRect();
+  const rectSource = (typeof tracksContainer !== 'undefined' && tracksContainer)
+    ? tracksContainer
+    : tracksSvg;
+  const rect = rectSource.getBoundingClientRect();
   const yInPane = clientY - rect.top;
   return bpFromYGenome(yInPane, tracksHeightPx());
 }
