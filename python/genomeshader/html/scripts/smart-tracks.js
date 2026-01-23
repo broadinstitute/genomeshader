@@ -678,6 +678,55 @@ function renderSmartTracksSidebar() {
     const label = document.createElement('div');
     label.className = 'smart-track-item-label';
     label.textContent = track.label;
+    label.style.cursor = 'text';
+    label.title = 'Click to edit label';
+    
+    // Create input field for editing (hidden initially)
+    const labelInput = document.createElement('input');
+    labelInput.type = 'text';
+    labelInput.className = 'smart-track-item-label-input';
+    labelInput.value = track.label;
+    labelInput.style.display = 'none';
+    labelInput.style.fontSize = '12px';
+    labelInput.style.fontWeight = '500';
+    labelInput.style.color = 'var(--text)';
+    labelInput.style.background = 'var(--panel)';
+    labelInput.style.border = '1px solid var(--border2)';
+    labelInput.style.borderRadius = '4px';
+    labelInput.style.padding = '2px 4px';
+    labelInput.style.width = '100%';
+    labelInput.style.boxSizing = 'border-box';
+    
+    // Click handler to start editing
+    label.addEventListener('click', (e) => {
+      e.stopPropagation();
+      label.style.display = 'none';
+      labelInput.style.display = 'block';
+      labelInput.focus();
+      labelInput.select();
+    });
+    
+    // Save on blur or Enter
+    const saveLabel = () => {
+      const newLabel = labelInput.value.trim() || track.label;
+      label.textContent = newLabel;
+      label.style.display = '';
+      labelInput.style.display = 'none';
+      editSmartTrackLabel(track.id, newLabel);
+    };
+    
+    labelInput.addEventListener('blur', saveLabel);
+    labelInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        saveLabel();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        labelInput.value = track.label;
+        label.style.display = '';
+        labelInput.style.display = 'none';
+      }
+    });
     
     const controls = document.createElement('div');
     controls.className = 'smart-track-item-controls';
@@ -754,6 +803,7 @@ function renderSmartTracksSidebar() {
     controls.appendChild(closeBtn);
     
     header.appendChild(label);
+    header.appendChild(labelInput);
     header.appendChild(controls);
     
     item.appendChild(header);
@@ -898,7 +948,7 @@ function initializeRightSidebar() {
       }
     };
     
-    // Auto-close when mouse leaves sidebar (after 2 seconds)
+    // Auto-close when mouse leaves sidebar (after 3 seconds)
     const handleMouseEnter = () => {
       // Clear any pending auto-close timer when mouse enters
       if (autoCloseTimer) {
@@ -914,11 +964,11 @@ function initializeRightSidebar() {
         if (autoCloseTimer) {
           clearTimeout(autoCloseTimer);
         }
-        // Set new timer to close after 2 seconds
+        // Set new timer to close after 3 seconds
         autoCloseTimer = setTimeout(() => {
           setRightSidebarCollapsed(true);
           autoCloseTimer = null;
-        }, 2000);
+        }, 3000);
       }
     };
     
