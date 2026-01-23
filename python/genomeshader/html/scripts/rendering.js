@@ -132,16 +132,44 @@ function getTrackLayout() {
     const mainHeight = rectH(main);
     // Ensure mainHeight is valid
     const safeMainHeight = (isNaN(mainHeight) || mainHeight <= 0) ? 0 : mainHeight;
+    // Minimum width for collapsed tracks (to show clickable indicator)
+    const collapsedTrackMinWidth = 8;
     
     for (const track of state.tracks) {
+      // Skip hidden tracks (they take no space)
+      // Default to false for backwards compatibility
+      if (track.hidden === true) {
+        continue;
+      }
+      
       // For standard tracks, don't reserve space for header (controls overlay on hover)
-      // For Smart tracks, keep the header space
+      // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
       const usesHeaderSpace = !isStandardTrack(track.id);
-      const effectiveWidth = track.collapsed 
-        ? (usesHeaderSpace ? headerH : 0)
-        : (usesHeaderSpace ? headerH + (track.height || 0) : (track.height || 0));
-      const safeContentLeft = usesHeaderSpace ? currentX + headerH : currentX;
-      const safeContentWidth = track.collapsed ? 0 : (track.height || 0);
+      const isSmartTrack = track.id.startsWith("smart-track-");
+      
+      let effectiveWidth;
+      let safeContentWidth;
+      let safeContentLeft;
+      
+      if (track.collapsed) {
+        if (isSmartTrack && track.closedHeight) {
+          // Smart Track closed state: use closedHeight (single read)
+          // Don't include header space - controls will overlay on top of content
+          effectiveWidth = track.closedHeight;
+          safeContentWidth = track.closedHeight;
+          safeContentLeft = currentX; // Content starts at left, no gap for header
+        } else {
+          // Standard track collapsed: minimal width
+          effectiveWidth = usesHeaderSpace ? headerH : collapsedTrackMinWidth;
+          safeContentWidth = 0;
+          safeContentLeft = usesHeaderSpace ? currentX + headerH : currentX;
+        }
+      } else {
+        // Open state: full width with header space
+        effectiveWidth = usesHeaderSpace ? headerH + (track.height || 0) : (track.height || 0);
+        safeContentWidth = track.height || 0;
+        safeContentLeft = usesHeaderSpace ? currentX + headerH : currentX;
+      }
       
       // Validate all values are numbers
       if (isNaN(currentX) || isNaN(effectiveWidth) || isNaN(safeContentLeft) || isNaN(safeContentWidth)) {
@@ -169,16 +197,44 @@ function getTrackLayout() {
     const mainWidth = rectW(main);
     // Ensure mainWidth is valid
     const safeMainWidth = (isNaN(mainWidth) || mainWidth <= 0) ? 0 : mainWidth;
+    // Minimum height for collapsed tracks (to show clickable indicator)
+    const collapsedTrackMinHeight = 8;
     
     for (const track of state.tracks) {
+      // Skip hidden tracks (they take no space)
+      // Default to false for backwards compatibility
+      if (track.hidden === true) {
+        continue;
+      }
+      
       // For standard tracks, don't reserve space for header (controls overlay on hover)
-      // For Smart tracks, keep the header space
+      // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
       const usesHeaderSpace = !isStandardTrack(track.id);
-      const effectiveHeight = track.collapsed 
-        ? (usesHeaderSpace ? headerH : 0)
-        : (usesHeaderSpace ? headerH + (track.height || 0) : (track.height || 0));
-      const safeContentTop = usesHeaderSpace ? currentY + headerH : currentY;
-      const safeContentHeight = track.collapsed ? 0 : (track.height || 0);
+      const isSmartTrack = track.id.startsWith("smart-track-");
+      
+      let effectiveHeight;
+      let safeContentHeight;
+      let safeContentTop;
+      
+      if (track.collapsed) {
+        if (isSmartTrack && track.closedHeight) {
+          // Smart Track closed state: use closedHeight (single read)
+          // Don't include header space - controls will overlay on top of content
+          effectiveHeight = track.closedHeight;
+          safeContentHeight = track.closedHeight;
+          safeContentTop = currentY; // Content starts at top, no gap for header
+        } else {
+          // Standard track collapsed: minimal height
+          effectiveHeight = usesHeaderSpace ? headerH : collapsedTrackMinHeight;
+          safeContentHeight = 0;
+          safeContentTop = usesHeaderSpace ? currentY + headerH : currentY;
+        }
+      } else {
+        // Open state: full height with header space
+        effectiveHeight = usesHeaderSpace ? headerH + (track.height || 0) : (track.height || 0);
+        safeContentHeight = track.height || 0;
+        safeContentTop = usesHeaderSpace ? currentY + headerH : currentY;
+      }
       
       // Validate all values are numbers
       if (isNaN(currentY) || isNaN(effectiveHeight) || isNaN(safeContentTop) || isNaN(safeContentHeight)) {

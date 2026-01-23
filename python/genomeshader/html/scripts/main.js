@@ -8,8 +8,10 @@ function renderSmartTrack(trackId) {
   
   const layout = getTrackLayout();
   const trackLayout = layout.find(l => l.track.id === trackId);
-  if (!trackLayout || trackLayout.track.collapsed) {
-    // Hide container and clear renderer instances if collapsed
+  
+  // If hidden, don't render at all
+  // Default to false for backwards compatibility
+  if (!trackLayout || track.hidden === true) {
     const renderer = state.smartTrackRenderers.get(trackId);
     if (renderer) {
       // Hide the container
@@ -31,6 +33,9 @@ function renderSmartTrack(trackId) {
     return;
   }
   
+  // If collapsed (closed state), still render but with limited height
+  // (We'll handle the height in the layout calculation)
+  
   const renderer = state.smartTrackRenderers.get(trackId);
   if (!renderer) return;
   
@@ -49,7 +54,7 @@ function renderSmartTrack(trackId) {
     container.style.width = "100%";
     container.style.height = `${trackLayout.contentHeight}px`;
   }
-  // Ensure container is visible when track is expanded (we know it's not collapsed here)
+  // Ensure container is visible (we know it's not hidden here, but may be collapsed/closed)
   container.style.display = "block";
   
   if (!canvas || !webgpuCanvas) return;
@@ -61,10 +66,13 @@ function renderSmartTrack(trackId) {
   // Calculate total content height if reads are loaded (horizontal mode)
   let totalContentHeight = H;
   if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
-    const top = 8;
+    // When collapsed (closed state), use minimal padding; otherwise use normal padding
+    const top = track.collapsed ? 2 : 8;
+    const bottom = track.collapsed ? 2 : 12;
     const rowH = 18;
-    const totalRows = track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1;
-    totalContentHeight = top + totalRows * rowH + 12;
+    // If collapsed (closed state), limit to single row; otherwise use all rows
+    const maxRows = track.collapsed ? 1 : (track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1);
+    totalContentHeight = top + maxRows * rowH + bottom;
     
     // Set up grid layout for scrolling
     // CRITICAL: Set explicit height FIRST (this overrides the CSS height: 100%)
@@ -230,6 +238,8 @@ function renderSmartTrack(trackId) {
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
       const maxCols = Math.floor((W - left - 12) / colW);
       for (const read of track.readsLayout.reads) {
+        // When collapsed (closed state), only show first row/column
+        if (track.collapsed && read.row !== 0) continue;
         if (read.row >= maxCols) continue;
         if (read.end < state.startBp || read.start > state.endBp) continue;
         
@@ -340,12 +350,15 @@ function renderSmartTrack(trackId) {
     ctx.globalAlpha = 1.0;
   } else {
     // Horizontal mode
-    const top = 8;
+    // When collapsed (closed state), use minimal padding; otherwise use normal padding
+    const top = track.collapsed ? 2 : 8;
+    const bottom = track.collapsed ? 2 : 12;
     const rowH = 18;
     
-    let totalRows = Math.floor((H - top - 12) / rowH);
+    let totalRows = Math.floor((H - top - bottom) / rowH);
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
-      totalRows = track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1;
+      // When collapsed (closed state), limit to single row
+      totalRows = track.collapsed ? 1 : (track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1);
       const scrollTop = container.scrollTop || 0;
       
       const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
@@ -365,7 +378,7 @@ function renderSmartTrack(trackId) {
     } else {
       ctx.strokeStyle = grid;
       ctx.lineWidth = 1;
-      const rows = Math.floor((H - top - 12) / rowH);
+      const rows = Math.floor((H - top - bottom) / rowH);
       for (let i=0; i<rows; i++) {
         const y = top + i*rowH + rowH/2;
         ctx.beginPath();
@@ -379,6 +392,8 @@ function renderSmartTrack(trackId) {
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
       const scrollTop = container.scrollTop || 0;
       for (const read of track.readsLayout.reads) {
+        // When collapsed (closed state), only show first row
+        if (track.collapsed && read.row !== 0) continue;
         if (read.end < state.startBp || read.start > state.endBp) continue;
         
         let color, alpha;
@@ -694,28 +709,54 @@ function renderTrackControls() {
       container.style.width = `${item.width}px`;
       container.style.top = "0";
       // For standard tracks, only cover controls area (24px width in vertical mode)
-      container.style.height = isStandardTrack ? "24px" : "100%";
+      // But if collapsed, cover the full width to include collapsed indicator
+      container.style.height = isStandardTrack && !track.collapsed ? "24px" : "100%";
     } else {
       container.style.position = "absolute";
       container.style.left = "0";
       container.style.right = "0";
       container.style.top = `${item.top}px`;
       // For standard tracks, only cover controls area (24px height in horizontal mode)
-      container.style.height = isStandardTrack ? "24px" : `${item.height}px`;
+      // But if collapsed, cover the full height to include collapsed indicator
+      container.style.height = isStandardTrack && !track.collapsed ? "24px" : `${item.height}px`;
     }
     container.dataset.trackId = track.id;
 
     const controls = document.createElement("div");
     controls.className = "track-controls";
     controls.dataset.trackId = track.id;
+    
+    // Check if this is a Smart track (declare once for this track)
+    const isSmartTrack = track.id.startsWith("smart-track-");
+    
+    // Hide controls when track is hidden or collapsed (for standard tracks only)
+    // Smart tracks show controls even when collapsed (closed state)
+    // Default hidden to false for backwards compatibility
+    if ((track.hidden === true) || (!isSmartTrack && track.collapsed)) {
+      controls.style.display = "none";
+      controls.style.pointerEvents = "none";
+    }
 
     const collapseBtn = document.createElement("button");
     collapseBtn.className = "track-collapse-btn";
-    if (isVertical) {
-      collapseBtn.textContent = track.collapsed ? "▲" : "▶";
+    
+    if (isSmartTrack) {
+      // For Smart Tracks: collapsed = closed (single read), !collapsed = open (full height)
+      if (isVertical) {
+        collapseBtn.textContent = track.collapsed ? "▲" : "▶";
+      } else {
+        collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      }
+      collapseBtn.title = track.collapsed ? "Expand to full height" : "Collapse to single read";
     } else {
-      collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      // For standard tracks: use existing behavior
+      if (isVertical) {
+        collapseBtn.textContent = track.collapsed ? "▲" : "▶";
+      } else {
+        collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      }
     }
+    
     collapseBtn.type = "button";
     collapseBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -728,10 +769,8 @@ function renderTrackControls() {
     const label = document.createElement("div");
     label.className = "track-label";
     
-    // Check if this is a Smart track
-    const isSmartTrack = track.id.startsWith("smart-track-");
-    
     // Declare labelInput and labelSpacer at higher scope so they're accessible in both Smart Track blocks
+    // (isSmartTrack is already declared above)
     let labelInput = null;
     let labelSpacer = null;
     
@@ -788,51 +827,13 @@ function renderTrackControls() {
       const saveLabel = () => {
         const newLabel = labelInput.value.trim() || track.label;
         
-        // Rebuild label with sample name
+        // Rebuild label
         label.innerHTML = "";
         // Wrap main text in a span so only the text content is clickable (not the entire flex area)
         const labelTextSpan = document.createElement("span");
         labelTextSpan.textContent = newLabel;
         labelTextSpan.className = "smart-track-label-text";
         label.appendChild(labelTextSpan);
-        
-        // Add sample name in parentheses with smaller font if available
-        if (track.sampleId) {
-          const sampleNameSpan = document.createElement("span");
-          sampleNameSpan.textContent = ` (${track.sampleId})`;
-          sampleNameSpan.style.fontSize = "10px";
-          sampleNameSpan.style.fontWeight = "400";
-          sampleNameSpan.style.color = "var(--muted2)";
-          sampleNameSpan.style.marginLeft = "4px";
-          label.appendChild(sampleNameSpan);
-        } else if (track.bamUrls && track.bamUrls.length > 0) {
-          // Fallback to BAM basenames if sampleId not available
-          const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
-          
-          let displayPath;
-          if (isInlineMode) {
-            // In inline mode: show only basename(s)
-            if (track.bamUrls.length === 1) {
-              displayPath = getBasename(track.bamUrls[0]);
-            } else {
-              displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
-            }
-          } else {
-            // In overlay mode: show full path(s) with truncation if needed
-            const bamPath = track.bamUrls.length === 1 
-              ? track.bamUrls[0] 
-              : track.bamUrls.join(", ");
-            displayPath = truncatePath(bamPath, 80);
-          }
-          
-          const pathSpan = document.createElement("span");
-          pathSpan.textContent = ` (${displayPath})`;
-          pathSpan.style.fontSize = "10px";
-          pathSpan.style.fontWeight = "400";
-          pathSpan.style.color = "var(--muted2)";
-          pathSpan.style.marginLeft = "4px";
-          label.appendChild(pathSpan);
-        }
         
         label.style.display = ""; // Show label again
         labelSpacer.style.display = "none"; // Hide spacer (label is visible)
@@ -852,51 +853,13 @@ function renderTrackControls() {
           e.preventDefault();
           labelInput.value = track.label;
           
-          // Rebuild label with sample name
+          // Rebuild label
           label.innerHTML = "";
           // Wrap main text in a span so only the text content is clickable (not the entire flex area)
           const labelTextSpan = document.createElement("span");
           labelTextSpan.textContent = track.label;
           labelTextSpan.className = "smart-track-label-text";
           label.appendChild(labelTextSpan);
-          
-          // Add sample name in parentheses with smaller font if available
-          if (track.sampleId) {
-            const sampleNameSpan = document.createElement("span");
-            sampleNameSpan.textContent = ` (${track.sampleId})`;
-            sampleNameSpan.style.fontSize = "10px";
-            sampleNameSpan.style.fontWeight = "400";
-            sampleNameSpan.style.color = "var(--muted2)";
-            sampleNameSpan.style.marginLeft = "4px";
-            label.appendChild(sampleNameSpan);
-          } else if (track.bamUrls && track.bamUrls.length > 0) {
-            // Fallback to BAM basenames if sampleId not available
-            const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
-            
-            let displayPath;
-            if (isInlineMode) {
-              // In inline mode: show only basename(s)
-              if (track.bamUrls.length === 1) {
-                displayPath = getBasename(track.bamUrls[0]);
-              } else {
-                displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
-              }
-            } else {
-              // In overlay mode: show full path(s) with truncation if needed
-              const bamPath = track.bamUrls.length === 1 
-                ? track.bamUrls[0] 
-                : track.bamUrls.join(", ");
-              displayPath = truncatePath(bamPath, 80);
-            }
-            
-            const pathSpan = document.createElement("span");
-            pathSpan.textContent = ` (${displayPath})`;
-            pathSpan.style.fontSize = "10px";
-            pathSpan.style.fontWeight = "400";
-            pathSpan.style.color = "var(--muted2)";
-            pathSpan.style.marginLeft = "4px";
-            label.appendChild(pathSpan);
-          }
           
           label.style.display = ""; // Show label again
           labelSpacer.style.display = "none"; // Hide spacer (label is visible)
@@ -907,51 +870,12 @@ function renderTrackControls() {
         }
       });
       
-      // Create label content with sample name
+      // Create label content
       // Wrap main text in a span so only the text content is clickable (not the entire flex area)
       const labelTextSpan = document.createElement("span");
       labelTextSpan.textContent = track.label;
       labelTextSpan.className = "smart-track-label-text";
       label.appendChild(labelTextSpan);
-      
-      // Add sample name in parentheses with smaller font if available
-      // Use sampleId (VCF sample name from sample mapping) if available
-      if (track.sampleId) {
-        const sampleNameSpan = document.createElement("span");
-        sampleNameSpan.textContent = ` (${track.sampleId})`;
-        sampleNameSpan.style.fontSize = "10px";
-        sampleNameSpan.style.fontWeight = "400";
-        sampleNameSpan.style.color = "var(--muted2)";
-        sampleNameSpan.style.marginLeft = "4px";
-        label.appendChild(sampleNameSpan);
-      } else if (track.bamUrls && track.bamUrls.length > 0) {
-        // Fallback to BAM basenames if sampleId not available
-        const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
-        
-        let displayPath;
-        if (isInlineMode) {
-          // In inline mode: show only basename(s)
-          if (track.bamUrls.length === 1) {
-            displayPath = getBasename(track.bamUrls[0]);
-          } else {
-            displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
-          }
-        } else {
-          // In overlay mode: show full path(s) with truncation if needed
-          const bamPath = track.bamUrls.length === 1 
-            ? track.bamUrls[0] 
-            : track.bamUrls.join(", ");
-          displayPath = truncatePath(bamPath, 80);
-        }
-        
-        const pathSpan = document.createElement("span");
-        pathSpan.textContent = ` (${displayPath})`;
-        pathSpan.style.fontSize = "10px";
-        pathSpan.style.fontWeight = "400";
-        pathSpan.style.color = "var(--muted2)";
-        pathSpan.style.marginLeft = "4px";
-        label.appendChild(pathSpan);
-      }
     } else {
       // For the Locus track, append the extent in parentheses
       if (track.id === "ruler") {
@@ -964,6 +888,35 @@ function renderTrackControls() {
 
     // Add Smart track controls if needed
     if (isSmartTrack) {
+      // Hidden checkbox (show/hide track)
+      const hiddenCheckbox = document.createElement("input");
+      hiddenCheckbox.type = "checkbox";
+      hiddenCheckbox.className = "smart-track-hidden-checkbox";
+      hiddenCheckbox.checked = !track.hidden;
+      hiddenCheckbox.title = track.hidden ? "Show track" : "Hide track";
+      hiddenCheckbox.style.width = "18px";
+      hiddenCheckbox.style.height = "18px";
+      hiddenCheckbox.style.marginLeft = "6px";
+      hiddenCheckbox.style.cursor = "pointer";
+      hiddenCheckbox.style.pointerEvents = "auto";
+      hiddenCheckbox.style.zIndex = "20";
+      hiddenCheckbox.style.verticalAlign = "middle";
+      hiddenCheckbox.style.marginTop = "0";
+      hiddenCheckbox.style.marginBottom = "0";
+      hiddenCheckbox.addEventListener("change", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        track.hidden = !hiddenCheckbox.checked;
+        const trackInArray = state.tracks.find(t => t.id === track.id);
+        if (trackInArray) {
+          trackInArray.hidden = track.hidden;
+        }
+        updateTracksHeight();
+        renderAll();
+        // Update sidebar checkbox to stay in sync
+        renderSmartTracksSidebar();
+      });
+      
       // Reload button (reload current sample)
       const reloadBtn = document.createElement("button");
       reloadBtn.className = "smart-track-reload-btn";
@@ -972,9 +925,9 @@ function renderTrackControls() {
       reloadBtn.type = "button";
       reloadBtn.style.fontSize = "16px";
       reloadBtn.style.padding = "0";
-      reloadBtn.style.border = "none";
-      reloadBtn.style.borderRadius = "0";
-      reloadBtn.style.background = "transparent";
+      reloadBtn.style.border = "1px solid var(--border2)";
+      reloadBtn.style.borderRadius = "4px";
+      reloadBtn.style.background = "var(--panel)";
       reloadBtn.style.color = "var(--muted)";
       reloadBtn.style.cursor = "pointer";
       reloadBtn.style.marginLeft = "6px";
@@ -1000,9 +953,9 @@ function renderTrackControls() {
       shuffleBtn.type = "button";
       shuffleBtn.style.fontSize = "16px";
       shuffleBtn.style.padding = "0";
-      shuffleBtn.style.border = "none";
-      shuffleBtn.style.borderRadius = "0";
-      shuffleBtn.style.background = "transparent";
+      shuffleBtn.style.border = "1px solid var(--border2)";
+      shuffleBtn.style.borderRadius = "4px";
+      shuffleBtn.style.background = "var(--panel)";
       shuffleBtn.style.color = "var(--muted)";
       shuffleBtn.style.cursor = "pointer";
       shuffleBtn.style.marginLeft = "6px";
@@ -1023,14 +976,14 @@ function renderTrackControls() {
       // Close button
       const closeBtn = document.createElement("button");
       closeBtn.className = "smart-track-close-btn";
-      closeBtn.textContent = "×";
+      closeBtn.textContent = "✕";  // Use heavy multiplication x for better centering
       closeBtn.title = "Close track";
       closeBtn.type = "button";
       closeBtn.style.fontSize = "16px";
       closeBtn.style.padding = "0";
-      closeBtn.style.border = "none";
-      closeBtn.style.borderRadius = "0";
-      closeBtn.style.background = "transparent";
+      closeBtn.style.border = "1px solid var(--border2)";
+      closeBtn.style.borderRadius = "4px";
+      closeBtn.style.background = "var(--panel)";
       closeBtn.style.color = "var(--muted)";
       closeBtn.style.cursor = "pointer";
       closeBtn.style.marginLeft = "6px";
@@ -1057,6 +1010,7 @@ function renderTrackControls() {
         controls.appendChild(label);
         controls.appendChild(labelSpacer); // Spacer maintains flex space when label is hidden
         controls.appendChild(labelInput);
+        controls.appendChild(hiddenCheckbox);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -1067,6 +1021,7 @@ function renderTrackControls() {
         controls.appendChild(label);
         controls.appendChild(labelSpacer); // Spacer maintains flex space when label is hidden
         controls.appendChild(labelInput);
+        controls.appendChild(hiddenCheckbox);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -1107,10 +1062,64 @@ function renderTrackControls() {
       resizeHandle.className = "track-resize-handle";
       resizeHandle.dataset.trackId = track.id;
       container.appendChild(resizeHandle);
+    } else if (!isSmartTrack) {
+      // For standard tracks: add collapsed indicator and make clickable
+      // Smart Tracks handle collapsed state differently (closed = single read, still visible)
+      // Mark container as collapsed for CSS styling
+      container.classList.add("track-collapsed");
+      
+      // Store track reference on container for easy access
+      container._trackRef = track;
+      
+      // Expand function - use the track from the container to ensure we have the right reference
+      const expandTrack = (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        // Get track from state to ensure we have the latest reference
+        const trackToExpand = state.tracks.find(t => t.id === track.id);
+        if (trackToExpand && trackToExpand.collapsed) {
+          trackToExpand.collapsed = false;
+          updateTracksHeight();
+          renderAll();
+        }
+      };
+      
+      // Make the entire container clickable when collapsed
+      container.style.cursor = "pointer";
+      container.style.pointerEvents = "auto";
+      container.title = `Click to expand ${track.label}`;
+      // Use capture phase to ensure we catch the click before anything else
+      container.addEventListener("click", expandTrack, true);
+      // Also add mousedown as backup
+      container.addEventListener("mousedown", (e) => {
+        if (e.button === 0) { // Left click only
+          expandTrack(e);
+        }
+      }, true);
+      
+      // Add collapsed track indicator - always visible clickable line/bar
+      const collapsedIndicator = document.createElement("div");
+      collapsedIndicator.className = "track-collapsed-indicator";
+      collapsedIndicator.dataset.trackId = track.id;
+      collapsedIndicator.title = `Click to expand ${track.label}`;
+      collapsedIndicator.style.cursor = "pointer";
+      collapsedIndicator.style.pointerEvents = "auto";
+      collapsedIndicator._trackRef = track; // Store reference on indicator too
+      // Also add click handler directly to indicator as backup
+      collapsedIndicator.addEventListener("click", expandTrack, true);
+      collapsedIndicator.addEventListener("mousedown", (e) => {
+        if (e.button === 0) { // Left click only
+          expandTrack(e);
+        }
+      }, true);
+      container.appendChild(collapsedIndicator);
     }
+    // For Smart Tracks when collapsed (closed state), we don't add collapsed indicator
+    // They still render their content with reduced height (handled in renderSmartTrack)
 
     // Add hover listeners for standard tracks to show/hide controls
-    if (STANDARD_TRACKS.includes(track.id)) {
+    // Skip hover detection for collapsed tracks - they expand on click
+    if (STANDARD_TRACKS.includes(track.id) && !track.collapsed) {
       // Mark container for standard track styling
       container.classList.add("standard-track");
       
@@ -1137,6 +1146,10 @@ function renderTrackControls() {
       
       // Setup after a short delay to ensure DOM is ready
       setTimeout(setupHoverDetection, 100);
+    } else if (STANDARD_TRACKS.includes(track.id) && track.collapsed) {
+      // For collapsed standard tracks, mark as standard but don't set up hover
+      // This ensures proper styling but prevents controls from showing
+      container.classList.add("standard-track");
     }
 
     trackControls.appendChild(container);

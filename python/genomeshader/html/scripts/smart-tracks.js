@@ -98,9 +98,11 @@ function createSmartTrack(strategy, selectedAlleles) {
   // Create track object
   const track = {
     id: trackId,
-    label: `Smart Track ${index + 1}`,
-    collapsed: false,
-    height: 220,
+    label: "Loading...",  // Initial label, will be updated when sample is loaded
+    collapsed: true,  // true = closed (~22px single read) by default, false = open (220px)
+    hidden: false,      // true = not displayed at all
+    height: 220,       // Open height
+    closedHeight: 22,  // Closed height (single read: 2px top + 18px row + 2px bottom, no header gap)
     minHeight: 50,
     strategy: strategy,
     selectedAlleles: new Set(selectedAlleles),
@@ -300,6 +302,9 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         track.sampleId = sampleId || response.sample_id || null;
         track.bamUrls = response.bam_urls || [];
         
+        // Update track label to use sample name
+        updateSmartTrackLabel(track);
+        
         // Set sampleType for carriers_controls strategy if not already set
         if (strategy === 'carriers_controls' && track.sampleId && !track.sampleType) {
           // Determine if this sample is a carrier or control
@@ -494,6 +499,48 @@ function shuffleSmartTrack(trackId) {
   }
 }
 
+// Update Smart track label based on sampleId or BAM URLs
+// Note: This function uses getBasename and truncatePath from main.js,
+// which are available at runtime after all scripts are loaded
+function updateSmartTrackLabel(track) {
+  if (!track) return;
+  
+  let newLabel;
+  
+  // Use sampleId (VCF sample name from sample mapping) if available
+  if (track.sampleId) {
+    newLabel = track.sampleId;
+  } else if (track.bamUrls && track.bamUrls.length > 0) {
+    // Fallback to BAM basenames if sampleId not available
+    // Use functions from main.js (available at runtime)
+    const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
+    
+    if (isInlineMode) {
+      // In inline mode: show only basename(s)
+      if (track.bamUrls.length === 1) {
+        newLabel = getBasename(track.bamUrls[0]);
+      } else {
+        newLabel = track.bamUrls.map(url => getBasename(url)).join(", ");
+      }
+    } else {
+      // In overlay mode: show full path(s) with truncation if needed
+      const bamPath = track.bamUrls.length === 1 
+        ? track.bamUrls[0] 
+        : track.bamUrls.join(", ");
+      newLabel = truncatePath(bamPath, 80);
+    }
+  } else {
+    // Fallback to default label if no sample info available
+    const index = state.smartTracks.findIndex(t => t.id === track.id);
+    newLabel = `Smart Track ${index + 1}`;
+  }
+  
+  // Only update if label actually changed
+  if (track.label !== newLabel) {
+    editSmartTrackLabel(track.id, newLabel);
+  }
+}
+
 // Update Smart track label
 function editSmartTrackLabel(trackId, newLabel) {
   const track = state.smartTracks.find(t => t.id === trackId);
@@ -635,17 +682,38 @@ function renderSmartTracksSidebar() {
     const controls = document.createElement('div');
     controls.className = 'smart-track-item-controls';
     
-    // Checkbox for show/hide
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.className = 'smart-track-item-checkbox';
-    checkbox.checked = !track.collapsed;
-    checkbox.addEventListener('change', (e) => {
+    // Collapse button (controls collapsed/expanded state)
+    const collapseBtn = document.createElement('button');
+    collapseBtn.className = 'smart-track-item-collapse-btn';
+    collapseBtn.type = 'button';
+    // For Smart Tracks: collapsed = closed (single read), !collapsed = open (full height)
+    collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+    collapseBtn.title = track.collapsed ? "Expand to full height" : "Collapse to single read";
+    collapseBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      track.collapsed = !checkbox.checked;
+      track.collapsed = !track.collapsed;
       const trackInArray = state.tracks.find(t => t.id === track.id);
       if (trackInArray) {
         trackInArray.collapsed = track.collapsed;
+      }
+      updateTracksHeight();
+      renderAll();
+      // Re-render sidebar to update button state
+      renderSmartTracksSidebar();
+    });
+    
+    // Checkbox for show/hide (controls hidden state)
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'smart-track-item-checkbox';
+    // Default to false (not hidden) if undefined for backwards compatibility
+    checkbox.checked = !(track.hidden === true);
+    checkbox.addEventListener('change', (e) => {
+      e.stopPropagation();
+      track.hidden = !checkbox.checked;
+      const trackInArray = state.tracks.find(t => t.id === track.id);
+      if (trackInArray) {
+        trackInArray.hidden = track.hidden;
       }
       updateTracksHeight();
       renderAll();
@@ -679,6 +747,7 @@ function renderSmartTracksSidebar() {
       renderSmartTracksSidebar();
     });
     
+    controls.appendChild(collapseBtn);
     controls.appendChild(checkbox);
     controls.appendChild(refreshBtn);
     controls.appendChild(shuffleBtn);

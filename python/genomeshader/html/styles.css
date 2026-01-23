@@ -221,7 +221,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .sidebar-right:hover::before {
   background: var(--blue);
-  width: 6px;
+  width: 4px;
   box-shadow: 0 0 8px rgba(120, 180, 255, 0.4);
 }
 .app.sidebar-right-collapsed .sidebar-right {
@@ -297,31 +297,115 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   align-items: center;
   gap: 4px;
 }
-.smart-track-item-checkbox {
-  width: 16px;
-  height: 16px;
+.smart-track-item-collapse-btn {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
-  accent-color: var(--blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  padding: 0;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color 0.15s ease, background 0.15s ease;
 }
+
+.smart-track-item-collapse-btn:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+.smart-track-item-collapse-btn:active {
+  transform: scale(0.95);
+}
+
+.smart-track-item-checkbox {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  cursor: pointer;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--panel);
+  transition: border-color 0.15s ease, background 0.15s ease;
+  margin: 0;
+  padding: 0;
+  flex-shrink: 0;
+  /* Ensure checkbox aligns with other buttons in flex container */
+  align-self: center;
+  /* Override default checkbox appearance */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  /* Remove any default browser styling that might affect alignment */
+  box-sizing: border-box;
+  /* Match button display for consistent alignment */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Nudge up slightly to match icon baseline */
+  transform: translateY(-2px);
+  position: relative;
+}
+
+/* Custom checkmark for checked state */
+.smart-track-item-checkbox::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--text);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.smart-track-item-checkbox:checked::after {
+  opacity: 1;
+}
+
+.smart-track-item-checkbox:hover {
+  border-color: var(--border);
+  background: var(--panel2);
+}
+
+.smart-track-item-checkbox:checked {
+  border-color: var(--border);
+}
+
 .smart-track-item-btn {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 1px solid var(--border2);
   background: var(--panel);
-  color: var(--text);
+  color: var(--muted);
   border-radius: 4px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
-  transition: all 0.15s ease;
+  font-size: 16px;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   flex-shrink: 0;
+  line-height: 1;
 }
 .smart-track-item-btn:hover {
   background: var(--panel2);
   border-color: var(--border);
+  color: var(--text);
+}
+
+.smart-track-item-btn.close:hover {
+  background: white;
 }
 .smart-track-item-btn:active {
   transform: scale(0.95);
@@ -333,9 +417,20 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   content: "⇄";
 }
 .smart-track-item-btn.close::before {
-  content: "×";
+  content: "✕";
   font-size: 14px;
   line-height: 1;
+}
+
+/* Close button specific styling for better "x" centering in sidebar */
+.smart-track-item-btn.close {
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: white;
 }
 
 .sidebarHeader {
@@ -732,19 +827,20 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 /* Track controls */
 .track-controls {
   position: absolute;
-  left: 0;
+  left: 12px;
   top: 0;
-  right: 0;
   height: 24px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0 12px;
+  padding: 0 10px;
   background: var(--panel);
-  border-bottom: 1px solid var(--border2);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
   z-index: 10;
   cursor: move;
   transition: opacity 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 /* Standard track controls: no transition for instant show/hide */
 .track-control-container.standard-track .track-controls {
@@ -760,19 +856,46 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   pointer-events: auto;
   background: var(--panel); /* Ensure opaque background when visible */
 }
+/* Collapsed tracks: always hide controls, don't show on hover */
+.track-control-container.track-collapsed .track-controls {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  display: none !important;
+}
+/* Prevent hover effects from showing controls on collapsed tracks */
+.track-control-container.track-collapsed.track-hovered .track-controls {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  display: none !important;
+}
 /* Smart track controls should allow button clicks */
 .track-controls button,
 .track-controls select {
   pointer-events: auto;
   z-index: 20;
 }
-.main.vertical .track-controls {
-  top: auto;
+.track-controls:hover { 
+  background: var(--panel2); 
+  border-color: var(--border);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
-.track-controls:hover { background: var(--panel2); }
 /* Smart track controls: keep opaque on hover like standard tracks */
 .track-controls[data-track-id^="smart-track-"]:hover {
   background: var(--panel);
+  border-color: var(--border);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+/* Smart Track controls: shrink pillbox to show only label, expand on hover */
+.track-controls[data-track-id^="smart-track-"] {
+  max-width: 120px; /* Collapse button (18px) + label (90px) + padding (12px) */
+  overflow: hidden;
+  transition: max-width 0.2s ease;
+  white-space: nowrap;
+}
+
+.track-controls[data-track-id^="smart-track-"]:hover {
+  max-width: 300px; /* Enough for all controls */
 }
 
 .track-collapse-btn {
@@ -794,31 +917,36 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .track-collapse-btn:active { transform: scale(0.95); }
 
 .track-label {
-  flex: 1;
+  flex: 0 1 auto;
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
   user-select: none;
   pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
 }
 /* Smart track labels are clickable */
 .track-controls[data-track-id^="smart-track-"] .track-label {
-  flex: 1; /* Keep flex: 1 to push buttons to the right */
+  flex: 0 0 90px; /* Fixed width: don't grow or shrink */
   display: flex; /* Make label a flex container */
   align-items: center; /* Vertically center content */
   pointer-events: none; /* Label itself doesn't capture clicks */
   cursor: default; /* Default cursor for non-clickable area */
+  width: 90px; /* Fixed width for alignment */
+  min-width: 90px; /* Ensure minimum width */
+  max-width: 90px; /* Ensure maximum width */
 }
 /* Only the text content (spans) inside Smart track labels are clickable */
 .track-controls[data-track-id^="smart-track-"] .track-label > * {
   pointer-events: auto;
   cursor: text;
-}
-/* Add a spacer after content to fill remaining space (non-clickable) */
-.track-controls[data-track-id^="smart-track-"] .track-label::after {
-  content: "";
-  flex: 1;
-  pointer-events: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%; /* Take full width of parent */
 }
 .track-controls[data-track-id^="smart-track-"] .track-label:hover > * {
   color: var(--text);
@@ -833,33 +961,33 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   align-items: flex-start;
 }
 .main.vertical .track-controls {
-  width: 24px;
-  height: 100%;
+  width: auto;
+  height: auto;
+  min-height: 24px;
   flex-direction: column;
-  padding: 0;
-  border-bottom: none;
-  border-right: 1px solid var(--border2);
+  padding: 6px 4px;
+  border: 1px solid var(--border2);
+  border-radius: 12px;
   position: relative;
   left: 0;
+  top: auto;
+  bottom: 0;
   right: auto;
   transform: none;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 .main.vertical .track-label {
   order: 1;
   white-space: nowrap;
   writing-mode: horizontal-tb;
   margin: 0;
-  position: absolute;
-  bottom: 0;
-  left: 50%;
-  transform-origin: left center;
+  position: relative;
+  transform: none;
   flex-shrink: 0;
-  /* Default transform to prevent flash of unstyled content */
-  transform: rotate(-90deg) translateX(12px) translateY(0.0px);
 }
 .main.vertical .track-collapse-btn {
   align-self: center;
@@ -914,13 +1042,13 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .smart-track-close-btn {
   font-size: 16px;
   padding: 0;
-  border: none;
-  border-radius: 0;
-  background: transparent;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--panel);
   color: var(--muted);
   cursor: pointer;
   outline: none;
-  transition: color 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   width: 18px;
   height: 18px;
   display: flex;
@@ -928,19 +1056,83 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   justify-content: center;
   line-height: 1;
 }
+
+/* Smart Track checkbox - style to match other buttons */
+.smart-track-hidden-checkbox {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--panel);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  margin: 0;
+  padding: 0;
+  flex-shrink: 0;
+  /* Ensure checkbox aligns with other buttons */
+  display: block;
+  position: relative;
+  /* Override default checkbox appearance */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  box-sizing: border-box;
+}
+
+/* Custom checkmark for checked state */
+.smart-track-hidden-checkbox::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--text);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.smart-track-hidden-checkbox:checked::after {
+  opacity: 1;
+}
+
+.smart-track-hidden-checkbox:hover {
+  border-color: var(--border);
+  background: var(--panel2);
+}
+
+.smart-track-hidden-checkbox:checked {
+  border-color: var(--border);
+}
 .smart-track-reload-btn:hover,
 .smart-track-shuffle-btn:hover {
   color: var(--text);
+  border-color: var(--border);
+  background: var(--panel2);
 }
+
 .smart-track-close-btn:hover {
   color: var(--text);
+  border-color: var(--border);
+  background: white;
 }
 .smart-track-reload-btn:active,
-.smart-track-shuffle-btn:active {
+.smart-track-shuffle-btn:active,
+.smart-track-close-btn:active {
   transform: scale(0.95);
 }
-.smart-track-close-btn:active {
-  opacity: 0.7;
+
+/* Close button specific styling for better "x" centering */
+.smart-track-close-btn {
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: white;
 }
 
 .smart-track-container {
@@ -1054,6 +1246,18 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .track-control-container.standard-track.track-hovered {
   pointer-events: auto;
 }
+/* Collapsed tracks: always enable pointer events for the entire container */
+.track-control-container.track-collapsed {
+  pointer-events: auto !important;
+  cursor: pointer;
+}
+/* Ensure collapsed indicator is clickable, but controls should not block */
+.track-control-container.track-collapsed .track-collapsed-indicator {
+  pointer-events: auto;
+}
+.track-control-container.track-collapsed .track-controls {
+  pointer-events: none !important;
+}
 .track-control-container .track-controls {
   pointer-events: auto; /* Controls can be clicked */
 }
@@ -1078,6 +1282,47 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .track-control-container.track-dragging .track-controls {
   border: 2px solid var(--accent);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Collapsed track indicator - always visible line/bar */
+.track-collapsed-indicator {
+  position: absolute;
+  background: var(--border2);
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 25;
+  transition: background-color 0.2s ease;
+}
+/* Horizontal mode: collapsed indicator is a horizontal line at the bottom */
+.main:not(.vertical) .track-collapsed-indicator {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 8px;
+  border-top: 1px solid var(--border);
+}
+/* Vertical mode: collapsed indicator is a vertical line on the right */
+.main.vertical .track-collapsed-indicator {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  border-left: 1px solid var(--border);
+}
+/* Make the entire collapsed container area show hover feedback */
+.track-control-container.track-collapsed:hover {
+  background: rgba(120, 180, 255, 0.05);
+}
+.track-control-container.track-collapsed:hover .track-collapsed-indicator {
+  background: var(--blue);
+  opacity: 0.6;
+}
+.track-control-container.track-collapsed:active {
+  background: rgba(120, 180, 255, 0.1);
+}
+.track-control-container.track-collapsed:active .track-collapsed-indicator {
+  background: var(--blue);
+  opacity: 0.8;
 }
 
 /* Drop indicator */
