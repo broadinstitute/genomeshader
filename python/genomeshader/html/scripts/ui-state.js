@@ -165,6 +165,7 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
 
 const main = byId(root, "main");
 const tracksSvg = byId(root, "tracksSvg");
+const tracksContainer = byId(root, "tracksContainer");
 const flow = byId(root, "flow");
 const flowCanvas = byId(root, "flowCanvas");
 const flowOverlay = byId(root, "flowOverlay");
@@ -273,6 +274,12 @@ function rectH(el) {
 }
 
 function tracksWidthPx() { 
+  if (tracksContainer) {
+    const w = tracksContainer.getBoundingClientRect().width;
+    if (!isNaN(w) && w > 0) {
+      return w;
+    }
+  }
   if (!tracksSvg) return 0;
   const w = tracksSvg.getBoundingClientRect().width;
   return isNaN(w) || w <= 0 ? 0 : w;
@@ -459,6 +466,12 @@ function yGenome(bp) {
 }
 
 function tracksHeightPx() {
+  if (tracksContainer) {
+    const h = tracksContainer.getBoundingClientRect().height;
+    if (!isNaN(h) && h > 0) {
+      return h;
+    }
+  }
   if (!tracksSvg) return 0;
   const h = tracksSvg.getBoundingClientRect().height;
   return isNaN(h) || h <= 0 ? 0 : h;

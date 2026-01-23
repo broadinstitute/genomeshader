@@ -60,8 +60,25 @@ function renderSmartTrack(trackId) {
   if (!canvas || !webgpuCanvas) return;
   
   const dpr = window.devicePixelRatio || 1;
-  const W = isVertical ? trackLayout.contentHeight : trackLayout.contentWidth;
-  let H = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+  
+  // Get the actual rendered width of the container (not the layout width)
+  // This is critical for overlay mode where the container width may differ from layout
+  const containerRect = container.getBoundingClientRect();
+  const actualContainerWidth = containerRect.width;
+  const actualContainerHeight = containerRect.height;
+  
+  // Use actual container dimensions for both canvas sizing AND coordinate calculations
+  // This ensures consistency between inline and overlay modes
+  const W = isVertical ? actualContainerHeight : actualContainerWidth;
+  let H = isVertical ? actualContainerWidth : actualContainerHeight;
+  
+  // Fallback to layout dimensions if container has no dimensions yet
+  if (W <= 0 || isNaN(W)) {
+    const layoutW = isVertical ? trackLayout.contentHeight : trackLayout.contentWidth;
+    const layoutH = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+    // Use layout dimensions as fallback
+    return; // Skip rendering if no valid dimensions
+  }
   
   // Calculate total content height if reads are loaded (horizontal mode)
   let totalContentHeight = H;
@@ -104,6 +121,10 @@ function renderSmartTrack(trackId) {
     canvas.width = W * dpr;
     
     // Set WebGPU canvas dimensions to match regular canvas
+    // Track previous dimensions BEFORE updating
+    const prevWebGpuWidth = webgpuCanvas.width;
+    const prevWebGpuHeight = webgpuCanvas.height;
+    
     webgpuCanvas.width = W * dpr;
     webgpuCanvas.height = totalContentHeight * dpr;
     webgpuCanvas.style.height = totalContentHeight + 'px';
@@ -114,7 +135,8 @@ function renderSmartTrack(trackId) {
     webgpuCanvas.style.inset = 'auto';
     
     // Notify WebGPU core of resize if dimensions changed
-    if (webgpuCore && (webgpuCanvas.width !== W * dpr || webgpuCanvas.height !== totalContentHeight * dpr)) {
+    // Compare against PREVIOUS dimensions, not current (which we just set)
+    if (webgpuCore && (prevWebGpuWidth !== W * dpr || prevWebGpuHeight !== totalContentHeight * dpr)) {
       webgpuCore.handleResize();
     }
     
@@ -367,7 +389,7 @@ function renderSmartTrack(trackId) {
       ctx.strokeStyle = grid;
       ctx.lineWidth = 1;
       for (let i = startRow; i < endRow; i++) {
-        const y = top + i*rowH + rowH/2 - scrollTop;
+        const y = top + i*rowH + rowH/2;
         if (y >= -rowH && y <= totalContentHeight + rowH) {
           ctx.beginPath();
           ctx.moveTo(16, y);
@@ -391,94 +413,160 @@ function renderSmartTrack(trackId) {
     // Draw reads if available
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
       const scrollTop = container.scrollTop || 0;
+      
+      // Calculate visible row range for expanded state
+      const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
+      const endRow = Math.min(totalRows, Math.ceil((scrollTop + H) / rowH) + 1);
+      
+      // When collapsed, build overlap map for CIGAR elements only
+      let elementOverlapMap = new Map(); // Map<genomicPosition, count>
+      
+      if (track.collapsed) {
+        // Build overlap map for CIGAR elements
+        for (const read of track.readsLayout.reads) {
+          if (read.end < state.startBp || read.start > state.endBp) continue;
+          
+          // Track CIGAR element overlaps
+          if (read.elements && read.elements.length > 0) {
+            for (const elem of read.elements) {
+              if (elem.start < state.startBp || elem.start > state.endBp) continue;
+              
+              if (elem.type === 2) { // Insertion - single position
+                elementOverlapMap.set(elem.start, (elementOverlapMap.get(elem.start) || 0) + 1);
+              } else if (elem.type === 3) { // Deletion - span from start to end
+                for (let bp = elem.start; bp <= elem.end; bp++) {
+                  if (bp >= state.startBp && bp <= state.endBp) {
+                    elementOverlapMap.set(bp, (elementOverlapMap.get(bp) || 0) + 1);
+                  }
+                }
+              } else if (elem.type === 1) { // Diff - single position
+                elementOverlapMap.set(elem.start, (elementOverlapMap.get(elem.start) || 0) + 1);
+              }
+            }
+          }
+        }
+        
+        // Draw single pseudo-read spanning from first read start to last read end
+        let minStart = Infinity;
+        let maxEnd = -Infinity;
+        for (const read of track.readsLayout.reads) {
+          if (read.end < state.startBp || read.start > state.endBp) continue;
+          minStart = Math.min(minStart, read.start);
+          maxEnd = Math.max(maxEnd, read.end);
+        }
+        
+        if (minStart !== Infinity && maxEnd !== -Infinity) {
+          // Use simple linear transformation (self-consistent, no dependency on global state.pxPerBp)
+          const leftPad = 16, rightPad = 16;
+          const innerW = W - leftPad - rightPad;
+          const span = state.endBp - state.startBp;
+          const x1 = leftPad + ((minStart - state.startBp) / span) * innerW;
+          const x2 = leftPad + ((maxEnd - state.startBp) / span) * innerW;
+          
+          const y = top + 0 * rowH + 2;
+          const h = rowH - 4;
+          const x = x1;
+          const w = Math.max(4, x2 - x1);
+          
+          if (y + h >= 0 && y <= totalContentHeight) {
+            // Draw pseudo-read with neutral gray color and high translucency
+            const color = [150, 150, 150];
+            const alpha = 0.15;
+            
+            if (instancedRenderer && webgpuSupported) {
+              instancedRenderer.addRect(
+                x * dpr, y * dpr,
+                w * dpr, h * dpr,
+                [color[0]/255, color[1]/255, color[2]/255, alpha]
+              );
+            } else {
+              ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+              ctx.beginPath();
+              roundRect(ctx, x, y, w, h, 3);
+              ctx.fill();
+            }
+          }
+        }
+      } else {
+        // Expanded state: Render individual reads
+        for (const read of track.readsLayout.reads) {
+          // Only show reads in visible rows
+          if (read.row < startRow || read.row > endRow) continue;
+          if (read.end < state.startBp || read.start > state.endBp) continue;
+          
+          let color, baseAlpha;
+          if (read.haplotype === 1) {
+            color = [255, 100, 100];
+            baseAlpha = 0.5;
+          } else if (read.haplotype === 2) {
+            color = [100, 100, 255];
+            baseAlpha = 0.5;
+          } else {
+            color = [150, 150, 150];
+            baseAlpha = 0.35;
+          }
+          if (!read.isForward) baseAlpha *= 0.7;
+          
+          // Use simple linear transformation (self-consistent, no dependency on global state.pxPerBp)
+          const leftPad = 16, rightPad = 16;
+          const innerW = W - leftPad - rightPad;
+          const span = state.endBp - state.startBp;
+          const x1 = leftPad + ((read.start - state.startBp) / span) * innerW;
+          const x2 = leftPad + ((read.end - state.startBp) / span) * innerW;
+          
+          const y = top + read.row * rowH + 2;
+          const h = rowH - 4;
+          
+          // Calculate drawing position and width
+          const x = x1;
+          const w = Math.max(4, x2 - x1);
+          
+          if (y + h < 0 || y > totalContentHeight) continue;
+          
+          if (instancedRenderer && webgpuSupported) {
+            instancedRenderer.addRect(
+              x * dpr, y * dpr,
+              w * dpr, h * dpr,
+              [color[0]/255, color[1]/255, color[2]/255, baseAlpha]
+            );
+          } else {
+            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${baseAlpha})`;
+            ctx.beginPath();
+            roundRect(ctx, x, y, w, h, 3);
+            ctx.fill();
+          }
+          
+          // Draw direction arrow
+          ctx.fillStyle = `rgba(255,255,255,0.6)`;
+          const arrowSize = Math.min(6, w * 0.2);
+          if (read.isForward) {
+            // Arrow pointing right
+            ctx.beginPath();
+            ctx.moveTo(x + w - arrowSize - 2, y + h/2 - arrowSize/2);
+            ctx.lineTo(x + w - 2, y + h/2);
+            ctx.lineTo(x + w - arrowSize - 2, y + h/2 + arrowSize/2);
+            ctx.fill();
+          } else {
+            // Arrow pointing left
+            ctx.beginPath();
+            ctx.moveTo(x + arrowSize + 2, y + h/2 - arrowSize/2);
+            ctx.lineTo(x + 2, y + h/2);
+            ctx.lineTo(x + arrowSize + 2, y + h/2 + arrowSize/2);
+            ctx.fill();
+          }
+        }
+      }
+      
+      // Third pass: Render CIGAR elements (front layer) - drawn after reads
       for (const read of track.readsLayout.reads) {
-        // When collapsed (closed state), only show first row
-        if (track.collapsed && read.row !== 0) continue;
+        // When collapsed, process all reads; when expanded, only visible rows
+        if (!track.collapsed && (read.row < startRow || read.row > endRow)) continue;
         if (read.end < state.startBp || read.start > state.endBp) continue;
         
-        let color, alpha;
-        if (read.haplotype === 1) {
-          color = [255, 100, 100];
-          alpha = 0.5;
-        } else if (read.haplotype === 2) {
-          color = [100, 100, 255];
-          alpha = 0.5;
-        } else {
-          color = [150, 150, 150];
-          alpha = 0.35;
-        }
-        if (!read.isForward) alpha *= 0.7;
-        
-        // Calculate genomic positions - xGenomeCanonical clamps to visible region,
-        // but we need to handle reads that extend beyond the visible bounds correctly
-        const leftPad = 16;
-        const rightPad = 16;
-        const innerW = W - leftPad - rightPad;
-        
-        // Calculate unclamped positions to get accurate width for reads extending off-screen
-        const span = state.endBp - state.startBp;
-        const totalGapPx = getTotalInsertionGapWidth();
-        const totalGapBp = totalGapPx / state.pxPerBp;
-        const effectiveSpan = span + totalGapBp;
-        
-        // Calculate x1 and x2 without clamping
-        const accumulatedGapPx1 = getAccumulatedGapPx(read.start, state.expandedInsertions);
-        const bpOffset1 = read.start - state.startBp;
-        const accumulatedGapBp1 = accumulatedGapPx1 / state.pxPerBp;
-        const normalizedPos1 = (bpOffset1 + accumulatedGapBp1) / effectiveSpan;
-        const x1Unclamped = leftPad + normalizedPos1 * innerW;
-        
-        const accumulatedGapPx2 = getAccumulatedGapPx(read.end, state.expandedInsertions);
-        const bpOffset2 = read.end - state.startBp;
-        const accumulatedGapBp2 = accumulatedGapPx2 / state.pxPerBp;
-        const normalizedPos2 = (bpOffset2 + accumulatedGapBp2) / effectiveSpan;
-        const x2Unclamped = leftPad + normalizedPos2 * innerW;
-        
-        // Now clamp to visible bounds for drawing
-        const x1 = Math.max(leftPad, Math.min(x1Unclamped, leftPad + innerW));
-        const x2 = Math.max(leftPad, Math.min(x2Unclamped, leftPad + innerW));
-        
-        const y = top + read.row * rowH + 2 - scrollTop;
+        // When collapsed, draw all elements at the same y position (row 0)
+        // When expanded, use the read's assigned row
+        const y = track.collapsed ? (top + 0 * rowH + 2) : (top + read.row * rowH + 2);
         const h = rowH - 4;
-        
-        // Calculate drawing position and width from clamped values
-        // This ensures reads that extend off-screen are drawn correctly
-        const x = x1;
-        const w = Math.max(4, x2 - x1);
-        
-        if (y + h < 0 || y > totalContentHeight) continue;
-        
-        if (instancedRenderer && webgpuSupported) {
-          instancedRenderer.addRect(
-            x * dpr, y * dpr,
-            w * dpr, h * dpr,
-            [color[0]/255, color[1]/255, color[2]/255, alpha]
-          );
-        } else {
-          ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
-          ctx.beginPath();
-          roundRect(ctx, x, y, w, h, 3);
-          ctx.fill();
-        }
-        
-        // Draw direction arrow
-        ctx.fillStyle = `rgba(255,255,255,0.6)`;
-        const arrowSize = Math.min(6, w * 0.2);
-        if (read.isForward) {
-          // Arrow pointing right
-          ctx.beginPath();
-          ctx.moveTo(x + w - arrowSize - 2, y + h/2 - arrowSize/2);
-          ctx.lineTo(x + w - 2, y + h/2);
-          ctx.lineTo(x + w - arrowSize - 2, y + h/2 + arrowSize/2);
-          ctx.fill();
-        } else {
-          // Arrow pointing left
-          ctx.beginPath();
-          ctx.moveTo(x + arrowSize + 2, y + h/2 - arrowSize/2);
-          ctx.lineTo(x + 2, y + h/2);
-          ctx.lineTo(x + arrowSize + 2, y + h/2 + arrowSize/2);
-          ctx.fill();
-        }
         
         // Draw insertion/deletion/diff markers (horizontal mode)
         if (read.elements && read.elements.length > 0) {
@@ -488,12 +576,44 @@ function renderSmartTrack(trackId) {
             const ey = y;
             const eh = h;
             
+            // Calculate base alpha for CIGAR elements (front layer - higher base opacity)
+            let baseElemAlpha;
+            if (elem.type === 2) { // Insertion
+              baseElemAlpha = track.collapsed ? 0.25 : 0.9;
+            } else if (elem.type === 3) { // Deletion
+              baseElemAlpha = track.collapsed ? 0.2 : 0.4;
+            } else { // Diff
+              baseElemAlpha = track.collapsed ? 0.25 : 1.0;
+            }
+            
+            // Accumulate opacity based on overlap when collapsed
+            let elemAlpha = baseElemAlpha;
+            if (track.collapsed) {
+              let overlap = 0;
+              if (elem.type === 2 || elem.type === 1) { // Insertion or Diff - single position
+                overlap = elementOverlapMap.get(elem.start) || 0;
+              } else if (elem.type === 3) { // Deletion - span
+                // Average overlap across deletion span
+                let totalOverlap = 0;
+                let count = 0;
+                for (let bp = elem.start; bp <= elem.end; bp++) {
+                  if (bp >= state.startBp && bp <= state.endBp) {
+                    totalOverlap += (elementOverlapMap.get(bp) || 0);
+                    count++;
+                  }
+                }
+                overlap = count > 0 ? totalOverlap / count : 0;
+              }
+              // Accumulate opacity: min(0.8, baseAlpha * (1 + overlapCount * 0.25))
+              elemAlpha = Math.min(0.8, baseElemAlpha * (1 + (overlap - 1) * 0.25));
+            }
+            
             if (elem.type === 2) { // Insertion - purple tick
-              ctx.fillStyle = 'rgba(200,100,255,0.9)';
+              ctx.fillStyle = `rgba(200,100,255,${elemAlpha})`;
               ctx.fillRect(ex - 1, ey, 2, eh);
             } else if (elem.type === 3) { // Deletion - black gap
               const ex2 = xGenomeCanonical(elem.end, W);
-              ctx.fillStyle = 'rgba(0,0,0,0.4)';
+              ctx.fillStyle = `rgba(0,0,0,${elemAlpha})`;
               ctx.fillRect(ex, ey + eh/4, ex2 - ex, eh/2);
             } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
               // Calculate actual base width
@@ -506,9 +626,14 @@ function renderSmartTrack(trackId) {
               const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
               const bgColor = nucColors[nuc] || '#9C27B0';
               
+              // Convert hex color to rgba with alpha
+              const r = parseInt(bgColor.slice(1, 3), 16);
+              const g = parseInt(bgColor.slice(3, 5), 16);
+              const b = parseInt(bgColor.slice(5, 7), 16);
+              
               // Draw background
               const drawWidth = Math.max(2, actualBaseWidth);
-              ctx.fillStyle = bgColor;
+              ctx.fillStyle = `rgba(${r},${g},${b},${elemAlpha})`;
               ctx.fillRect(ex, ey + 1, drawWidth, eh - 2);
               
               // Draw nucleotide letter only if there's enough space
@@ -3596,12 +3721,18 @@ function panByPixels(dxPx, dyPx) {
 }
 
 function anchorBpFromClientX(clientX) {
-  const rect = tracksSvg.getBoundingClientRect();
+  const rectSource = (typeof tracksContainer !== 'undefined' && tracksContainer)
+    ? tracksContainer
+    : tracksSvg;
+  const rect = rectSource.getBoundingClientRect();
   const xInPane = clientX - rect.left;
   return bpFromXGenome(xInPane, tracksWidthPx());
 }
 function anchorBpFromClientY(clientY) {
-  const rect = tracksSvg.getBoundingClientRect();
+  const rectSource = (typeof tracksContainer !== 'undefined' && tracksContainer)
+    ? tracksContainer
+    : tracksSvg;
+  const rect = rectSource.getBoundingClientRect();
   const yInPane = clientY - rect.top;
   return bpFromYGenome(yInPane, tracksHeightPx());
 }
