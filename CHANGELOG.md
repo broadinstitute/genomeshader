@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0](https://github.com/broadinstitute/genomeshader/compare/v0.2.0...v0.3.0) (2026-01-23)
+
+
+### Features
+
+* add a right sidebar that allows control over Smart Track properties ([78d1173](https://github.com/broadinstitute/genomeshader/commit/78d11732617ea0f47ca027f9ad0851c9b0f2bbcf))
+* added a right sidebar for smart track control ([3d6287d](https://github.com/broadinstitute/genomeshader/commit/3d6287d2b7748a1d1048ec81ad711bbae2e099a8))
+* collapsing smart tracks paints a one-line read summary ([2577802](https://github.com/broadinstitute/genomeshader/commit/2577802399d1a5f312ff94a49538f2c5b781228d))
+* implemented best evidence and case + control sample selections ([c882ca4](https://github.com/broadinstitute/genomeshader/commit/c882ca4f6535bfc2f334c9b6fb845d66d755b7e1))
+* load samples by entering their ID into the 'Load sample by ID' box ([ac4074f](https://github.com/broadinstitute/genomeshader/commit/ac4074f28f464fad098d7d3a6604ba80cb73c1e3))
+
+
+### Bug Fixes
+
+* allow user to rename track from the sidebar ([a897e36](https://github.com/broadinstitute/genomeshader/commit/a897e36f7e2bef8c76778f62c8567120214bc0e9))
+* fixed issue with read painting inconsistencies in overlay mode ([7f5a048](https://github.com/broadinstitute/genomeshader/commit/7f5a048da5afdde6578fa7c468aa40bd78fef71f))
+* implemented compare branches sample selection ([a36aad7](https://github.com/broadinstitute/genomeshader/commit/a36aad7ec8f61021edfef236844489f2b9d8348b))
+* implemented the most diverse sample selection strategy ([c7c518d](https://github.com/broadinstitute/genomeshader/commit/c7c518d8c478135cc21f39eae16686653c4a8177))
+* improved sample menu display ([f6e9f20](https://github.com/broadinstitute/genomeshader/commit/f6e9f20f3e3a5d6b1dd495b9b2e7a8a23ebcc68e))
+* minor improvements to sidebar display ([c0b4aab](https://github.com/broadinstitute/genomeshader/commit/c0b4aab4673cc8f888199c1dab7d8d6a2b5b2e80))
+
 ## [0.2.0](https://github.com/broadinstitute/genomeshader/compare/v0.1.91...v0.2.0) (2026-01-22)
 
 
