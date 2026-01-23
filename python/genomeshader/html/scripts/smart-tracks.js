@@ -98,13 +98,16 @@ function createSmartTrack(strategy, selectedAlleles) {
   // Create track object
   const track = {
     id: trackId,
-    label: `Smart Track ${index + 1}`,
-    collapsed: false,
-    height: 220,
+    label: "Loading...",  // Initial label, will be updated when sample is loaded
+    collapsed: true,  // true = closed (~22px single read) by default, false = open (220px)
+    hidden: false,      // true = not displayed at all
+    height: 220,       // Open height
+    closedHeight: 22,  // Closed height (single read: 2px top + 18px row + 2px bottom, no header gap)
     minHeight: 50,
     strategy: strategy,
     selectedAlleles: new Set(selectedAlleles),
     sampleId: null,
+    sampleType: null, // 'carrier' or 'control' (for carriers_controls strategy)
     readsData: null,
     readsLayout: null,
     loading: false,
@@ -125,6 +128,7 @@ function createSmartTrack(strategy, selectedAlleles) {
   // Update layout
   updateTracksHeight();
   renderAll();
+  renderSmartTracksSidebar();
   
   return track;
 }
@@ -297,6 +301,21 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
         track.bamUrls = response.bam_urls || [];
+        
+        // Update track label to use sample name
+        updateSmartTrackLabel(track);
+        
+        // Set sampleType for carriers_controls strategy if not already set
+        if (strategy === 'carriers_controls' && track.sampleId && !track.sampleType) {
+          // Determine if this sample is a carrier or control
+          const combineMode = state.sampleSelection.combineMode;
+          const carriers = window.computeCandidateSamplesForAlleles 
+            ? window.computeCandidateSamplesForAlleles(selectedAlleles, combineMode)
+            : [];
+          const carriersSet = new Set(carriers);
+          track.sampleType = carriersSet.has(track.sampleId) ? 'carrier' : 'control';
+        }
+        
         renderAll();
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
@@ -333,6 +352,7 @@ function removeSmartTrack(trackId) {
   // Update layout and re-render
   updateTracksHeight();
   renderAll();
+  renderSmartTracksSidebar();
 }
 
 // Update Smart track strategy and reload
@@ -370,6 +390,59 @@ function shuffleSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
   
+  // For carriers_controls strategy, preserve the sample type (carrier vs control)
+  if (track.strategy === 'carriers_controls' && track.sampleType) {
+    // Get all available samples
+    const allSamples = state.sampleSelection.allSampleIds || [];
+    if (allSamples.length === 0) {
+      console.warn(`No samples available for shuffling track ${trackId}`);
+      return;
+    }
+    
+    // Compute candidates for this track's alleles
+    const combineMode = state.sampleSelection.combineMode;
+    const carriers = window.computeCandidateSamplesForAlleles 
+      ? window.computeCandidateSamplesForAlleles(track.selectedAlleles, combineMode)
+      : [];
+    
+    // Compute controls: samples that are NOT carriers
+    const carriersSet = new Set(carriers);
+    const controls = allSamples.filter(sampleId => !carriersSet.has(sampleId));
+    
+    // Get candidates based on sample type
+    let typeCandidates = [];
+    if (track.sampleType === 'carrier') {
+      typeCandidates = carriers.filter(s => s !== track.sampleId);
+    } else if (track.sampleType === 'control') {
+      typeCandidates = controls.filter(s => s !== track.sampleId);
+    }
+    
+    if (typeCandidates.length === 0) {
+      // If no other samples of this type, allow the same sample or fallback
+      if (track.sampleType === 'carrier' && carriers.length > 0) {
+        typeCandidates = carriers;
+      } else if (track.sampleType === 'control' && controls.length > 0) {
+        typeCandidates = controls;
+      } else {
+        console.warn(`No ${track.sampleType} samples available for shuffling track ${trackId}`);
+        return;
+      }
+    }
+    
+    // Pick a random sample from the type-specific candidates
+    const randomIndex = Math.floor(Math.random() * typeCandidates.length);
+    const sampleId = typeCandidates[randomIndex];
+    
+    // Fetch reads with new sample (preserving the sampleType)
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
+      .catch(err => {
+        console.error(`Failed to shuffle track ${trackId}:`, err);
+      });
+    
+    return;
+  }
+  
+  // For other strategies, use the original logic
   // Compute candidate samples for this track's specific alleles
   // Use the track's strategy and the current combine mode
   const combineMode = state.sampleSelection.combineMode;
@@ -426,6 +499,48 @@ function shuffleSmartTrack(trackId) {
   }
 }
 
+// Update Smart track label based on sampleId or BAM URLs
+// Note: This function uses getBasename and truncatePath from main.js,
+// which are available at runtime after all scripts are loaded
+function updateSmartTrackLabel(track) {
+  if (!track) return;
+  
+  let newLabel;
+  
+  // Use sampleId (VCF sample name from sample mapping) if available
+  if (track.sampleId) {
+    newLabel = track.sampleId;
+  } else if (track.bamUrls && track.bamUrls.length > 0) {
+    // Fallback to BAM basenames if sampleId not available
+    // Use functions from main.js (available at runtime)
+    const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
+    
+    if (isInlineMode) {
+      // In inline mode: show only basename(s)
+      if (track.bamUrls.length === 1) {
+        newLabel = getBasename(track.bamUrls[0]);
+      } else {
+        newLabel = track.bamUrls.map(url => getBasename(url)).join(", ");
+      }
+    } else {
+      // In overlay mode: show full path(s) with truncation if needed
+      const bamPath = track.bamUrls.length === 1 
+        ? track.bamUrls[0] 
+        : track.bamUrls.join(", ");
+      newLabel = truncatePath(bamPath, 80);
+    }
+  } else {
+    // Fallback to default label if no sample info available
+    const index = state.smartTracks.findIndex(t => t.id === track.id);
+    newLabel = `Smart Track ${index + 1}`;
+  }
+  
+  // Only update if label actually changed
+  if (track.label !== newLabel) {
+    editSmartTrackLabel(track.id, newLabel);
+  }
+}
+
 // Update Smart track label
 function editSmartTrackLabel(trackId, newLabel) {
   const track = state.smartTracks.find(t => t.id === trackId);
@@ -439,4 +554,384 @@ function editSmartTrackLabel(trackId, newLabel) {
   
   track.label = newLabel;
   renderAll();
+  renderSmartTracksSidebar();
+}
+
+// Right sidebar for Smart Tracks
+// -----------------------------
+
+// Render Smart Tracks list in right sidebar
+function renderSmartTracksSidebar() {
+  const smartTracksList = document.getElementById('smartTracksList');
+  if (!smartTracksList) return;
+  
+  smartTracksList.innerHTML = '';
+
+  const applySmartTrackOrderFromDom = () => {
+    const items = Array.from(smartTracksList.querySelectorAll('.smart-track-item'));
+    const newOrder = items.map(item => item.dataset.trackId);
+    if (newOrder.length === 0) return;
+
+    const currentOrder = state.tracks
+      .filter(t => t.id.startsWith('smart-track-'))
+      .map(t => t.id);
+
+    if (JSON.stringify(currentOrder) === JSON.stringify(newOrder)) {
+      return;
+    }
+
+    const smartTrackMap = new Map();
+    state.smartTracks.forEach(track => {
+      smartTrackMap.set(track.id, track);
+    });
+
+    const orderedSmartTracks = newOrder
+      .map(id => smartTrackMap.get(id))
+      .filter(track => track);
+
+    state.smartTracks = orderedSmartTracks;
+
+    const allTracks = [...state.tracks];
+    const reorderedTracks = [];
+    let smartTracksInserted = false;
+
+    for (const track of allTracks) {
+      if (!track.id.startsWith('smart-track-')) {
+        reorderedTracks.push(track);
+        if (track.id === 'flow' && !smartTracksInserted) {
+          reorderedTracks.push(...orderedSmartTracks);
+          smartTracksInserted = true;
+        }
+      }
+    }
+
+    if (!smartTracksInserted) {
+      reorderedTracks.push(...orderedSmartTracks);
+    }
+
+    state.tracks = reorderedTracks;
+    updateTracksHeight();
+    renderAll();
+    setTimeout(() => {
+      renderSmartTracksSidebar();
+    }, 0);
+  };
+  
+  // Get Smart Tracks in the order they appear in state.tracks
+  const smartTracksInOrder = state.tracks
+    .filter(t => t.id.startsWith('smart-track-'))
+    .map(t => state.smartTracks.find(st => st.id === t.id))
+    .filter(st => st !== undefined);
+  
+  if (smartTracksInOrder.length === 0) {
+    const emptyMsg = document.createElement('div');
+    emptyMsg.style.padding = '9px 10px';
+    emptyMsg.style.fontSize = '11px';
+    emptyMsg.style.color = 'var(--muted)';
+    emptyMsg.textContent = 'No Smart Tracks';
+    smartTracksList.appendChild(emptyMsg);
+    return;
+  }
+  
+  // Remove existing event listeners if any (to avoid duplicates)
+  const existingDropHandler = smartTracksList._dropHandler;
+  if (existingDropHandler) {
+    smartTracksList.removeEventListener('drop', existingDropHandler);
+    smartTracksList.removeEventListener('dragover', smartTracksList._dragoverHandler);
+  }
+  
+  // Add drop handler to the container to catch all drops
+  const handleContainerDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Remove dragging class from all items
+    document.querySelectorAll('.smart-track-item.dragging').forEach(item => {
+      item.classList.remove('dragging');
+    });
+
+    applySmartTrackOrderFromDom();
+  };
+  
+  const handleContainerDragover = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+  
+  // Store handlers to allow removal later
+  smartTracksList._dropHandler = handleContainerDrop;
+  smartTracksList._dragoverHandler = handleContainerDragover;
+  
+  // Add drop handler to container
+  smartTracksList.addEventListener('dragover', handleContainerDragover);
+  smartTracksList.addEventListener('drop', handleContainerDrop);
+  
+  smartTracksInOrder.forEach((track, index) => {
+    const item = document.createElement('div');
+    item.className = 'smart-track-item';
+    item.dataset.trackId = track.id;
+    item.draggable = true;
+    
+    const header = document.createElement('div');
+    header.className = 'smart-track-item-header';
+    
+    const label = document.createElement('div');
+    label.className = 'smart-track-item-label';
+    label.textContent = track.label;
+    
+    const controls = document.createElement('div');
+    controls.className = 'smart-track-item-controls';
+    
+    // Collapse button (controls collapsed/expanded state)
+    const collapseBtn = document.createElement('button');
+    collapseBtn.className = 'smart-track-item-collapse-btn';
+    collapseBtn.type = 'button';
+    // For Smart Tracks: collapsed = closed (single read), !collapsed = open (full height)
+    collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+    collapseBtn.title = track.collapsed ? "Expand to full height" : "Collapse to single read";
+    collapseBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track.collapsed = !track.collapsed;
+      const trackInArray = state.tracks.find(t => t.id === track.id);
+      if (trackInArray) {
+        trackInArray.collapsed = track.collapsed;
+      }
+      updateTracksHeight();
+      renderAll();
+      // Re-render sidebar to update button state
+      renderSmartTracksSidebar();
+    });
+    
+    // Checkbox for show/hide (controls hidden state)
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'smart-track-item-checkbox';
+    // Default to false (not hidden) if undefined for backwards compatibility
+    checkbox.checked = !(track.hidden === true);
+    checkbox.addEventListener('change', (e) => {
+      e.stopPropagation();
+      track.hidden = !checkbox.checked;
+      const trackInArray = state.tracks.find(t => t.id === track.id);
+      if (trackInArray) {
+        trackInArray.hidden = track.hidden;
+      }
+      updateTracksHeight();
+      renderAll();
+    });
+    
+    // Refresh button
+    const refreshBtn = document.createElement('button');
+    refreshBtn.className = 'smart-track-item-btn refresh';
+    refreshBtn.title = 'Refresh';
+    refreshBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      reloadSmartTrack(track.id);
+    });
+    
+    // Shuffle button
+    const shuffleBtn = document.createElement('button');
+    shuffleBtn.className = 'smart-track-item-btn shuffle';
+    shuffleBtn.title = 'Shuffle';
+    shuffleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      shuffleSmartTrack(track.id);
+    });
+    
+    // Close button
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'smart-track-item-btn close';
+    closeBtn.title = 'Close';
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeSmartTrack(track.id);
+      renderSmartTracksSidebar();
+    });
+    
+    controls.appendChild(collapseBtn);
+    controls.appendChild(checkbox);
+    controls.appendChild(refreshBtn);
+    controls.appendChild(shuffleBtn);
+    controls.appendChild(closeBtn);
+    
+    header.appendChild(label);
+    header.appendChild(controls);
+    
+    item.appendChild(header);
+    
+    // Drag and drop handlers
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', track.id);
+      item.classList.add('dragging');
+    });
+    
+    item.addEventListener('dragend', (e) => {
+      item.classList.remove('dragging');
+      applySmartTrackOrderFromDom();
+    });
+    
+    item.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      
+      const afterElement = getDragAfterElement(smartTracksList, e.clientY);
+      const dragging = document.querySelector('.smart-track-item.dragging');
+      if (afterElement == null) {
+        smartTracksList.appendChild(dragging);
+      } else {
+        smartTracksList.insertBefore(dragging, afterElement);
+      }
+    });
+    
+    // Drop handler on individual items - just prevent default, container handles the reordering
+    item.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    
+    smartTracksList.appendChild(item);
+  });
+}
+
+// Helper function for drag and drop
+function getDragAfterElement(container, y) {
+  const draggableElements = [...container.querySelectorAll('.smart-track-item:not(.dragging)')];
+  
+  return draggableElements.reduce((closest, child) => {
+    const box = child.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    
+    if (offset < 0 && offset > closest.offset) {
+      return { offset: offset, element: child };
+    } else {
+      return closest;
+    }
+  }, { offset: Number.NEGATIVE_INFINITY }).element;
+}
+
+// Right sidebar collapse/expand
+function getRightSidebarCollapsed() {
+  const stored = localStorage.getItem("genomeshader.rightSidebarCollapsed");
+  // Default to collapsed (true) if not set
+  if (stored === null) {
+    return true;
+  }
+  return stored === "true";
+}
+function setRightSidebarCollapsed(collapsed) {
+  localStorage.setItem("genomeshader.rightSidebarCollapsed", String(collapsed));
+  updateRightSidebarState();
+}
+function updateRightSidebarState() {
+  const collapsed = getRightSidebarCollapsed();
+  const app = document.querySelector('.app');
+  if (!app) {
+    return;
+  }
+  if (collapsed) {
+    app.classList.add("sidebar-right-collapsed");
+  } else {
+    app.classList.remove("sidebar-right-collapsed");
+  }
+  // Trigger resize after CSS transition completes
+  setTimeout(() => {
+    window.dispatchEvent(new Event('resize'));
+  }, 220);
+}
+
+// Initialize right sidebar (closed by default)
+// Wait for DOM to be ready
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeRightSidebar);
+  } else {
+    initializeRightSidebar();
+  }
+}
+
+function initializeRightSidebar() {
+  const app = document.querySelector('.app');
+  if (!app) {
+    // Retry after a short delay if app isn't ready yet
+    setTimeout(initializeRightSidebar, 100);
+    return;
+  }
+  
+  // Initialize state (defaults to collapsed if not set)
+  updateRightSidebarState();
+  
+  // Make right sidebar border clickable
+  const sidebarRight = document.getElementById('sidebarRight');
+  if (sidebarRight) {
+    let autoCloseTimer = null;
+    
+    const handleRightSidebarToggle = (e) => {
+      // Don't intercept clicks on form elements or their containers
+      const target = e.target;
+      if (target.closest('input, button, .smart-track-item')) {
+        return;
+      }
+      
+      const collapsed = getRightSidebarCollapsed();
+      const rect = sidebarRight.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      
+      // Check if click is within 12px of the left edge (or anywhere if collapsed)
+      if (collapsed) {
+        e.preventDefault();
+        e.stopPropagation();
+        setRightSidebarCollapsed(false);
+        // Clear any pending auto-close timer when opening
+        if (autoCloseTimer) {
+          clearTimeout(autoCloseTimer);
+          autoCloseTimer = null;
+        }
+      } else if (clickX <= 12) {
+        e.preventDefault();
+        e.stopPropagation();
+        setRightSidebarCollapsed(true);
+        // Clear any pending auto-close timer when closing manually
+        if (autoCloseTimer) {
+          clearTimeout(autoCloseTimer);
+          autoCloseTimer = null;
+        }
+      }
+    };
+    
+    // Auto-close when mouse leaves sidebar (after 2 seconds)
+    const handleMouseEnter = () => {
+      // Clear any pending auto-close timer when mouse enters
+      if (autoCloseTimer) {
+        clearTimeout(autoCloseTimer);
+        autoCloseTimer = null;
+      }
+    };
+    
+    const handleMouseLeave = () => {
+      // Only auto-close if sidebar is open
+      if (!getRightSidebarCollapsed()) {
+        // Clear any existing timer
+        if (autoCloseTimer) {
+          clearTimeout(autoCloseTimer);
+        }
+        // Set new timer to close after 2 seconds
+        autoCloseTimer = setTimeout(() => {
+          setRightSidebarCollapsed(true);
+          autoCloseTimer = null;
+        }, 2000);
+      }
+    };
+    
+    sidebarRight.addEventListener("click", handleRightSidebarToggle, true);
+    sidebarRight.addEventListener("pointerdown", handleRightSidebarToggle, true);
+    sidebarRight.addEventListener("pointerup", handleRightSidebarToggle, true);
+    sidebarRight.addEventListener("mousedown", handleRightSidebarToggle, true);
+    sidebarRight.addEventListener("mouseenter", handleMouseEnter);
+    sidebarRight.addEventListener("mouseleave", handleMouseLeave);
+    
+    sidebarRight.style.pointerEvents = "auto";
+    
+    // Initial render
+    renderSmartTracksSidebar();
+  }
 }

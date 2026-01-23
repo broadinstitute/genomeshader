@@ -1,4 +1,4 @@
-<div class="app" style="position: relative; display: block;">
+<div class="app sidebar-right-collapsed" style="position: relative; display: block;">
   <div class="sidebar" id="sidebar" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
     <div class="sidebarContent">
     <div style="display: none;">
@@ -20,7 +20,7 @@
 
     <div id="sampleSearchSection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); margin-bottom: 20px;">
       <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;">
-      <div id="sampleSearchResults" style="display: none; margin-top: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel);"></div>
+      <div id="sampleSearchResults" style="display: none; max-height: 200px; overflow-y: auto; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); opacity: 1;"></div>
     </div>
 
     <div class="sidebarHeader" style="margin-top: 20px;">
@@ -38,10 +38,10 @@
         <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;">Strategy</label>
         <select id="sampleStrategy" disabled style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px;">
           <option value="random">Random</option>
-          <option value="best_evidence" disabled>Best evidence</option>
-          <option value="most_diverse" disabled>Most diverse</option>
+          <option value="best_evidence">Best evidence</option>
+          <option value="most_diverse">Most diverse</option>
           <option value="compare_branches" disabled>Compare branches</option>
-          <option value="carriers_controls" disabled>Carriers + controls</option>
+          <option value="carriers_controls">Carriers + controls</option>
         </select>
       </div>
       
@@ -124,5 +124,16 @@
 
     <div class="hud" id="hud"></div>
     <div class="tooltip" id="tooltip"></div>
+  </div>
+
+  <div class="sidebar-right" id="sidebarRight" style="position: absolute; right: 0; top: 0; bottom: 0; width: 12px; z-index: 100; pointer-events: auto;">
+    <div class="sidebarContent">
+      <div class="sidebarHeader" style="margin-top: 20px;">
+        <h3>Smart Tracks</h3>
+      </div>
+      <div id="smartTracksList" style="padding: 0; margin: 0;">
+        <!-- Smart Tracks will be rendered here -->
+      </div>
+    </div>
   </div>
 </div>

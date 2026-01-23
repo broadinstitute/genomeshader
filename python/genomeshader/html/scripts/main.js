@@ -8,8 +8,10 @@ function renderSmartTrack(trackId) {
   
   const layout = getTrackLayout();
   const trackLayout = layout.find(l => l.track.id === trackId);
-  if (!trackLayout || trackLayout.track.collapsed) {
-    // Hide container and clear renderer instances if collapsed
+  
+  // If hidden, don't render at all
+  // Default to false for backwards compatibility
+  if (!trackLayout || track.hidden === true) {
     const renderer = state.smartTrackRenderers.get(trackId);
     if (renderer) {
       // Hide the container
@@ -31,6 +33,9 @@ function renderSmartTrack(trackId) {
     return;
   }
   
+  // If collapsed (closed state), still render but with limited height
+  // (We'll handle the height in the layout calculation)
+  
   const renderer = state.smartTrackRenderers.get(trackId);
   if (!renderer) return;
   
@@ -49,7 +54,7 @@ function renderSmartTrack(trackId) {
     container.style.width = "100%";
     container.style.height = `${trackLayout.contentHeight}px`;
   }
-  // Ensure container is visible when track is expanded (we know it's not collapsed here)
+  // Ensure container is visible (we know it's not hidden here, but may be collapsed/closed)
   container.style.display = "block";
   
   if (!canvas || !webgpuCanvas) return;
@@ -61,10 +66,13 @@ function renderSmartTrack(trackId) {
   // Calculate total content height if reads are loaded (horizontal mode)
   let totalContentHeight = H;
   if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
-    const top = 8;
+    // When collapsed (closed state), use minimal padding; otherwise use normal padding
+    const top = track.collapsed ? 2 : 8;
+    const bottom = track.collapsed ? 2 : 12;
     const rowH = 18;
-    const totalRows = track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1;
-    totalContentHeight = top + totalRows * rowH + 12;
+    // If collapsed (closed state), limit to single row; otherwise use all rows
+    const maxRows = track.collapsed ? 1 : (track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1);
+    totalContentHeight = top + maxRows * rowH + bottom;
     
     // Set up grid layout for scrolling
     // CRITICAL: Set explicit height FIRST (this overrides the CSS height: 100%)
@@ -230,6 +238,8 @@ function renderSmartTrack(trackId) {
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
       const maxCols = Math.floor((W - left - 12) / colW);
       for (const read of track.readsLayout.reads) {
+        // When collapsed (closed state), only show first row/column
+        if (track.collapsed && read.row !== 0) continue;
         if (read.row >= maxCols) continue;
         if (read.end < state.startBp || read.start > state.endBp) continue;
         
@@ -340,12 +350,15 @@ function renderSmartTrack(trackId) {
     ctx.globalAlpha = 1.0;
   } else {
     // Horizontal mode
-    const top = 8;
+    // When collapsed (closed state), use minimal padding; otherwise use normal padding
+    const top = track.collapsed ? 2 : 8;
+    const bottom = track.collapsed ? 2 : 12;
     const rowH = 18;
     
-    let totalRows = Math.floor((H - top - 12) / rowH);
+    let totalRows = Math.floor((H - top - bottom) / rowH);
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
-      totalRows = track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1;
+      // When collapsed (closed state), limit to single row
+      totalRows = track.collapsed ? 1 : (track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1);
       const scrollTop = container.scrollTop || 0;
       
       const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
@@ -365,7 +378,7 @@ function renderSmartTrack(trackId) {
     } else {
       ctx.strokeStyle = grid;
       ctx.lineWidth = 1;
-      const rows = Math.floor((H - top - 12) / rowH);
+      const rows = Math.floor((H - top - bottom) / rowH);
       for (let i=0; i<rows; i++) {
         const y = top + i*rowH + rowH/2;
         ctx.beginPath();
@@ -379,6 +392,8 @@ function renderSmartTrack(trackId) {
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
       const scrollTop = container.scrollTop || 0;
       for (const read of track.readsLayout.reads) {
+        // When collapsed (closed state), only show first row
+        if (track.collapsed && read.row !== 0) continue;
         if (read.end < state.startBp || read.start > state.endBp) continue;
         
         let color, alpha;
@@ -694,28 +709,54 @@ function renderTrackControls() {
       container.style.width = `${item.width}px`;
       container.style.top = "0";
       // For standard tracks, only cover controls area (24px width in vertical mode)
-      container.style.height = isStandardTrack ? "24px" : "100%";
+      // But if collapsed, cover the full width to include collapsed indicator
+      container.style.height = isStandardTrack && !track.collapsed ? "24px" : "100%";
     } else {
       container.style.position = "absolute";
       container.style.left = "0";
       container.style.right = "0";
       container.style.top = `${item.top}px`;
       // For standard tracks, only cover controls area (24px height in horizontal mode)
-      container.style.height = isStandardTrack ? "24px" : `${item.height}px`;
+      // But if collapsed, cover the full height to include collapsed indicator
+      container.style.height = isStandardTrack && !track.collapsed ? "24px" : `${item.height}px`;
     }
     container.dataset.trackId = track.id;
 
     const controls = document.createElement("div");
     controls.className = "track-controls";
     controls.dataset.trackId = track.id;
+    
+    // Check if this is a Smart track (declare once for this track)
+    const isSmartTrack = track.id.startsWith("smart-track-");
+    
+    // Hide controls when track is hidden or collapsed (for standard tracks only)
+    // Smart tracks show controls even when collapsed (closed state)
+    // Default hidden to false for backwards compatibility
+    if ((track.hidden === true) || (!isSmartTrack && track.collapsed)) {
+      controls.style.display = "none";
+      controls.style.pointerEvents = "none";
+    }
 
     const collapseBtn = document.createElement("button");
     collapseBtn.className = "track-collapse-btn";
-    if (isVertical) {
-      collapseBtn.textContent = track.collapsed ? "▲" : "▶";
+    
+    if (isSmartTrack) {
+      // For Smart Tracks: collapsed = closed (single read), !collapsed = open (full height)
+      if (isVertical) {
+        collapseBtn.textContent = track.collapsed ? "▲" : "▶";
+      } else {
+        collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      }
+      collapseBtn.title = track.collapsed ? "Expand to full height" : "Collapse to single read";
     } else {
-      collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      // For standard tracks: use existing behavior
+      if (isVertical) {
+        collapseBtn.textContent = track.collapsed ? "▲" : "▶";
+      } else {
+        collapseBtn.textContent = track.collapsed ? "▶" : "▼";
+      }
     }
+    
     collapseBtn.type = "button";
     collapseBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -728,8 +769,10 @@ function renderTrackControls() {
     const label = document.createElement("div");
     label.className = "track-label";
     
-    // Check if this is a Smart track
-    const isSmartTrack = track.id.startsWith("smart-track-");
+    // Declare labelInput and labelSpacer at higher scope so they're accessible in both Smart Track blocks
+    // (isSmartTrack is already declared above)
+    let labelInput = null;
+    let labelSpacer = null;
     
     if (isSmartTrack) {
       // Make label editable for Smart tracks
@@ -738,7 +781,7 @@ function renderTrackControls() {
       label.title = "Click to edit label";
       
       // Create input field for editing (hidden initially)
-      const labelInput = document.createElement("input");
+      labelInput = document.createElement("input");
       labelInput.type = "text";
       labelInput.className = "smart-track-label-input";
       labelInput.value = track.label;
@@ -754,67 +797,51 @@ function renderTrackControls() {
       labelInput.style.minWidth = "100px";
       labelInput.style.maxWidth = "200px";
       
-      // Click handler to start editing
-      label.addEventListener("click", (e) => {
-        e.stopPropagation();
-        label.style.display = "none";
-        labelInput.style.display = "inline-block";
-        collapseBtn.style.display = "none"; // Hide collapse button during editing
-        labelInput.focus();
-        labelInput.select();
-      });
+      // Create invisible spacer to maintain flex space when label is hidden
+      labelSpacer = document.createElement("span");
+      labelSpacer.className = "smart-track-label-spacer";
+      labelSpacer.style.display = "none"; // Hidden by default (label is visible)
+      labelSpacer.style.flex = "1";
+      labelSpacer.style.minWidth = "0";
+      
+      // Click handler to start editing - attach to the text span, not the label
+      // (The label has pointer-events: none, so we attach to the clickable span)
+      const attachLabelClickHandler = () => {
+        const labelTextSpan = label.querySelector(".smart-track-label-text");
+        if (labelTextSpan) {
+          labelTextSpan.addEventListener("click", (e) => {
+            e.stopPropagation();
+            label.style.display = "none"; // Hide label
+            labelSpacer.style.display = "block"; // Show spacer to maintain flex space
+            labelInput.style.display = "block"; // Show input
+            collapseBtn.style.display = "none"; // Hide collapse button during editing
+            labelInput.focus();
+            labelInput.select();
+          });
+        }
+      };
+      // Attach handler after label content is created
+      setTimeout(attachLabelClickHandler, 0);
       
       // Save on blur or Enter
       const saveLabel = () => {
         const newLabel = labelInput.value.trim() || track.label;
         
-        // Rebuild label with sample name
+        // Rebuild label
         label.innerHTML = "";
-        const labelText = document.createTextNode(newLabel);
-        label.appendChild(labelText);
+        // Wrap main text in a span so only the text content is clickable (not the entire flex area)
+        const labelTextSpan = document.createElement("span");
+        labelTextSpan.textContent = newLabel;
+        labelTextSpan.className = "smart-track-label-text";
+        label.appendChild(labelTextSpan);
         
-        // Add sample name in parentheses with smaller font if available
-        if (track.sampleId) {
-          const sampleNameSpan = document.createElement("span");
-          sampleNameSpan.textContent = ` (${track.sampleId})`;
-          sampleNameSpan.style.fontSize = "10px";
-          sampleNameSpan.style.fontWeight = "400";
-          sampleNameSpan.style.color = "var(--muted2)";
-          sampleNameSpan.style.marginLeft = "4px";
-          label.appendChild(sampleNameSpan);
-        } else if (track.bamUrls && track.bamUrls.length > 0) {
-          // Fallback to BAM basenames if sampleId not available
-          const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
-          
-          let displayPath;
-          if (isInlineMode) {
-            // In inline mode: show only basename(s)
-            if (track.bamUrls.length === 1) {
-              displayPath = getBasename(track.bamUrls[0]);
-            } else {
-              displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
-            }
-          } else {
-            // In overlay mode: show full path(s) with truncation if needed
-            const bamPath = track.bamUrls.length === 1 
-              ? track.bamUrls[0] 
-              : track.bamUrls.join(", ");
-            displayPath = truncatePath(bamPath, 80);
-          }
-          
-          const pathSpan = document.createElement("span");
-          pathSpan.textContent = ` (${displayPath})`;
-          pathSpan.style.fontSize = "10px";
-          pathSpan.style.fontWeight = "400";
-          pathSpan.style.color = "var(--muted2)";
-          pathSpan.style.marginLeft = "4px";
-          label.appendChild(pathSpan);
-        }
-        
-        label.style.display = "";
+        label.style.display = ""; // Show label again
+        labelSpacer.style.display = "none"; // Hide spacer (label is visible)
         labelInput.style.display = "none";
         collapseBtn.style.display = ""; // Show collapse button again
         editSmartTrackLabel(track.id, newLabel);
+        // Reattach click handler after rebuilding label
+        attachLabelClickHandler();
       };
       
       labelInput.addEventListener("blur", saveLabel);
@@ -826,99 +853,29 @@ function renderTrackControls() {
           e.preventDefault();
           labelInput.value = track.label;
           
-          // Rebuild label with sample name
+          // Rebuild label
           label.innerHTML = "";
-          const labelText = document.createTextNode(track.label);
-          label.appendChild(labelText);
+          // Wrap main text in a span so only the text content is clickable (not the entire flex area)
+          const labelTextSpan = document.createElement("span");
+          labelTextSpan.textContent = track.label;
+          labelTextSpan.className = "smart-track-label-text";
+          label.appendChild(labelTextSpan);
           
-          // Add sample name in parentheses with smaller font if available
-          if (track.sampleId) {
-            const sampleNameSpan = document.createElement("span");
-            sampleNameSpan.textContent = ` (${track.sampleId})`;
-            sampleNameSpan.style.fontSize = "10px";
-            sampleNameSpan.style.fontWeight = "400";
-            sampleNameSpan.style.color = "var(--muted2)";
-            sampleNameSpan.style.marginLeft = "4px";
-            label.appendChild(sampleNameSpan);
-          } else if (track.bamUrls && track.bamUrls.length > 0) {
-            // Fallback to BAM basenames if sampleId not available
-            const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
-            
-            let displayPath;
-            if (isInlineMode) {
-              // In inline mode: show only basename(s)
-              if (track.bamUrls.length === 1) {
-                displayPath = getBasename(track.bamUrls[0]);
-              } else {
-                displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
-              }
-            } else {
-              // In overlay mode: show full path(s) with truncation if needed
-              const bamPath = track.bamUrls.length === 1 
-                ? track.bamUrls[0] 
-                : track.bamUrls.join(", ");
-              displayPath = truncatePath(bamPath, 80);
-            }
-            
-            const pathSpan = document.createElement("span");
-            pathSpan.textContent = ` (${displayPath})`;
-            pathSpan.style.fontSize = "10px";
-            pathSpan.style.fontWeight = "400";
-            pathSpan.style.color = "var(--muted2)";
-            pathSpan.style.marginLeft = "4px";
-            label.appendChild(pathSpan);
-          }
-          
-          label.style.display = "";
+          label.style.display = ""; // Show label again
+          labelSpacer.style.display = "none"; // Hide spacer (label is visible)
           labelInput.style.display = "none";
           collapseBtn.style.display = ""; // Show collapse button again
+          // Reattach click handler after rebuilding label
+          attachLabelClickHandler();
         }
       });
       
-      // Create label content with sample name
-      const labelText = document.createTextNode(track.label);
-      label.appendChild(labelText);
-      
-      // Add sample name in parentheses with smaller font if available
-      // Use sampleId (VCF sample name from sample mapping) if available
-      if (track.sampleId) {
-        const sampleNameSpan = document.createElement("span");
-        sampleNameSpan.textContent = ` (${track.sampleId})`;
-        sampleNameSpan.style.fontSize = "10px";
-        sampleNameSpan.style.fontWeight = "400";
-        sampleNameSpan.style.color = "var(--muted2)";
-        sampleNameSpan.style.marginLeft = "4px";
-        label.appendChild(sampleNameSpan);
-      } else if (track.bamUrls && track.bamUrls.length > 0) {
-        // Fallback to BAM basenames if sampleId not available
-        const isInlineMode = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.hostMode === 'inline');
-        
-        let displayPath;
-        if (isInlineMode) {
-          // In inline mode: show only basename(s)
-          if (track.bamUrls.length === 1) {
-            displayPath = getBasename(track.bamUrls[0]);
-          } else {
-            displayPath = track.bamUrls.map(url => getBasename(url)).join(", ");
-          }
-        } else {
-          // In overlay mode: show full path(s) with truncation if needed
-          const bamPath = track.bamUrls.length === 1 
-            ? track.bamUrls[0] 
-            : track.bamUrls.join(", ");
-          displayPath = truncatePath(bamPath, 80);
-        }
-        
-        const pathSpan = document.createElement("span");
-        pathSpan.textContent = ` (${displayPath})`;
-        pathSpan.style.fontSize = "10px";
-        pathSpan.style.fontWeight = "400";
-        pathSpan.style.color = "var(--muted2)";
-        pathSpan.style.marginLeft = "4px";
-        label.appendChild(pathSpan);
-      }
-      
-      controls.appendChild(labelInput);
+      // Create label content
+      // Wrap main text in a span so only the text content is clickable (not the entire flex area)
+      const labelTextSpan = document.createElement("span");
+      labelTextSpan.textContent = track.label;
+      labelTextSpan.className = "smart-track-label-text";
+      label.appendChild(labelTextSpan);
     } else {
       // For the Locus track, append the extent in parentheses
       if (track.id === "ruler") {
@@ -931,6 +888,35 @@ function renderTrackControls() {
 
     // Add Smart track controls if needed
     if (isSmartTrack) {
+      // Hidden checkbox (show/hide track)
+      const hiddenCheckbox = document.createElement("input");
+      hiddenCheckbox.type = "checkbox";
+      hiddenCheckbox.className = "smart-track-hidden-checkbox";
+      hiddenCheckbox.checked = !track.hidden;
+      hiddenCheckbox.title = track.hidden ? "Show track" : "Hide track";
+      hiddenCheckbox.style.width = "18px";
+      hiddenCheckbox.style.height = "18px";
+      hiddenCheckbox.style.marginLeft = "6px";
+      hiddenCheckbox.style.cursor = "pointer";
+      hiddenCheckbox.style.pointerEvents = "auto";
+      hiddenCheckbox.style.zIndex = "20";
+      hiddenCheckbox.style.verticalAlign = "middle";
+      hiddenCheckbox.style.marginTop = "0";
+      hiddenCheckbox.style.marginBottom = "0";
+      hiddenCheckbox.addEventListener("change", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        track.hidden = !hiddenCheckbox.checked;
+        const trackInArray = state.tracks.find(t => t.id === track.id);
+        if (trackInArray) {
+          trackInArray.hidden = track.hidden;
+        }
+        updateTracksHeight();
+        renderAll();
+        // Update sidebar checkbox to stay in sync
+        renderSmartTracksSidebar();
+      });
+      
       // Reload button (reload current sample)
       const reloadBtn = document.createElement("button");
       reloadBtn.className = "smart-track-reload-btn";
@@ -939,9 +925,9 @@ function renderTrackControls() {
       reloadBtn.type = "button";
       reloadBtn.style.fontSize = "16px";
       reloadBtn.style.padding = "0";
-      reloadBtn.style.border = "none";
-      reloadBtn.style.borderRadius = "0";
-      reloadBtn.style.background = "transparent";
+      reloadBtn.style.border = "1px solid var(--border2)";
+      reloadBtn.style.borderRadius = "4px";
+      reloadBtn.style.background = "var(--panel)";
       reloadBtn.style.color = "var(--muted)";
       reloadBtn.style.cursor = "pointer";
       reloadBtn.style.marginLeft = "6px";
@@ -967,9 +953,9 @@ function renderTrackControls() {
       shuffleBtn.type = "button";
       shuffleBtn.style.fontSize = "16px";
       shuffleBtn.style.padding = "0";
-      shuffleBtn.style.border = "none";
-      shuffleBtn.style.borderRadius = "0";
-      shuffleBtn.style.background = "transparent";
+      shuffleBtn.style.border = "1px solid var(--border2)";
+      shuffleBtn.style.borderRadius = "4px";
+      shuffleBtn.style.background = "var(--panel)";
       shuffleBtn.style.color = "var(--muted)";
       shuffleBtn.style.cursor = "pointer";
       shuffleBtn.style.marginLeft = "6px";
@@ -990,14 +976,14 @@ function renderTrackControls() {
       // Close button
       const closeBtn = document.createElement("button");
       closeBtn.className = "smart-track-close-btn";
-      closeBtn.textContent = "×";
+      closeBtn.textContent = "✕";  // Use heavy multiplication x for better centering
       closeBtn.title = "Close track";
       closeBtn.type = "button";
       closeBtn.style.fontSize = "16px";
       closeBtn.style.padding = "0";
-      closeBtn.style.border = "none";
-      closeBtn.style.borderRadius = "0";
-      closeBtn.style.background = "transparent";
+      closeBtn.style.border = "1px solid var(--border2)";
+      closeBtn.style.borderRadius = "4px";
+      closeBtn.style.background = "var(--panel)";
       closeBtn.style.color = "var(--muted)";
       closeBtn.style.cursor = "pointer";
       closeBtn.style.marginLeft = "6px";
@@ -1022,6 +1008,9 @@ function renderTrackControls() {
       // In vertical mode, reverse order: label on top, button on bottom
       if (isVertical) {
         controls.appendChild(label);
+        controls.appendChild(labelSpacer); // Spacer maintains flex space when label is hidden
+        controls.appendChild(labelInput);
+        controls.appendChild(hiddenCheckbox);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -1030,6 +1019,9 @@ function renderTrackControls() {
       } else {
         controls.appendChild(collapseBtn);
         controls.appendChild(label);
+        controls.appendChild(labelSpacer); // Spacer maintains flex space when label is hidden
+        controls.appendChild(labelInput);
+        controls.appendChild(hiddenCheckbox);
         controls.appendChild(reloadBtn);
         controls.appendChild(shuffleBtn);
         controls.appendChild(closeBtn);
@@ -1070,10 +1062,64 @@ function renderTrackControls() {
       resizeHandle.className = "track-resize-handle";
       resizeHandle.dataset.trackId = track.id;
       container.appendChild(resizeHandle);
+    } else if (!isSmartTrack) {
+      // For standard tracks: add collapsed indicator and make clickable
+      // Smart Tracks handle collapsed state differently (closed = single read, still visible)
+      // Mark container as collapsed for CSS styling
+      container.classList.add("track-collapsed");
+      
+      // Store track reference on container for easy access
+      container._trackRef = track;
+      
+      // Expand function - use the track from the container to ensure we have the right reference
+      const expandTrack = (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        // Get track from state to ensure we have the latest reference
+        const trackToExpand = state.tracks.find(t => t.id === track.id);
+        if (trackToExpand && trackToExpand.collapsed) {
+          trackToExpand.collapsed = false;
+          updateTracksHeight();
+          renderAll();
+        }
+      };
+      
+      // Make the entire container clickable when collapsed
+      container.style.cursor = "pointer";
+      container.style.pointerEvents = "auto";
+      container.title = `Click to expand ${track.label}`;
+      // Use capture phase to ensure we catch the click before anything else
+      container.addEventListener("click", expandTrack, true);
+      // Also add mousedown as backup
+      container.addEventListener("mousedown", (e) => {
+        if (e.button === 0) { // Left click only
+          expandTrack(e);
+        }
+      }, true);
+      
+      // Add collapsed track indicator - always visible clickable line/bar
+      const collapsedIndicator = document.createElement("div");
+      collapsedIndicator.className = "track-collapsed-indicator";
+      collapsedIndicator.dataset.trackId = track.id;
+      collapsedIndicator.title = `Click to expand ${track.label}`;
+      collapsedIndicator.style.cursor = "pointer";
+      collapsedIndicator.style.pointerEvents = "auto";
+      collapsedIndicator._trackRef = track; // Store reference on indicator too
+      // Also add click handler directly to indicator as backup
+      collapsedIndicator.addEventListener("click", expandTrack, true);
+      collapsedIndicator.addEventListener("mousedown", (e) => {
+        if (e.button === 0) { // Left click only
+          expandTrack(e);
+        }
+      }, true);
+      container.appendChild(collapsedIndicator);
     }
+    // For Smart Tracks when collapsed (closed state), we don't add collapsed indicator
+    // They still render their content with reduced height (handled in renderSmartTrack)
 
     // Add hover listeners for standard tracks to show/hide controls
-    if (STANDARD_TRACKS.includes(track.id)) {
+    // Skip hover detection for collapsed tracks - they expand on click
+    if (STANDARD_TRACKS.includes(track.id) && !track.collapsed) {
       // Mark container for standard track styling
       container.classList.add("standard-track");
       
@@ -1100,6 +1146,10 @@ function renderTrackControls() {
       
       // Setup after a short delay to ensure DOM is ready
       setTimeout(setupHoverDetection, 100);
+    } else if (STANDARD_TRACKS.includes(track.id) && track.collapsed) {
+      // For collapsed standard tracks, mark as standard but don't set up hover
+      // This ensures proper styling but prevents controls from showing
+      container.classList.add("standard-track");
     }
 
     trackControls.appendChild(container);
@@ -1389,8 +1439,12 @@ function renderAll() {
   renderTrackControls();
   updateFlowAndReadsPosition();
   renderFlowCanvas();
-  // Render all Smart tracks
-  state.smartTracks.forEach(track => {
+  // Render all Smart tracks in the order they appear in state.tracks
+  const smartTracksInOrder = state.tracks
+    .filter(t => t.id.startsWith('smart-track-'))
+    .map(t => state.smartTracks.find(st => st.id === t.id))
+    .filter(st => st !== undefined);
+  smartTracksInOrder.forEach(track => {
     renderSmartTrack(track.id);
   });
   renderHUD();
@@ -2328,6 +2382,21 @@ function setupCanvasHover() {
       Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
     }
     
+    // Also add sample names from sample_mapping (both keys and values)
+    if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.sample_mapping) {
+      const sampleMapping = window.GENOMESHADER_CONFIG.sample_mapping;
+      // Add all keys (VCF sample names)
+      Object.keys(sampleMapping).forEach(sampleId => allSamplesSet.add(sampleId));
+      // Add all values (BAM sample names)
+      Object.values(sampleMapping).forEach(bamSamples => {
+        if (Array.isArray(bamSamples)) {
+          bamSamples.forEach(sampleId => allSamplesSet.add(sampleId));
+        } else if (bamSamples) {
+          allSamplesSet.add(bamSamples);
+        }
+      });
+    }
+    
     // Populate allSampleIds if empty
     if (state.sampleSelection.allSampleIds.length === 0) {
       state.sampleSelection.allSampleIds = Array.from(allSamplesSet).sort();
@@ -2535,9 +2604,209 @@ function setupCanvasHover() {
   // Export for use in smart-tracks.js
   window.computeCandidateSamplesForAlleles = computeCandidateSamplesForAlleles;
   
+  // Helper: Compute evidence score for a sample based on selected alleles
+  // Higher score = stronger evidence
+  // Returns a score (number) - higher is better
+  function computeEvidenceScore(sampleId, selectedAllelesSet, combineMode) {
+    const selectedAlleles = Array.from(selectedAllelesSet);
+    if (selectedAlleles.length === 0) {
+      return 0;
+    }
+    
+    // Parse selected alleles into variant/allele pairs
+    const selectedAllelePairs = [];
+    for (const key of selectedAlleles) {
+      const [variantId, alleleIndexStr] = key.split(':');
+      const alleleIndex = parseInt(alleleIndexStr, 10);
+      
+      const variant = variants.find(v => v.id === variantId);
+      if (!variant) continue;
+      
+      selectedAllelePairs.push({
+        variantId,
+        alleleIndex,
+        variant
+      });
+    }
+    
+    if (selectedAllelePairs.length === 0) {
+      return 0;
+    }
+    
+    let totalScore = 0;
+    let matchingAlleles = 0;
+    
+    if (combineMode === 'AND') {
+      // Sample must have ALL selected alleles
+      // Score based on homozygosity for each allele
+      for (const pair of selectedAllelePairs) {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        const genotype = sampleGenotypes[sampleId];
+        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+        
+        if (!genotype || genotypeIndex === null) {
+          // Missing genotype or no-call allele - penalize heavily
+          return -1000;
+        }
+        
+        if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+          matchingAlleles++;
+          
+          // Score based on homozygosity
+          // Parse genotype to count how many copies of the allele
+          const alleles = genotype.split(/[\/|]/);
+          let alleleCount = 0;
+          for (const allele of alleles) {
+            const alleleStr = allele.trim();
+            if (alleleStr === '.' || alleleStr === '') continue;
+            const idx = parseInt(alleleStr, 10);
+            if (!isNaN(idx) && idx === genotypeIndex) {
+              alleleCount++;
+            }
+          }
+          
+          // Homozygous (2 copies) scores higher than heterozygous (1 copy)
+          // Score: 10 for homozygous, 5 for heterozygous
+          if (alleleCount >= 2) {
+            totalScore += 10; // Homozygous - strongest evidence
+          } else if (alleleCount === 1) {
+            totalScore += 5;  // Heterozygous - good evidence
+          }
+        } else {
+          // Sample doesn't have this required allele - disqualify
+          return -1000;
+        }
+      }
+      
+      // Bonus for having all alleles
+      if (matchingAlleles === selectedAllelePairs.length) {
+        totalScore += 100; // Bonus for complete match
+      }
+    } else {
+      // OR mode: Sample must have ANY of the selected alleles
+      // Score based on number of matching alleles and homozygosity
+      for (const pair of selectedAllelePairs) {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        const genotype = sampleGenotypes[sampleId];
+        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+        
+        if (!genotype || genotypeIndex === null) {
+          continue; // Skip missing genotypes in OR mode
+        }
+        
+        if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+          matchingAlleles++;
+          
+          // Score based on homozygosity
+          const alleles = genotype.split(/[\/|]/);
+          let alleleCount = 0;
+          for (const allele of alleles) {
+            const alleleStr = allele.trim();
+            if (alleleStr === '.' || alleleStr === '') continue;
+            const idx = parseInt(alleleStr, 10);
+            if (!isNaN(idx) && idx === genotypeIndex) {
+              alleleCount++;
+            }
+          }
+          
+          // Homozygous scores higher than heterozygous
+          if (alleleCount >= 2) {
+            totalScore += 10; // Homozygous
+          } else if (alleleCount === 1) {
+            totalScore += 5;  // Heterozygous
+          }
+        }
+      }
+      
+      // Bonus for matching more alleles (in OR mode, more matches = better)
+      totalScore += matchingAlleles * 20;
+    }
+    
+    return totalScore;
+  }
+  
   // Helper: Select samples based on strategy
   // Returns an array of sample IDs to use for creating Smart Tracks
   function selectSamplesForStrategy(strategy, candidates, numSamples) {
+    if (strategy === 'carriers_controls') {
+      // Carriers + controls strategy: select a mix of carriers and controls
+      // Carriers are samples with selected alleles (candidates)
+      // Controls are samples without selected alleles
+      
+      // Get all available samples
+      const allSamples = state.sampleSelection.allSampleIds || [];
+      if (allSamples.length === 0) {
+        // Fallback: if allSampleIds not populated, just use candidates (or empty)
+        if (!candidates || candidates.length === 0) {
+          return [];
+        }
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Compute controls: samples that are NOT in candidates
+      const carriers = candidates || [];
+      const carriersSet = new Set(carriers);
+      const controls = allSamples.filter(sampleId => !carriersSet.has(sampleId));
+      
+      // If no controls available and no carriers, return empty
+      if (controls.length === 0 && carriers.length === 0) {
+        return [];
+      }
+      
+      // If no controls available, fall back to random from carriers
+      if (controls.length === 0) {
+        console.warn('No control samples available (all samples are carriers), falling back to random selection');
+        if (carriers.length === 0) {
+          return [];
+        }
+        return selectSamplesForStrategy('random', carriers, numSamples);
+      }
+      
+      // If no carriers available, just return controls
+      if (carriers.length === 0) {
+        console.warn('No carrier samples available, returning controls only');
+        const selectedSamples = [];
+        const controlsCopy = [...controls];
+        for (let i = 0; i < numSamples && controlsCopy.length > 0; i++) {
+          const randomIndex = Math.floor(Math.random() * controlsCopy.length);
+          selectedSamples.push(controlsCopy[randomIndex]);
+          controlsCopy.splice(randomIndex, 1);
+        }
+        return selectedSamples;
+      }
+      
+      // Split numSamples between carriers and controls
+      // Try to get roughly equal numbers, but favor carriers if odd number
+      const numCarriers = Math.ceil(numSamples / 2);
+      const numControls = Math.floor(numSamples / 2);
+      
+      const selectedSamples = [];
+      
+      // Select carriers (random from candidates)
+      const carriersCopy = [...carriers];
+      for (let i = 0; i < numCarriers && carriersCopy.length > 0; i++) {
+        const randomIndex = Math.floor(Math.random() * carriersCopy.length);
+        selectedSamples.push(carriersCopy[randomIndex]);
+        carriersCopy.splice(randomIndex, 1);
+      }
+      
+      // Select controls (random from controls)
+      const controlsCopy = [...controls];
+      for (let i = 0; i < numControls && controlsCopy.length > 0; i++) {
+        const randomIndex = Math.floor(Math.random() * controlsCopy.length);
+        selectedSamples.push(controlsCopy[randomIndex]);
+        controlsCopy.splice(randomIndex, 1);
+      }
+      
+      // Shuffle the result so carriers and controls are interleaved
+      for (let i = selectedSamples.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [selectedSamples[i], selectedSamples[j]] = [selectedSamples[j], selectedSamples[i]];
+      }
+      
+      return selectedSamples;
+    }
+    
     if (!candidates || candidates.length === 0) {
       return [];
     }
@@ -2559,6 +2828,339 @@ function setupCanvasHover() {
         
         // Remove the selected sample to avoid duplicates (if possible)
         candidatesCopy.splice(randomIndex, 1);
+      }
+      
+      return selectedSamples;
+    } else if (strategy === 'best_evidence') {
+      // Best evidence strategy: select samples with strongest evidence for selected alleles
+      // Get selected alleles and combine mode from state
+      const selectedAlleles = state.selectedAlleles || new Set();
+      const combineMode = state.sampleSelection.combineMode || 'AND';
+      
+      if (selectedAlleles.size === 0) {
+        // No alleles selected, fall back to random
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Score all candidate samples
+      const scoredSamples = candidates.map(sampleId => ({
+        sampleId,
+        score: computeEvidenceScore(sampleId, selectedAlleles, combineMode)
+      }));
+      
+      // Sort by score (descending) - highest score first
+      scoredSamples.sort((a, b) => b.score - a.score);
+      
+      // Filter out samples with negative scores (disqualified)
+      const validSamples = scoredSamples.filter(s => s.score >= 0);
+      
+      if (validSamples.length === 0) {
+        // No valid samples, fall back to random
+        console.warn('No samples with valid evidence found, falling back to random selection');
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Select top N samples
+      const selectedSamples = [];
+      for (let i = 0; i < numSamples && i < validSamples.length; i++) {
+        selectedSamples.push(validSamples[i].sampleId);
+      }
+      
+      // If we need more samples than available, cycle through top samples
+      if (selectedSamples.length < numSamples) {
+        for (let i = selectedSamples.length; i < numSamples; i++) {
+          selectedSamples.push(validSamples[i % validSamples.length].sampleId);
+        }
+      }
+      
+      return selectedSamples;
+    } else if (strategy === 'most_diverse') {
+      // Most diverse strategy: select samples with maximally different genotype profiles
+      // This helps explore the full range of genetic variation in the dataset
+      
+      if (!candidates || candidates.length === 0) {
+        return [];
+      }
+      
+      // If only one sample requested, just return it
+      if (numSamples === 1) {
+        return [candidates[0]];
+      }
+      
+      // Determine which variants to consider
+      const selectedAlleles = state.selectedAlleles || new Set();
+      let variantsToConsider = [];
+      
+      if (selectedAlleles.size > 0) {
+        // If alleles are selected, only consider those variants
+        const variantIds = new Set();
+        for (const key of selectedAlleles) {
+          const [variantId] = key.split(':');
+          variantIds.add(variantId);
+        }
+        variantsToConsider = variants.filter(v => variantIds.has(v.id));
+      } else {
+        // If no alleles selected, consider all variants
+        variantsToConsider = variants;
+      }
+      
+      if (variantsToConsider.length === 0) {
+        // No variants to consider, fall back to random
+        console.warn('No variants available for diversity calculation, falling back to random selection');
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Compute genotype profile for each candidate sample
+      // Profile is a string representing genotypes across all variants
+      function computeGenotypeProfile(sampleId) {
+        const profile = [];
+        for (const variant of variantsToConsider) {
+          const sampleGenotypes = variant.sampleGenotypes || {};
+          const genotype = sampleGenotypes[sampleId];
+          // Normalize genotype: use a canonical representation
+          // Missing genotypes are represented as "."
+          if (!genotype || genotype === './.' || genotype === '.') {
+            profile.push('.');
+          } else {
+            // Normalize: sort alleles for unphased genotypes to ensure consistency
+            const alleles = genotype.split(/[\/|]/).map(a => a.trim());
+            if (alleles.length >= 2) {
+              // Check if phased (contains |) or unphased (contains /)
+              const isPhased = genotype.includes('|');
+              if (isPhased) {
+                // Keep phased order
+                profile.push(alleles.join('|'));
+              } else {
+                // Sort unphased alleles for consistency
+                const sorted = alleles.slice().sort((a, b) => {
+                  const aNum = a === '.' ? -1 : parseInt(a, 10);
+                  const bNum = b === '.' ? -1 : parseInt(b, 10);
+                  return aNum - bNum;
+                });
+                profile.push(sorted.join('/'));
+              }
+            } else {
+              profile.push(genotype);
+            }
+          }
+        }
+        return profile.join('|');
+      }
+      
+      // Compute Hamming distance between two genotype profiles
+      // Profiles are strings with genotype values separated by '|'
+      function profileDistance(profile1, profile2) {
+        const parts1 = profile1.split('|');
+        const parts2 = profile2.split('|');
+        
+        if (parts1.length !== parts2.length) {
+          // Different number of variants - use length difference as penalty
+          return Math.abs(parts1.length - parts2.length) * 10;
+        }
+        
+        let distance = 0;
+        for (let i = 0; i < parts1.length; i++) {
+          if (parts1[i] !== parts2[i]) {
+            distance++;
+          }
+        }
+        return distance;
+      }
+      
+      // Compute minimum distance from a sample to a set of already-selected samples
+      function minDistanceToSet(sampleProfile, selectedProfiles) {
+        if (selectedProfiles.length === 0) {
+          return Infinity; // First sample has infinite distance
+        }
+        
+        let minDist = Infinity;
+        for (const selectedProfile of selectedProfiles) {
+          const dist = profileDistance(sampleProfile, selectedProfile);
+          if (dist < minDist) {
+            minDist = dist;
+          }
+        }
+        return minDist;
+      }
+      
+      // Compute profiles for all candidates
+      const candidateProfiles = new Map();
+      for (const sampleId of candidates) {
+        candidateProfiles.set(sampleId, computeGenotypeProfile(sampleId));
+      }
+      
+      // Greedy algorithm: iteratively select the sample that is most different
+      // from all previously selected samples
+      const selectedSamples = [];
+      const selectedProfiles = [];
+      
+      // Start with a random sample (or first candidate)
+      const firstSample = candidates[Math.floor(Math.random() * candidates.length)];
+      selectedSamples.push(firstSample);
+      selectedProfiles.push(candidateProfiles.get(firstSample));
+      
+      // Select remaining samples
+      const remainingCandidates = candidates.filter(s => s !== firstSample);
+      
+      for (let i = 1; i < numSamples && remainingCandidates.length > 0; i++) {
+        let bestSample = null;
+        let bestDistance = -1;
+        
+        // Find the candidate that maximizes minimum distance to selected samples
+        for (const candidateId of remainingCandidates) {
+          const candidateProfile = candidateProfiles.get(candidateId);
+          const minDist = minDistanceToSet(candidateProfile, selectedProfiles);
+          
+          if (minDist > bestDistance) {
+            bestDistance = minDist;
+            bestSample = candidateId;
+          }
+        }
+        
+        if (bestSample) {
+          selectedSamples.push(bestSample);
+          selectedProfiles.push(candidateProfiles.get(bestSample));
+          // Remove from remaining candidates
+          const index = remainingCandidates.indexOf(bestSample);
+          if (index > -1) {
+            remainingCandidates.splice(index, 1);
+          }
+        } else {
+          // No more diverse samples available, break
+          break;
+        }
+      }
+      
+      // If we still need more samples, fill with remaining candidates
+      if (selectedSamples.length < numSamples && remainingCandidates.length > 0) {
+        for (let i = selectedSamples.length; i < numSamples && remainingCandidates.length > 0; i++) {
+          const randomIndex = Math.floor(Math.random() * remainingCandidates.length);
+          const sample = remainingCandidates.splice(randomIndex, 1)[0];
+          selectedSamples.push(sample);
+        }
+      }
+      
+      return selectedSamples;
+    } else if (strategy === 'compare_branches') {
+      // Compare branches strategy: select samples representing different combinations
+      // of the selected alleles to compare different "branches" of the allele tree
+      
+      if (!candidates || candidates.length === 0) {
+        return [];
+      }
+      
+      const selectedAlleles = state.selectedAlleles || new Set();
+      if (selectedAlleles.size < 2) {
+        // Need at least 2 alleles to compare branches
+        console.warn('Compare branches requires 2+ selected alleles, falling back to random selection');
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Parse selected alleles into variant/allele pairs
+      const selectedAllelePairs = [];
+      for (const key of selectedAlleles) {
+        const [variantId, alleleIndexStr] = key.split(':');
+        const alleleIndex = parseInt(alleleIndexStr, 10);
+        
+        const variant = variants.find(v => v.id === variantId);
+        if (!variant) continue;
+        
+        selectedAllelePairs.push({
+          variantId,
+          alleleIndex,
+          variant
+        });
+      }
+      
+      if (selectedAllelePairs.length < 2) {
+        console.warn('Compare branches requires 2+ valid alleles, falling back to random selection');
+        return selectSamplesForStrategy('random', candidates, numSamples);
+      }
+      
+      // Compute which alleles each sample has
+      // For each sample, create a "branch signature" representing which selected alleles it carries
+      function computeBranchSignature(sampleId) {
+        const signature = [];
+        for (const pair of selectedAllelePairs) {
+          const sampleGenotypes = pair.variant.sampleGenotypes || {};
+          const genotype = sampleGenotypes[sampleId];
+          const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
+          
+          if (genotypeIndex !== null && hasAlleleInGenotype(genotype, genotypeIndex)) {
+            signature.push(1); // Sample has this allele
+          } else {
+            signature.push(0); // Sample doesn't have this allele
+          }
+        }
+        return signature.join(''); // Binary string like "101" means has allele 0, not 1, has 2
+      }
+      
+      // Group samples by their branch signature
+      const branchGroups = new Map(); // Map<signature, sampleIds[]>
+      for (const sampleId of candidates) {
+        const signature = computeBranchSignature(sampleId);
+        if (!branchGroups.has(signature)) {
+          branchGroups.set(signature, []);
+        }
+        branchGroups.get(signature).push(sampleId);
+      }
+      
+      // Sort branch groups by signature (to get consistent ordering)
+      // Prefer groups with more unique allele combinations
+      const sortedBranches = Array.from(branchGroups.entries()).sort((a, b) => {
+        // Count how many alleles each branch has
+        const aCount = (a[0].match(/1/g) || []).length;
+        const bCount = (b[0].match(/1/g) || []).length;
+        
+        // Prefer branches with different allele counts (more diverse)
+        if (aCount !== bCount) {
+          return bCount - aCount; // Higher count first
+        }
+        
+        // If same count, prefer lexicographically different signatures
+        return a[0].localeCompare(b[0]);
+      });
+      
+      // Select samples from different branches
+      const selectedSamples = [];
+      const usedBranches = new Set();
+      
+      // First pass: try to get one sample from each unique branch
+      for (const [signature, sampleIds] of sortedBranches) {
+        if (selectedSamples.length >= numSamples) break;
+        if (usedBranches.has(signature)) continue;
+        
+        // Pick a random sample from this branch
+        const randomIndex = Math.floor(Math.random() * sampleIds.length);
+        selectedSamples.push(sampleIds[randomIndex]);
+        usedBranches.add(signature);
+      }
+      
+      // Second pass: if we need more samples, cycle through branches
+      if (selectedSamples.length < numSamples) {
+        let branchIndex = 0;
+        while (selectedSamples.length < numSamples && sortedBranches.length > 0) {
+          const [signature, sampleIds] = sortedBranches[branchIndex % sortedBranches.length];
+          
+          // Pick a different sample from this branch if possible
+          const availableSamples = sampleIds.filter(s => !selectedSamples.includes(s));
+          if (availableSamples.length > 0) {
+            const randomIndex = Math.floor(Math.random() * availableSamples.length);
+            selectedSamples.push(availableSamples[randomIndex]);
+          } else if (sampleIds.length > 0) {
+            // All samples from this branch already used, allow reuse
+            const randomIndex = Math.floor(Math.random() * sampleIds.length);
+            selectedSamples.push(sampleIds[randomIndex]);
+          }
+          
+          branchIndex++;
+        }
+      }
+      
+      // Shuffle to mix branches (optional, but makes comparison more interesting)
+      for (let i = selectedSamples.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [selectedSamples[i], selectedSamples[j]] = [selectedSamples[j], selectedSamples[i]];
       }
       
       return selectedSamples;
@@ -2622,8 +3224,7 @@ function setupCanvasHover() {
           resultEl.className = 'sampleSearchResult';
           resultEl.textContent = sampleId;
           resultEl.addEventListener('click', () => {
-            // TODO: Load reads for this sample
-            console.log('Load sample:', sampleId);
+            loadSmartTrackForSample(sampleId);
             searchInput.value = '';
             resultsEl.style.display = 'none';
           });
@@ -2644,12 +3245,57 @@ function setupCanvasHover() {
     // Handle Enter key
     searchInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
-        const firstResult = resultsEl.querySelector('.sampleSearchResult');
-        if (firstResult) {
-          firstResult.click();
+        e.preventDefault();
+        const query = searchInput.value.trim();
+        if (query.length > 0) {
+          // Check if there's a matching result
+          const firstResult = resultsEl.querySelector('.sampleSearchResult');
+          if (firstResult) {
+            firstResult.click();
+          } else {
+            // If no results shown but query exists, try to load directly if it matches a sample
+            const exactMatch = state.sampleSelection.allSampleIds.find(
+              id => id.toLowerCase() === query.toLowerCase()
+            );
+            if (exactMatch) {
+              loadSmartTrackForSample(exactMatch);
+              searchInput.value = '';
+              resultsEl.style.display = 'none';
+            }
+          }
         }
       }
     });
+  }
+  
+  // Function to load a Smart Track for a specific sample
+  function loadSmartTrackForSample(sampleId) {
+    // Use currently selected alleles if any, otherwise use empty set
+    const selectedAlleles = state.selectedAlleles.size > 0 
+      ? Array.from(state.selectedAlleles) 
+      : [];
+    
+    // Use current strategy, or 'random' as fallback
+    const strategy = state.sampleSelection.strategy || 'random';
+    
+    // Create Smart Track
+    const track = createSmartTrack(strategy, selectedAlleles);
+    
+    // Set sampleType for carriers_controls strategy
+    if (strategy === 'carriers_controls') {
+      const combineMode = state.sampleSelection.combineMode;
+      const carriers = window.computeCandidateSamplesForAlleles 
+        ? window.computeCandidateSamplesForAlleles(selectedAlleles, combineMode)
+        : [];
+      const carriersSet = new Set(carriers);
+      track.sampleType = carriersSet.has(sampleId) ? 'carrier' : 'control';
+    }
+    
+    // Fetch reads for the specific sample
+    fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+      .catch(err => {
+        console.error('Failed to load reads for Smart track:', err);
+      });
   }
   
   // Main update function for selection display
@@ -2750,11 +3396,25 @@ function setupCanvasHover() {
       // Select samples based on strategy (will pick new random samples each time for Random strategy)
       const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
       
+      // For carriers_controls strategy, determine which samples are carriers vs controls
+      let sampleTypes = {};
+      if (strategy === 'carriers_controls') {
+        const carriersSet = new Set(candidates);
+        for (const sampleId of selectedSamples) {
+          sampleTypes[sampleId] = carriersSet.has(sampleId) ? 'carrier' : 'control';
+        }
+      }
+      
       // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
       for (let i = 0; i < selectedSamples.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
         const sampleId = selectedSamples[i];
+        
+        // Set sampleType for carriers_controls strategy
+        if (strategy === 'carriers_controls' && sampleTypes[sampleId]) {
+          track.sampleType = sampleTypes[sampleId];
+        }
         
         // Fetch reads
         trackPromises.push(
@@ -2798,11 +3458,25 @@ function setupCanvasHover() {
       // Select samples based on strategy
       const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
       
+      // For carriers_controls strategy, determine which samples are carriers vs controls
+      let sampleTypes = {};
+      if (strategy === 'carriers_controls') {
+        const carriersSet = new Set(candidates);
+        for (const sampleId of selectedSamples) {
+          sampleTypes[sampleId] = carriersSet.has(sampleId) ? 'carrier' : 'control';
+        }
+      }
+      
       // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
       for (let i = 0; i < selectedSamples.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
         const sampleId = selectedSamples[i];
+        
+        // Set sampleType for carriers_controls strategy
+        if (strategy === 'carriers_controls' && sampleTypes[sampleId]) {
+          track.sampleType = sampleTypes[sampleId];
+        }
         
         // Fetch reads
         trackPromises.push(
