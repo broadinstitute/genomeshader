@@ -113,11 +113,11 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   transition: grid-template-columns 0.2s ease;
 }
 .app.sidebar-collapsed {
-  grid-template-columns: 12px 1fr;
+  grid-template-columns: 8px 1fr;
 }
 .app.sidebar-collapsed .sidebar {
-  width: 12px !important;
-  min-width: 12px;
+  width: 8px !important;
+  min-width: 8px;
 }
 
 .sidebar {
@@ -169,19 +169,19 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   pointer-events: auto;
   opacity: 1 !important;
   right: 0;
-  width: 12px;
+  width: 8px;
   background: rgba(127, 127, 127, 0.08);
   border-right: 1px solid var(--border2);
 }
 .app.sidebar-collapsed .sidebar:hover::after {
-  width: 14px;
+  width: 10px;
   background: var(--blue);
   border-right: none;
   box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
 }
 /* Adjust main panel position when sidebar is collapsed */
 .app.sidebar-collapsed .main {
-  left: 12px !important;
+  left: 8px !important;
 }
 
 /* Right sidebar styles - always overlays on top of main panel */
@@ -198,8 +198,8 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   display: flex;
   flex-direction: column;
   z-index: 100;
-  width: 12px;
-  min-width: 12px;
+  width: 8px;
+  min-width: 8px;
 }
 .sidebar-right .sidebarContent {
   flex: 1;
@@ -227,8 +227,8 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .app.sidebar-right-collapsed .sidebar-right {
   padding: 0;
   overflow: visible;
-  width: 12px !important;
-  min-width: 12px;
+  width: 8px !important;
+  min-width: 8px;
 }
 .app.sidebar-right-collapsed .sidebar-right > * {
   opacity: 0;
@@ -242,12 +242,12 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   pointer-events: auto;
   opacity: 1 !important;
   left: 0;
-  width: 12px;
+  width: 8px;
   background: rgba(127, 127, 127, 0.08);
   border-left: 1px solid var(--border2);
 }
 .app.sidebar-right-collapsed .sidebar-right:hover::before {
-  width: 14px;
+  width: 10px;
   background: var(--blue);
   border-left: none;
   box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);

@@ -926,7 +926,7 @@ function initializeRightSidebar() {
       const rect = sidebarRight.getBoundingClientRect();
       const clickX = e.clientX - rect.left;
       
-      // Check if click is within 12px of the left edge (or anywhere if collapsed)
+      // Check if click is within 8px of the left edge (or anywhere if collapsed)
       if (collapsed) {
         e.preventDefault();
         e.stopPropagation();
@@ -936,7 +936,7 @@ function initializeRightSidebar() {
           clearTimeout(autoCloseTimer);
           autoCloseTimer = null;
         }
-      } else if (clickX <= 12) {
+      } else if (clickX <= 8) {
         e.preventDefault();
         e.stopPropagation();
         setRightSidebarCollapsed(true);
