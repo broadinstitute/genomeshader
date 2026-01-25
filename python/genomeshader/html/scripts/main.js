@@ -833,17 +833,17 @@ function renderTrackControls() {
       container.style.left = `${item.left}px`;
       container.style.width = `${item.width}px`;
       container.style.top = "0";
-      // For standard tracks, only cover controls area (24px width in vertical mode)
-      // But if collapsed, cover the full width to include collapsed indicator
-      container.style.height = isStandardTrack && !track.collapsed ? "24px" : "100%";
+      // Container should cover full track height to allow resize handle at bottom
+      // Controls are positioned absolutely at top, so they only occupy their space
+      container.style.height = track.collapsed ? "24px" : "100%";
     } else {
       container.style.position = "absolute";
       container.style.left = "0";
       container.style.right = "0";
       container.style.top = `${item.top}px`;
-      // For standard tracks, only cover controls area (24px height in horizontal mode)
-      // But if collapsed, cover the full height to include collapsed indicator
-      container.style.height = isStandardTrack && !track.collapsed ? "24px" : `${item.height}px`;
+      // Container should cover full track height to allow resize handle at bottom
+      // Controls are positioned absolutely at top, so they only occupy their space
+      container.style.height = track.collapsed ? "24px" : `${item.height}px`;
     }
     container.dataset.trackId = track.id;
 
