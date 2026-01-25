@@ -136,8 +136,18 @@ function renderSmartTrack(trackId) {
     
     // Notify WebGPU core of resize if dimensions changed
     // Compare against PREVIOUS dimensions, not current (which we just set)
+    // Defer to next frame to ensure layout has settled (prevents flickering in overlay mode)
     if (webgpuCore && (prevWebGpuWidth !== W * dpr || prevWebGpuHeight !== totalContentHeight * dpr)) {
-      webgpuCore.handleResize();
+      // Use requestAnimationFrame to ensure container dimensions have settled
+      // This is especially important in overlay mode where layout may be changing
+      requestAnimationFrame(() => {
+        // Verify dimensions are still valid before resizing
+        const currentRect = container.getBoundingClientRect();
+        const currentW = isVertical ? currentRect.height : currentRect.width;
+        if (currentW > 0 && !isNaN(currentW)) {
+          webgpuCore.handleResize();
+        }
+      });
     }
     
     // Enable overflow for scrolling when content exceeds container height
@@ -215,7 +225,13 @@ function renderSmartTrack(trackId) {
       webgpuCanvas.width = rect.width * dpr;
       webgpuCanvas.height = rect.height * dpr;
       if (webgpuCore) {
-        webgpuCore.handleResize();
+        // Defer resize to next frame to ensure layout has settled (prevents flickering in overlay mode)
+        requestAnimationFrame(() => {
+          const currentRect = container.getBoundingClientRect();
+          if (currentRect.width > 0 && currentRect.height > 0) {
+            webgpuCore.handleResize();
+          }
+        });
       }
     }
   }
@@ -741,7 +757,13 @@ function renderSmartTrack(trackId) {
       if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
         webgpuCanvas.width = width;
         webgpuCanvas.height = height;
-        webgpuCore.handleResize();
+        // Defer resize to next frame to ensure layout has settled (prevents flickering in overlay mode)
+        requestAnimationFrame(() => {
+          const currentRect = container.getBoundingClientRect();
+          if (currentRect.width > 0 && currentRect.height > 0) {
+            webgpuCore.handleResize();
+          }
+        });
       }
       
       const encoder = webgpuCore.createCommandEncoder();
