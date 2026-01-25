@@ -288,21 +288,24 @@ function renderTracks() {
     }
     
     // Find centromere position to determine p/q arm split
-    let centromereStart = null;
-    let centromereEnd = null;
+    // The first acen entry indicates the end of the p-arm
+    // The second acen entry indicates the start of the q-arm
+    let firstAcenEnd = null;
     for (const band of ideogramData) {
       if (band.gieStain === "acen") {
-        if (centromereStart === null) {
-          centromereStart = band.chromStart;
+        if (firstAcenEnd === null) {
+          // First acen band: its end marks where p-arm ends
+          firstAcenEnd = band.chromEnd;
         }
-        centromereEnd = band.chromEnd;
+        // Second acen band marks where q-arm starts (we don't need to track this separately)
       }
     }
     
     // Calculate actual p/q arm proportions based on centromere position
+    // The split between p and q arms is at the end of the first acen band
     // If no centromere found, use approximate position (p-arm is typically ~48% of chromosome)
     const defaultPFrac = 0.48;
-    const centromerePos = centromereStart !== null ? centromereStart : Math.floor(chrLength * defaultPFrac);
+    const centromerePos = firstAcenEnd !== null ? firstAcenEnd : Math.floor(chrLength * defaultPFrac);
     const pFrac = centromerePos / chrLength;
     const qFrac = 1 - pFrac;
 
