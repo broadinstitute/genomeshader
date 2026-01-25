@@ -913,8 +913,6 @@ function initializeRightSidebar() {
   // Make right sidebar border clickable
   const sidebarRight = document.getElementById('sidebarRight');
   if (sidebarRight) {
-    let autoCloseTimer = null;
-    
     const handleRightSidebarToggle = (e) => {
       // Don't intercept clicks on form elements or their containers
       const target = e.target;
@@ -931,44 +929,10 @@ function initializeRightSidebar() {
         e.preventDefault();
         e.stopPropagation();
         setRightSidebarCollapsed(false);
-        // Clear any pending auto-close timer when opening
-        if (autoCloseTimer) {
-          clearTimeout(autoCloseTimer);
-          autoCloseTimer = null;
-        }
       } else if (clickX <= 8) {
         e.preventDefault();
         e.stopPropagation();
         setRightSidebarCollapsed(true);
-        // Clear any pending auto-close timer when closing manually
-        if (autoCloseTimer) {
-          clearTimeout(autoCloseTimer);
-          autoCloseTimer = null;
-        }
-      }
-    };
-    
-    // Auto-close when mouse leaves sidebar (after 3 seconds)
-    const handleMouseEnter = () => {
-      // Clear any pending auto-close timer when mouse enters
-      if (autoCloseTimer) {
-        clearTimeout(autoCloseTimer);
-        autoCloseTimer = null;
-      }
-    };
-    
-    const handleMouseLeave = () => {
-      // Only auto-close if sidebar is open
-      if (!getRightSidebarCollapsed()) {
-        // Clear any existing timer
-        if (autoCloseTimer) {
-          clearTimeout(autoCloseTimer);
-        }
-        // Set new timer to close after 3 seconds
-        autoCloseTimer = setTimeout(() => {
-          setRightSidebarCollapsed(true);
-          autoCloseTimer = null;
-        }, 3000);
       }
     };
     
@@ -976,8 +940,6 @@ function initializeRightSidebar() {
     sidebarRight.addEventListener("pointerdown", handleRightSidebarToggle, true);
     sidebarRight.addEventListener("pointerup", handleRightSidebarToggle, true);
     sidebarRight.addEventListener("mousedown", handleRightSidebarToggle, true);
-    sidebarRight.addEventListener("mouseenter", handleMouseEnter);
-    sidebarRight.addEventListener("mouseleave", handleMouseLeave);
     
     sidebarRight.style.pointerEvents = "auto";
     
