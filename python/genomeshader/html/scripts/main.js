@@ -1248,14 +1248,33 @@ function renderTrackControls() {
       // Mark container for standard track styling
       container.classList.add("standard-track");
       
+      // Add a small hover detection area at the top (24px) for hover detection
+      // This allows clicks to pass through to track content below
+      const hoverArea = document.createElement("div");
+      hoverArea.className = "track-hover-area";
+      if (isVertical) {
+        hoverArea.style.position = "absolute";
+        hoverArea.style.left = "0";
+        hoverArea.style.top = "0";
+        hoverArea.style.width = "24px";
+        hoverArea.style.height = "100%";
+      } else {
+        hoverArea.style.position = "absolute";
+        hoverArea.style.left = "0";
+        hoverArea.style.top = "0";
+        hoverArea.style.width = "100%";
+        hoverArea.style.height = "24px";
+      }
+      container.appendChild(hoverArea);
+      
       // Setup hover detection - only show controls when hovering over controls area
       const setupHoverDetection = () => {
-        // Show controls when hovering over container (controls area - top 24px)
-        container.addEventListener("mouseenter", () => {
+        // Show controls when hovering over hover area (top 24px)
+        hoverArea.addEventListener("mouseenter", () => {
           container.classList.add("track-hovered");
         });
         
-        container.addEventListener("mouseleave", () => {
+        hoverArea.addEventListener("mouseleave", () => {
           container.classList.remove("track-hovered");
         });
         
