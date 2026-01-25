@@ -106,29 +106,30 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 * { box-sizing: border-box; }
 
 .app {
-  display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  display: block;
   height: 100%;
   overflow: hidden;
-  transition: grid-template-columns 0.2s ease;
-}
-.app.sidebar-collapsed {
-  grid-template-columns: 8px 1fr;
-}
-.app.sidebar-collapsed .sidebar {
-  width: 8px !important;
-  min-width: 8px;
+  position: relative;
 }
 
 .sidebar {
-  position: relative;
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--sidebar-w, 240px);
   background: var(--panel);
   border-right: 1px solid var(--border2);
   padding: 0;
   overflow: hidden;
-  transition: opacity 0.2s ease;
+  transition: width 0.2s ease, opacity 0.2s ease;
   display: flex;
   flex-direction: column;
+  z-index: 100;
+}
+.app.sidebar-collapsed .sidebar {
+  width: 8px !important;
+  min-width: 8px;
 }
 .sidebarContent {
   flex: 1;
@@ -178,10 +179,6 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   background: var(--blue);
   border-right: none;
   box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
-}
-/* Adjust main panel position when sidebar is collapsed */
-.app.sidebar-collapsed .main {
-  left: 8px !important;
 }
 
 /* Right sidebar styles - always overlays on top of main panel */
@@ -682,9 +679,14 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 
 .main {
-  position: relative;
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
   overflow: hidden;
   touch-action: none; /* we own pan/zoom gestures on right pane */
+  z-index: 1;
 }
 
 .tracks {
