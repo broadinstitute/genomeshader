@@ -899,6 +899,39 @@ if (typeof document !== 'undefined') {
   }
 }
 
+// Tab switching for right sidebar
+function getActiveTab() {
+  const stored = localStorage.getItem("genomeshader.rightSidebarTab");
+  return stored || "smart-tracks"; // Default to smart-tracks
+}
+function setActiveTab(tabName) {
+  localStorage.setItem("genomeshader.rightSidebarTab", tabName);
+  updateActiveTab();
+}
+function updateActiveTab() {
+  const activeTab = getActiveTab();
+  
+  // Update tab panes
+  const tabPanes = document.querySelectorAll('.tab-pane');
+  tabPanes.forEach(pane => {
+    if (pane.dataset.tab === activeTab) {
+      pane.classList.add('active');
+    } else {
+      pane.classList.remove('active');
+    }
+  });
+  
+  // Update command strip icons
+  const icons = document.querySelectorAll('.command-strip-icon');
+  icons.forEach(icon => {
+    if (icon.dataset.tab === activeTab) {
+      icon.classList.add('active');
+    } else {
+      icon.classList.remove('active');
+    }
+  });
+}
+
 function initializeRightSidebar() {
   const app = document.querySelector('.app');
   if (!app) {
@@ -914,9 +947,9 @@ function initializeRightSidebar() {
   const sidebarRight = document.getElementById('sidebarRight');
   if (sidebarRight) {
     const handleRightSidebarToggle = (e) => {
-      // Don't intercept clicks on form elements or their containers
+      // Don't intercept clicks on form elements, command strip icons, or their containers
       const target = e.target;
-      if (target.closest('input, button, .smart-track-item')) {
+      if (target.closest('input, button.command-strip-icon, .smart-track-item, .sidebar-right-command-strip')) {
         return;
       }
       
@@ -942,6 +975,26 @@ function initializeRightSidebar() {
     sidebarRight.addEventListener("mousedown", handleRightSidebarToggle, true);
     
     sidebarRight.style.pointerEvents = "auto";
+    
+    // Initialize tab switching
+    const commandStripIcons = document.querySelectorAll('.command-strip-icon');
+    commandStripIcons.forEach(icon => {
+      icon.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const tabName = icon.dataset.tab;
+        if (tabName) {
+          setActiveTab(tabName);
+          // Expand sidebar if collapsed
+          if (getRightSidebarCollapsed()) {
+            setRightSidebarCollapsed(false);
+          }
+        }
+      });
+    });
+    
+    // Initialize active tab
+    updateActiveTab();
     
     // Initial render
     renderSmartTracksSidebar();
