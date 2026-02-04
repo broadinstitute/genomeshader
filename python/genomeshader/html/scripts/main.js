@@ -136,8 +136,18 @@ function renderSmartTrack(trackId) {
     
     // Notify WebGPU core of resize if dimensions changed
     // Compare against PREVIOUS dimensions, not current (which we just set)
+    // Defer to next frame to ensure layout has settled (prevents flickering in overlay mode)
     if (webgpuCore && (prevWebGpuWidth !== W * dpr || prevWebGpuHeight !== totalContentHeight * dpr)) {
-      webgpuCore.handleResize();
+      // Use requestAnimationFrame to ensure container dimensions have settled
+      // This is especially important in overlay mode where layout may be changing
+      requestAnimationFrame(() => {
+        // Verify dimensions are still valid before resizing
+        const currentRect = container.getBoundingClientRect();
+        const currentW = isVertical ? currentRect.height : currentRect.width;
+        if (currentW > 0 && !isNaN(currentW)) {
+          webgpuCore.handleResize();
+        }
+      });
     }
     
     // Enable overflow for scrolling when content exceeds container height
@@ -215,7 +225,13 @@ function renderSmartTrack(trackId) {
       webgpuCanvas.width = rect.width * dpr;
       webgpuCanvas.height = rect.height * dpr;
       if (webgpuCore) {
-        webgpuCore.handleResize();
+        // Defer resize to next frame to ensure layout has settled (prevents flickering in overlay mode)
+        requestAnimationFrame(() => {
+          const currentRect = container.getBoundingClientRect();
+          if (currentRect.width > 0 && currentRect.height > 0) {
+            webgpuCore.handleResize();
+          }
+        });
       }
     }
   }
@@ -741,7 +757,13 @@ function renderSmartTrack(trackId) {
       if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
         webgpuCanvas.width = width;
         webgpuCanvas.height = height;
-        webgpuCore.handleResize();
+        // Defer resize to next frame to ensure layout has settled (prevents flickering in overlay mode)
+        requestAnimationFrame(() => {
+          const currentRect = container.getBoundingClientRect();
+          if (currentRect.width > 0 && currentRect.height > 0) {
+            webgpuCore.handleResize();
+          }
+        });
       }
       
       const encoder = webgpuCore.createCommandEncoder();
@@ -833,17 +855,17 @@ function renderTrackControls() {
       container.style.left = `${item.left}px`;
       container.style.width = `${item.width}px`;
       container.style.top = "0";
-      // For standard tracks, only cover controls area (24px width in vertical mode)
-      // But if collapsed, cover the full width to include collapsed indicator
-      container.style.height = isStandardTrack && !track.collapsed ? "24px" : "100%";
+      // Container should cover full track height to allow resize handle at bottom
+      // Controls are positioned absolutely at top, so they only occupy their space
+      container.style.height = track.collapsed ? "24px" : "100%";
     } else {
       container.style.position = "absolute";
       container.style.left = "0";
       container.style.right = "0";
       container.style.top = `${item.top}px`;
-      // For standard tracks, only cover controls area (24px height in horizontal mode)
-      // But if collapsed, cover the full height to include collapsed indicator
-      container.style.height = isStandardTrack && !track.collapsed ? "24px" : `${item.height}px`;
+      // Container should cover full track height to allow resize handle at bottom
+      // Controls are positioned absolutely at top, so they only occupy their space
+      container.style.height = track.collapsed ? "24px" : `${item.height}px`;
     }
     container.dataset.trackId = track.id;
 
@@ -1248,14 +1270,33 @@ function renderTrackControls() {
       // Mark container for standard track styling
       container.classList.add("standard-track");
       
+      // Add a small hover detection area at the top (24px) for hover detection
+      // This allows clicks to pass through to track content below
+      const hoverArea = document.createElement("div");
+      hoverArea.className = "track-hover-area";
+      if (isVertical) {
+        hoverArea.style.position = "absolute";
+        hoverArea.style.left = "0";
+        hoverArea.style.top = "0";
+        hoverArea.style.width = "24px";
+        hoverArea.style.height = "100%";
+      } else {
+        hoverArea.style.position = "absolute";
+        hoverArea.style.left = "0";
+        hoverArea.style.top = "0";
+        hoverArea.style.width = "100%";
+        hoverArea.style.height = "24px";
+      }
+      container.appendChild(hoverArea);
+      
       // Setup hover detection - only show controls when hovering over controls area
       const setupHoverDetection = () => {
-        // Show controls when hovering over container (controls area - top 24px)
-        container.addEventListener("mouseenter", () => {
+        // Show controls when hovering over hover area (top 24px)
+        hoverArea.addEventListener("mouseenter", () => {
           container.classList.add("track-hovered");
         });
         
-        container.addEventListener("mouseleave", () => {
+        hoverArea.addEventListener("mouseleave", () => {
           container.classList.remove("track-hovered");
         });
         

@@ -68,28 +68,46 @@ class WebGPUCore {
   handleResize() {
     if (!this.canvas || !this.context) return;
 
-    const devicePixelRatio = window.devicePixelRatio || 1;
-    const width = this.canvas.clientWidth * devicePixelRatio;
-    const height = this.canvas.clientHeight * devicePixelRatio;
+    // Cancel any pending resize to avoid rapid successive updates
+    if (this._resizeTimeout) {
+      cancelAnimationFrame(this._resizeTimeout);
+    }
 
-    // Update canvas size
-    this.canvas.width = width;
-    this.canvas.height = height;
+    // Defer resize to next animation frame to ensure layout has settled
+    // This prevents flickering in overlay mode where dimensions may change rapidly
+    this._resizeTimeout = requestAnimationFrame(() => {
+      this._resizeTimeout = null;
+      
+      if (!this.canvas || !this.context) return;
 
-    // Update projection matrix
-    this.projectionMatrix[0] = 2.0 / width;
-    this.projectionMatrix[5] = -2.0 / height;
-    this.projectionMatrix[12] = -1;
-    this.projectionMatrix[13] = 1;
-    
-    // Update screen size (vec4 padded)
-    this.screenSize[0] = width;
-    this.screenSize[1] = height;
-    this.screenSize[2] = 0;
-    this.screenSize[3] = 0;
+      const devicePixelRatio = window.devicePixelRatio || 1;
+      const width = this.canvas.clientWidth * devicePixelRatio;
+      const height = this.canvas.clientHeight * devicePixelRatio;
 
-    this.device.queue.writeBuffer(this.projectionBuffer, 0, this.projectionMatrix);
-    this.device.queue.writeBuffer(this.projectionBuffer, 16 * 4, this.screenSize);
+      // Skip if dimensions are invalid (layout still settling)
+      if (width <= 0 || height <= 0 || isNaN(width) || isNaN(height)) {
+        return;
+      }
+
+      // Update canvas size
+      this.canvas.width = width;
+      this.canvas.height = height;
+
+      // Update projection matrix
+      this.projectionMatrix[0] = 2.0 / width;
+      this.projectionMatrix[5] = -2.0 / height;
+      this.projectionMatrix[12] = -1;
+      this.projectionMatrix[13] = 1;
+      
+      // Update screen size (vec4 padded)
+      this.screenSize[0] = width;
+      this.screenSize[1] = height;
+      this.screenSize[2] = 0;
+      this.screenSize[3] = 0;
+
+      this.device.queue.writeBuffer(this.projectionBuffer, 0, this.projectionMatrix);
+      this.device.queue.writeBuffer(this.projectionBuffer, 16 * 4, this.screenSize);
+    });
   }
 
   getCurrentTexture() {

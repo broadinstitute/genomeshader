@@ -899,6 +899,39 @@ if (typeof document !== 'undefined') {
   }
 }
 
+// Tab switching for right sidebar
+function getActiveTab() {
+  const stored = localStorage.getItem("genomeshader.rightSidebarTab");
+  return stored || "smart-tracks"; // Default to smart-tracks
+}
+function setActiveTab(tabName) {
+  localStorage.setItem("genomeshader.rightSidebarTab", tabName);
+  updateActiveTab();
+}
+function updateActiveTab() {
+  const activeTab = getActiveTab();
+  
+  // Update tab panes
+  const tabPanes = document.querySelectorAll('.tab-pane');
+  tabPanes.forEach(pane => {
+    if (pane.dataset.tab === activeTab) {
+      pane.classList.add('active');
+    } else {
+      pane.classList.remove('active');
+    }
+  });
+  
+  // Update command strip icons
+  const icons = document.querySelectorAll('.command-strip-icon');
+  icons.forEach(icon => {
+    if (icon.dataset.tab === activeTab) {
+      icon.classList.add('active');
+    } else {
+      icon.classList.remove('active');
+    }
+  });
+}
+
 function initializeRightSidebar() {
   const app = document.querySelector('.app');
   if (!app) {
@@ -913,12 +946,10 @@ function initializeRightSidebar() {
   // Make right sidebar border clickable
   const sidebarRight = document.getElementById('sidebarRight');
   if (sidebarRight) {
-    let autoCloseTimer = null;
-    
     const handleRightSidebarToggle = (e) => {
-      // Don't intercept clicks on form elements or their containers
+      // Don't intercept clicks on form elements, command strip icons, or their containers
       const target = e.target;
-      if (target.closest('input, button, .smart-track-item')) {
+      if (target.closest('input, button.command-strip-icon, .smart-track-item, .sidebar-right-command-strip')) {
         return;
       }
       
@@ -926,49 +957,15 @@ function initializeRightSidebar() {
       const rect = sidebarRight.getBoundingClientRect();
       const clickX = e.clientX - rect.left;
       
-      // Check if click is within 12px of the left edge (or anywhere if collapsed)
+      // Check if click is within 8px of the left edge (or anywhere if collapsed)
       if (collapsed) {
         e.preventDefault();
         e.stopPropagation();
         setRightSidebarCollapsed(false);
-        // Clear any pending auto-close timer when opening
-        if (autoCloseTimer) {
-          clearTimeout(autoCloseTimer);
-          autoCloseTimer = null;
-        }
-      } else if (clickX <= 12) {
+      } else if (clickX <= 8) {
         e.preventDefault();
         e.stopPropagation();
         setRightSidebarCollapsed(true);
-        // Clear any pending auto-close timer when closing manually
-        if (autoCloseTimer) {
-          clearTimeout(autoCloseTimer);
-          autoCloseTimer = null;
-        }
-      }
-    };
-    
-    // Auto-close when mouse leaves sidebar (after 3 seconds)
-    const handleMouseEnter = () => {
-      // Clear any pending auto-close timer when mouse enters
-      if (autoCloseTimer) {
-        clearTimeout(autoCloseTimer);
-        autoCloseTimer = null;
-      }
-    };
-    
-    const handleMouseLeave = () => {
-      // Only auto-close if sidebar is open
-      if (!getRightSidebarCollapsed()) {
-        // Clear any existing timer
-        if (autoCloseTimer) {
-          clearTimeout(autoCloseTimer);
-        }
-        // Set new timer to close after 3 seconds
-        autoCloseTimer = setTimeout(() => {
-          setRightSidebarCollapsed(true);
-          autoCloseTimer = null;
-        }, 3000);
       }
     };
     
@@ -976,10 +973,28 @@ function initializeRightSidebar() {
     sidebarRight.addEventListener("pointerdown", handleRightSidebarToggle, true);
     sidebarRight.addEventListener("pointerup", handleRightSidebarToggle, true);
     sidebarRight.addEventListener("mousedown", handleRightSidebarToggle, true);
-    sidebarRight.addEventListener("mouseenter", handleMouseEnter);
-    sidebarRight.addEventListener("mouseleave", handleMouseLeave);
     
     sidebarRight.style.pointerEvents = "auto";
+    
+    // Initialize tab switching
+    const commandStripIcons = document.querySelectorAll('.command-strip-icon');
+    commandStripIcons.forEach(icon => {
+      icon.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const tabName = icon.dataset.tab;
+        if (tabName) {
+          setActiveTab(tabName);
+          // Expand sidebar if collapsed
+          if (getRightSidebarCollapsed()) {
+            setRightSidebarCollapsed(false);
+          }
+        }
+      });
+    });
+    
+    // Initialize active tab
+    updateActiveTab();
     
     // Initial render
     renderSmartTracksSidebar();

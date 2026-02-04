@@ -116,14 +116,14 @@ if (sidebar) {
     const rect = sidebar.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
 
-    // Check if click is within 12px of the right edge (or anywhere if collapsed)
+    // Check if click is within 8px of the right edge (or anywhere if collapsed)
     if (collapsed) {
-      // When collapsed, the entire 12px strip is clickable
+      // When collapsed, the entire 8px strip is clickable
       e.preventDefault();
       e.stopPropagation();
       setSidebarCollapsed(false);
-    } else if (clickX >= rect.width - 12) {
-      // When open, only the right 12px edge is clickable
+    } else if (clickX >= rect.width - 8) {
+      // When open, only the right 8px edge is clickable
       e.preventDefault();
       e.stopPropagation();
       setSidebarCollapsed(true);
