@@ -13,9 +13,13 @@ function resizeCanvasTo(el, canvas) {
 
 function visibleVariantWindow() {
   // Return all variants in the visible genomic range, not limited by state.K
-  // state.K is just used for initial window sizing
   const visibleVariants = variants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
   return visibleVariants;
+}
+
+function visibleVariantWindowFor(variantsList) {
+  if (!variantsList || !Array.isArray(variantsList)) return [];
+  return variantsList.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -33,41 +37,107 @@ function roundRect(ctx, x, y, w, h, r) {
 // -----------------------------
 function renderFlowCanvas() {
   const layout = getTrackLayout();
-  const flowLayout = layout.find(l => l.track.id === "flow");
-  if (!flowLayout || flowLayout.track.collapsed) {
-    // Clear canvas if collapsed
-    const ctx = flowCanvas.getContext("2d");
-    ctx.clearRect(0, 0, flowCanvas.width, flowCanvas.height);
-    // Clear WebGPU renderer instances
-    if (flowInstancedRenderer) {
-      flowInstancedRenderer.clear();
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
+  const visibleFlowLayouts = flowLayouts.filter(l => !l.track.collapsed);
+  if (visibleFlowLayouts.length === 0) {
+    const fc = document.getElementById("flowCanvas") || document.getElementById("flowCanvas-0");
+    if (fc) {
+      const ctx = fc.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, fc.width, fc.height);
     }
+    if (flowInstancedRenderer) flowInstancedRenderer.clear();
     return;
   }
 
-  const dpr = resizeCanvasTo(flow, flowCanvas);
-  const ctx = flowCanvas.getContext("2d");
-  
-  // Clear and set up canvas
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.clearRect(0,0,flowCanvas.width,flowCanvas.height);
-  ctx.scale(dpr, dpr);
-  
-  // Clear WebGPU renderer instances
-  if (flowInstancedRenderer) {
-    flowInstancedRenderer.clear();
-  }
-  if (flowRibbonRenderer) {
-    flowRibbonRenderer.clear();
-  }
-
+  const multiTrack = variantTracksConfig.length > 1;
   const isVertical = isVerticalMode();
   const variantMode = getVariantLayoutMode();
   const junctionY = 40;
   const junctionX = 40;
+  const W = flowWidthPx();
+  const totalFlowH = flowHeightPx();
 
-  const W = flowWidthPx(), H = flowHeightPx();
+  // Build list of bands: one per variant track (or single band when using legacy single "flow")
+  const flowBands = [];
+  if (variantTracksConfig.length > 0) {
+    let bandOffset = 0;
+    for (let i = 0; i < variantTracksConfig.length; i++) {
+      const trackConfig = variantTracksConfig[i];
+      const trackLayout = layout.find(l => l.track.id === trackConfig.id);
+      if (!trackLayout || trackLayout.track.collapsed) continue;
+      const bandHeight = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+      flowBands.push({
+        track: trackConfig,
+        flowLayout: trackLayout,
+        bandOffset,
+        bandHeight,
+      });
+      bandOffset += bandHeight;
+    }
+  } else {
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    if (flowLayout && !flowLayout.track.collapsed) {
+      const bandHeight = isVertical ? flowLayout.contentWidth : flowLayout.contentHeight;
+      flowBands.push({
+        track: { variants_data: variants, variants_phased: (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variants_phased) !== false },
+        flowLayout,
+        bandOffset: 0,
+        bandHeight,
+      });
+    }
+  }
 
+  if (!multiTrack && flowBands.length > 0) {
+    const dpr = resizeCanvasTo(flow, flowCanvas);
+    const ctx = flowCanvas.getContext("2d");
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,flowCanvas.width,flowCanvas.height);
+    ctx.scale(dpr, dpr);
+  }
+  if (flowInstancedRenderer) flowInstancedRenderer.clear();
+  if (flowRibbonRenderer) flowRibbonRenderer.clear();
+
+  for (const band of flowBands) {
+    const { track, flowLayout, bandOffset, bandHeight } = band;
+    const variants = track.variants_data || [];
+    const win = visibleVariantWindowFor(variants);
+    const variantsPhased = track.variants_phased !== false;
+    const H = bandHeight;
+
+    let ctx;
+    if (multiTrack) {
+      let bandFlowEl = document.getElementById(track.id);
+      let bandCanvas = bandFlowEl ? document.getElementById("flowCanvas-" + track.id.replace("flow-", "")) : null;
+      // Fallback for first band: use first .flow-track and its canvas (handles id "flow" or missing elements)
+      const flowEl = document.getElementById("flow");
+      if ((!bandFlowEl || !bandCanvas) && bandOffset === 0 && flowEl) {
+        const firstTrack = flowEl.querySelector(".flow-track");
+        if (firstTrack) {
+          bandFlowEl = firstTrack;
+          bandCanvas = firstTrack.querySelector("canvas");
+        }
+      }
+      if (!bandFlowEl || !bandCanvas) continue;
+      const dpr = resizeCanvasTo(bandFlowEl, bandCanvas);
+      ctx = bandCanvas.getContext("2d");
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.clearRect(0, 0, bandCanvas.width, bandCanvas.height);
+      ctx.scale(dpr, dpr);
+    } else {
+      ctx = flowCanvas.getContext("2d");
+      ctx.save();
+      ctx.translate(0, bandOffset);
+      ctx.beginPath();
+      ctx.rect(0, 0, W, bandHeight);
+      ctx.clip();
+    }
+
+    // yBandToFlow / xBandToFlow: add bandOffset for WebGPU (multi-track); for 2D multi-track we draw in local 0..H
+    const yBandToFlow = (y) => y + bandOffset;
+    const xBandToFlow = (x) => x + (isVertical ? bandOffset : 0);
+
+    (function drawOneFlowBand() {
   const colLines = cssVar("--grid");
   const colGrid  = cssVar("--grid2");
   const colText  = cssVar("--muted");
@@ -117,17 +187,17 @@ function renderFlowCanvas() {
     const base = dx * 0.40;
     const handle = Math.max(1.0, Math.min(base, dx * 0.45));
 
-    // Scale all coordinates to physical pixels for WebGPU
-    const topP0 = [srcX * devicePixelRatio, sTop * devicePixelRatio];
-    const topP3 = [dstX * devicePixelRatio, dTop * devicePixelRatio];
-    const botP0 = [srcX * devicePixelRatio, sBot * devicePixelRatio];
-    const botP3 = [dstX * devicePixelRatio, dBot * devicePixelRatio];
+    // Scale all coordinates to physical pixels for WebGPU (yBandToFlow for multi-track offset)
+    const topP0 = [srcX * devicePixelRatio, yBandToFlow(sTop) * devicePixelRatio];
+    const topP3 = [dstX * devicePixelRatio, yBandToFlow(dTop) * devicePixelRatio];
+    const botP0 = [srcX * devicePixelRatio, yBandToFlow(sBot) * devicePixelRatio];
+    const botP3 = [dstX * devicePixelRatio, yBandToFlow(dBot) * devicePixelRatio];
 
     // Horizontal tangents at endpoints (classic Sankey look)
-    const topP1 = [(srcX + handle) * devicePixelRatio, sTop * devicePixelRatio];
-    const topP2 = [(dstX - handle) * devicePixelRatio, dTop * devicePixelRatio];
-    const botP1 = [(srcX + handle) * devicePixelRatio, sBot * devicePixelRatio];
-    const botP2 = [(dstX - handle) * devicePixelRatio, dBot * devicePixelRatio];
+    const topP1 = [(srcX + handle) * devicePixelRatio, yBandToFlow(sTop) * devicePixelRatio];
+    const topP2 = [(dstX - handle) * devicePixelRatio, yBandToFlow(dTop) * devicePixelRatio];
+    const botP1 = [(srcX + handle) * devicePixelRatio, yBandToFlow(sBot) * devicePixelRatio];
+    const botP2 = [(dstX - handle) * devicePixelRatio, yBandToFlow(dBot) * devicePixelRatio];
 
     // Parse color string to RGBA floats (expects "rgba(r,g,b,a)" or similar)
     const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
@@ -191,18 +261,16 @@ function renderFlowCanvas() {
     const base = dy * 0.40;
     const handle = Math.max(1.0, Math.min(base, dy * 0.45));
 
-    // Scale all coordinates to physical pixels for WebGPU
-    // Ribbon flows from bottom (srcY, larger) to top (dstY, smaller)
-    const leftP0 = [sLeft * devicePixelRatio, srcY * devicePixelRatio];
-    const leftP3 = [dLeft * devicePixelRatio, dstY * devicePixelRatio];
-    const rightP0 = [sRight * devicePixelRatio, srcY * devicePixelRatio];
-    const rightP3 = [dRight * devicePixelRatio, dstY * devicePixelRatio];
+    // Scale all coordinates to physical pixels for WebGPU (vertical: xBandToFlow for x, yBandToFlow for y)
+    const leftP0 = [xBandToFlow(sLeft) * devicePixelRatio, yBandToFlow(srcY) * devicePixelRatio];
+    const leftP3 = [xBandToFlow(dLeft) * devicePixelRatio, yBandToFlow(dstY) * devicePixelRatio];
+    const rightP0 = [xBandToFlow(sRight) * devicePixelRatio, yBandToFlow(srcY) * devicePixelRatio];
+    const rightP3 = [xBandToFlow(dRight) * devicePixelRatio, yBandToFlow(dstY) * devicePixelRatio];
 
-    // Vertical tangents at endpoints (flowing upward: srcY decreases toward dstY)
-    const leftP1 = [sLeft * devicePixelRatio, (srcY - handle) * devicePixelRatio];
-    const leftP2 = [dLeft * devicePixelRatio, (dstY + handle) * devicePixelRatio];
-    const rightP1 = [sRight * devicePixelRatio, (srcY - handle) * devicePixelRatio];
-    const rightP2 = [dRight * devicePixelRatio, (dstY + handle) * devicePixelRatio];
+    const leftP1 = [xBandToFlow(sLeft) * devicePixelRatio, yBandToFlow(srcY - handle) * devicePixelRatio];
+    const leftP2 = [xBandToFlow(dLeft) * devicePixelRatio, yBandToFlow(dstY + handle) * devicePixelRatio];
+    const rightP1 = [xBandToFlow(sRight) * devicePixelRatio, yBandToFlow(srcY - handle) * devicePixelRatio];
+    const rightP2 = [xBandToFlow(dRight) * devicePixelRatio, yBandToFlow(dstY + handle) * devicePixelRatio];
 
     // Parse color string to RGBA floats (expects "rgba(r,g,b,a)" or similar)
     const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
@@ -238,7 +306,7 @@ function renderFlowCanvas() {
   ctx.fillRect(0,0,W,H);
 
   // connectors (diagonal lines - make them meet the ruler variant position precisely)
-  const win = visibleVariantWindow();
+  // Use this band's win (from visibleVariantWindowFor(variants) above), not global visibleVariantWindow()
   
   // Use WebGPU for variant columns if available, otherwise fall back to Canvas 2D
   // Use flowWebGPU instead of tracksWebGPU for variant columns
@@ -256,8 +324,7 @@ function renderFlowCanvas() {
     const left = 70;
     const marginPercent = 0.1;
     const minMargin = 10;
-    const flowLayoutForStems = layout.find(l => l.track.id === "flow");
-    const trackWidth = flowLayoutForStems ? flowLayoutForStems.contentWidth : 300;
+    const trackWidth = flowLayout ? flowLayout.contentWidth : 300;
     const margin = Math.max(minMargin, trackWidth * marginPercent);
     // Estimate where nodes start - use a reasonable default if we can't calculate exactly
     const nodeStartX = left + margin + 20; // Add some buffer for centering offset
@@ -269,14 +336,14 @@ function renderFlowCanvas() {
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
         const y = variantMode === "genomic" 
           ? yGenomeCanonical(v.pos, H)
           : yColumn(i, sortedWin.length);
-        const yScaled = y * devicePixelRatio;
+        const yScaled = yBandToFlow(y) * devicePixelRatio;
         flowInstancedRenderer.addLine(
           junctionX * devicePixelRatio, yScaled,
           stemEndX * devicePixelRatio, yScaled,
@@ -287,7 +354,7 @@ function renderFlowCanvas() {
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -378,7 +445,7 @@ function renderFlowCanvas() {
       }
       
       // Determine if we should show this label
-      const isHovered = variantsAtPos.some(v => state.hoveredVariantIndex === variants.findIndex(v2 => v2.id === v.id));
+      const isHovered = variantsAtPos.some(v => state.hoveredVariantId === v.id);
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
@@ -425,7 +492,7 @@ function renderFlowCanvas() {
       for (let i=0; i<sortedWin.length; i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
@@ -433,8 +500,8 @@ function renderFlowCanvas() {
           ? yGenomeCanonical(v.pos, H)
           : yColumn(i, sortedWin.length);
         flowInstancedRenderer.addLine(
-          x0 * devicePixelRatio, vy * devicePixelRatio,
-          junctionX * devicePixelRatio, cy * devicePixelRatio,
+          x0 * devicePixelRatio, yBandToFlow(vy) * devicePixelRatio,
+          junctionX * devicePixelRatio, yBandToFlow(cy) * devicePixelRatio,
           color, alpha
         );
       }
@@ -442,7 +509,7 @@ function renderFlowCanvas() {
       for (let i=0; i<sortedWin.length; i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -463,8 +530,7 @@ function renderFlowCanvas() {
     const top = 0;
     const marginPercent = 0.1;
     const minMargin = 10;
-    const flowLayoutForStems = layout.find(l => l.track.id === "flow");
-    const trackHeight = flowLayoutForStems ? flowLayoutForStems.contentHeight : 300;
+    const trackHeight = flowLayout ? flowLayout.contentHeight : 300;
     const margin = Math.max(minMargin, trackHeight * marginPercent);
     // Estimate where nodes start - use a reasonable default if we can't calculate exactly
     const nodeStartY = top + margin + 20; // Add some buffer for centering offset
@@ -476,7 +542,7 @@ function renderFlowCanvas() {
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
@@ -485,8 +551,8 @@ function renderFlowCanvas() {
           : xColumn(i, win.length);
         const xScaled = x * devicePixelRatio;
         flowInstancedRenderer.addLine(
-          xScaled, junctionY * devicePixelRatio,
-          xScaled, stemEndY * devicePixelRatio,
+          xScaled, yBandToFlow(junctionY) * devicePixelRatio,
+          xScaled, yBandToFlow(stemEndY) * devicePixelRatio,
           color, alpha
         );
       }
@@ -494,7 +560,7 @@ function renderFlowCanvas() {
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -562,7 +628,7 @@ function renderFlowCanvas() {
       }
       
       // Determine if we should show this label
-      const isHovered = variantsAtPos.some(v => state.hoveredVariantIndex === variants.findIndex(v2 => v2.id === v.id));
+      const isHovered = variantsAtPos.some(v => state.hoveredVariantId === v.id);
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
@@ -604,7 +670,7 @@ function renderFlowCanvas() {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         const vx = xGenomeCanonical(v.pos, W);
@@ -612,8 +678,8 @@ function renderFlowCanvas() {
           ? xGenomeCanonical(v.pos, W)
           : xColumn(i, win.length);
         flowInstancedRenderer.addLine(
-          vx * devicePixelRatio, y0 * devicePixelRatio,
-          cx * devicePixelRatio, junctionY * devicePixelRatio,
+          vx * devicePixelRatio, yBandToFlow(y0) * devicePixelRatio,
+          cx * devicePixelRatio, yBandToFlow(junctionY) * devicePixelRatio,
           color, alpha
         );
       }
@@ -621,7 +687,7 @@ function renderFlowCanvas() {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -673,7 +739,8 @@ function renderFlowCanvas() {
   
   // Helper function to get all formatted labels for a variant
   // Uses precomputed formatted labels from backend if available for performance
-  function getFormattedLabelsForVariant(variant) {
+  // Exposed on window for handleVariantRectClick (main.js)
+  window.getFormattedLabelsForVariant = function getFormattedLabelsForVariant(variant) {
     const labels = [];
     const labelToAllele = new Map();
     
@@ -721,7 +788,7 @@ function renderFlowCanvas() {
     }
     
     return { labels, labelToAllele };
-  }
+  };
   
   // Helper function to extract allele string from formatted label
   function extractAlleleFromLabel(label) {
@@ -731,75 +798,67 @@ function renderFlowCanvas() {
     return match ? match[1] : label;
   }
   
+  // Convert HSLA to RGBA so WebGPU path (which only parses rgba) can draw all nodes opaque
+  function hslaToRgba(h, s, l, a) {
+    s /= 100;
+    l /= 100;
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+    const m = l - c / 2;
+    let r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; }
+    else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; }
+    else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; }
+    return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255), a];
+  }
+
   // Helper function to get node colors based on allele type
+  // Always returns rgba() so WebGPU fill path works for all colors (red/purple were hsla and were skipped)
   function getAlleleNodeColors(label, variant, actualAllele, isDragging) {
     const noCallLabel = formatAlleleLabel(".");
-    const opacity = 0.65; // Light translucency
-    const opacityDragging = 0.85; // Slightly more opaque when dragging
-    const currentOpacity = isDragging ? opacityDragging : opacity;
+    const currentOpacity = 1.0; // Opaque nodes (WebGPU only parses rgba, so we always use rgba)
     
     let fillColor, strokeColor;
     
     if (label === noCallLabel) {
-      // No-call allele: gray with translucency
       fillColor = `rgba(200,200,200,${currentOpacity})`;
       strokeColor = `rgba(200,200,200,${currentOpacity})`;
     } else {
-      // Determine allele type based on variant context and length
-      // Use actualAllele if provided (to avoid truncation issues), otherwise extract from label
       const allele = actualAllele || extractAlleleFromLabel(label);
       const refLen = variant.refAllele ? variant.refAllele.length : 0;
       const alleleLen = allele.length;
       
-      // 1 bp alleles are always SNVs (blue), regardless of reference length
       if (alleleLen === 1) {
         fillColor = `rgba(100,150,255,${currentOpacity})`;
         strokeColor = `rgba(100,150,255,${currentOpacity})`;
       } else {
-        // Determine variant type by comparing ref to alts
-        // Use precomputed variantType if available (performance optimization)
         let isDeletion = false;
         let isInsertion = false;
         
         if (variant.hasOwnProperty('variantType')) {
-          // Use precomputed variant type
           const variantType = variant.variantType;
           isDeletion = variantType === 'deletion' || variantType === 'complex';
           isInsertion = variantType === 'insertion' || variantType === 'complex';
         } else {
-          // Fallback to computation for backward compatibility
           if (variant.altAlleles && Array.isArray(variant.altAlleles) && variant.altAlleles.length > 0) {
-            // Check if any alt is shorter than ref (deletion) or longer than ref (insertion)
             const hasShorterAlt = variant.altAlleles.some(alt => alt.length < refLen);
             const hasLongerAlt = variant.altAlleles.some(alt => alt.length > refLen);
-            
-            if (hasShorterAlt && !hasLongerAlt) {
-              isDeletion = true;
-            } else if (hasLongerAlt && !hasShorterAlt) {
-              isInsertion = true;
-            }
+            if (hasShorterAlt && !hasLongerAlt) isDeletion = true;
+            else if (hasLongerAlt && !hasShorterAlt) isInsertion = true;
           }
         }
         
-        // Color based on variant type and allele length
         if (isDeletion) {
-          // In deletion variants, longer alleles are deletions (yellow)
-          // Shorter alleles (if > 1 bp) would also be deletions, but 1 bp is already handled above
-          const maxDiff = 100;
-          const normalizedDiff = Math.min((alleleLen - 1) / maxDiff, 1.0); // Compare to 1 bp minimum
-          const lightness = 70 - (normalizedDiff * 40); // 70% to 30%
-          fillColor = `hsla(60, 80%, ${lightness}%, ${currentOpacity})`;
-          strokeColor = `hsla(60, 80%, ${lightness}%, ${currentOpacity})`;
+          // Single consistent red for all deletions (no lightness gradient)
+          const [r, g, b] = hslaToRgba(0, 70, 55, currentOpacity);
+          fillColor = `rgba(${r},${g},${b},${currentOpacity})`;
+          strokeColor = `rgba(${r},${g},${b},${currentOpacity})`;
         } else if (isInsertion) {
-          // In insertion variants, longer alleles are insertions (purple)
-          const lengthDiff = alleleLen - refLen;
-          const maxDiff = 100;
-          const normalizedDiff = Math.min(lengthDiff / maxDiff, 1.0);
-          const lightness = 70 - (normalizedDiff * 40); // 70% to 30%
-          fillColor = `hsla(280, 70%, ${lightness}%, ${currentOpacity})`;
-          strokeColor = `hsla(280, 70%, ${lightness}%, ${currentOpacity})`;
+          // Single consistent purple for all insertions
+          const [r, g, b] = hslaToRgba(280, 70, 55, currentOpacity);
+          fillColor = `rgba(${r},${g},${b},${currentOpacity})`;
+          strokeColor = `rgba(${r},${g},${b},${currentOpacity})`;
         } else {
-          // SNV or substitution (same length): blue
           fillColor = `rgba(100,150,255,${currentOpacity})`;
           strokeColor = `rgba(100,150,255,${currentOpacity})`;
         }
@@ -888,11 +947,10 @@ function renderFlowCanvas() {
     return finalSizes;
   }
   
-  // Get track dimensions for sizing (reuse flowLayout from earlier in function)
-  const flowLayoutForSizing = layout.find(l => l.track.id === "flow");
+  // Get track dimensions for sizing (current band's flowLayout)
   const trackDimension = isVertical 
-    ? (flowLayoutForSizing ? flowLayoutForSizing.contentWidth : 300)
-    : (flowLayoutForSizing ? flowLayoutForSizing.contentHeight : 300);
+    ? (flowLayout ? flowLayout.contentWidth : 300)
+    : (flowLayout ? flowLayout.contentHeight : 300);
   
   // Allele nodes with drag-and-drop support
   // Define constants at function scope so they're accessible in nested functions
@@ -985,7 +1043,7 @@ function renderFlowCanvas() {
       let currentX = left + horizontalOffset;
       
       // Check if this variant column is hovered
-      const isVariantHovered = state.hoveredVariantIndex === variantIdx;
+      const isVariantHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
       
       // Draw nodes in current order
       for (let j=0;j<order.length;j++){
@@ -1027,10 +1085,10 @@ function renderFlowCanvas() {
             const g = parseInt(fillMatch[2]) / 255;
             const b = parseInt(fillMatch[3]) / 255;
             const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
-            // Scale coordinates to physical pixels for WebGPU
+            // Scale coordinates to physical pixels for WebGPU (yBandToFlow for multi-track)
             flowInstancedRenderer.addRect(
               nodeX * devicePixelRatio,
-              nodeY * devicePixelRatio,
+              yBandToFlow(nodeY) * devicePixelRatio,
               nodeW * devicePixelRatio,
               nodeH * devicePixelRatio,
               [r, g, b, a]
@@ -1079,15 +1137,16 @@ function renderFlowCanvas() {
           });
         }
         
-        // Store position for hit testing
+        // Store position for hit testing (global flow coords + bandOffset for multi-track)
         nodePositions.push({
           variantId: v.id,
           alleleIndex: order.indexOf(label),
           label: label,
-          x: nodeX,
+          x: xBandToFlow(nodeX),
           y: nodeY,
           w: nodeW,
           h: nodeH,
+          bandOffset: bandOffset,
           isSelected: isSelected
         });
         
@@ -1231,7 +1290,7 @@ function renderFlowCanvas() {
       let currentY = top + verticalOffset;
 
       // Check if this variant column is hovered
-      const isVariantHovered = state.hoveredVariantIndex === variantIdx;
+      const isVariantHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
       
       // Draw nodes in current order
       for (let j=0;j<order.length;j++){
@@ -1276,7 +1335,7 @@ function renderFlowCanvas() {
             // Scale coordinates to physical pixels for WebGPU
             flowInstancedRenderer.addRect(
               nodeX * devicePixelRatio,
-              nodeY * devicePixelRatio,
+              yBandToFlow(nodeY) * devicePixelRatio,
               nodeW * devicePixelRatio,
               nodeH * devicePixelRatio,
               [r, g, b, a]
@@ -1325,15 +1384,16 @@ function renderFlowCanvas() {
           });
         }
         
-        // Store position for hit testing
+        // Store position for hit testing (global flow coords + bandOffset for multi-track)
         nodePositions.push({
           variantId: v.id,
           alleleIndex: order.indexOf(label),
           label: label,
           x: nodeX,
-          y: nodeY,
+          y: yBandToFlow(nodeY),
           w: nodeW,
           h: nodeH,
+          bandOffset: bandOffset,
           isSelected: isSelected
         });
         
@@ -1405,10 +1465,8 @@ function renderFlowCanvas() {
     }
   }
   
-  // Draw ribbons between alleles based on haplotype transitions (not matching labels)
-  // For each pair of adjacent variants, we compute which alleles each sample has at both variants
-  // and draw ribbons proportional to the number of haplotypes making each transition
-  if (nodeInfoByVariant.size > 1) {
+  // Draw ribbons only when variants are phased (|). Unphased (/) data does not have haplotype order.
+  if (nodeInfoByVariant.size > 1 && variantsPhased) {
     const sortedVariantIdxs = Array.from(nodeInfoByVariant.keys()).sort((a, b) => a - b);
     
     // Get the actual variant list (sorted for vertical mode, original order for horizontal)
@@ -1849,6 +1907,10 @@ function renderFlowCanvas() {
       ctx.fillStyle = labelTextColor;
       ctx.fillText(text, labelX, labelY);
     }
+    }
+
+    if (!multiTrack) ctx.restore();
+    })();
   }
 
   // Execute WebGPU render pass after variant columns are added
@@ -1884,6 +1946,16 @@ function renderFlowCanvas() {
       flowInstancedRenderer.render(encoder, renderPass);
       renderPass.end();
       flowWebGPUCore.submit([encoder.finish()]);
+
+      // Ensure alleuvial diagram appears on first paint: schedule one deferred redraw
+      // when we have ribbons so the next frame runs again (handles zero-sized canvas on
+      // first run or WebGPU presenting after first frame). Only once per page load.
+      if (hasRibbonInstances && flowWebGPU && !window._flowRibbonDeferDone) {
+        window._flowRibbonDeferDone = true;
+        requestAnimationFrame(() => {
+          if (typeof renderFlowCanvas === 'function') renderFlowCanvas();
+        });
+      }
     } catch (error) {
       console.error("Flow WebGPU render error:", error);
       // Fallback: clear instances and continue with Canvas 2D only

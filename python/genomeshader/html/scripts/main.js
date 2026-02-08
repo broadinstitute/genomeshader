@@ -375,7 +375,7 @@ function renderSmartTrack(trackId) {
     for (let idx = 0; idx < variants.length; idx++) {
       const v = variants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
-      const isHovered = state.hoveredVariantIndex === idx;
+      const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
       ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
       ctx.globalAlpha = isHovered ? 0.7 : 0.3;
       ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -675,7 +675,7 @@ function renderSmartTrack(trackId) {
     for (let idx = 0; idx < variants.length; idx++) {
       const v = variants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
-      const isHovered = state.hoveredVariantIndex === idx;
+      const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
       ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
       ctx.globalAlpha = isHovered ? 0.7 : 0.3;
       ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -836,6 +836,9 @@ function getBasename(path) {
 const trackControls = document.getElementById("trackControls");
 // Standard tracks that have hover-only controls
 const STANDARD_TRACKS = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
+function isFlowTrack(trackId) {
+  return trackId === "flow" || (typeof trackId === "string" && trackId.startsWith("flow-"));
+}
 
 function renderTrackControls() {
   trackControls.innerHTML = "";
@@ -848,7 +851,7 @@ function renderTrackControls() {
     container.className = "track-control-container";
     
     // Check if this is a standard track - limit container to controls area only
-    const isStandardTrack = STANDARD_TRACKS.includes(track.id);
+    const isStandardTrack = STANDARD_TRACKS.includes(track.id) || isFlowTrack(track.id);
     
     if (isVertical) {
       container.style.position = "absolute";
@@ -1210,7 +1213,7 @@ function renderTrackControls() {
       resizeHandle.dataset.trackId = track.id;
       container.appendChild(resizeHandle);
     } else if (!isSmartTrack) {
-      // For standard tracks: add collapsed indicator and make clickable
+      // For standard tracks (including flow-N): add collapsed indicator and make clickable
       // Smart Tracks handle collapsed state differently (closed = single read, still visible)
       // Mark container as collapsed for CSS styling
       container.classList.add("track-collapsed");
@@ -1266,7 +1269,7 @@ function renderTrackControls() {
 
     // Add hover listeners for standard tracks to show/hide controls
     // Skip hover detection for collapsed tracks - they expand on click
-    if (STANDARD_TRACKS.includes(track.id) && !track.collapsed) {
+    if ((STANDARD_TRACKS.includes(track.id) || isFlowTrack(track.id)) && !track.collapsed) {
       // Mark container for standard track styling
       container.classList.add("standard-track");
       
@@ -1312,7 +1315,7 @@ function renderTrackControls() {
       
       // Setup after a short delay to ensure DOM is ready
       setTimeout(setupHoverDetection, 100);
-    } else if (STANDARD_TRACKS.includes(track.id) && track.collapsed) {
+    } else if ((STANDARD_TRACKS.includes(track.id) || isFlowTrack(track.id)) && track.collapsed) {
       // For collapsed standard tracks, mark as standard but don't set up hover
       // This ensures proper styling but prevents controls from showing
       container.classList.add("standard-track");
@@ -1359,6 +1362,11 @@ function updateTooltip() {
     tooltip.style.left = state.hoveredVariantLabelTooltip.x + 'px';
     tooltip.style.top = state.hoveredVariantLabelTooltip.y + 'px';
     tooltip.classList.add('visible');
+  } else if (state.hoveredAlleleNodeTooltip) {
+    tooltip.textContent = state.hoveredAlleleNodeTooltip.text;
+    tooltip.style.left = state.hoveredAlleleNodeTooltip.x + 'px';
+    tooltip.style.top = state.hoveredAlleleNodeTooltip.y + 'px';
+    tooltip.classList.add('visible');
   } else {
     tooltip.classList.remove('visible');
   }
@@ -1404,10 +1412,11 @@ function debounce(func, delay) {
   };
 }
 
-// Update Locus track variant element hover styles
+// Update Locus track variant element hover styles (use hoveredVariantId so multi-track ruler works)
 function updateLocusTrackHover() {
   state.locusVariantElements.forEach((elements, idx) => {
-    const isHovered = state.hoveredVariantIndex === idx;
+    const variantId = elements.lineEl && elements.lineEl.getAttribute("data-variant-id");
+    const isHovered = (state.hoveredVariantId != null && variantId != null && String(state.hoveredVariantId) === String(variantId)) || state.hoveredVariantIndex === idx;
     const strokeWidth = isHovered ? 2.5 : 1.2;
     const circleStrokeWidth = isHovered ? 2.2 : 1.4;
     const strokeColor = isHovered ? "var(--blue)" : "rgba(127,127,127,0.5)";
@@ -1423,6 +1432,41 @@ function updateLocusTrackHover() {
   });
 }
 
+// Helpers for multi-track variant hover: flat list of all variants (ruler order) and index/by-id lookup
+function getRulerVariants() {
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  return variantTracksConfig.length > 0
+    ? variantTracksConfig.flatMap(t => t.variants_data || [])
+    : variants;
+}
+function getRulerVariantIndex(variantId) {
+  const rulerVariants = getRulerVariants();
+  const idx = rulerVariants.findIndex(v => String(v.id) === String(variantId));
+  return idx >= 0 ? idx : null;
+}
+function findVariantById(variantId) {
+  const rulerVariants = getRulerVariants();
+  return rulerVariants.find(v => String(v.id) === String(variantId)) || null;
+}
+function getFlowBands() {
+  const layout = getTrackLayout();
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  const isVertical = isVerticalMode();
+  const bands = [];
+  if (variantTracksConfig.length > 0) {
+    let bandOffset = 0;
+    for (let i = 0; i < variantTracksConfig.length; i++) {
+      const trackConfig = variantTracksConfig[i];
+      const trackLayout = layout.find(l => l.track.id === trackConfig.id);
+      if (!trackLayout || trackLayout.track.collapsed) continue;
+      const bandHeight = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+      bands.push({ track: trackConfig, flowLayout: trackLayout, bandOffset, bandHeight });
+      bandOffset += bandHeight;
+    }
+  }
+  return bands;
+}
+
 // Set up variant hover areas in canvas overlays
 function setupVariantHoverAreas() {
   if (!flowOverlay) return;
@@ -1430,16 +1474,17 @@ function setupVariantHoverAreas() {
   const isVertical = isVerticalMode();
   const clearSvg = (svg) => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
   
-  // Shared click handler for variant selection
+  // Shared click handler for variant selection (variant may be from any track)
   const handleVariantRectClick = (e, variantId) => {
     e.stopPropagation();
     
-    // Find variant by ID
-    const variant = variants.find(v => String(v.id) === String(variantId));
+    const variant = findVariantById(variantId);
     if (!variant) return;
     
-    // Get all alleles for this variant
-    const { labels } = getFormattedLabelsForVariant(variant);
+    // Get all alleles for this variant (getFormattedLabelsForVariant is from interaction.js)
+    const getFormattedLabels = window.getFormattedLabelsForVariant;
+    if (!getFormattedLabels) return;
+    const { labels } = getFormattedLabels(variant);
     let order = state.variantAlleleOrder.get(variant.id);
     if (!order || order.length !== labels.length) {
       order = [...labels];
@@ -1487,102 +1532,207 @@ function setupVariantHoverAreas() {
   flowOverlay.setAttribute("height", flowH);
   flowOverlay.setAttribute("viewBox", `0 0 ${flowW} ${flowH}`);
   
-  // Create hover areas for Variants/Haplotypes track
-  const win = visibleVariantWindow();
   const variantMode = getVariantLayoutMode();
+  const flowBands = getFlowBands();
+  const multiTrack = flowBands.length > 1;
   
-  if (isVertical) {
-    const junctionX = 70;
-    const left = 8;
-    
-    for (let i = 0; i < win.length; i++) {
-      const v = win[i];
-      const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-      if (variantIdx === -1) continue;
-      
-      const cy = variantMode === "genomic"
-        ? yGenomeCanonical(v.pos, flowH)
-        : yColumn(i, win.length);
-      
-      // Create hover rectangle for the column
-      const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      hoverRect.setAttribute("x", junctionX);
-      hoverRect.setAttribute("y", cy - 8);
-      hoverRect.setAttribute("width", Math.max(0, flowW - junctionX - 10));
-      hoverRect.setAttribute("height", 16);
-      hoverRect.setAttribute("fill", "transparent");
-      hoverRect.setAttribute("data-variant-id", v.id);
-      hoverRect.style.cursor = "pointer";
-      hoverRect.style.pointerEvents = "auto";
-      hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
-      flowOverlay.appendChild(hoverRect);
-    }
-  } else {
-    const junctionY = 40;
-    
-    for (let i = 0; i < win.length; i++) {
-      const v = win[i];
-      const variantIdx = state.firstVariantIndex + i;
-      if (variantIdx >= variants.length) continue;
-      const variant = variants[variantIdx];
-      
-      const cx = variantMode === "genomic"
-        ? xGenomeCanonical(v.pos, flowW)
-        : xColumn(i, win.length);
-      
-      // Create hover rectangle for the column
-      const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      hoverRect.setAttribute("x", cx - 8);
-      hoverRect.setAttribute("y", junctionY);
-      hoverRect.setAttribute("width", 16);
-      hoverRect.setAttribute("height", Math.max(0, flowH - junctionY - 10));
-      hoverRect.setAttribute("fill", "transparent");
-      hoverRect.setAttribute("data-variant-id", variant.id);
-      hoverRect.style.cursor = "pointer";
-      hoverRect.style.pointerEvents = "auto";
-      hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, variant.id));
-      flowOverlay.appendChild(hoverRect);
-    }
-  }
-  
-  // Set up event delegation for hover detection
-  // Use a single handler for all hover areas
+  // Hover handlers (used by both multi-track per-overlay and single-track shared overlay)
   const handleVariantHover = (e) => {
     const target = e.target;
     const variantId = target.getAttribute("data-variant-id");
     if (!variantId) return;
-    
-    // Find variant index by ID
-    const variantIdx = variants.findIndex(v => String(v.id) === String(variantId));
-    if (variantIdx === -1) return;
-    
+    state.hoveredVariantId = variantId;
+    const variantIdx = getRulerVariantIndex(variantId);
     if (state.hoveredVariantIndex !== variantIdx) {
       state.hoveredVariantIndex = variantIdx;
       renderHoverOnly();
+    } else {
+      renderHoverOnly();
     }
   };
-  
   const handleVariantLeave = (e) => {
     const target = e.target;
     if (target.hasAttribute("data-variant-id")) {
-      if (state.hoveredVariantIndex !== null) {
+      if (state.hoveredVariantIndex !== null || state.hoveredVariantId !== null) {
         state.hoveredVariantIndex = null;
+        state.hoveredVariantId = null;
         renderHoverOnly();
       }
     }
   };
   
+  if (multiTrack) {
+    // Per-track overlays so variant click works in every track (first track was blocked by shared overlay stacking)
+    flowOverlay.style.pointerEvents = "none";
+    flowOverlay.innerHTML = "";
+    const junctionY = 40;
+    const junctionX = 70;
+    for (const band of flowBands) {
+      const bandVariants = band.track.variants_data || [];
+      const win = typeof visibleVariantWindowFor === "function" ? visibleVariantWindowFor(bandVariants) : bandVariants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
+      const bandSize = band.bandHeight;
+      const trackEl = document.getElementById(band.track.id);
+      const bandOverlay = trackEl ? trackEl.querySelector(".flow-track-overlay") : null;
+      if (!bandOverlay) continue;
+      clearSvg(bandOverlay);
+      if (isVertical) {
+        bandOverlay.setAttribute("width", bandSize);
+        bandOverlay.setAttribute("height", flowH);
+        bandOverlay.setAttribute("viewBox", `0 0 ${bandSize} ${flowH}`);
+      } else {
+        bandOverlay.setAttribute("width", flowW);
+        bandOverlay.setAttribute("height", bandSize);
+        bandOverlay.setAttribute("viewBox", `0 0 ${flowW} ${bandSize}`);
+      }
+      bandOverlay.style.pointerEvents = "auto";
+      // Pass-through rect so clicks in the allele area go to the canvas (for per-allele selection/drag)
+      const passThrough = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      if (isVertical) {
+        passThrough.setAttribute("x", junctionX);
+        passThrough.setAttribute("y", 0);
+        passThrough.setAttribute("width", Math.max(0, bandSize - junctionX - 10));
+        passThrough.setAttribute("height", flowH);
+      } else {
+        passThrough.setAttribute("x", 0);
+        passThrough.setAttribute("y", junctionY);
+        passThrough.setAttribute("width", flowW);
+        passThrough.setAttribute("height", Math.max(0, bandSize - junctionY));
+      }
+      passThrough.setAttribute("fill", "transparent");
+      passThrough.style.pointerEvents = "none";
+      bandOverlay.appendChild(passThrough);
+      // Variant rects only in the label strip (y 0..junctionY) so "select whole variant" is there; allele area uses canvas hit test
+      if (isVertical) {
+        const bandW = bandSize;
+        const labelW = Math.min(24, Math.max(0, bandW - junctionX - 10));
+        for (let i = 0; i < win.length; i++) {
+          const v = win[i];
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, flowH)
+            : yColumn(i, win.length);
+          const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          hoverRect.setAttribute("x", junctionX);
+          hoverRect.setAttribute("y", Math.max(0, cy - 8));
+          hoverRect.setAttribute("width", labelW);
+          hoverRect.setAttribute("height", 16);
+          hoverRect.setAttribute("fill", "transparent");
+          hoverRect.setAttribute("data-variant-id", v.id);
+          hoverRect.style.cursor = "pointer";
+          hoverRect.style.pointerEvents = "auto";
+          hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
+          bandOverlay.appendChild(hoverRect);
+        }
+      } else {
+        for (let i = 0; i < win.length; i++) {
+          const v = win[i];
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, flowW)
+            : xColumn(i, win.length);
+          const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          hoverRect.setAttribute("x", cx - 8);
+          hoverRect.setAttribute("y", 0);
+          hoverRect.setAttribute("width", 16);
+          hoverRect.setAttribute("height", junctionY);
+          hoverRect.setAttribute("fill", "transparent");
+          hoverRect.setAttribute("data-variant-id", v.id);
+          hoverRect.style.cursor = "pointer";
+          hoverRect.style.pointerEvents = "auto";
+          hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
+          bandOverlay.appendChild(hoverRect);
+        }
+      }
+      // Hover delegation on this band's overlay
+      bandOverlay._variantHoverHandler = handleVariantHover;
+      bandOverlay._variantLeaveHandler = handleVariantLeave;
+      bandOverlay.removeEventListener("mouseenter", bandOverlay._variantHoverHandler, true);
+      bandOverlay.removeEventListener("mouseleave", bandOverlay._variantLeaveHandler, true);
+      bandOverlay.addEventListener("mouseenter", handleVariantHover, true);
+      bandOverlay.addEventListener("mouseleave", handleVariantLeave, true);
+    }
+  } else {
+    flowOverlay.style.pointerEvents = "";
+  }
+  
+  if (!multiTrack) {
+    // Single track: pass-through in content area so allele clicks work; variant rects only in label strip
+    const junctionYSingle = 40;
+    const junctionXSingle = 70;
+    const passThroughSingle = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    if (isVertical) {
+      passThroughSingle.setAttribute("x", junctionXSingle);
+      passThroughSingle.setAttribute("y", 0);
+      passThroughSingle.setAttribute("width", Math.max(0, flowW - junctionXSingle - 10));
+      passThroughSingle.setAttribute("height", flowH);
+    } else {
+      passThroughSingle.setAttribute("x", 0);
+      passThroughSingle.setAttribute("y", junctionYSingle);
+      passThroughSingle.setAttribute("width", flowW);
+      passThroughSingle.setAttribute("height", Math.max(0, flowH - junctionYSingle));
+    }
+    passThroughSingle.setAttribute("fill", "transparent");
+    passThroughSingle.style.pointerEvents = "none";
+    flowOverlay.appendChild(passThroughSingle);
+    const win = visibleVariantWindow();
+    if (isVertical) {
+      const labelW = Math.min(24, Math.max(0, flowW - junctionXSingle - 10));
+      for (let i = 0; i < win.length; i++) {
+        const v = win[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        if (variantIdx === -1) continue;
+        const cy = variantMode === "genomic"
+          ? yGenomeCanonical(v.pos, flowH)
+          : yColumn(i, win.length);
+        const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        hoverRect.setAttribute("x", junctionXSingle);
+        hoverRect.setAttribute("y", Math.max(0, cy - 8));
+        hoverRect.setAttribute("width", labelW);
+        hoverRect.setAttribute("height", 16);
+        hoverRect.setAttribute("fill", "transparent");
+        hoverRect.setAttribute("data-variant-id", v.id);
+        hoverRect.style.cursor = "pointer";
+        hoverRect.style.pointerEvents = "auto";
+        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
+        flowOverlay.appendChild(hoverRect);
+      }
+    } else {
+      for (let i = 0; i < win.length; i++) {
+        const v = win[i];
+        const variantIdx = state.firstVariantIndex + i;
+        if (variantIdx >= variants.length) continue;
+        const variant = variants[variantIdx];
+        const cx = variantMode === "genomic"
+          ? xGenomeCanonical(v.pos, flowW)
+          : xColumn(i, win.length);
+        const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        hoverRect.setAttribute("x", cx - 8);
+        hoverRect.setAttribute("y", 0);
+        hoverRect.setAttribute("width", 16);
+        hoverRect.setAttribute("height", junctionYSingle);
+        hoverRect.setAttribute("fill", "transparent");
+        hoverRect.setAttribute("data-variant-id", variant.id);
+        hoverRect.style.cursor = "pointer";
+        hoverRect.style.pointerEvents = "auto";
+        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, variant.id));
+        flowOverlay.appendChild(hoverRect);
+      }
+    }
+  }
+  
   // Remove old listeners if they exist (for hover only, clicks are now on rectangles)
   if (flowOverlay._variantHoverHandler) {
     flowOverlay.removeEventListener("mouseenter", flowOverlay._variantHoverHandler, true);
-    flowOverlay.removeEventListener("mouseleave", flowOverlay._variantHoverHandler, true);
+    flowOverlay.removeEventListener("mouseleave", flowOverlay._variantLeaveHandler, true);
   }
+  flowOverlay._variantHoverHandler = null;
+  flowOverlay._variantLeaveHandler = null;
   
-  // Add new listeners with capture phase to catch events on child elements (hover only)
-  flowOverlay._variantHoverHandler = handleVariantHover;
-  flowOverlay._variantLeaveHandler = handleVariantLeave;
-  flowOverlay.addEventListener("mouseenter", handleVariantHover, true);
-  flowOverlay.addEventListener("mouseleave", handleVariantLeave, true);
+  // Single-track: use shared overlay for hover; multi-track uses per-track overlays (already set up above)
+  if (!multiTrack) {
+    flowOverlay._variantHoverHandler = handleVariantHover;
+    flowOverlay._variantLeaveHandler = handleVariantLeave;
+    flowOverlay.addEventListener("mouseenter", handleVariantHover, true);
+    flowOverlay.addEventListener("mouseleave", handleVariantLeave, true);
+  }
 }
 
 // Selective rendering for hover-only state changes (no SVG rebuild)
@@ -1719,12 +1869,12 @@ function setupCanvasHover() {
     const y = e.clientY - rect.top;
     const isVertical = isVerticalMode();
     const variantMode = getVariantLayoutMode();
-    const win = visibleVariantWindow();
+    const flowBands = getFlowBands();
+    const multiTrack = flowBands.length > 1;
     
     if (isVertical) {
       const junctionX = 40;
       const H = flowHeightPx();
-      const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
       
       // Check if mouse is over a variant label
       if (window._variantLabelPositions && window._variantLabelPositions.length > 0) {
@@ -1751,48 +1901,55 @@ function setupCanvasHover() {
         }
       }
       
-      // Check if mouse is near a column line (horizontal in vertical mode)
-      for (let i = 0; i < sortedWin.length; i++) {
-        const v = sortedWin[i];
-        // Position based on variant layout mode
-        const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
-          : yColumn(i, sortedWin.length);
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        
-        if (Math.abs(y - cy) < 10 && x >= junctionX) {
-          if (state.hoveredVariantIndex !== variantIdx) {
-            state.hoveredVariantIndex = variantIdx;
-            renderHoverOnly();
-          }
-          // Clear variant label tooltip when hovering column
-          state.hoveredVariantLabelTooltip = null;
-          updateTooltip();
-          return;
-        }
-      }
-      
-      // Check if mouse is near a diagonal connector
+      // Check if mouse is near a column line or diagonal connector (vertical mode); per-band when multi-track (vertical mode: bands stacked along x)
       const x0 = 6;
-      for (let i = 0; i < sortedWin.length; i++) {
-        const v = sortedWin[i];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        const vy = yGenomeCanonical(v.pos, H); // always genomic for ruler connection
-        const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
-          : yColumn(i, sortedWin.length);
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        
-        const dist = Math.abs((x - x0) * (cy - vy) / (junctionX - x0) + vy - y);
-        if (dist < 5 && x >= x0 && x <= junctionX) {
-          if (state.hoveredVariantIndex !== variantIdx) {
-            state.hoveredVariantIndex = variantIdx;
-            renderHoverOnly();
+      const bandsToTestVertical = multiTrack
+        ? flowBands.filter(b => x >= b.bandOffset && x < b.bandOffset + b.bandHeight)
+        : [{ track: { variants_data: variants }, bandOffset: 0, bandHeight: H }];
+      for (const band of bandsToTestVertical) {
+        const bandVariants = band.track.variants_data || [];
+        const win = multiTrack && typeof visibleVariantWindowFor === "function"
+          ? visibleVariantWindowFor(bandVariants)
+          : visibleVariantWindow();
+        const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
+        for (let i = 0; i < sortedWin.length; i++) {
+          const v = sortedWin[i];
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          const variantIdx = getRulerVariantIndex(v.id);
+          if (variantIdx == null) continue;
+          if (Math.abs(y - cy) < 10 && x >= junctionX) {
+            if (state.hoveredVariantIndex !== variantIdx || state.hoveredVariantId !== v.id) {
+              state.hoveredVariantIndex = variantIdx;
+              state.hoveredVariantId = v.id;
+              renderHoverOnly();
+            }
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
+            return;
           }
-          // Clear variant label tooltip when hovering connector
-          state.hoveredVariantLabelTooltip = null;
-          updateTooltip();
-          return;
+        }
+        for (let i = 0; i < sortedWin.length; i++) {
+          const v = sortedWin[i];
+          if (v.pos < state.startBp || v.pos > state.endBp) continue;
+          const vy = yGenomeCanonical(v.pos, H);
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          const variantIdx = getRulerVariantIndex(v.id);
+          if (variantIdx == null) continue;
+          const dist = Math.abs((x - x0) * (cy - vy) / (junctionX - x0) + vy - y);
+          if (dist < 5 && x >= x0 && x <= junctionX) {
+            if (state.hoveredVariantIndex !== variantIdx || state.hoveredVariantId !== v.id) {
+              state.hoveredVariantIndex = variantIdx;
+              state.hoveredVariantId = v.id;
+              renderHoverOnly();
+            }
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
+            return;
+          }
         }
       }
     } else {
@@ -1822,51 +1979,64 @@ function setupCanvasHover() {
         }
       }
       
-      // Check if mouse is near a column line
-      for (let i = 0; i < win.length; i++) {
-        // Position based on variant layout mode
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(win[i].pos, W)
-          : xColumn(i, win.length);
-        const variantIdx = state.firstVariantIndex + i;
-        
-        if (Math.abs(x - cx) < 10 && y >= junctionY) {
-          if (state.hoveredVariantIndex !== variantIdx) {
-            state.hoveredVariantIndex = variantIdx;
-            renderHoverOnly();
-          }
-          // Clear variant label tooltip when hovering column
-          state.hoveredVariantLabelTooltip = null;
-          updateTooltip();
-          return;
-        }
-      }
-      
-      // Check if mouse is near a diagonal connector
+      // Check if mouse is near a column line or diagonal connector (horizontal mode); per-band when multi-track
       const y0 = 6;
-      for (let i = 0; i < win.length; i++) {
-        const v = win[i];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        const vx = xGenomeCanonical(v.pos, W); // always genomic for ruler connection
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        const variantIdx = state.firstVariantIndex + i;
-        
-        const dist = Math.abs((y - y0) * (cx - vx) / (junctionY - y0) + vx - x);
-        if (dist < 5 && y >= y0 && y <= junctionY) {
-          if (state.hoveredVariantIndex !== variantIdx) {
-            state.hoveredVariantIndex = variantIdx;
-            renderHoverOnly();
+      const bandsToTestHorizontal = multiTrack
+        ? flowBands.filter(b => y >= b.bandOffset && y < b.bandOffset + b.bandHeight)
+        : [{ track: { variants_data: variants }, bandOffset: 0, bandHeight: flowHeightPx() }];
+      for (const band of bandsToTestHorizontal) {
+        const bandVariants = band.track.variants_data || [];
+        const win = multiTrack && typeof visibleVariantWindowFor === "function"
+          ? visibleVariantWindowFor(bandVariants)
+          : visibleVariantWindow();
+        for (let i = 0; i < win.length; i++) {
+          const v = win[i];
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          const variantIdx = getRulerVariantIndex(v.id);
+          if (variantIdx == null) continue;
+          const yInBand = y - band.bandOffset;
+          if (yInBand >= junctionY && Math.abs(x - cx) < 10) {
+            if (state.hoveredVariantIndex !== variantIdx || state.hoveredVariantId !== v.id) {
+              state.hoveredVariantIndex = variantIdx;
+              state.hoveredVariantId = v.id;
+              renderHoverOnly();
+            }
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
+            return;
           }
-          return;
+        }
+        for (let i = 0; i < win.length; i++) {
+          const v = win[i];
+          if (v.pos < state.startBp || v.pos > state.endBp) continue;
+          const vx = xGenomeCanonical(v.pos, W);
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          const variantIdx = getRulerVariantIndex(v.id);
+          if (variantIdx == null) continue;
+          const yInBand = y - band.bandOffset;
+          const dist = Math.abs((yInBand - y0) * (cx - vx) / (junctionY - y0) + vx - x);
+          if (dist < 5 && yInBand >= y0 && yInBand <= junctionY) {
+            if (state.hoveredVariantIndex !== variantIdx || state.hoveredVariantId !== v.id) {
+              state.hoveredVariantIndex = variantIdx;
+              state.hoveredVariantId = v.id;
+              renderHoverOnly();
+            }
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
+            return;
+          }
         }
       }
     }
     
     // No variant hovered
-    if (state.hoveredVariantIndex !== null) {
+    if (state.hoveredVariantIndex !== null || state.hoveredVariantId !== null) {
       state.hoveredVariantIndex = null;
+      state.hoveredVariantId = null;
       renderHoverOnly();
     }
     // Clear variant label tooltip when not hovering anything
@@ -1877,10 +2047,13 @@ function setupCanvasHover() {
   };
   
   flowLeaveHandler = () => {
-    if (state.hoveredVariantIndex !== null || state.hoveredAlleleNode !== null) {
+    if (state.hoveredVariantIndex !== null || state.hoveredVariantId !== null || state.hoveredAlleleNode !== null) {
       state.hoveredVariantIndex = null;
+      state.hoveredVariantId = null;
       state.hoveredAlleleNode = null;
+      state.hoveredAlleleNodeTooltip = null;
       renderHoverOnly();
+      updateTooltip();
     }
     // Clear variant label tooltip when leaving flow canvas
     if (state.hoveredVariantLabelTooltip !== null) {
@@ -1957,13 +2130,17 @@ function setupCanvasHover() {
   let alleleMouseUpHandler = null;
   
   function setupAlleleDragDrop() {
-    // Remove existing listeners
+    // Remove existing listeners from both possible targets
     if (alleleMouseDownHandler) {
-      const oldTarget = flowWebGPU || flow;
-      oldTarget.removeEventListener("mousedown", alleleMouseDownHandler);
+      if (flow) flow.removeEventListener("mousedown", alleleMouseDownHandler);
+      if (flowWebGPU) flowWebGPU.removeEventListener("mousedown", alleleMouseDownHandler);
       document.removeEventListener("mousemove", alleleMouseMoveHandler);
       document.removeEventListener("mouseup", alleleMouseUpHandler);
     }
+    
+    // With multiple variant tracks, flowWebGPU has pointer-events: none; attach to flow so overlays' events bubble here
+    const variantTracks = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+    const targetElement = variantTracks.length > 1 ? flow : (flowWebGPU || flow);
     
     alleleMouseDownHandler = (e) => {
       if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) return;
@@ -2000,6 +2177,8 @@ function setupCanvasHover() {
       const rect = flow.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+      
+      const nodesToTest = window._alleleNodePositions || [];
       
       if (state.alleleDragState) {
         // Handle drag
@@ -2039,7 +2218,7 @@ function setupCanvasHover() {
         if (v) {
           // Get track dimension for size calculation
           const layout = getTrackLayout();
-          const flowLayout = layout.find(l => l.track.id === "flow");
+          const flowLayout = layout.find(l => l.track.id === "flow") || layout.find(l => l.track.id && l.track.id.startsWith("flow-"));
           const trackDimension = isVertical 
             ? (flowLayout ? flowLayout.contentWidth : 300)
             : (flowLayout ? flowLayout.contentHeight : 300);
@@ -2188,27 +2367,40 @@ function setupCanvasHover() {
         if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) {
           if (state.hoveredAlleleNode) {
             state.hoveredAlleleNode = null;
+            state.hoveredAlleleNodeTooltip = null;
             renderFlowCanvas();
+            updateTooltip();
           }
           return;
         }
         
-        // Find which node is hovered
+        // Find which node is hovered (nodesToTest is filtered by band in multi-track)
         let hoveredNode = null;
-        for (const node of window._alleleNodePositions) {
+        let hoveredNodeLabel = null;
+        for (const node of nodesToTest) {
           if (x >= node.x && x <= node.x + node.w && 
               y >= node.y && y <= node.y + node.h) {
             hoveredNode = { variantId: node.variantId, alleleIndex: node.alleleIndex };
+            hoveredNodeLabel = node.label;
             break;
           }
         }
         
-        // Update hover state if changed
+        // Update hover state and tooltip if changed
         const currentHover = state.hoveredAlleleNode;
-        if ((hoveredNode && (!currentHover || currentHover.variantId !== hoveredNode.variantId || currentHover.alleleIndex !== hoveredNode.alleleIndex)) ||
-            (!hoveredNode && currentHover)) {
+        const hoverChanged = (hoveredNode && (!currentHover || currentHover.variantId !== hoveredNode.variantId || currentHover.alleleIndex !== hoveredNode.alleleIndex)) ||
+            (!hoveredNode && currentHover);
+        if (hoverChanged) {
           state.hoveredAlleleNode = hoveredNode;
+          state.hoveredAlleleNodeTooltip = hoveredNode && hoveredNodeLabel
+            ? { text: hoveredNodeLabel, x: e.clientX + 10, y: e.clientY + 10 }
+            : null;
           renderFlowCanvas();
+          updateTooltip();
+        } else if (hoveredNode && hoveredNodeLabel) {
+          // Same node: keep tooltip text but update position so it follows the cursor
+          state.hoveredAlleleNodeTooltip = { text: hoveredNodeLabel, x: e.clientX + 10, y: e.clientY + 10 };
+          updateTooltip();
         }
       }
     };
@@ -2353,9 +2545,7 @@ function setupCanvasHover() {
       renderFlowCanvas();
     };
     
-    // Attach to flowWebGPU canvas (which is on top) or flow container
-    // Both flowCanvas and flowWebGPU are inside flow, so coordinates are relative to flow
-    const targetElement = flowWebGPU || flow;
+    // Attach to flow (when multi-track so overlays bubble) or flowWebGPU (single-track)
     targetElement.addEventListener("mousedown", alleleMouseDownHandler, { passive: false });
     document.addEventListener("mousemove", alleleMouseMoveHandler);
     document.addEventListener("mouseup", alleleMouseUpHandler);
@@ -3670,24 +3860,93 @@ function setupCanvasHover() {
   window.updateSelectionDisplay = updateSelectionDisplay;
 }
 
+function ensureFlowContainers(flowLayouts) {
+  if (!flow || flowLayouts.length <= 1) return;
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  if (variantTracksConfig.length <= 1) return;
+  const flowWebGPUEl = document.getElementById("flowWebGPU");
+  const flowOverlayEl = document.getElementById("flowOverlay");
+  const firstFlowTrack = flow.querySelector('[id^="flow-"]');
+  if (firstFlowTrack && firstFlowTrack.id === "flow-0") return;
+  while (flow.firstChild) flow.removeChild(flow.firstChild);
+  // Append flowWebGPU first so it is behind flow-tracks; then clicks in each track hit the correct track
+  if (flowWebGPUEl) {
+    flow.appendChild(flowWebGPUEl);
+    flowWebGPUEl.style.pointerEvents = "none";
+  }
+  const flowTrackDivs = [];
+  for (let i = 0; i < flowLayouts.length; i++) {
+    const track = flowLayouts[i].track;
+    const div = document.createElement("div");
+    div.className = "flow-track";
+    div.id = track.id;
+    div.style.position = "absolute";
+    div.style.left = "0";
+    div.style.width = "100%";
+    const canvas = document.createElement("canvas");
+    canvas.className = "canvas";
+    canvas.id = "flowCanvas-" + track.id.replace("flow-", "");
+    div.appendChild(canvas);
+    const overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    overlay.setAttribute("class", "overlay flow-track-overlay");
+    overlay.setAttribute("data-track-id", track.id);
+    overlay.style.pointerEvents = "auto";
+    div.appendChild(overlay);
+    flowTrackDivs.push(div);
+  }
+  // Append in reverse order so flow-0 is on top and receives clicks in the first track
+  for (let i = flowTrackDivs.length - 1; i >= 0; i--) {
+    flow.appendChild(flowTrackDivs[i]);
+  }
+  if (flowOverlayEl) flow.appendChild(flowOverlayEl);
+}
+
 function updateFlowAndReadsPosition() {
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
-  
-  const flowLayout = layout.find(l => l.track.id === "flow");
-  if (flowLayout && flow) {
-    if (isVertical) {
-      flow.style.left = `${flowLayout.contentLeft}px`;
-      flow.style.width = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentWidth}px`;
-      flow.style.top = "0";
-      flow.style.height = "100%";
+  const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
+  if (flowLayouts.length > 0 && flow) {
+    ensureFlowContainers(flowLayouts);
+    const visible = flowLayouts.filter(l => !l.track.collapsed);
+    if (visible.length === 0) {
+      flow.style.display = "none";
     } else {
-      flow.style.top = `${flowLayout.contentTop}px`;
-      flow.style.height = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentHeight}px`;
-      flow.style.left = "0";
-      flow.style.width = "100%";
+      if (isVertical) {
+        const left = Math.min(...visible.map(l => l.contentLeft));
+        const right = Math.max(...visible.map(l => l.contentLeft + l.contentWidth));
+        flow.style.left = `${left}px`;
+        flow.style.width = `${right - left}px`;
+        flow.style.top = "0";
+        flow.style.height = "100%";
+      } else {
+        const top = Math.min(...visible.map(l => l.contentTop));
+        const bottom = Math.max(...visible.map(l => l.contentTop + l.contentHeight));
+        flow.style.top = `${top}px`;
+        flow.style.height = `${bottom - top}px`;
+        flow.style.left = "0";
+        flow.style.width = "100%";
+      }
+      flow.style.display = "block";
+      let offset = 0;
+      for (let i = 0; i < visible.length; i++) {
+        const flowTrackEl = document.getElementById(visible[i].track.id);
+        if (flowTrackEl) {
+          const ch = visible[i].contentHeight;
+          const cw = visible[i].contentWidth;
+          if (isVertical) {
+            flowTrackEl.style.top = "0";
+            flowTrackEl.style.left = `${offset}px`;
+            flowTrackEl.style.width = `${cw}px`;
+            flowTrackEl.style.height = "100%";
+            offset += cw;
+          } else {
+            flowTrackEl.style.top = `${offset}px`;
+            flowTrackEl.style.height = `${ch}px`;
+            offset += ch;
+          }
+        }
+      }
     }
-    flow.style.display = flowLayout.track.collapsed ? "none" : "block";
   }
   
   // Update Smart track container positions (actual rendering is done in renderSmartTrack)
@@ -3936,17 +4195,16 @@ function bindInteractions(root, state, main) {
   };
 
   const onPointerDown = (e) => {
-    // Don't start drag if clicking on a variant (for insertion expansion)
-    // Check if clicking on SVG elements that are variants
     const target = e.target;
+    // Don't start pan/drag if clicking on variant selection rects (flow overlay or per-track overlay)
+    if (target && target.getAttribute && target.getAttribute("data-variant-id")) return;
+    if (target && target.closest && (target.closest(".flow-track-overlay") || target.closest("#flowOverlay"))) return;
+    // Don't start drag if clicking on a variant (for insertion expansion) in Locus track
     if (target && target.tagName && (target.tagName === "line" || target.tagName === "circle" || target.tagName === "rect")) {
-      // Check if this is a variant element (has blue stroke or is in the variant area)
       const stroke = target.getAttribute ? target.getAttribute("stroke") : null;
       if (stroke && (stroke === "var(--blue)" || stroke === cssVar("--blue") || stroke.includes("blue"))) {
-        // This might be a variant - don't start dragging, let click handler work
         return;
       }
-      // Also check if it's the invisible click area for insertions
       if (target.getAttribute && target.getAttribute("fill") === "transparent" && target.getAttribute("width") === "10") {
         return;
       }

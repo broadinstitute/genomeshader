@@ -147,20 +147,26 @@ class InstancedRenderer {
         // -strokeWidth <= d < 0: in stroke region
         // d >= 0: outside
         
-        // Check if this is a "stroke-enabled" rectangle by looking at alpha
-        // If alpha > 0.5, it's a stroke rectangle (higher opacity = stroke color)
-        // If alpha <= 0.5, it's a fill rectangle (lower opacity = fill color)
-        let isStrokeRect = color.a > 0.5;
+        // Alpha convention: alpha >= 0.99 = draw both fill and stroke (opaque node, e.g. allele nodes).
+        // 0.5 < alpha < 0.99 = stroke-only (legacy). alpha <= 0.5 = fill-only (legacy).
+        let drawBoth = color.a >= 0.99;
+        let isStrokeOnly = !drawBoth && color.a > 0.5;
         
-        if (isStrokeRect) {
-          // This is a stroke-only rectangle: only render pixels in the stroke band
-          // Stroke band is from d = -strokeWidth to d = 0
+        if (drawBoth) {
+          // Opaque node: stroke full opacity, fill slightly transparent
+          let fillMask = 1.0 - smoothstep(-strokeWidth - 0.5, -strokeWidth + 0.5, d);
+          let strokeMask = smoothstep(-strokeWidth - 0.5, -strokeWidth + 0.5, d) * (1.0 - smoothstep(-0.5, 0.5, d));
+          let fillAlpha = fillMask * 0.70;   // Slightly transparent fill (70%)
+          let strokeAlpha = strokeMask * 1.0; // Full opacity stroke
+          let finalAlpha = min(1.0, fillAlpha + strokeAlpha);
+          return vec4<f32>(color.rgb * finalAlpha, finalAlpha);
+        } else if (isStrokeOnly) {
+          // Stroke-only rectangle
           let strokeAlpha = smoothstep(-strokeWidth - 0.5, -strokeWidth + 0.5, d) * (1.0 - smoothstep(-0.5, 0.5, d));
           let finalAlpha = color.a * strokeAlpha;
           return vec4<f32>(color.rgb * finalAlpha, finalAlpha);
         } else {
-          // This is a fill rectangle: render the interior (up to but not including stroke)
-          // Fill region is where d < -strokeWidth
+          // Fill-only rectangle
           let fillAlpha = 1.0 - smoothstep(-strokeWidth - 0.5, -strokeWidth + 0.5, d);
           let finalAlpha = color.a * fillAlpha;
           return vec4<f32>(color.rgb * finalAlpha, finalAlpha);

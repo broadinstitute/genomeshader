@@ -121,9 +121,8 @@ function getTrackLayout() {
   
   // Standard tracks that should have hover-only controls (no reserved space)
   const standardTracks = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
-  
   function isStandardTrack(trackId) {
-    return standardTracks.includes(trackId);
+    return standardTracks.includes(trackId) || (typeof trackId === "string" && trackId.startsWith("flow-"));
   }
 
   if (isVertical) {
@@ -264,8 +263,8 @@ function getTrackLayout() {
 function updateTracksHeight() {
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
-  // Exclude flow and reads from tracks height/width since they're positioned separately
-  const tracksLayout = layout.filter(l => l.track.id !== "flow" && l.track.id !== "reads");
+  // Exclude flow (and flow-N) and reads from tracks height/width since they're positioned separately
+  const tracksLayout = layout.filter(l => l.track.id !== "flow" && !l.track.id.startsWith("flow-") && l.track.id !== "reads");
   if (isVertical) {
     const totalW = tracksLayout.length > 0 
       ? tracksLayout[tracksLayout.length - 1].left + tracksLayout[tracksLayout.length - 1].width

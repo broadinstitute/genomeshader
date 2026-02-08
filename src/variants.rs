@@ -83,7 +83,7 @@ pub fn extract_variants(
                 // Get genotype (GT field) for this sample
                 let gt = genotypes_array.get(sample_idx);
                 
-                // Format genotype as string (e.g., "0/1", "1/1", "./.")
+                // Format genotype as string: "0|1" (phased) or "0/1" (unphased)
                 let gt_str = if gt.len() >= 2 {
                     let a1 = match gt[0] {
                         GenotypeAllele::Unphased(idx) | GenotypeAllele::Phased(idx) => idx.to_string(),
@@ -93,7 +93,11 @@ pub fn extract_variants(
                         GenotypeAllele::Unphased(idx) | GenotypeAllele::Phased(idx) => idx.to_string(),
                         GenotypeAllele::UnphasedMissing | GenotypeAllele::PhasedMissing => ".".to_string(),
                     };
-                    format!("{}/{}", a1, a2)
+                    let sep = match (&gt[0], &gt[1]) {
+                        (GenotypeAllele::Phased(_) | GenotypeAllele::PhasedMissing, GenotypeAllele::Phased(_) | GenotypeAllele::PhasedMissing) => "|",
+                        _ => "/",
+                    };
+                    format!("{}{}{}", a1, sep, a2)
                 } else if gt.len() == 1 {
                     match gt[0] {
                         GenotypeAllele::Unphased(idx) | GenotypeAllele::Phased(idx) => idx.to_string(),

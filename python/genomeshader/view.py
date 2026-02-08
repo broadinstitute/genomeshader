@@ -3,7 +3,7 @@ import re
 import hashlib
 import threading
 import socket
-from typing import Union, List, Optional
+from typing import Union, List, Optional, Tuple
 from pathlib import Path
 import importlib.resources
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -69,6 +69,9 @@ class GenomeShader:
         # Format: {"VCF_sample1": ["BAM_sample1"], "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
         # If empty, assumes 1:1 identity mapping (VCF sample name == BAM sample name)
         self._sample_mapping: dict = {}
+
+        # One entry per variant track: (track_name, list of paths). Order matches session's variant_file_groups.
+        self._variant_datasets: List[Tuple[str, List[str]]] = []
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
@@ -239,36 +242,43 @@ class GenomeShader:
 
     def attach_variants(
         self,
+        track_name: str,
         variant_files: Union[str, List[str]],
     ):
         """
-        Attaches variant files (BCF/VCF) to the current session.
-        The variant files can be a single string or a list of strings.
-        Each path can be a direct path to a .bcf, .vcf, or .vcf.gz file,
-        or a directory containing variant files.
+        Attaches variant files (BCF/VCF) to the current session as a single
+        track. Multiple files are merged dynamically when querying a locus.
+        Use a user-defined track name for the variants/haplotypes track label.
 
         Args:
-            variant_files (Union[str, List[str]]): The paths to variant files.
-                Can be local file paths or GCS paths (gs://...).
-                Supported formats: .bcf, .vcf, .vcf.gz
+            track_name (str): Display name for the variant track (e.g. "TR-GT",
+                "WGS calls"). Used as the track title instead of "Variants/Haplotypes".
+            variant_files (Union[str, Path, List[Union[str, Path]]]): One or more paths
+                to variant files (str or pathlib.Path / PosixPath). Can be local paths
+                or GCS paths (gs://...). Supported formats: .bcf, .vcf, .vcf.gz.
+                A directory path lists all variant files in that directory.
         """
         import genomeshader.genomeshader as gs
-        
-        if isinstance(variant_files, str):
-            variant_files = [variant_files]  # Convert single string to list
 
+        if isinstance(variant_files, (str, Path)):
+            variant_files = [variant_files]
+
+        paths_to_attach: List[str] = []
         for variant_path in variant_files:
-            if variant_path.endswith(".bcf") or variant_path.endswith(".vcf") or variant_path.endswith(".vcf.gz"):
-                self._session.attach_variants([variant_path])
+            p = os.fspath(variant_path)
+            if p.endswith(".bcf") or p.endswith(".vcf") or p.endswith(".vcf.gz"):
+                paths_to_attach.append(p)
             else:
-                # If it's a directory, list all variant files
-                bcfs = gs._gcs_list_files_of_type(variant_path, ".bcf")
-                vcfs = gs._gcs_list_files_of_type(variant_path, ".vcf")
-                vcf_gzs = gs._gcs_list_files_of_type(variant_path, ".vcf.gz")
+                bcfs = gs._gcs_list_files_of_type(p, ".bcf")
+                vcfs = gs._gcs_list_files_of_type(p, ".vcf")
+                vcf_gzs = gs._gcs_list_files_of_type(p, ".vcf.gz")
+                paths_to_attach.extend(bcfs)
+                paths_to_attach.extend(vcfs)
+                paths_to_attach.extend(vcf_gzs)
 
-                self._session.attach_variants(bcfs)
-                self._session.attach_variants(vcfs)
-                self._session.attach_variants(vcf_gzs)
+        if paths_to_attach:
+            self._variant_datasets.append((str(track_name), paths_to_attach))
+            self._session.attach_variants(paths_to_attach)
 
     def set_sample_mapping(self, mapping: dict):
         """
@@ -384,6 +394,194 @@ class GenomeShader:
         """
         return self._session.get_locus_variants(locus)
 
+    def _build_variants_data_for_track(
+        self, variants_df: pl.DataFrame
+    ) -> Tuple[List[dict], List[dict], bool]:
+        """Build variants_data, insertion_variants_lookup, and variants_phased for one track's DataFrame."""
+        variants_data = []
+        insertion_variants_lookup = []
+        if not isinstance(variants_df, pl.DataFrame) or len(variants_df) == 0:
+            return variants_data, insertion_variants_lookup, False
+
+        select_cols = ["position", "ref_allele", "alt_allele", "variant_id"]
+        if "vcf_id" in variants_df.columns:
+            select_cols.append("vcf_id")
+        unique_variants = (
+            variants_df.select(select_cols)
+            .unique(subset=["position", "ref_allele", "alt_allele"])
+            .sort("position")
+        )
+        variant_groups = {}
+        for row in unique_variants.iter_rows(named=True):
+            pos = row["position"]
+            ref_allele = row["ref_allele"]
+            alt_allele = row["alt_allele"]
+            variant_id = row["variant_id"]
+            vcf_id = None
+            if "vcf_id" in row and row["vcf_id"] is not None:
+                vcf_id_str = str(row["vcf_id"]).strip()
+                if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
+                    vcf_id = vcf_id_str
+            if pos not in variant_groups:
+                variant_groups[pos] = {
+                    "pos": pos,
+                    "refAllele": ref_allele,
+                    "altAlleles": [],
+                    "variant_id": variant_id,
+                    "vcf_id": vcf_id,
+                    "variant_display_ids": [],
+                }
+            row_display_id = str(vcf_id) if vcf_id else str(variant_id)
+            if row_display_id not in variant_groups[pos]["variant_display_ids"]:
+                variant_groups[pos]["variant_display_ids"].append(row_display_id)
+            if alt_allele not in variant_groups[pos]["altAlleles"]:
+                variant_groups[pos]["altAlleles"].append(alt_allele)
+
+        for row in variants_df.iter_rows(named=True):
+            pos = row["position"]
+            if pos not in variant_groups:
+                continue
+            row_vcf_id = None
+            if "vcf_id" in row and row["vcf_id"] is not None:
+                vcf_id_str = str(row["vcf_id"]).strip()
+                if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
+                    row_vcf_id = vcf_id_str
+            row_display_id = str(row_vcf_id) if row_vcf_id else str(row["variant_id"])
+            display_ids = variant_groups[pos].setdefault("variant_display_ids", [])
+            if row_display_id not in display_ids:
+                display_ids.append(row_display_id)
+
+        if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
+            for pos, variant_info in variant_groups.items():
+                pos_df = variants_df.filter(
+                    (pl.col("position") == pos) & (pl.col("ref_allele") == variant_info["refAllele"])
+                )
+                allele_counts = {".": 0, "ref": 0}
+                for i in range(len(variant_info["altAlleles"])):
+                    allele_counts[f"a{i+1}"] = 0
+                total_alleles = 0
+                for row in pos_df.iter_rows(named=True):
+                    gt_str = row.get("genotype", "./.")
+                    if not gt_str or gt_str == "./.":
+                        allele_counts["."] += 2
+                        total_alleles += 2
+                    else:
+                        for part in gt_str.replace("|", "/").split("/"):
+                            part = part.strip()
+                            if part == "." or part == "":
+                                allele_counts["."] += 1
+                                total_alleles += 1
+                            else:
+                                try:
+                                    allele_idx = int(part)
+                                    total_alleles += 1
+                                    if allele_idx == 0:
+                                        allele_counts["ref"] += 1
+                                    elif allele_idx <= len(variant_info["altAlleles"]):
+                                        allele_counts[f"a{allele_idx}"] += 1
+                                    else:
+                                        allele_counts["."] += 1
+                                except ValueError:
+                                    allele_counts["."] += 1
+                                    total_alleles += 1
+                allele_frequencies = {}
+                if total_alleles > 0:
+                    for allele, count in allele_counts.items():
+                        allele_frequencies[allele] = count / total_alleles
+                else:
+                    n_a = 1 + len(variant_info["altAlleles"]) + 1
+                    allele_frequencies = {a: 1.0 / n_a for a in allele_counts}
+                total_freq = sum(allele_frequencies.values())
+                if total_freq > 0:
+                    for a in allele_frequencies:
+                        allele_frequencies[a] /= total_freq
+                variant_info["alleleFrequencies"] = allele_frequencies
+        else:
+            for variant_info in variant_groups.values():
+                n_a = 1 + len(variant_info["altAlleles"]) + 1
+                variant_info["alleleFrequencies"] = {
+                    a: 1.0 / n_a for a in ["."] + ["ref"] + [f"a{i+1}" for i in range(len(variant_info["altAlleles"]))]
+                }
+
+        sample_genotypes = {}
+        if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
+            for row in variants_df.iter_rows(named=True):
+                sample_name = row.get("sample_name")
+                pos = row.get("position")
+                genotype = row.get("genotype", "./.")
+                ref_allele = row.get("ref_allele")
+                if sample_name not in sample_genotypes:
+                    sample_genotypes[sample_name] = {}
+                key = (pos, ref_allele)
+                if key not in sample_genotypes[sample_name]:
+                    sample_genotypes[sample_name][key] = genotype
+
+        def format_allele_label(allele):
+            if not allele or allele == ".":
+                return ". (no-call)"
+            length = len(allele)
+            length_label = "1 bp" if length == 1 else f"{length} bp"
+            display_allele = allele[:50] + "..." if length > 50 else allele
+            return f"{display_allele} ({length_label})"
+
+        for pos, variant_info in sorted(variant_groups.items(), key=lambda x: x[0]):
+            vcf_id = variant_info.get("vcf_id")
+            variant_display_id = str(vcf_id) if vcf_id else str(variant_info["variant_id"])
+            key = (pos, variant_info["refAllele"])
+            variant_genotypes = {
+                sn: sample_genotypes[sn][key]
+                for sn in sample_genotypes
+                if key in sample_genotypes[sn]
+            }
+            ref_allele = variant_info["refAllele"]
+            alt_alleles = variant_info["altAlleles"]
+            ref_len = len(ref_allele) if ref_allele else 0
+            is_insertion = False
+            max_insertion_length = 0
+            is_deletion = False
+            if alt_alleles:
+                for alt in alt_alleles:
+                    alt_len = len(alt) if alt else 0
+                    if alt_len > ref_len:
+                        is_insertion = True
+                        max_insertion_length = max(max_insertion_length, alt_len - ref_len)
+                    elif alt_len < ref_len:
+                        is_deletion = True
+            variant_type = "complex" if (is_insertion and is_deletion) else (
+                "insertion" if is_insertion else ("deletion" if is_deletion else "snv")
+            )
+            insertion_gap_px = max_insertion_length * 8 if is_insertion else 0
+            formatted_ref_allele = format_allele_label(ref_allele) if ref_allele else None
+            formatted_alt_alleles = [format_allele_label(alt) for alt in alt_alleles] if alt_alleles else []
+            variants_data.append({
+                "id": variant_display_id,
+                "pos": variant_info["pos"],
+                "refAllele": variant_info["refAllele"],
+                "altAlleles": variant_info["altAlleles"],
+                "alleles": ["ref"] + [f"a{i+1}" for i in range(len(variant_info["altAlleles"]))],
+                "alleleFrequencies": variant_info.get("alleleFrequencies", {}),
+                "sampleGenotypes": variant_genotypes,
+                "displayIds": variant_info.get("variant_display_ids", [variant_display_id]),
+                "isInsertion": is_insertion,
+                "maxInsertionLength": max_insertion_length,
+                "variantType": variant_type,
+                "insertionGapPx": insertion_gap_px,
+                "formattedRefAllele": formatted_ref_allele,
+                "formattedAltAlleles": formatted_alt_alleles,
+            })
+            if is_insertion and insertion_gap_px > 0:
+                insertion_variants_lookup.append({
+                    "id": variant_display_id,
+                    "pos": pos,
+                    "insertionGapPx": insertion_gap_px,
+                })
+        insertion_variants_lookup.sort(key=lambda v: v["pos"])
+        variants_phased = any(
+            ("|" in (gt or ""))
+            for v in variants_data
+            for gt in (v.get("sampleGenotypes") or {}).values()
+        )
+        return variants_data, insertion_variants_lookup, variants_phased
 
     def ideogram(self, contig: str) -> pl.DataFrame:
         # Define the API endpoint with the contig parameter
@@ -1098,272 +1296,43 @@ class GenomeShader:
             print(f"Warning: Failed to load reference sequence data: {e}")
             reference_sequence = ""
 
-        # Transform variant data for frontend if we have variant data
-        variants_data = []
-        insertion_variants_lookup = []  # Precomputed sorted list for coordinate transformations
+        # Build variant_tracks: one entry per attached variant dataset (each with its own track)
+        variant_tracks = []
+        insertion_variants_lookup = []
         if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
-            # Get unique variant positions and their alleles
-            # Include vcf_id if available, otherwise it will be None
-            select_cols = ["position", "ref_allele", "alt_allele", "variant_id"]
-            if "vcf_id" in variants_df.columns:
-                select_cols.append("vcf_id")
-            
-            unique_variants = (
-                variants_df
-                .select(select_cols)
-                .unique(subset=["position", "ref_allele", "alt_allele"])
-                .sort("position")
-            )
-            
-            # Group by position to collect all alt alleles for each position
-            variant_groups = {}
-            for row in unique_variants.iter_rows(named=True):
-                pos = row["position"]
-                ref_allele = row["ref_allele"]
-                alt_allele = row["alt_allele"]
-                variant_id = row["variant_id"]
-                # Extract vcf_id - handle both None and Polars null values
-                vcf_id = None
-                if "vcf_id" in row:
-                    vcf_id_val = row["vcf_id"]
-                    # Polars nulls can be None, or sometimes need special handling
-                    if vcf_id_val is not None:
-                        vcf_id_str = str(vcf_id_val).strip()
-                        # Accept any non-empty string that's not "." or "null" or "None"
-                        if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
-                            vcf_id = vcf_id_str
-                
-                if pos not in variant_groups:
-                    variant_groups[pos] = {
-                        "pos": pos,
-                        "refAllele": ref_allele,
-                        "altAlleles": [],
-                        "variant_id": variant_id,
-                        "vcf_id": vcf_id,
-                        "variant_display_ids": [],
-                    }
-
-                # Determine display ID for this row (prefers VCF ID when available)
-                row_display_id = str(vcf_id) if vcf_id else str(variant_id)
-                if row_display_id not in variant_groups[pos]["variant_display_ids"]:
-                    variant_groups[pos]["variant_display_ids"].append(row_display_id)
-                
-                if alt_allele not in variant_groups[pos]["altAlleles"]:
-                    variant_groups[pos]["altAlleles"].append(alt_allele)
-            
-            # Collect display IDs for each position so we include duplicates that were collapsed
-            for row in variants_df.iter_rows(named=True):
-                pos = row["position"]
-                if pos not in variant_groups:
-                    continue
-                row_vcf_id = None
-                if "vcf_id" in row:
-                    vcf_id_val = row["vcf_id"]
-                    if vcf_id_val is not None:
-                        vcf_id_str = str(vcf_id_val).strip()
-                        if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
-                            row_vcf_id = vcf_id_str
-                row_variant_id = row["variant_id"]
-                row_display_id = str(row_vcf_id) if row_vcf_id else str(row_variant_id)
-                display_ids = variant_groups[pos].setdefault("variant_display_ids", [])
-                if row_display_id not in display_ids:
-                    display_ids.append(row_display_id)
-
-            # Calculate allele frequencies for each variant
-            # Filter variants_df to get genotype data for frequency calculation
-            if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
-                # Group by position to calculate frequencies per variant
-                for pos, variant_info in variant_groups.items():
-                    # Filter variants_df for this specific position and alleles
-                    pos_df = variants_df.filter(
-                        (pl.col("position") == pos) &
-                        (pl.col("ref_allele") == variant_info["refAllele"])
+            if "variant_track_id" in variants_df.columns:
+                # Iterate by attached-dataset index so we get exactly one track per dataset.
+                # Use pl.lit() in the filter so Polars does a proper scalar comparison (column may be UInt32 from Rust).
+                n_tracks = len(self._variant_datasets)
+                for track_id_val in range(n_tracks):
+                    subset = variants_df.filter(
+                        pl.col("variant_track_id").cast(pl.Int64) == pl.lit(track_id_val)
                     )
-                    
-                    # Count allele occurrences
-                    allele_counts = {
-                        ".": 0,  # no-call
-                        "ref": 0,  # reference (index 0)
-                    }
-                    # Initialize alt allele counts
-                    for i in range(len(variant_info["altAlleles"])):
-                        allele_counts[f"a{i+1}"] = 0
-                    
-                    total_alleles = 0
-                    
-                    # Parse genotypes and count alleles
-                    for row in pos_df.iter_rows(named=True):
-                        gt_str = row.get("genotype", "./.")
-                        if not gt_str or gt_str == "./.":
-                            allele_counts["."] += 2  # Assume diploid missing
-                            total_alleles += 2
-                        else:
-                            # Parse genotype string (e.g., "0/1", "1/1", "0|1", "1")
-                            parts = gt_str.replace("|", "/").split("/")
-                            for part in parts:
-                                part = part.strip()
-                                if part == "." or part == "":
-                                    allele_counts["."] += 1
-                                    total_alleles += 1
-                                else:
-                                    try:
-                                        allele_idx = int(part)
-                                        total_alleles += 1
-                                        if allele_idx == 0:
-                                            allele_counts["ref"] += 1
-                                        elif allele_idx <= len(variant_info["altAlleles"]):
-                                            allele_counts[f"a{allele_idx}"] += 1
-                                        else:
-                                            # Out of range allele index, count as no-call
-                                            allele_counts["."] += 1
-                                    except ValueError:
-                                        # Invalid allele index, count as no-call
-                                        allele_counts["."] += 1
-                                        total_alleles += 1
-                    
-                    # Calculate frequencies
-                    allele_frequencies = {}
-                    if total_alleles > 0:
-                        for allele, count in allele_counts.items():
-                            allele_frequencies[allele] = count / total_alleles
-                    else:
-                        # Fallback: equal frequencies if no data
-                        num_alleles = 1 + len(variant_info["altAlleles"]) + 1  # ref + alts + no-call
-                        for allele in allele_counts.keys():
-                            allele_frequencies[allele] = 1.0 / num_alleles
-                    
-                    # Normalize frequencies to sum to 1.0
-                    total_freq = sum(allele_frequencies.values())
-                    if total_freq > 0:
-                        for allele in allele_frequencies:
-                            allele_frequencies[allele] /= total_freq
-                    
-                    variant_info["alleleFrequencies"] = allele_frequencies
-            else:
-                # No genotype data available, set equal frequencies as fallback
-                for pos, variant_info in variant_groups.items():
-                    num_alleles = 1 + len(variant_info["altAlleles"]) + 1  # ref + alts + no-call
-                    allele_frequencies = {
-                        ".": 1.0 / num_alleles,
-                        "ref": 1.0 / num_alleles,
-                    }
-                    for i in range(len(variant_info["altAlleles"])):
-                        allele_frequencies[f"a{i+1}"] = 1.0 / num_alleles
-                    variant_info["alleleFrequencies"] = allele_frequencies
-            
-            # Collect sample genotypes for each variant
-            # Group genotypes by sample and variant position
-            sample_genotypes = {}  # {sample_name: {position: genotype_string}}
-            if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
-                for row in variants_df.iter_rows(named=True):
-                    sample_name = row.get("sample_name")
-                    pos = row.get("position")
-                    genotype = row.get("genotype", "./.")
-                    ref_allele = row.get("ref_allele")
-                    
-                    if sample_name not in sample_genotypes:
-                        sample_genotypes[sample_name] = {}
-                    
-                    # Store genotype for this position and ref_allele combination
-                    # Use (pos, ref_allele) as key since we group by position
-                    key = (pos, ref_allele)
-                    if key not in sample_genotypes[sample_name]:
-                        sample_genotypes[sample_name][key] = genotype
-            
-            # Helper function to format allele labels (matches JavaScript formatAlleleLabel logic)
-            def format_allele_label(allele):
-                """Format allele label to match JavaScript formatAlleleLabel function."""
-                if not allele or allele == ".":
-                    return ". (no-call)"
-                length = len(allele)
-                length_label = "1 bp" if length == 1 else f"{length} bp"
-                # Truncate to 50 bp and add "..." if longer
-                display_allele = allele[:50] + "..." if length > 50 else allele
-                return f"{display_allele} ({length_label})"
-            
-            # Convert to frontend format
-            for idx, (pos, variant_info) in enumerate(sorted(variant_groups.items())):
-                # Use VCF ID if available (numeric IDs like "59434" are valid), otherwise use variant_id index
-                vcf_id = variant_info.get("vcf_id")
-                if vcf_id:
-                    variant_display_id = str(vcf_id)
-                else:
-                    variant_display_id = str(variant_info['variant_id'])
-                
-                # Get genotypes for this variant from all samples
-                variant_genotypes = {}  # {sample_name: genotype_string}
-                key = (pos, variant_info["refAllele"])
-                for sample_name, sample_data in sample_genotypes.items():
-                    if key in sample_data:
-                        variant_genotypes[sample_name] = sample_data[key]
-                
-                # Precompute variant type metadata for performance
-                ref_allele = variant_info["refAllele"]
-                alt_alleles = variant_info["altAlleles"]
-                ref_len = len(ref_allele) if ref_allele else 0
-                
-                # Check if any alt allele is longer than ref (insertion)
-                is_insertion = False
-                max_insertion_length = 0
-                is_deletion = False
-                variant_type = "snv"  # default
-                
-                if alt_alleles:
-                    for alt in alt_alleles:
-                        alt_len = len(alt) if alt else 0
-                        if alt_len > ref_len:
-                            is_insertion = True
-                            max_insertion_length = max(max_insertion_length, alt_len - ref_len)
-                        elif alt_len < ref_len:
-                            is_deletion = True
-                
-                # Determine variant type
-                if is_insertion and is_deletion:
-                    variant_type = "complex"  # mixed insertion/deletion
-                elif is_insertion:
-                    variant_type = "insertion"
-                elif is_deletion:
-                    variant_type = "deletion"
-                else:
-                    variant_type = "snv"  # substitution or same length
-                
-                # Precompute insertion gap width in pixels (8px per inserted base)
-                insertion_gap_px = max_insertion_length * 8 if is_insertion else 0
-                
-                # Precompute formatted allele labels for performance
-                formatted_ref_allele = format_allele_label(ref_allele) if ref_allele else None
-                formatted_alt_alleles = [format_allele_label(alt) for alt in alt_alleles] if alt_alleles else []
-                
-                variants_data.append({
-                    "id": variant_display_id,
-                    "pos": variant_info["pos"],
-                    "refAllele": variant_info["refAllele"],
-                    "altAlleles": variant_info["altAlleles"],
-                    "alleles": ["ref"] + [f"a{i+1}" for i in range(len(variant_info["altAlleles"]))],
-                    "alleleFrequencies": variant_info.get("alleleFrequencies", {}),
-                    "sampleGenotypes": variant_genotypes,  # Add genotype data per sample
-                    "displayIds": variant_info.get("variant_display_ids", [variant_display_id]),
-                    # Precomputed variant type metadata for performance
-                    "isInsertion": is_insertion,
-                    "maxInsertionLength": max_insertion_length,
-                    "variantType": variant_type,
-                    "insertionGapPx": insertion_gap_px,  # Precomputed gap width in pixels
-                    # Precomputed formatted allele labels for performance
-                    "formattedRefAllele": formatted_ref_allele,
-                    "formattedAltAlleles": formatted_alt_alleles,
-                })
-            
-            # Precompute sorted list of insertion variants for efficient coordinate transformation lookups
-            # This enables binary search instead of linear iteration
-            for variant in variants_data:
-                if variant.get("isInsertion") and variant.get("insertionGapPx", 0) > 0:
-                    insertion_variants_lookup.append({
-                        "id": variant["id"],
-                        "pos": variant["pos"],
-                        "insertionGapPx": variant["insertionGapPx"],
+                    track_name = (
+                        self._variant_datasets[track_id_val][0]
+                        if track_id_val < len(self._variant_datasets)
+                        else f"Variants {track_id_val}"
+                    )
+                    vdata, ins_lookup, phased = self._build_variants_data_for_track(subset)
+                    # Append a copy of the list so we never share references between tracks
+                    variant_tracks.append({
+                        "id": f"flow-{track_id_val}",
+                        "label": track_name,
+                        "variants_data": list(vdata),
+                        "variants_phased": phased,
                     })
-            # Sort by position for binary search
-            insertion_variants_lookup.sort(key=lambda v: v["pos"])
+                    insertion_variants_lookup.extend(ins_lookup)
+                insertion_variants_lookup.sort(key=lambda v: v["pos"])
+            else:
+                # Fallback: single track (e.g. old backend or no track_id)
+                track_name = self._variant_datasets[0][0] if self._variant_datasets else "Variants/Haplotypes"
+                vdata, insertion_variants_lookup, phased = self._build_variants_data_for_track(variants_df)
+                variant_tracks.append({
+                    "id": "flow-0",
+                    "label": track_name,
+                    "variants_data": vdata,
+                    "variants_phased": phased,
+                })
 
         # Load template HTML
         template_html = self._load_template_html()
@@ -1384,8 +1353,8 @@ class GenomeShader:
             'transcripts_data': transcripts_data,
             'repeats_data': repeats_data,
             'reference_data': reference_sequence,
-            'variants_data': variants_data,  # Add variant data to config
-            'insertion_variants_lookup': insertion_variants_lookup,  # Precomputed sorted list for coordinate transformations
+            'variant_tracks': variant_tracks,  # One track per attached variant dataset: [{ id, label, variants_data, variants_phased }, ...]
+            'insertion_variants_lookup': insertion_variants_lookup,  # Merged across tracks for coordinate transformations
             'data_bounds': {
                 'start': data_start,
                 'end': data_end,

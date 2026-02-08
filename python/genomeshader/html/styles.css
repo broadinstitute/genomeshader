@@ -10,6 +10,7 @@
 
   --border: rgba(255,255,255,0.10);
   --border2: rgba(255,255,255,0.08);
+  --track-boundary: rgba(255,255,255,0.28);
 
   --text: rgba(255,255,255,0.92);
   --muted: rgba(255,255,255,0.65);
@@ -34,6 +35,7 @@ html[data-theme="light"] {
 
   --border: rgba(0,0,0,0.12);
   --border2: rgba(0,0,0,0.10);
+  --track-boundary: rgba(0,0,0,0.28);
 
   --text: rgba(0,0,0,0.90);
   --muted: rgba(0,0,0,0.62);
@@ -59,6 +61,7 @@ html[data-theme="light"] {
 
     --border: rgba(0,0,0,0.12);
     --border2: rgba(0,0,0,0.10);
+    --track-boundary: rgba(0,0,0,0.28);
 
     --text: rgba(0,0,0,0.90);
     --muted: rgba(0,0,0,0.62);
@@ -84,6 +87,7 @@ html[data-theme="light"] {
 
     --border: rgba(255,255,255,0.10);
     --border2: rgba(255,255,255,0.08);
+    --track-boundary: rgba(255,255,255,0.28);
 
     --text: rgba(255,255,255,0.92);
     --muted: rgba(255,255,255,0.65);
@@ -811,6 +815,28 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   position: absolute;
   left: 0; right: 0;
   background: rgba(127,127,127,0.04);
+  /* Above track controls (z-index 100) so variant click-to-select works in first track */
+  z-index: 101;
+}
+
+.flow .flow-track {
+  overflow: hidden;
+}
+
+.flow .flow-track-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+}
+
+.flow .flow-track canvas.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .reads {
@@ -865,6 +891,11 @@ svg.overlay {
   width: 100%;
   height: 100%;
   pointer-events: none;
+}
+
+/* Flow overlay must receive pointer events so variant click-to-select works (read-loading sidepanel) */
+#flowOverlay {
+  pointer-events: auto;
 }
 
 /* Locus indicator lower-right */
@@ -1298,6 +1329,8 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   background: transparent;
   pointer-events: auto;
   transition: opacity 0.2s ease;
+  /* Clear boundary at bottom of track so extent and handle are obvious */
+  border-top: 1px solid var(--track-boundary);
 }
 /* Standard tracks: hide resize handle by default, show on hover */
 .track-control-container.standard-track .track-resize-handle {
@@ -1335,6 +1368,8 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   width: 6px;
   height: 100%;
   cursor: ew-resize;
+  border-top: none;
+  border-left: 1px solid var(--track-boundary);
 }
 
 .track-content {

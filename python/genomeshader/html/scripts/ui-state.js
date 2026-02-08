@@ -9,6 +9,7 @@ const state = {
   firstVariantIndex: 0,
   K: 8,
   hoveredVariantIndex: null, // index of hovered variant, or null
+  hoveredVariantId: null,    // id of hovered variant (for multi-track ruler/flow), or null
   expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
   hoveredRepeatTooltip: null, // { text, x, y } or null
   hoveredVariantLabelTooltip: null, // { text, x, y } or null
@@ -25,7 +26,7 @@ const state = {
   pinchStartSpan: null,
   pinchAnchorBp: null,
 
-  // track management
+  // track management (flow tracks are injected from config.variant_tracks when present)
   tracks: [
     { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
@@ -48,7 +49,8 @@ const state = {
   
   // hovered allele node: { variantId, alleleIndex } or null
   hoveredAlleleNode: null,
-  
+  hoveredAlleleNodeTooltip: null, // { text, x, y } when hovering an allele node
+
   // pinned allele labels: Set of strings like "variantId:alleleIndex"
   pinnedAlleleLabels: new Set(),
   
@@ -161,6 +163,21 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
   
   // Update document title with initial locus
   updateDocumentTitle();
+}
+
+// Replace single "flow" track with one track per variant dataset when config.variant_tracks is provided
+if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && window.GENOMESHADER_CONFIG.variant_tracks.length > 0) {
+  const variantTracksConfig = window.GENOMESHADER_CONFIG.variant_tracks;
+  state.tracks = state.tracks.filter(t => t.id !== "flow");
+  variantTracksConfig.forEach(t => {
+    state.tracks.push({
+      id: t.id,
+      label: t.label,
+      collapsed: false,
+      height: 130,
+      minHeight: 100
+    });
+  });
 }
 
 const main = byId(root, "main");

@@ -1,20 +1,23 @@
 // Variant data: load from config or use demo data
 // -----------------------------
 let variants = [];
-if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variants_data) {
+// Prefer variant_tracks (one entry per variant dataset); fall back to legacy variants_data
+if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && window.GENOMESHADER_CONFIG.variant_tracks.length > 0) {
+  // Use first track's data for global `variants` (used by code that expects a single list)
+  variants = window.GENOMESHADER_CONFIG.variant_tracks[0].variants_data || [];
+  console.log(`Loaded ${window.GENOMESHADER_CONFIG.variant_tracks.length} variant track(s) from config`);
+} else if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variants_data) {
   const data = window.GENOMESHADER_CONFIG.variants_data;
-  // Data should already be an array of variant objects
   if (Array.isArray(data) && data.length > 0) {
     variants = data;
-    console.log(`Loaded ${variants.length} variants from config`);
+    console.log(`Loaded ${variants.length} variants from config (legacy)`);
   } else {
     console.warn("Variants data is not in expected array format or is empty:", data);
-    // Fall back to empty array or demo data
     variants = [];
   }
 } else {
   // Fall back to demo data if no config provided
-  console.log("No variants_data found in GENOMESHADER_CONFIG, using demo data");
+  console.log("No variants_data / variant_tracks found in GENOMESHADER_CONFIG, using demo data");
   variants = [
     { id: "v1", pos: 100_120, alleles: ["ref","a1"], refAllele: "A", altAlleles: ["A" + "ATCGATCGATCGATCGATCGATCGATCGAT"] }, // insertion example (30 bp inserted: ATCGATCGATCGATCGATCGATCGATCGAT)
     { id: "v2", pos: 100_240, alleles: ["ref","a1"] },
