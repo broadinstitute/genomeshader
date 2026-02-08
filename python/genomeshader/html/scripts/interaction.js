@@ -36,6 +36,17 @@ function roundRect(ctx, x, y, w, h, r) {
 // Sankey placeholder (Canvas2D)
 // -----------------------------
 function renderFlowCanvas() {
+  const variantOrderKeyFor = (trackId, variantId) => (
+    window.makeVariantOrderKey
+      ? window.makeVariantOrderKey(trackId, variantId)
+      : String(variantId)
+  );
+  const selectionKeyFor = (trackId, variantId, alleleIndex) => (
+    window.makeAlleleSelectionKey
+      ? window.makeAlleleSelectionKey(trackId, variantId, alleleIndex)
+      : `${variantId}:${alleleIndex}`
+  );
+
   const layout = getTrackLayout();
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
   const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
@@ -985,10 +996,11 @@ function renderFlowCanvas() {
       const { labels, labelToAllele } = getFormattedLabelsForVariant(v);
       
       // Get order from state, or use default
-      let order = state.variantAlleleOrder.get(v.id);
+      const variantOrderKey = variantOrderKeyFor(track.id, v.id);
+      let order = state.variantAlleleOrder.get(variantOrderKey);
       if (!order || order.length !== labels.length) {
         order = [...labels];
-        state.variantAlleleOrder.set(v.id, order);
+        state.variantAlleleOrder.set(variantOrderKey, order);
       }
       
       // Calculate allele sizes based on frequencies
@@ -1060,7 +1072,8 @@ function renderFlowCanvas() {
         const x = currentX;
         
         // Check if this node is being dragged
-        const isDragging = state.alleleDragState && 
+        const isDragging = state.alleleDragState &&
+          (state.alleleDragState.trackId || "") === (track.id || "") &&
           state.alleleDragState.variantId === v.id && 
           state.alleleDragState.alleleIndex === order.indexOf(label);
         const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
@@ -1103,7 +1116,7 @@ function renderFlowCanvas() {
         }
         
         // Check if this allele is selected
-        const selectionKey = `${v.id}:${order.indexOf(label)}`;
+        const selectionKey = selectionKeyFor(track.id, v.id, order.indexOf(label));
         const isSelected = state.selectedAlleles.has(selectionKey);
         
         // Stroke always uses Canvas2D (minimal overhead for borders)
@@ -1120,8 +1133,9 @@ function renderFlowCanvas() {
         ctx.stroke();
 
         // Store label info for drawing after all nodes
-        const labelKey = `${v.id}:${order.indexOf(label)}`;
-        const isHovered = state.hoveredAlleleNode && 
+        const labelKey = selectionKeyFor(track.id, v.id, order.indexOf(label));
+        const isHovered = state.hoveredAlleleNode &&
+          (state.hoveredAlleleNode.trackId || "") === (track.id || "") &&
           state.hoveredAlleleNode.variantId === v.id && 
           state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
         const isPinned = state.pinnedAlleleLabels.has(labelKey);
@@ -1139,6 +1153,7 @@ function renderFlowCanvas() {
         
         // Store position for hit testing (global flow coords + bandOffset for multi-track)
         nodePositions.push({
+          trackId: track.id,
           variantId: v.id,
           alleleIndex: order.indexOf(label),
           label: label,
@@ -1171,7 +1186,9 @@ function renderFlowCanvas() {
       }
       
       // Draw drop indicator if dragging this variant
-      if (state.alleleDragState && state.alleleDragState.variantId === v.id && 
+      if (state.alleleDragState &&
+          (state.alleleDragState.trackId || "") === (track.id || "") &&
+          state.alleleDragState.variantId === v.id &&
           state.alleleDragState.dropIndex !== null && state.alleleDragState.dropIndex !== undefined) {
         const dropIdx = state.alleleDragState.dropIndex;
         const currentIdx = order.indexOf(state.alleleDragState.label);
@@ -1226,10 +1243,11 @@ function renderFlowCanvas() {
       const { labels, labelToAllele } = getFormattedLabelsForVariant(v);
       
       // Get order from state, or use default
-      let order = state.variantAlleleOrder.get(v.id);
+      const variantOrderKey = variantOrderKeyFor(track.id, v.id);
+      let order = state.variantAlleleOrder.get(variantOrderKey);
       if (!order || order.length !== labels.length) {
         order = [...labels];
-        state.variantAlleleOrder.set(v.id, order);
+        state.variantAlleleOrder.set(variantOrderKey, order);
       }
       
       // Calculate allele sizes based on frequencies
@@ -1307,7 +1325,8 @@ function renderFlowCanvas() {
         const y = currentY;
         
         // Check if this node is being dragged
-        const isDragging = state.alleleDragState && 
+        const isDragging = state.alleleDragState &&
+          (state.alleleDragState.trackId || "") === (track.id || "") &&
           state.alleleDragState.variantId === v.id && 
           state.alleleDragState.alleleIndex === order.indexOf(label);
         const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
@@ -1350,7 +1369,7 @@ function renderFlowCanvas() {
         }
         
         // Check if this allele is selected
-        const selectionKey = `${v.id}:${order.indexOf(label)}`;
+        const selectionKey = selectionKeyFor(track.id, v.id, order.indexOf(label));
         const isSelected = state.selectedAlleles.has(selectionKey);
         
         // Stroke always uses Canvas2D (minimal overhead for borders)
@@ -1367,8 +1386,9 @@ function renderFlowCanvas() {
         ctx.stroke();
 
         // Store label info for drawing after all nodes
-        const labelKey = `${v.id}:${order.indexOf(label)}`;
-        const isHovered = state.hoveredAlleleNode && 
+        const labelKey = selectionKeyFor(track.id, v.id, order.indexOf(label));
+        const isHovered = state.hoveredAlleleNode &&
+          (state.hoveredAlleleNode.trackId || "") === (track.id || "") &&
           state.hoveredAlleleNode.variantId === v.id && 
           state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
         const isPinned = state.pinnedAlleleLabels.has(labelKey);
@@ -1386,6 +1406,7 @@ function renderFlowCanvas() {
         
         // Store position for hit testing (global flow coords + bandOffset for multi-track)
         nodePositions.push({
+          trackId: track.id,
           variantId: v.id,
           alleleIndex: order.indexOf(label),
           label: label,
@@ -1418,7 +1439,9 @@ function renderFlowCanvas() {
       }
       
       // Draw drop indicator if dragging this variant
-      if (state.alleleDragState && state.alleleDragState.variantId === v.id && 
+      if (state.alleleDragState &&
+          (state.alleleDragState.trackId || "") === (track.id || "") &&
+          state.alleleDragState.variantId === v.id &&
           state.alleleDragState.dropIndex !== null && state.alleleDragState.dropIndex !== undefined) {
         const dropIdx = state.alleleDragState.dropIndex;
         const currentIdx = order.indexOf(state.alleleDragState.label);

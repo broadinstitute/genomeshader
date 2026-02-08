@@ -1467,6 +1467,47 @@ function getFlowBands() {
   return bands;
 }
 
+function makeVariantOrderKeyCompat(trackId, variantId) {
+  return window.makeVariantOrderKey
+    ? window.makeVariantOrderKey(trackId, variantId)
+    : String(variantId);
+}
+
+function makeAlleleSelectionKeyCompat(trackId, variantId, alleleIndex) {
+  return window.makeAlleleSelectionKey
+    ? window.makeAlleleSelectionKey(trackId, variantId, alleleIndex)
+    : `${variantId}:${alleleIndex}`;
+}
+
+function parseAlleleSelectionKeyCompat(key) {
+  if (window.parseAlleleSelectionKey) {
+    return window.parseAlleleSelectionKey(key);
+  }
+  const idx = String(key).lastIndexOf(":");
+  if (idx <= 0) return null;
+  return {
+    trackId: "",
+    variantId: String(key).slice(0, idx),
+    alleleIndex: parseInt(String(key).slice(idx + 1), 10)
+  };
+}
+
+function getVariantTrackById(trackId) {
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  return variantTracksConfig.find(t => String(t.id) === String(trackId)) || null;
+}
+
+function findVariantByTrackAndId(trackId, variantId) {
+  if (trackId) {
+    const track = getVariantTrackById(trackId);
+    const fromTrack = track && Array.isArray(track.variants_data)
+      ? track.variants_data.find(v => String(v.id) === String(variantId))
+      : null;
+    if (fromTrack) return fromTrack;
+  }
+  return findVariantById(variantId);
+}
+
 // Set up variant hover areas in canvas overlays
 function setupVariantHoverAreas() {
   if (!flowOverlay) return;
@@ -1475,24 +1516,27 @@ function setupVariantHoverAreas() {
   const clearSvg = (svg) => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
   
   // Shared click handler for variant selection (variant may be from any track)
-  const handleVariantRectClick = (e, variantId) => {
+  const handleVariantRectClick = (e, trackId, variantId) => {
     e.stopPropagation();
     
-    const variant = findVariantById(variantId);
+    const variant = findVariantByTrackAndId(trackId, variantId);
     if (!variant) return;
     
     // Get all alleles for this variant (getFormattedLabelsForVariant is from interaction.js)
     const getFormattedLabels = window.getFormattedLabelsForVariant;
     if (!getFormattedLabels) return;
     const { labels } = getFormattedLabels(variant);
-    let order = state.variantAlleleOrder.get(variant.id);
+    const variantOrderKey = makeVariantOrderKeyCompat(trackId, variant.id);
+    let order = state.variantAlleleOrder.get(variantOrderKey);
     if (!order || order.length !== labels.length) {
       order = [...labels];
-      state.variantAlleleOrder.set(variant.id, order);
+      state.variantAlleleOrder.set(variantOrderKey, order);
     }
     
-    // Create label keys for all alleles: "variantId:alleleIndex"
-    const variantAlleleKeys = order.map((label, alleleIndex) => `${variant.id}:${alleleIndex}`);
+    // Create label keys for all alleles in this track/variant.
+    const variantAlleleKeys = order.map((label, alleleIndex) =>
+      makeAlleleSelectionKeyCompat(trackId, variant.id, alleleIndex)
+    );
     
     // Handle selection with Ctrl/Cmd for multi-select
     if (e.ctrlKey || e.metaKey) {
@@ -1565,7 +1609,7 @@ function setupVariantHoverAreas() {
     // Per-track overlays so variant click works in every track (first track was blocked by shared overlay stacking)
     flowOverlay.style.pointerEvents = "none";
     flowOverlay.innerHTML = "";
-    const junctionY = 40;
+    const junctionY = 18;
     const junctionX = 70;
     for (const band of flowBands) {
       const bandVariants = band.track.variants_data || [];
@@ -1601,17 +1645,17 @@ function setupVariantHoverAreas() {
       passThrough.setAttribute("fill", "transparent");
       passThrough.style.pointerEvents = "none";
       bandOverlay.appendChild(passThrough);
-      // Variant rects only in the label strip (y 0..junctionY) so "select whole variant" is there; allele area uses canvas hit test
+      // Variant rects only in the label strip so allele-area clicks pass through to canvas hit test.
       if (isVertical) {
-        const bandW = bandSize;
-        const labelW = Math.min(24, Math.max(0, bandW - junctionX - 10));
+        const labelX = 0;
+        const labelW = Math.min(30, Math.max(0, bandSize));
         for (let i = 0; i < win.length; i++) {
           const v = win[i];
           const cy = variantMode === "genomic"
             ? yGenomeCanonical(v.pos, flowH)
             : yColumn(i, win.length);
           const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-          hoverRect.setAttribute("x", junctionX);
+          hoverRect.setAttribute("x", labelX);
           hoverRect.setAttribute("y", Math.max(0, cy - 8));
           hoverRect.setAttribute("width", labelW);
           hoverRect.setAttribute("height", 16);
@@ -1619,7 +1663,7 @@ function setupVariantHoverAreas() {
           hoverRect.setAttribute("data-variant-id", v.id);
           hoverRect.style.cursor = "pointer";
           hoverRect.style.pointerEvents = "auto";
-          hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
+          hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, band.track.id, v.id));
           bandOverlay.appendChild(hoverRect);
         }
       } else {
@@ -1637,7 +1681,7 @@ function setupVariantHoverAreas() {
           hoverRect.setAttribute("data-variant-id", v.id);
           hoverRect.style.cursor = "pointer";
           hoverRect.style.pointerEvents = "auto";
-          hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
+          hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, band.track.id, v.id));
           bandOverlay.appendChild(hoverRect);
         }
       }
@@ -1655,7 +1699,7 @@ function setupVariantHoverAreas() {
   
   if (!multiTrack) {
     // Single track: pass-through in content area so allele clicks work; variant rects only in label strip
-    const junctionYSingle = 40;
+    const junctionYSingle = 18;
     const junctionXSingle = 70;
     const passThroughSingle = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     if (isVertical) {
@@ -1674,7 +1718,8 @@ function setupVariantHoverAreas() {
     flowOverlay.appendChild(passThroughSingle);
     const win = visibleVariantWindow();
     if (isVertical) {
-      const labelW = Math.min(24, Math.max(0, flowW - junctionXSingle - 10));
+      const labelX = 0;
+      const labelW = Math.min(30, Math.max(0, flowW));
       for (let i = 0; i < win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
@@ -1683,7 +1728,7 @@ function setupVariantHoverAreas() {
           ? yGenomeCanonical(v.pos, flowH)
           : yColumn(i, win.length);
         const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        hoverRect.setAttribute("x", junctionXSingle);
+        hoverRect.setAttribute("x", labelX);
         hoverRect.setAttribute("y", Math.max(0, cy - 8));
         hoverRect.setAttribute("width", labelW);
         hoverRect.setAttribute("height", 16);
@@ -1691,7 +1736,7 @@ function setupVariantHoverAreas() {
         hoverRect.setAttribute("data-variant-id", v.id);
         hoverRect.style.cursor = "pointer";
         hoverRect.style.pointerEvents = "auto";
-        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
+        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, "", v.id));
         flowOverlay.appendChild(hoverRect);
       }
     } else {
@@ -1712,7 +1757,7 @@ function setupVariantHoverAreas() {
         hoverRect.setAttribute("data-variant-id", variant.id);
         hoverRect.style.cursor = "pointer";
         hoverRect.style.pointerEvents = "auto";
-        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, variant.id));
+        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, "", variant.id));
         flowOverlay.appendChild(hoverRect);
       }
     }
@@ -2157,6 +2202,7 @@ function setupCanvasHover() {
           e.preventDefault();
           e.stopPropagation();
           state.alleleDragState = {
+            trackId: node.trackId || "",
             variantId: node.variantId,
             alleleIndex: node.alleleIndex,
             label: node.label,
@@ -2196,11 +2242,16 @@ function setupCanvasHover() {
       
       // Calculate drop position to show indicator
       const dragState = state.alleleDragState;
-      const order = state.variantAlleleOrder.get(dragState.variantId);
+      const variantOrderKey = makeVariantOrderKeyCompat(dragState.trackId, dragState.variantId);
+      const order = state.variantAlleleOrder.get(variantOrderKey);
       if (order) {
         const isVertical = isVerticalMode();
         const variantMode = getVariantLayoutMode();
-        const win = visibleVariantWindow();
+        const variantTrack = getVariantTrackById(dragState.trackId);
+        const dragTrackVariants = (variantTrack && Array.isArray(variantTrack.variants_data))
+          ? variantTrack.variants_data
+          : variants;
+        const win = dragTrackVariants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
         const constants = window._alleleNodeConstants || { baseNodeW: 4, baseNodeH: 14, gap: 8, MIN_NODE_SIZE: 4 };
         const gap = constants.gap;
         const MIN_NODE_SIZE = constants.MIN_NODE_SIZE;
@@ -2380,7 +2431,7 @@ function setupCanvasHover() {
         for (const node of nodesToTest) {
           if (x >= node.x && x <= node.x + node.w && 
               y >= node.y && y <= node.y + node.h) {
-            hoveredNode = { variantId: node.variantId, alleleIndex: node.alleleIndex };
+            hoveredNode = { trackId: node.trackId || "", variantId: node.variantId, alleleIndex: node.alleleIndex };
             hoveredNodeLabel = node.label;
             break;
           }
@@ -2388,7 +2439,10 @@ function setupCanvasHover() {
         
         // Update hover state and tooltip if changed
         const currentHover = state.hoveredAlleleNode;
-        const hoverChanged = (hoveredNode && (!currentHover || currentHover.variantId !== hoveredNode.variantId || currentHover.alleleIndex !== hoveredNode.alleleIndex)) ||
+        const hoverChanged = (hoveredNode && (!currentHover ||
+            (currentHover.trackId || "") !== (hoveredNode.trackId || "") ||
+            currentHover.variantId !== hoveredNode.variantId ||
+            currentHover.alleleIndex !== hoveredNode.alleleIndex)) ||
             (!hoveredNode && currentHover);
         if (hoverChanged) {
           state.hoveredAlleleNode = hoveredNode;
@@ -2416,7 +2470,7 @@ function setupCanvasHover() {
       
       // Check if this was a click (not a drag)
       if (dragState.isClick) {
-        const labelKey = `${dragState.variantId}:${dragState.alleleIndex}`;
+        const labelKey = makeAlleleSelectionKeyCompat(dragState.trackId, dragState.variantId, dragState.alleleIndex);
         
         // Handle selection with Ctrl/Cmd for multi-select
         if (e.ctrlKey || e.metaKey) {
@@ -2446,7 +2500,8 @@ function setupCanvasHover() {
       }
       
       // Otherwise, handle as a drag/drop
-      const order = state.variantAlleleOrder.get(dragState.variantId);
+      const variantOrderKey = makeVariantOrderKeyCompat(dragState.trackId, dragState.variantId);
+      const order = state.variantAlleleOrder.get(variantOrderKey);
       if (!order) {
         state.alleleDragState = null;
         flowCanvas.style.cursor = "";
@@ -2457,7 +2512,11 @@ function setupCanvasHover() {
       
       const isVertical = isVerticalMode();
       const variantMode = getVariantLayoutMode();
-      const win = visibleVariantWindow();
+      const variantTrack = getVariantTrackById(dragState.trackId);
+      const dragTrackVariants = (variantTrack && Array.isArray(variantTrack.variants_data))
+        ? variantTrack.variants_data
+        : variants;
+      const win = dragTrackVariants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
       const constants = window._alleleNodeConstants || { baseNodeW: 4, baseNodeH: 14, gap: 8, MIN_NODE_SIZE: 4 };
       const nodeW = constants.baseNodeW;
       const nodeH = constants.baseNodeH;
@@ -2536,7 +2595,7 @@ function setupCanvasHover() {
         const currentIndex = order.indexOf(dragState.label);
         order.splice(currentIndex, 1);
         order.splice(newIndex, 0, dragState.label);
-        state.variantAlleleOrder.set(dragState.variantId, order);
+        state.variantAlleleOrder.set(variantOrderKey, order);
       }
       
       state.alleleDragState = null;
@@ -2561,19 +2620,23 @@ function setupCanvasHover() {
   function getSelectedAlleleInfo() {
     const selectedInfo = [];
     for (const key of state.selectedAlleles) {
-      const [variantId, alleleIndexStr] = key.split(':');
-      const alleleIndex = parseInt(alleleIndexStr, 10);
+      const parsed = parseAlleleSelectionKeyCompat(key);
+      if (!parsed) continue;
+      const { trackId, variantId, alleleIndex } = parsed;
       
       // Find the variant
-      const variant = variants.find(v => v.id === variantId);
+      const variant = findVariantByTrackAndId(trackId, variantId);
       if (!variant) continue;
       
       // Find the node position info to get the label
       const nodeInfo = window._alleleNodePositions?.find(n => 
-        n.variantId === variantId && n.alleleIndex === alleleIndex
+        (n.trackId || "") === (trackId || "") &&
+        n.variantId === variantId &&
+        n.alleleIndex === alleleIndex
       );
       
       selectedInfo.push({
+        trackId,
         variantId,
         alleleIndex,
         label: nodeInfo?.label || `Allele ${alleleIndex}`,
@@ -2713,13 +2776,15 @@ function setupCanvasHover() {
     // Parse selected alleles into variant/allele pairs
     const selectedAllelePairs = [];
     for (const key of state.selectedAlleles) {
-      const [variantId, alleleIndexStr] = key.split(':');
-      const alleleIndex = parseInt(alleleIndexStr, 10);
+      const parsed = parseAlleleSelectionKeyCompat(key);
+      if (!parsed) continue;
+      const { trackId, variantId, alleleIndex } = parsed;
       
-      const variant = variants.find(v => v.id === variantId);
+      const variant = findVariantByTrackAndId(trackId, variantId);
       if (!variant) continue;
       
       selectedAllelePairs.push({
+        trackId,
         variantId,
         alleleIndex,
         variant
@@ -2882,13 +2947,15 @@ function setupCanvasHover() {
     // Parse selected alleles into variant/allele pairs
     const selectedAllelePairs = [];
     for (const key of selectedAlleles) {
-      const [variantId, alleleIndexStr] = key.split(':');
-      const alleleIndex = parseInt(alleleIndexStr, 10);
+      const parsed = parseAlleleSelectionKeyCompat(key);
+      if (!parsed) continue;
+      const { trackId, variantId, alleleIndex } = parsed;
       
-      const variant = variants.find(v => v.id === variantId);
+      const variant = findVariantByTrackAndId(trackId, variantId);
       if (!variant) continue;
       
       selectedAllelePairs.push({
+        trackId,
         variantId,
         alleleIndex,
         variant
@@ -2972,13 +3039,15 @@ function setupCanvasHover() {
     // Parse selected alleles into variant/allele pairs
     const selectedAllelePairs = [];
     for (const key of selectedAlleles) {
-      const [variantId, alleleIndexStr] = key.split(':');
-      const alleleIndex = parseInt(alleleIndexStr, 10);
+      const parsed = parseAlleleSelectionKeyCompat(key);
+      if (!parsed) continue;
+      const { trackId, variantId, alleleIndex } = parsed;
       
-      const variant = variants.find(v => v.id === variantId);
+      const variant = findVariantByTrackAndId(trackId, variantId);
       if (!variant) continue;
       
       selectedAllelePairs.push({
+        trackId,
         variantId,
         alleleIndex,
         variant
@@ -3249,12 +3318,19 @@ function setupCanvasHover() {
       
       if (selectedAlleles.size > 0) {
         // If alleles are selected, only consider those variants
-        const variantIds = new Set();
+        const selectedVariants = [];
+        const selectedVariantKeys = new Set();
         for (const key of selectedAlleles) {
-          const [variantId] = key.split(':');
-          variantIds.add(variantId);
+          const parsed = parseAlleleSelectionKeyCompat(key);
+          if (!parsed) continue;
+          const composite = `${parsed.trackId || ""}::${parsed.variantId}`;
+          if (selectedVariantKeys.has(composite)) continue;
+          const variant = findVariantByTrackAndId(parsed.trackId, parsed.variantId);
+          if (!variant) continue;
+          selectedVariantKeys.add(composite);
+          selectedVariants.push(variant);
         }
-        variantsToConsider = variants.filter(v => variantIds.has(v.id));
+        variantsToConsider = selectedVariants;
       } else {
         // If no alleles selected, consider all variants
         variantsToConsider = variants;
@@ -3415,13 +3491,15 @@ function setupCanvasHover() {
       // Parse selected alleles into variant/allele pairs
       const selectedAllelePairs = [];
       for (const key of selectedAlleles) {
-        const [variantId, alleleIndexStr] = key.split(':');
-        const alleleIndex = parseInt(alleleIndexStr, 10);
+        const parsed = parseAlleleSelectionKeyCompat(key);
+        if (!parsed) continue;
+        const { trackId, variantId, alleleIndex } = parsed;
         
-        const variant = variants.find(v => v.id === variantId);
+        const variant = findVariantByTrackAndId(trackId, variantId);
         if (!variant) continue;
         
         selectedAllelePairs.push({
+          trackId,
           variantId,
           alleleIndex,
           variant

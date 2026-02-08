@@ -41,23 +41,23 @@ const state = {
   // variant layout mode: "equidistant" or "genomic"
   variantLayoutMode: null, // will be initialized from localStorage
   
-  // allele order for each variant: Map<variantId, string[]> where array is ['.', '(N bp) refAllele', '(N bp) altAllele1', ...]
+  // allele order for each variant node: Map<trackId::variantId, string[]>
   variantAlleleOrder: new Map(),
   
   // drag state for allele reordering
-  alleleDragState: null, // { variantId, alleleIndex, label, startX, startY, offsetX, offsetY, dropIndex }
+  alleleDragState: null, // { trackId, variantId, alleleIndex, label, startX, startY, offsetX, offsetY, dropIndex }
   
-  // hovered allele node: { variantId, alleleIndex } or null
+  // hovered allele node: { trackId, variantId, alleleIndex } or null
   hoveredAlleleNode: null,
   hoveredAlleleNodeTooltip: null, // { text, x, y } when hovering an allele node
 
-  // pinned allele labels: Set of strings like "variantId:alleleIndex"
+  // pinned allele labels: Set of keys from makeAlleleSelectionKey()
   pinnedAlleleLabels: new Set(),
   
   // pinned variant labels: Set of variant IDs (strings)
   pinnedVariantLabels: new Set(),
   
-  // selected alleles for multi-select: Set of strings like "variantId:alleleIndex"
+  // selected alleles for multi-select: Set of keys from makeAlleleSelectionKey()
   selectedAlleles: new Set(),
   
   // sample selection state
@@ -206,6 +206,49 @@ const ribbonTransitionCache = new Map();
 const MAX_CACHE_SIZE = 1000; // Limit cache size to prevent unbounded growth
 let cachedVisibleVariantIds = null; // Track which variants were used for cache
 let cachedViewportRange = null; // Track the viewport range used for cache (with padding)
+
+// Selection/order key helpers (track-aware; with legacy parsing fallback).
+function makeVariantOrderKey(trackId, variantId) {
+  return `${String(trackId || "")}::${String(variantId)}`;
+}
+
+function makeAlleleSelectionKey(trackId, variantId, alleleIndex) {
+  const t = encodeURIComponent(String(trackId || ""));
+  const v = encodeURIComponent(String(variantId));
+  return `t=${t};v=${v};a=${Number(alleleIndex)}`;
+}
+
+function parseAlleleSelectionKey(key) {
+  if (typeof key !== "string") return null;
+
+  // New track-aware format.
+  if (key.startsWith("t=") && key.includes(";v=") && key.includes(";a=")) {
+    const fields = key.split(";");
+    const tField = fields.find(f => f.startsWith("t="));
+    const vField = fields.find(f => f.startsWith("v="));
+    const aField = fields.find(f => f.startsWith("a="));
+    if (!vField || !aField) return null;
+    const alleleIndex = parseInt(aField.slice(2), 10);
+    if (!Number.isFinite(alleleIndex)) return null;
+    return {
+      trackId: tField ? decodeURIComponent(tField.slice(2)) : "",
+      variantId: decodeURIComponent(vField.slice(2)),
+      alleleIndex
+    };
+  }
+
+  // Legacy format: "variantId:alleleIndex"
+  const idx = key.lastIndexOf(":");
+  if (idx <= 0) return null;
+  const variantId = key.slice(0, idx);
+  const alleleIndex = parseInt(key.slice(idx + 1), 10);
+  if (!Number.isFinite(alleleIndex)) return null;
+  return { trackId: "", variantId, alleleIndex };
+}
+
+window.makeVariantOrderKey = makeVariantOrderKey;
+window.makeAlleleSelectionKey = makeAlleleSelectionKey;
+window.parseAlleleSelectionKey = parseAlleleSelectionKey;
 
 // Expanded variant window with padding to reduce cache invalidation during pan/zoom
 // Returns variants within viewport + padding (e.g., 30% on each side)
