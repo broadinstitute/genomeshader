@@ -46,12 +46,23 @@ function renderFlowCanvas() {
       ? window.makeAlleleSelectionKey(trackId, variantId, alleleIndex)
       : `${variantId}:${alleleIndex}`
   );
+  const findBandFlowTrackEl = (trackId) => {
+    const flowEl = document.getElementById("flow");
+    if (!flowEl) return null;
+    const target = String(trackId || "");
+    const tracks = flowEl.querySelectorAll(".flow-track");
+    for (const el of tracks) {
+      if ((el.dataset.trackId || "") === target) return el;
+    }
+    return null;
+  };
 
   const layout = getTrackLayout();
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
   const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
   const visibleFlowLayouts = flowLayouts.filter(l => !l.track.collapsed);
   if (visibleFlowLayouts.length === 0) {
+    window._alleleNodePositions = [];
     const fc = document.getElementById("flowCanvas") || document.getElementById("flowCanvas-0");
     if (fc) {
       const ctx = fc.getContext("2d");
@@ -108,8 +119,10 @@ function renderFlowCanvas() {
   }
   if (flowInstancedRenderer) flowInstancedRenderer.clear();
   if (flowRibbonRenderer) flowRibbonRenderer.clear();
+  const allBandNodePositions = [];
 
-  for (const band of flowBands) {
+  for (let bandIdx = 0; bandIdx < flowBands.length; bandIdx++) {
+    const band = flowBands[bandIdx];
     const { track, flowLayout, bandOffset, bandHeight } = band;
     const variants = track.variants_data || [];
     const win = visibleVariantWindowFor(variants);
@@ -118,16 +131,30 @@ function renderFlowCanvas() {
 
     let ctx;
     if (multiTrack) {
-      let bandFlowEl = document.getElementById(track.id);
-      let bandCanvas = bandFlowEl ? document.getElementById("flowCanvas-" + track.id.replace("flow-", "")) : null;
-      // Fallback for first band: use first .flow-track and its canvas (handles id "flow" or missing elements)
       const flowEl = document.getElementById("flow");
-      if ((!bandFlowEl || !bandCanvas) && bandOffset === 0 && flowEl) {
-        const firstTrack = flowEl.querySelector(".flow-track");
-        if (firstTrack) {
-          bandFlowEl = firstTrack;
-          bandCanvas = firstTrack.querySelector("canvas");
+      let bandFlowEl = findBandFlowTrackEl(track.id);
+      if (!bandFlowEl) {
+        const candidate = document.getElementById(track.id);
+        if (candidate && candidate.classList && candidate.classList.contains("flow-track")) {
+          bandFlowEl = candidate;
         }
+      }
+      let bandCanvas = bandFlowEl ? bandFlowEl.querySelector("canvas.canvas") : null;
+      // Fallback by track order if id/data-track-id lookup fails.
+      if ((!bandFlowEl || !bandCanvas) && flowEl) {
+        const trackEls = Array.from(flowEl.querySelectorAll(".flow-track"));
+        const orderTrack = trackEls[bandIdx] || trackEls[0] || null;
+        if (orderTrack) {
+          bandFlowEl = orderTrack;
+          bandCanvas = orderTrack.querySelector("canvas.canvas") || orderTrack.querySelector("canvas");
+        }
+      }
+      // Final fallback to shared flow canvas to avoid dropping all hit-test nodes.
+      if (!bandFlowEl && flowEl) {
+        bandFlowEl = flowEl;
+      }
+      if (!bandCanvas) {
+        bandCanvas = document.getElementById("flowCanvas");
       }
       if (!bandFlowEl || !bandCanvas) continue;
       const dpr = resizeCanvasTo(bandFlowEl, bandCanvas);
@@ -1860,8 +1887,8 @@ function renderFlowCanvas() {
     }
   }
   
-  // Store node positions globally for hit testing
-  window._alleleNodePositions = nodePositions;
+  // Accumulate node positions across all flow bands.
+  allBandNodePositions.push(...nodePositions);
   
   // Draw all labels at the very end with tooltip-style rounded rectangles (to bring them to foreground)
   ctx.font = "11px ui-monospace, 'SF Mono', Monaco, 'Consolas', 'Courier New', monospace";
@@ -1935,6 +1962,9 @@ function renderFlowCanvas() {
     if (!multiTrack) ctx.restore();
     })();
   }
+
+  // Store node positions globally for hit testing (across all tracks/bands).
+  window._alleleNodePositions = allBandNodePositions;
 
   // Execute WebGPU render pass after variant columns are added
   // Render to flowWebGPU canvas (separate from tracksWebGPU)

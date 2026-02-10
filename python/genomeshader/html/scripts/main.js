@@ -1508,6 +1508,24 @@ function findVariantByTrackAndId(trackId, variantId) {
   return findVariantById(variantId);
 }
 
+function flowTrackDomId(trackId) {
+  return `flow-track-${encodeURIComponent(String(trackId || ""))}`;
+}
+
+function flowCanvasDomId(trackId) {
+  return `flowCanvas-${encodeURIComponent(String(trackId || ""))}`;
+}
+
+function findFlowTrackElementByTrackId(trackId) {
+  if (!flow) return null;
+  const target = String(trackId || "");
+  const tracks = flow.querySelectorAll(".flow-track");
+  for (const el of tracks) {
+    if ((el.dataset.trackId || "") === target) return el;
+  }
+  return null;
+}
+
 // Set up variant hover areas in canvas overlays
 function setupVariantHoverAreas() {
   if (!flowOverlay) return;
@@ -1615,7 +1633,7 @@ function setupVariantHoverAreas() {
       const bandVariants = band.track.variants_data || [];
       const win = typeof visibleVariantWindowFor === "function" ? visibleVariantWindowFor(bandVariants) : bandVariants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
       const bandSize = band.bandHeight;
-      const trackEl = document.getElementById(band.track.id);
+      const trackEl = findFlowTrackElementByTrackId(band.track.id);
       const bandOverlay = trackEl ? trackEl.querySelector(".flow-track-overlay") : null;
       if (!bandOverlay) continue;
       clearSvg(bandOverlay);
@@ -2186,6 +2204,16 @@ function setupCanvasHover() {
     // With multiple variant tracks, flowWebGPU has pointer-events: none; attach to flow so overlays' events bubble here
     const variantTracks = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
     const targetElement = variantTracks.length > 1 ? flow : (flowWebGPU || flow);
+    const getTrackIdAtClientPoint = (clientX, clientY) => {
+      const el = document.elementFromPoint(clientX, clientY);
+      const trackEl = el && el.closest ? el.closest(".flow-track") : null;
+      return trackEl ? String(trackEl.dataset.trackId || "") : "";
+    };
+    const filterNodesByTrack = (nodes, trackId) => {
+      if (!trackId) return nodes;
+      const filtered = nodes.filter(n => String(n.trackId || "") === trackId);
+      return filtered.length > 0 ? filtered : nodes;
+    };
     
     alleleMouseDownHandler = (e) => {
       if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) return;
@@ -2194,28 +2222,38 @@ function setupCanvasHover() {
       const rect = flow.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+      const activeTrackId = getTrackIdAtClientPoint(e.clientX, e.clientY);
+      const allNodes = window._alleleNodePositions;
+      const nodesToTest = filterNodesByTrack(allNodes, activeTrackId);
+      const tryStartDragForNodes = (nodes) => {
+        for (const node of nodes) {
+          if (x >= node.x && x <= node.x + node.w &&
+              y >= node.y && y <= node.y + node.h) {
+            e.preventDefault();
+            e.stopPropagation();
+            state.alleleDragState = {
+              trackId: node.trackId || "",
+              variantId: node.variantId,
+              alleleIndex: node.alleleIndex,
+              label: node.label,
+              startX: x,
+              startY: y,
+              offsetX: 0,
+              offsetY: 0,
+              isClick: true // Track if this might be a click (not a drag)
+            };
+            flowCanvas.style.cursor = "grabbing";
+            if (flowWebGPU) flowWebGPU.style.cursor = "grabbing";
+            return true;
+          }
+        }
+        return false;
+      };
       
       // Find which node was clicked
-      for (const node of window._alleleNodePositions) {
-        if (x >= node.x && x <= node.x + node.w && 
-            y >= node.y && y <= node.y + node.h) {
-          e.preventDefault();
-          e.stopPropagation();
-          state.alleleDragState = {
-            trackId: node.trackId || "",
-            variantId: node.variantId,
-            alleleIndex: node.alleleIndex,
-            label: node.label,
-            startX: x,
-            startY: y,
-            offsetX: 0,
-            offsetY: 0,
-            isClick: true // Track if this might be a click (not a drag)
-          };
-          flowCanvas.style.cursor = "grabbing";
-          if (flowWebGPU) flowWebGPU.style.cursor = "grabbing";
-          return;
-        }
+      if (tryStartDragForNodes(nodesToTest)) return;
+      if (nodesToTest !== allNodes) {
+        tryStartDragForNodes(allNodes);
       }
     };
     
@@ -2223,8 +2261,8 @@ function setupCanvasHover() {
       const rect = flow.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      
-      const nodesToTest = window._alleleNodePositions || [];
+      const activeTrackId = getTrackIdAtClientPoint(e.clientX, e.clientY);
+      const nodesToTest = filterNodesByTrack(window._alleleNodePositions || [], activeTrackId);
       
       if (state.alleleDragState) {
         // Handle drag
@@ -2425,16 +2463,28 @@ function setupCanvasHover() {
           return;
         }
         
-        // Find which node is hovered (nodesToTest is filtered by band in multi-track)
+        // Find which node is hovered (nodesToTest is filtered by track in multi-track)
         let hoveredNode = null;
         let hoveredNodeLabel = null;
-        for (const node of nodesToTest) {
-          if (x >= node.x && x <= node.x + node.w && 
-              y >= node.y && y <= node.y + node.h) {
-            hoveredNode = { trackId: node.trackId || "", variantId: node.variantId, alleleIndex: node.alleleIndex };
-            hoveredNodeLabel = node.label;
-            break;
+        const findHoveredInNodes = (nodes) => {
+          for (const node of nodes) {
+            if (x >= node.x && x <= node.x + node.w &&
+                y >= node.y && y <= node.y + node.h) {
+              return {
+                node: { trackId: node.trackId || "", variantId: node.variantId, alleleIndex: node.alleleIndex },
+                label: node.label
+              };
+            }
           }
+          return null;
+        };
+        let hovered = findHoveredInNodes(nodesToTest);
+        if (!hovered && nodesToTest !== (window._alleleNodePositions || [])) {
+          hovered = findHoveredInNodes(window._alleleNodePositions || []);
+        }
+        if (hovered) {
+          hoveredNode = hovered.node;
+          hoveredNodeLabel = hovered.label;
         }
         
         // Update hover state and tooltip if changed
@@ -3942,10 +3992,16 @@ function ensureFlowContainers(flowLayouts) {
   if (!flow || flowLayouts.length <= 1) return;
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
   if (variantTracksConfig.length <= 1) return;
+
+  const expectedTrackIds = flowLayouts.map(l => String(l.track.id));
+  const existingTrackEls = Array.from(flow.querySelectorAll(".flow-track"));
+  const existingTrackIds = existingTrackEls.map(el => String(el.dataset.trackId || ""));
+  const hasAllTracks = expectedTrackIds.length === existingTrackIds.length &&
+    expectedTrackIds.every(id => existingTrackIds.includes(id));
+  if (hasAllTracks) return;
+
   const flowWebGPUEl = document.getElementById("flowWebGPU");
   const flowOverlayEl = document.getElementById("flowOverlay");
-  const firstFlowTrack = flow.querySelector('[id^="flow-"]');
-  if (firstFlowTrack && firstFlowTrack.id === "flow-0") return;
   while (flow.firstChild) flow.removeChild(flow.firstChild);
   // Append flowWebGPU first so it is behind flow-tracks; then clicks in each track hit the correct track
   if (flowWebGPUEl) {
@@ -3957,13 +4013,14 @@ function ensureFlowContainers(flowLayouts) {
     const track = flowLayouts[i].track;
     const div = document.createElement("div");
     div.className = "flow-track";
-    div.id = track.id;
+    div.id = flowTrackDomId(track.id);
+    div.dataset.trackId = String(track.id || "");
     div.style.position = "absolute";
     div.style.left = "0";
     div.style.width = "100%";
     const canvas = document.createElement("canvas");
     canvas.className = "canvas";
-    canvas.id = "flowCanvas-" + track.id.replace("flow-", "");
+    canvas.id = flowCanvasDomId(track.id);
     div.appendChild(canvas);
     const overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     overlay.setAttribute("class", "overlay flow-track-overlay");
@@ -3972,7 +4029,7 @@ function ensureFlowContainers(flowLayouts) {
     div.appendChild(overlay);
     flowTrackDivs.push(div);
   }
-  // Append in reverse order so flow-0 is on top and receives clicks in the first track
+  // Append in reverse order so the first configured track is on top.
   for (let i = flowTrackDivs.length - 1; i >= 0; i--) {
     flow.appendChild(flowTrackDivs[i]);
   }
@@ -4007,7 +4064,7 @@ function updateFlowAndReadsPosition() {
       flow.style.display = "block";
       let offset = 0;
       for (let i = 0; i < visible.length; i++) {
-        const flowTrackEl = document.getElementById(visible[i].track.id);
+        const flowTrackEl = findFlowTrackElementByTrackId(visible[i].track.id);
         if (flowTrackEl) {
           const ch = visible[i].contentHeight;
           const cw = visible[i].contentWidth;

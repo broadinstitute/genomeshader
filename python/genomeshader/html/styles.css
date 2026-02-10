@@ -807,7 +807,8 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 #trackControls {
   position: absolute;
   inset: 0;
-  z-index: 20;
+  /* Keep controls/resize handles above flow overlays while preserving click-through */
+  z-index: 120;
   pointer-events: none;
 }
 
@@ -815,7 +816,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   position: absolute;
   left: 0; right: 0;
   background: rgba(127,127,127,0.04);
-  /* Above track controls (z-index 100) so variant click-to-select works in first track */
+  /* Below #trackControls so track controls and resize handles remain interactive */
   z-index: 101;
 }
 
