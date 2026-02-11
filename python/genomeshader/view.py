@@ -535,6 +535,103 @@ class GenomeShader:
             }
             ref_allele = variant_info["refAllele"]
             alt_alleles = variant_info["altAlleles"]
+            alt_allele_set = set(alt_alleles)
+            pos_df = variants_df.filter(
+                (pl.col("position") == pos) & (pl.col("ref_allele") == variant_info["refAllele"])
+            )
+            sample_alleles_raw = {}
+            for row in pos_df.iter_rows(named=True):
+                sample_name = row.get("sample_name")
+                if sample_name is None:
+                    continue
+                if sample_name not in sample_alleles_raw:
+                    sample_alleles_raw[sample_name] = set()
+                gt_str = str(row.get("genotype", "./.") or "./.")
+                row_alt_allele = row.get("alt_allele")
+                row_alt_index = row.get("alt_index")
+                row_alt_index_int = None
+                if row_alt_index is not None:
+                    try:
+                        row_alt_index_int = int(row_alt_index)
+                    except (TypeError, ValueError):
+                        row_alt_index_int = None
+                has_missing = False
+                for part in gt_str.replace("|", "/").split("/"):
+                    token = part.strip()
+                    if token == "" or token == ".":
+                        has_missing = True
+                        continue
+                    try:
+                        allele_idx = int(token)
+                    except ValueError:
+                        has_missing = True
+                        continue
+                    if allele_idx == 0:
+                        sample_alleles_raw[sample_name].add("ref")
+                        continue
+                    if row_alt_index_int is not None:
+                        # Use exact per-row ALT index when available to avoid
+                        # mismatches in merged multiallelic representations.
+                        if allele_idx == row_alt_index_int and row_alt_allele in alt_allele_set:
+                            sample_alleles_raw[sample_name].add(("alt", row_alt_allele))
+                        continue
+                    # Fallback for older data without alt_index.
+                    if 1 <= allele_idx <= len(alt_alleles):
+                        sample_alleles_raw[sample_name].add(("alt", alt_alleles[allele_idx - 1]))
+                if has_missing:
+                    sample_alleles_raw[sample_name].add(".")
+
+            alt_sample_counts_by_allele = {alt: 0 for alt in alt_alleles}
+            for seen_raw in sample_alleles_raw.values():
+                for marker in seen_raw:
+                    if isinstance(marker, tuple) and len(marker) == 2 and marker[0] == "alt":
+                        alt = marker[1]
+                        if alt in alt_sample_counts_by_allele:
+                            alt_sample_counts_by_allele[alt] += 1
+
+            # Keep '.' then ref fixed; sort ALT alleles by descending sample support.
+            # Tie-break by original ALT order for deterministic rendering.
+            alt_original_index = {alt: i for i, alt in enumerate(alt_alleles)}
+            alt_alleles = sorted(
+                alt_alleles,
+                key=lambda alt: (-alt_sample_counts_by_allele.get(alt, 0), alt_original_index.get(alt, 0))
+            )
+            alt_key_by_allele = {alt: f"a{i+1}" for i, alt in enumerate(alt_alleles)}
+
+            allele_sample_counts = {".": 0, "ref": 0}
+            for i in range(len(alt_alleles)):
+                allele_sample_counts[f"a{i+1}"] = 0
+            sample_alleles = {}
+            for sample_name, seen_raw in sample_alleles_raw.items():
+                seen_keys = set()
+                for marker in seen_raw:
+                    if marker == "." or marker == "ref":
+                        seen_keys.add(marker)
+                    elif isinstance(marker, tuple) and len(marker) == 2 and marker[0] == "alt":
+                        allele_key = alt_key_by_allele.get(marker[1])
+                        if allele_key is not None:
+                            seen_keys.add(allele_key)
+                sample_alleles[sample_name] = seen_keys
+                for allele_key in seen_keys:
+                    if allele_key in allele_sample_counts:
+                        allele_sample_counts[allele_key] += 1
+            total_sample_alleles = sum(allele_sample_counts.values())
+            if total_sample_alleles > 0:
+                allele_frequencies = {
+                    allele_key: count / total_sample_alleles
+                    for allele_key, count in allele_sample_counts.items()
+                }
+            else:
+                n_a = 1 + len(alt_alleles) + 1
+                allele_frequencies = {
+                    a: 1.0 / n_a
+                    for a in ["."] + ["ref"] + [f"a{i+1}" for i in range(len(alt_alleles))]
+                }
+            variant_sample_alleles = {
+                sample_name: sorted(list(seen_keys))
+                for sample_name, seen_keys in sample_alleles.items()
+            }
+
             ref_len = len(ref_allele) if ref_allele else 0
             is_insertion = False
             max_insertion_length = 0
@@ -557,9 +654,11 @@ class GenomeShader:
                 "id": variant_display_id,
                 "pos": variant_info["pos"],
                 "refAllele": variant_info["refAllele"],
-                "altAlleles": variant_info["altAlleles"],
-                "alleles": ["ref"] + [f"a{i+1}" for i in range(len(variant_info["altAlleles"]))],
-                "alleleFrequencies": variant_info.get("alleleFrequencies", {}),
+                "altAlleles": alt_alleles,
+                "alleles": ["ref"] + [f"a{i+1}" for i in range(len(alt_alleles))],
+                "alleleFrequencies": allele_frequencies,
+                "alleleSampleCounts": allele_sample_counts,
+                "sampleAlleles": variant_sample_alleles,
                 "sampleGenotypes": variant_genotypes,
                 "displayIds": variant_info.get("variant_display_ids", [variant_display_id]),
                 "isInsertion": is_insertion,

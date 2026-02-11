@@ -30,6 +30,7 @@ pub fn extract_variants(
     let mut alt_alleles = Vec::new();
     let mut sample_names_vec = Vec::new();
     let mut genotypes = Vec::new();
+    let mut alt_indices = Vec::new();
     let mut variant_ids = Vec::new();
     let mut vcf_ids = Vec::new();
     
@@ -64,7 +65,7 @@ pub fn extract_variants(
             .collect();
         
         // Process each alternate allele as a separate variant
-        for (_alt_idx, alt_allele) in alt_alleles_list.iter().enumerate() {
+        for (alt_idx, alt_allele) in alt_alleles_list.iter().enumerate() {
             let alt_allele_str: String = alt_allele.clone();
             
             // Get or create variant ID
@@ -115,6 +116,7 @@ pub fn extract_variants(
                 alt_alleles.push(alt_allele_str.clone());
                 sample_names_vec.push(sample_name.clone());
                 genotypes.push(gt_str);
+                alt_indices.push((alt_idx + 1) as i32);
                 variant_ids.push(variant_id);
                 vcf_ids.push(vcf_id_str.clone());
             }
@@ -129,6 +131,7 @@ pub fn extract_variants(
             Series::new("alt_allele", alt_alleles),
             Series::new("sample_name", sample_names_vec),
             Series::new("genotype", genotypes),
+            Series::new("alt_index", alt_indices),
             Series::new("variant_id", variant_ids),
             Series::new("vcf_id", vcf_ids),
         ]
@@ -136,4 +139,3 @@ pub fn extract_variants(
     
     Ok(df)
 }
-

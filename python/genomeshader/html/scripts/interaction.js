@@ -1168,8 +1168,16 @@ function renderFlowCanvas() {
         const isPinned = state.pinnedAlleleLabels.has(labelKey);
         
         if (isHovered || isPinned || isSelected) {
+          const sampleCount = (
+            v.alleleSampleCounts &&
+            Object.prototype.hasOwnProperty.call(v.alleleSampleCounts, alleleKey)
+          )
+            ? v.alleleSampleCounts[alleleKey]
+            : 0;
+          const labelText = `${label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
           allLabelsToDraw.push({
             label: label,
+            text: labelText,
             nodeX: nodeX,
             nodeY: nodeY,
             nodeW: nodeW,
@@ -1421,8 +1429,16 @@ function renderFlowCanvas() {
         const isPinned = state.pinnedAlleleLabels.has(labelKey);
         
         if (isHovered || isPinned || isSelected) {
+          const sampleCount = (
+            v.alleleSampleCounts &&
+            Object.prototype.hasOwnProperty.call(v.alleleSampleCounts, alleleKey)
+          )
+            ? v.alleleSampleCounts[alleleKey]
+            : 0;
+          const labelText = `${label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
           allLabelsToDraw.push({
             label: label,
+            text: labelText,
             nodeX: nodeX,
             nodeY: nodeY,
             nodeW: nodeW,
@@ -1899,7 +1915,7 @@ function renderFlowCanvas() {
   const labelTextColor = "rgba(255, 255, 255, 0.95)";
   
   for (const labelInfo of allLabelsToDraw) {
-    const text = labelInfo.label;
+    const text = labelInfo.text || labelInfo.label;
     const textMetrics = ctx.measureText(text);
     const textWidth = textMetrics.width;
     const textHeight = 11; // font size

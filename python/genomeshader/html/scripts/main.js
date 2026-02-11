@@ -2484,7 +2484,21 @@ function setupCanvasHover() {
         }
         if (hovered) {
           hoveredNode = hovered.node;
-          hoveredNodeLabel = hovered.label;
+          const hoveredVariant = findVariantByTrackAndId(hoveredNode.trackId, hoveredNode.variantId);
+          let alleleKey = ".";
+          if (hoveredNode.alleleIndex === 1) {
+            alleleKey = "ref";
+          } else if (hoveredNode.alleleIndex >= 2) {
+            alleleKey = `a${hoveredNode.alleleIndex - 1}`;
+          }
+          const sampleCount = (
+            hoveredVariant &&
+            hoveredVariant.alleleSampleCounts &&
+            Object.prototype.hasOwnProperty.call(hoveredVariant.alleleSampleCounts, alleleKey)
+          )
+            ? hoveredVariant.alleleSampleCounts[alleleKey]
+            : 0;
+          hoveredNodeLabel = `${hovered.label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
         }
         
         // Update hover state and tooltip if changed
@@ -2849,8 +2863,12 @@ function setupCanvasHover() {
     // Collect all sample IDs from variant data (for allSampleIds if not populated)
     const allSamplesSet = new Set();
     for (const pair of selectedAllelePairs) {
-      const sampleGenotypes = pair.variant.sampleGenotypes || {};
-      Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
+      if (pair.variant.sampleAlleles) {
+        Object.keys(pair.variant.sampleAlleles).forEach(sampleId => allSamplesSet.add(sampleId));
+      } else {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
+      }
     }
     
     // Also add sample names from sample_mapping (both keys and values)
@@ -2881,55 +2899,28 @@ function setupCanvasHover() {
       // Sample must have ALL selected alleles
       // Start with samples from first variant, then filter by others
       const firstPair = selectedAllelePairs[0];
-      const firstGenotypes = firstPair.variant.sampleGenotypes || {};
-      const firstGenotypeIndex = alleleIndexToGenotypeIndex(firstPair.alleleIndex);
-      
-      // Only process if first allele is valid
-      if (firstGenotypeIndex !== null) {
-        for (const sampleId of Object.keys(firstGenotypes)) {
-          const genotype = firstGenotypes[sampleId];
-          
-          // Check if this sample has the first allele
-          if (hasAlleleInGenotype(genotype, firstGenotypeIndex)) {
-            // Check if this sample has ALL other selected alleles
-            let hasAllAlleles = true;
-            for (let i = 1; i < selectedAllelePairs.length; i++) {
-              const pair = selectedAllelePairs[i];
-              const pairGenotypes = pair.variant.sampleGenotypes || {};
-              const pairGenotype = pairGenotypes[sampleId];
-              
-              if (!pairGenotype) {
-                hasAllAlleles = false;
-                break;
-              }
-              
-              const pairGenotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-              if (pairGenotypeIndex === null || !hasAlleleInGenotype(pairGenotype, pairGenotypeIndex)) {
-                hasAllAlleles = false;
-                break;
-              }
-            }
-            
-            if (hasAllAlleles) {
-              candidateSamplesSet.add(sampleId);
-            }
+      const firstSamples = getVariantSampleIds(firstPair.variant);
+      for (const sampleId of firstSamples) {
+        if (!sampleHasSelectedAllele(firstPair.variant, sampleId, firstPair.alleleIndex)) {
+          continue;
+        }
+        let hasAllAlleles = true;
+        for (let i = 1; i < selectedAllelePairs.length; i++) {
+          const pair = selectedAllelePairs[i];
+          if (!sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
+            hasAllAlleles = false;
+            break;
           }
+        }
+        if (hasAllAlleles) {
+          candidateSamplesSet.add(sampleId);
         }
       }
     } else {
       // OR mode: Sample must have ANY of the selected alleles
-      // Iterate through each variant's samples directly (more efficient than collecting all first)
       for (const pair of selectedAllelePairs) {
-        const sampleGenotypes = pair.variant.sampleGenotypes || {};
-        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        
-        // Skip no-call alleles (alleleIndex 0)
-        if (genotypeIndex === null) continue;
-        
-        // Iterate through samples that have genotype data for this variant
-        for (const sampleId of Object.keys(sampleGenotypes)) {
-          const genotype = sampleGenotypes[sampleId];
-          if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+        for (const sampleId of getVariantSampleIds(pair.variant)) {
+          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
             candidateSamplesSet.add(sampleId);
           }
         }
@@ -2958,6 +2949,38 @@ function setupCanvasHover() {
     }
     return alleleIndex - 1;
   }
+
+  function alleleIndexToAlleleKey(alleleIndex) {
+    if (alleleIndex === 0) return ".";
+    if (alleleIndex === 1) return "ref";
+    return `a${alleleIndex - 1}`;
+  }
+
+  function getVariantSampleIds(variant) {
+    if (!variant) return [];
+    if (variant.sampleAlleles) {
+      return Object.keys(variant.sampleAlleles);
+    }
+    return Object.keys(variant.sampleGenotypes || {});
+  }
+
+  function variantHasSampleAlleles(variant) {
+    return !!(variant && variant.sampleAlleles);
+  }
+
+  function sampleHasSelectedAllele(variant, sampleId, alleleIndex) {
+    if (!variant || sampleId == null || alleleIndex == null) return false;
+    if (variant.sampleAlleles) {
+      const alleleKey = alleleIndexToAlleleKey(alleleIndex);
+      const sampleAlleles = variant.sampleAlleles[sampleId] || [];
+      return sampleAlleles.includes(alleleKey);
+    }
+    const genotypeIndex = alleleIndexToGenotypeIndex(alleleIndex);
+    if (genotypeIndex === null) return false;
+    const sampleGenotypes = variant.sampleGenotypes || {};
+    const genotype = sampleGenotypes[sampleId];
+    return hasAlleleInGenotype(genotype, genotypeIndex);
+  }
   
   // Helper: Check if a genotype string contains a specific allele index
   // Genotype format: "0/1", "1/1", "./.", "0|1", etc.
@@ -2985,7 +3008,7 @@ function setupCanvasHover() {
     
     return false;
   }
-  
+
   // Helper: Compute candidate samples for a specific set of alleles
   // This is used by shuffle to get candidates for a track's specific alleles
   function computeCandidateSamplesForAlleles(selectedAllelesSet, combineMode) {
@@ -3022,49 +3045,27 @@ function setupCanvasHover() {
     if (combineMode === 'AND') {
       // Sample must have ALL selected alleles
       const firstPair = selectedAllelePairs[0];
-      const firstGenotypes = firstPair.variant.sampleGenotypes || {};
-      const firstGenotypeIndex = alleleIndexToGenotypeIndex(firstPair.alleleIndex);
-      
-      if (firstGenotypeIndex !== null) {
-        for (const sampleId of Object.keys(firstGenotypes)) {
-          const genotype = firstGenotypes[sampleId];
-          
-          if (hasAlleleInGenotype(genotype, firstGenotypeIndex)) {
-            let hasAllAlleles = true;
-            for (let i = 1; i < selectedAllelePairs.length; i++) {
-              const pair = selectedAllelePairs[i];
-              const pairGenotypes = pair.variant.sampleGenotypes || {};
-              const pairGenotype = pairGenotypes[sampleId];
-              
-              if (!pairGenotype) {
-                hasAllAlleles = false;
-                break;
-              }
-              
-              const pairGenotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-              if (pairGenotypeIndex === null || !hasAlleleInGenotype(pairGenotype, pairGenotypeIndex)) {
-                hasAllAlleles = false;
-                break;
-              }
-            }
-            
-            if (hasAllAlleles) {
-              candidateSamplesSet.add(sampleId);
-            }
+      for (const sampleId of getVariantSampleIds(firstPair.variant)) {
+        if (!sampleHasSelectedAllele(firstPair.variant, sampleId, firstPair.alleleIndex)) {
+          continue;
+        }
+        let hasAllAlleles = true;
+        for (let i = 1; i < selectedAllelePairs.length; i++) {
+          const pair = selectedAllelePairs[i];
+          if (!sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
+            hasAllAlleles = false;
+            break;
           }
+        }
+        if (hasAllAlleles) {
+          candidateSamplesSet.add(sampleId);
         }
       }
     } else {
       // OR mode: Sample must have ANY of the selected alleles
       for (const pair of selectedAllelePairs) {
-        const sampleGenotypes = pair.variant.sampleGenotypes || {};
-        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        
-        if (genotypeIndex === null) continue;
-        
-        for (const sampleId of Object.keys(sampleGenotypes)) {
-          const genotype = sampleGenotypes[sampleId];
-          if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+        for (const sampleId of getVariantSampleIds(pair.variant)) {
+          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
             candidateSamplesSet.add(sampleId);
           }
         }
@@ -3118,37 +3119,34 @@ function setupCanvasHover() {
         const sampleGenotypes = pair.variant.sampleGenotypes || {};
         const genotype = sampleGenotypes[sampleId];
         const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        
-        if (!genotype || genotypeIndex === null) {
+        const hasAllele = sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex);
+
+        if (!hasAllele) {
           // Missing genotype or no-call allele - penalize heavily
           return -1000;
         }
-        
-        if (hasAlleleInGenotype(genotype, genotypeIndex)) {
-          matchingAlleles++;
-          
-          // Score based on homozygosity
-          // Parse genotype to count how many copies of the allele
-          const alleles = genotype.split(/[\/|]/);
-          let alleleCount = 0;
-          for (const allele of alleles) {
-            const alleleStr = allele.trim();
-            if (alleleStr === '.' || alleleStr === '') continue;
-            const idx = parseInt(alleleStr, 10);
-            if (!isNaN(idx) && idx === genotypeIndex) {
-              alleleCount++;
-            }
+        matchingAlleles++;
+
+        if (variantHasSampleAlleles(pair.variant)) {
+          totalScore += 5;
+          continue;
+        }
+        if (!genotype || genotypeIndex === null) return -1000;
+        const alleles = genotype.split(/[\/|]/);
+        let alleleCount = 0;
+        for (const allele of alleles) {
+          const alleleStr = allele.trim();
+          if (alleleStr === '.' || alleleStr === '') continue;
+          const idx = parseInt(alleleStr, 10);
+          if (!isNaN(idx) && idx === genotypeIndex) {
+            alleleCount++;
           }
-          
-          // Homozygous (2 copies) scores higher than heterozygous (1 copy)
-          // Score: 10 for homozygous, 5 for heterozygous
-          if (alleleCount >= 2) {
-            totalScore += 10; // Homozygous - strongest evidence
-          } else if (alleleCount === 1) {
-            totalScore += 5;  // Heterozygous - good evidence
-          }
+        }
+        if (alleleCount >= 2) {
+          totalScore += 10;
+        } else if (alleleCount === 1) {
+          totalScore += 5;
         } else {
-          // Sample doesn't have this required allele - disqualify
           return -1000;
         }
       }
@@ -3164,15 +3162,13 @@ function setupCanvasHover() {
         const sampleGenotypes = pair.variant.sampleGenotypes || {};
         const genotype = sampleGenotypes[sampleId];
         const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        
-        if (!genotype || genotypeIndex === null) {
-          continue; // Skip missing genotypes in OR mode
-        }
-        
-        if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+        if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
           matchingAlleles++;
-          
-          // Score based on homozygosity
+          if (variantHasSampleAlleles(pair.variant)) {
+            totalScore += 5;
+            continue;
+          }
+          if (!genotype || genotypeIndex === null) continue;
           const alleles = genotype.split(/[\/|]/);
           let alleleCount = 0;
           for (const allele of alleles) {
@@ -3183,12 +3179,10 @@ function setupCanvasHover() {
               alleleCount++;
             }
           }
-          
-          // Homozygous scores higher than heterozygous
           if (alleleCount >= 2) {
-            totalScore += 10; // Homozygous
+            totalScore += 10;
           } else if (alleleCount === 1) {
-            totalScore += 5;  // Heterozygous
+            totalScore += 5;
           }
         }
       }
