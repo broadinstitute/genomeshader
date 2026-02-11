@@ -18,6 +18,12 @@
 
   --grid: rgba(255,255,255,0.12);
   --grid2: rgba(255,255,255,0.07);
+  --tracks-bg-top: rgba(127,127,127,0.08);
+  --tracks-bg-bottom: rgba(127,127,127,0.00);
+  --flow-bg: rgba(127,127,127,0.04);
+  --reads-bg: rgba(127,127,127,0.02);
+  --flow-band-bg: rgba(127,127,127,0.035);
+  --smart-track-bg: rgba(127,127,127,0.02);
 
   --accent: #ff4d4d;
 
@@ -43,6 +49,12 @@ html[data-theme="light"] {
 
   --grid: rgba(0,0,0,0.12);
   --grid2: rgba(0,0,0,0.07);
+  --tracks-bg-top: rgba(255,255,255,0.96);
+  --tracks-bg-bottom: rgba(255,255,255,0.88);
+  --flow-bg: rgba(255,255,255,0.92);
+  --reads-bg: rgba(255,255,255,0.95);
+  --flow-band-bg: rgba(255,255,255,0.93);
+  --smart-track-bg: rgba(255,255,255,0.95);
 
   --accent: #d81b1b;
 
@@ -69,6 +81,12 @@ html[data-theme="light"] {
 
     --grid: rgba(0,0,0,0.12);
     --grid2: rgba(0,0,0,0.07);
+    --tracks-bg-top: rgba(255,255,255,0.96);
+    --tracks-bg-bottom: rgba(255,255,255,0.88);
+    --flow-bg: rgba(255,255,255,0.92);
+    --reads-bg: rgba(255,255,255,0.95);
+    --flow-band-bg: rgba(255,255,255,0.93);
+    --smart-track-bg: rgba(255,255,255,0.95);
 
     --accent: #d81b1b;
 
@@ -95,6 +113,12 @@ html[data-theme="light"] {
 
     --grid: rgba(255,255,255,0.12);
     --grid2: rgba(255,255,255,0.07);
+    --tracks-bg-top: rgba(127,127,127,0.08);
+    --tracks-bg-bottom: rgba(127,127,127,0.00);
+    --flow-bg: rgba(127,127,127,0.04);
+    --reads-bg: rgba(127,127,127,0.02);
+    --flow-band-bg: rgba(127,127,127,0.035);
+    --smart-track-bg: rgba(127,127,127,0.02);
 
     --accent: #ff4d4d;
 
@@ -116,7 +140,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   position: relative;
 }
 
-.sidebar {
+.sidebar-left {
   position: absolute;
   left: 0;
   top: 0;
@@ -131,7 +155,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   flex-direction: column;
   z-index: 100;
 }
-.app.sidebar-collapsed .sidebar {
+.app.sidebar-collapsed .sidebar-left {
   width: 8px !important;
   min-width: 8px;
 }
@@ -142,7 +166,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   padding: 12px;
   padding-bottom: 12px;
 }
-.sidebar::after {
+.sidebar-left::after {
   content: "";
   position: absolute;
   right: 0;
@@ -153,16 +177,16 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   transition: background-color 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
   z-index: 10;
 }
-.sidebar:hover::after {
+.sidebar-left:hover::after {
   background: var(--blue);
   width: 6px;
   box-shadow: 0 0 8px rgba(120, 180, 255, 0.4);
 }
-.app.sidebar-collapsed .sidebar {
+.app.sidebar-collapsed .sidebar-left {
   padding: 0;
   overflow: visible;
 }
-.app.sidebar-collapsed .sidebar > * {
+.app.sidebar-collapsed .sidebar-left > * {
   opacity: 0;
   pointer-events: none;
 }
@@ -170,7 +194,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   opacity: 0;
   pointer-events: none;
 }
-.app.sidebar-collapsed .sidebar::after {
+.app.sidebar-collapsed .sidebar-left::after {
   pointer-events: auto;
   opacity: 1 !important;
   right: 0;
@@ -178,7 +202,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   background: rgba(127, 127, 127, 0.08);
   border-right: 1px solid var(--border2);
 }
-.app.sidebar-collapsed .sidebar:hover::after {
+.app.sidebar-collapsed .sidebar-left:hover::after {
   width: 10px;
   background: var(--blue);
   border-right: none;
@@ -650,6 +674,22 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .menuItem:hover { background: var(--panel2); }
 .menuRight { color: var(--muted); font-size: 12px; }
+.menuRight input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  vertical-align: middle;
+}
+.menuRight input[type="number"] {
+  width: 58px;
+  padding: 2px 4px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 12px;
+  text-align: right;
+}
 .menuHotkey {
   color: var(--muted2);
   font-size: 11px;
@@ -723,17 +763,17 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 
 /* Ensure all form elements in sidebar are clickable and interactive */
-.sidebar select,
-.sidebar input,
-.sidebar button,
-.sidebar label {
+.sidebar-left select,
+.sidebar-left input,
+.sidebar-left button,
+.sidebar-left label {
   pointer-events: auto !important;
   position: relative !important;
   z-index: 200 !important;
 }
 
 /* Style for select dropdown to ensure it's visible */
-.sidebar select {
+.sidebar-left select {
   -webkit-appearance: menulist !important;
   -moz-appearance: menulist !important;
   appearance: menulist !important;
@@ -741,20 +781,20 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 
 /* Style for range input to ensure it's interactive */
-.sidebar input[type="range"] {
+.sidebar-left input[type="range"] {
   -webkit-appearance: auto !important;
   appearance: auto !important;
   cursor: pointer !important;
 }
 
 /* Style for number input */
-.sidebar input[type="number"] {
+.sidebar-left input[type="number"] {
   -webkit-appearance: auto !important;
   appearance: auto !important;
 }
 
 /* Style for text input */
-.sidebar input[type="text"] {
+.sidebar-left input[type="text"] {
   -webkit-appearance: auto !important;
   appearance: auto !important;
   cursor: text !important;
@@ -780,8 +820,8 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   z-index: 200 !important;
 }
 /* Ensure sidebar content is above any potential overlays */
-.sidebar .sidebarHeader,
-.sidebar .group {
+.sidebar-left .sidebarHeader,
+.sidebar-left .group {
   position: relative !important;
   z-index: 200 !important;
 }
@@ -802,7 +842,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   left: 0; top: 0; right: 0;
   height: var(--tracks-h);
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(to bottom, rgba(127,127,127,0.08), rgba(127,127,127,0.00));
+  background: linear-gradient(to bottom, var(--tracks-bg-top), var(--tracks-bg-bottom));
 }
 #trackControls {
   position: absolute;
@@ -815,7 +855,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .flow {
   position: absolute;
   left: 0; right: 0;
-  background: rgba(127,127,127,0.04);
+  background: var(--flow-bg);
   /* Below #trackControls so track controls and resize handles remain interactive */
   z-index: 101;
 }
@@ -830,6 +870,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   width: 100%;
   height: 100%;
   pointer-events: auto;
+  z-index: 3;
 }
 
 .flow .flow-track canvas.canvas {
@@ -838,12 +879,14 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   width: 100%;
   height: 100%;
   display: block;
+  z-index: 2;
+  pointer-events: none;
 }
 
 .reads {
   position: absolute;
   left: 0; right: 0;
-  background: rgba(127,127,127,0.02);
+  background: var(--reads-bg);
 }
 
 /* Vertical mode: tracks laid out side-by-side */
@@ -897,6 +940,18 @@ svg.overlay {
 /* Flow overlay must receive pointer events so variant click-to-select works (read-loading sidepanel) */
 #flowOverlay {
   pointer-events: auto;
+  z-index: 3;
+}
+
+/* Keep WebGPU flow rendering underneath canvas-drawn tooltip labels */
+#flowWebGPU {
+  z-index: 1;
+}
+
+/* Single-track legacy flow canvas also sits above WebGPU */
+.flow > canvas.canvas {
+  z-index: 2;
+  pointer-events: none;
 }
 
 /* Locus indicator lower-right */

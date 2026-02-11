@@ -252,8 +252,10 @@ function renderSmartTrack(trackId) {
   const grid = cssVar("--grid2");
   
   const bgHeight = (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) ? totalContentHeight : H;
-  ctx.fillStyle = "rgba(127,127,127,0.02)";
+  ctx.fillStyle = cssVar("--smart-track-bg");
   ctx.fillRect(0,0,W,bgHeight);
+  // Keep Reads-track variant guides aligned with ruler/multi-track ordering.
+  const rulerVariants = getRulerVariants();
   
   if (isVertical) {
     const coordHeight = H;
@@ -372,8 +374,8 @@ function renderSmartTrack(trackId) {
     }
     
     // Draw variant markers
-    for (let idx = 0; idx < variants.length; idx++) {
-      const v = variants[idx];
+    for (let idx = 0; idx < rulerVariants.length; idx++) {
+      const v = rulerVariants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
       const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
       ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
@@ -672,8 +674,8 @@ function renderSmartTrack(trackId) {
     }
     
     // Draw variant markers
-    for (let idx = 0; idx < variants.length; idx++) {
-      const v = variants[idx];
+    for (let idx = 0; idx < rulerVariants.length; idx++) {
+      const v = rulerVariants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
       const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
       ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
@@ -2471,7 +2473,12 @@ function setupCanvasHover() {
             if (x >= node.x && x <= node.x + node.w &&
                 y >= node.y && y <= node.y + node.h) {
               return {
-                node: { trackId: node.trackId || "", variantId: node.variantId, alleleIndex: node.alleleIndex },
+                node: {
+                  trackId: node.trackId || "",
+                  variantId: node.variantId,
+                  alleleIndex: node.alleleIndex,
+                  sampleCount: node.sampleCount
+                },
                 label: node.label
               };
             }
@@ -2484,19 +2491,8 @@ function setupCanvasHover() {
         }
         if (hovered) {
           hoveredNode = hovered.node;
-          const hoveredVariant = findVariantByTrackAndId(hoveredNode.trackId, hoveredNode.variantId);
-          let alleleKey = ".";
-          if (hoveredNode.alleleIndex === 1) {
-            alleleKey = "ref";
-          } else if (hoveredNode.alleleIndex >= 2) {
-            alleleKey = `a${hoveredNode.alleleIndex - 1}`;
-          }
-          const sampleCount = (
-            hoveredVariant &&
-            hoveredVariant.alleleSampleCounts &&
-            Object.prototype.hasOwnProperty.call(hoveredVariant.alleleSampleCounts, alleleKey)
-          )
-            ? hoveredVariant.alleleSampleCounts[alleleKey]
+          const sampleCount = Number.isFinite(hovered.node.sampleCount)
+            ? hovered.node.sampleCount
             : 0;
           hoveredNodeLabel = `${hovered.label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
         }
@@ -2686,28 +2682,45 @@ function setupCanvasHover() {
     for (const key of state.selectedAlleles) {
       const parsed = parseAlleleSelectionKeyCompat(key);
       if (!parsed) continue;
-      const { trackId, variantId, alleleIndex } = parsed;
-      
-      // Find the variant
-      const variant = findVariantByTrackAndId(trackId, variantId);
-      if (!variant) continue;
-      
-      // Find the node position info to get the label
-      const nodeInfo = window._alleleNodePositions?.find(n => 
-        (n.trackId || "") === (trackId || "") &&
-        n.variantId === variantId &&
-        n.alleleIndex === alleleIndex
-      );
-      
-      selectedInfo.push({
-        trackId,
-        variantId,
-        alleleIndex,
-        label: nodeInfo?.label || `Allele ${alleleIndex}`,
-        variant
-      });
+      const resolved = resolveSelectedAllelePair(parsed);
+      if (!resolved) continue;
+      selectedInfo.push(resolved);
     }
     return selectedInfo;
+  }
+
+  function getSelectedNodeInfo(trackId, variantId, alleleIndex) {
+    const trackKey = String(trackId || "");
+    const variantKey = String(variantId);
+    return (window._alleleNodePositions || []).find(n =>
+      String(n.trackId || "") === trackKey &&
+      String(n.variantId) === variantKey &&
+      Number(n.alleleIndex) === Number(alleleIndex)
+    ) || null;
+  }
+
+  function resolveSelectedAllelePair(parsed) {
+    if (!parsed) return null;
+    const { trackId, variantId, alleleIndex } = parsed;
+    const variant = findVariantByTrackAndId(trackId, variantId);
+    if (!variant) return null;
+    const nodeInfo = getSelectedNodeInfo(trackId, variantId, alleleIndex);
+    const sourceAlleleKeys = Array.isArray(nodeInfo?.sourceAlleleKeys)
+      ? nodeInfo.sourceAlleleKeys
+      : [];
+    const fallbackAlleleKey = alleleIndexToAlleleKey(alleleIndex);
+    const alleleKeys = (sourceAlleleKeys.length > 0 ? sourceAlleleKeys : [fallbackAlleleKey])
+      .filter(k => typeof k === 'string' && k.length > 0)
+      .filter((k, idx, arr) => arr.indexOf(k) === idx);
+
+    return {
+      trackId,
+      variantId,
+      alleleIndex,
+      alleleKeys,
+      label: nodeInfo?.label || `Allele ${alleleIndex}`,
+      variant
+    };
   }
   
   // Update context indicator (shows what's selected)
@@ -2842,17 +2855,9 @@ function setupCanvasHover() {
     for (const key of state.selectedAlleles) {
       const parsed = parseAlleleSelectionKeyCompat(key);
       if (!parsed) continue;
-      const { trackId, variantId, alleleIndex } = parsed;
-      
-      const variant = findVariantByTrackAndId(trackId, variantId);
-      if (!variant) continue;
-      
-      selectedAllelePairs.push({
-        trackId,
-        variantId,
-        alleleIndex,
-        variant
-      });
+      const resolved = resolveSelectedAllelePair(parsed);
+      if (!resolved) continue;
+      selectedAllelePairs.push(resolved);
     }
     
     if (selectedAllelePairs.length === 0) {
@@ -2901,13 +2906,13 @@ function setupCanvasHover() {
       const firstPair = selectedAllelePairs[0];
       const firstSamples = getVariantSampleIds(firstPair.variant);
       for (const sampleId of firstSamples) {
-        if (!sampleHasSelectedAllele(firstPair.variant, sampleId, firstPair.alleleIndex)) {
+        if (!sampleHasSelectedAllele(firstPair.variant, sampleId, firstPair.alleleIndex, firstPair.alleleKeys)) {
           continue;
         }
         let hasAllAlleles = true;
         for (let i = 1; i < selectedAllelePairs.length; i++) {
           const pair = selectedAllelePairs[i];
-          if (!sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
+          if (!sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
             hasAllAlleles = false;
             break;
           }
@@ -2920,7 +2925,7 @@ function setupCanvasHover() {
       // OR mode: Sample must have ANY of the selected alleles
       for (const pair of selectedAllelePairs) {
         for (const sampleId of getVariantSampleIds(pair.variant)) {
-          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
+          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
             candidateSamplesSet.add(sampleId);
           }
         }
@@ -2968,18 +2973,47 @@ function setupCanvasHover() {
     return !!(variant && variant.sampleAlleles);
   }
 
-  function sampleHasSelectedAllele(variant, sampleId, alleleIndex) {
-    if (!variant || sampleId == null || alleleIndex == null) return false;
-    if (variant.sampleAlleles) {
-      const alleleKey = alleleIndexToAlleleKey(alleleIndex);
-      const sampleAlleles = variant.sampleAlleles[sampleId] || [];
-      return sampleAlleles.includes(alleleKey);
+  function alleleKeyToGenotypeIndex(alleleKey) {
+    if (alleleKey === "ref") return 0;
+    if (typeof alleleKey === "string" && alleleKey.startsWith("a")) {
+      const altIdx = parseInt(alleleKey.slice(1), 10);
+      if (Number.isFinite(altIdx) && altIdx > 0) return altIdx;
     }
-    const genotypeIndex = alleleIndexToGenotypeIndex(alleleIndex);
-    if (genotypeIndex === null) return false;
+    return null;
+  }
+
+  function countMatchingGenotypeAlleles(genotype, genotypeIndices) {
+    if (!genotype || genotype === './.' || genotype === '.') return 0;
+    const indexSet = new Set((genotypeIndices || []).filter(i => Number.isFinite(i) && i >= 0));
+    if (indexSet.size === 0) return 0;
+    let matches = 0;
+    const alleles = genotype.split(/[\/|]/);
+    for (const allele of alleles) {
+      const alleleStr = allele.trim();
+      if (alleleStr === '.' || alleleStr === '') continue;
+      const idx = parseInt(alleleStr, 10);
+      if (!isNaN(idx) && indexSet.has(idx)) matches++;
+    }
+    return matches;
+  }
+
+  function sampleHasSelectedAllele(variant, sampleId, alleleIndex, alleleKeys) {
+    if (!variant || sampleId == null || alleleIndex == null) return false;
+    const resolvedAlleleKeys = Array.isArray(alleleKeys) && alleleKeys.length > 0
+      ? alleleKeys
+      : [alleleIndexToAlleleKey(alleleIndex)];
+
+    if (variant.sampleAlleles) {
+      const sampleAlleles = variant.sampleAlleles[sampleId] || [];
+      return resolvedAlleleKeys.some(k => sampleAlleles.includes(k));
+    }
+    const genotypeIndices = resolvedAlleleKeys
+      .map(alleleKeyToGenotypeIndex)
+      .filter(idx => idx !== null);
+    if (genotypeIndices.length === 0) return false;
     const sampleGenotypes = variant.sampleGenotypes || {};
     const genotype = sampleGenotypes[sampleId];
-    return hasAlleleInGenotype(genotype, genotypeIndex);
+    return countMatchingGenotypeAlleles(genotype, genotypeIndices) > 0;
   }
   
   // Helper: Check if a genotype string contains a specific allele index
@@ -3022,17 +3056,9 @@ function setupCanvasHover() {
     for (const key of selectedAlleles) {
       const parsed = parseAlleleSelectionKeyCompat(key);
       if (!parsed) continue;
-      const { trackId, variantId, alleleIndex } = parsed;
-      
-      const variant = findVariantByTrackAndId(trackId, variantId);
-      if (!variant) continue;
-      
-      selectedAllelePairs.push({
-        trackId,
-        variantId,
-        alleleIndex,
-        variant
-      });
+      const resolved = resolveSelectedAllelePair(parsed);
+      if (!resolved) continue;
+      selectedAllelePairs.push(resolved);
     }
     
     if (selectedAllelePairs.length === 0) {
@@ -3046,13 +3072,13 @@ function setupCanvasHover() {
       // Sample must have ALL selected alleles
       const firstPair = selectedAllelePairs[0];
       for (const sampleId of getVariantSampleIds(firstPair.variant)) {
-        if (!sampleHasSelectedAllele(firstPair.variant, sampleId, firstPair.alleleIndex)) {
+        if (!sampleHasSelectedAllele(firstPair.variant, sampleId, firstPair.alleleIndex, firstPair.alleleKeys)) {
           continue;
         }
         let hasAllAlleles = true;
         for (let i = 1; i < selectedAllelePairs.length; i++) {
           const pair = selectedAllelePairs[i];
-          if (!sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
+          if (!sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
             hasAllAlleles = false;
             break;
           }
@@ -3065,7 +3091,7 @@ function setupCanvasHover() {
       // OR mode: Sample must have ANY of the selected alleles
       for (const pair of selectedAllelePairs) {
         for (const sampleId of getVariantSampleIds(pair.variant)) {
-          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
+          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
             candidateSamplesSet.add(sampleId);
           }
         }
@@ -3092,17 +3118,9 @@ function setupCanvasHover() {
     for (const key of selectedAlleles) {
       const parsed = parseAlleleSelectionKeyCompat(key);
       if (!parsed) continue;
-      const { trackId, variantId, alleleIndex } = parsed;
-      
-      const variant = findVariantByTrackAndId(trackId, variantId);
-      if (!variant) continue;
-      
-      selectedAllelePairs.push({
-        trackId,
-        variantId,
-        alleleIndex,
-        variant
-      });
+      const resolved = resolveSelectedAllelePair(parsed);
+      if (!resolved) continue;
+      selectedAllelePairs.push(resolved);
     }
     
     if (selectedAllelePairs.length === 0) {
@@ -3118,8 +3136,7 @@ function setupCanvasHover() {
       for (const pair of selectedAllelePairs) {
         const sampleGenotypes = pair.variant.sampleGenotypes || {};
         const genotype = sampleGenotypes[sampleId];
-        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        const hasAllele = sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex);
+        const hasAllele = sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys);
 
         if (!hasAllele) {
           // Missing genotype or no-call allele - penalize heavily
@@ -3131,17 +3148,11 @@ function setupCanvasHover() {
           totalScore += 5;
           continue;
         }
-        if (!genotype || genotypeIndex === null) return -1000;
-        const alleles = genotype.split(/[\/|]/);
-        let alleleCount = 0;
-        for (const allele of alleles) {
-          const alleleStr = allele.trim();
-          if (alleleStr === '.' || alleleStr === '') continue;
-          const idx = parseInt(alleleStr, 10);
-          if (!isNaN(idx) && idx === genotypeIndex) {
-            alleleCount++;
-          }
-        }
+        const genotypeIndices = (pair.alleleKeys || [])
+          .map(alleleKeyToGenotypeIndex)
+          .filter(idx => idx !== null);
+        if (!genotype || genotypeIndices.length === 0) return -1000;
+        const alleleCount = countMatchingGenotypeAlleles(genotype, genotypeIndices);
         if (alleleCount >= 2) {
           totalScore += 10;
         } else if (alleleCount === 1) {
@@ -3161,24 +3172,17 @@ function setupCanvasHover() {
       for (const pair of selectedAllelePairs) {
         const sampleGenotypes = pair.variant.sampleGenotypes || {};
         const genotype = sampleGenotypes[sampleId];
-        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex)) {
+        if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
           matchingAlleles++;
           if (variantHasSampleAlleles(pair.variant)) {
             totalScore += 5;
             continue;
           }
-          if (!genotype || genotypeIndex === null) continue;
-          const alleles = genotype.split(/[\/|]/);
-          let alleleCount = 0;
-          for (const allele of alleles) {
-            const alleleStr = allele.trim();
-            if (alleleStr === '.' || alleleStr === '') continue;
-            const idx = parseInt(alleleStr, 10);
-            if (!isNaN(idx) && idx === genotypeIndex) {
-              alleleCount++;
-            }
-          }
+          const genotypeIndices = (pair.alleleKeys || [])
+            .map(alleleKeyToGenotypeIndex)
+            .filter(idx => idx !== null);
+          if (!genotype || genotypeIndices.length === 0) continue;
+          const alleleCount = countMatchingGenotypeAlleles(genotype, genotypeIndices);
           if (alleleCount >= 2) {
             totalScore += 10;
           } else if (alleleCount === 1) {
@@ -3537,17 +3541,9 @@ function setupCanvasHover() {
       for (const key of selectedAlleles) {
         const parsed = parseAlleleSelectionKeyCompat(key);
         if (!parsed) continue;
-        const { trackId, variantId, alleleIndex } = parsed;
-        
-        const variant = findVariantByTrackAndId(trackId, variantId);
-        if (!variant) continue;
-        
-        selectedAllelePairs.push({
-          trackId,
-          variantId,
-          alleleIndex,
-          variant
-        });
+        const resolved = resolveSelectedAllelePair(parsed);
+        if (!resolved) continue;
+        selectedAllelePairs.push(resolved);
       }
       
       if (selectedAllelePairs.length < 2) {
@@ -3560,11 +3556,7 @@ function setupCanvasHover() {
       function computeBranchSignature(sampleId) {
         const signature = [];
         for (const pair of selectedAllelePairs) {
-          const sampleGenotypes = pair.variant.sampleGenotypes || {};
-          const genotype = sampleGenotypes[sampleId];
-          const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-          
-          if (genotypeIndex !== null && hasAlleleInGenotype(genotype, genotypeIndex)) {
+          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
             signature.push(1); // Sample has this allele
           } else {
             signature.push(0); // Sample doesn't have this allele

@@ -883,10 +883,7 @@ function updateRightSidebarState() {
   } else {
     app.classList.remove("sidebar-right-collapsed");
   }
-  // Trigger resize after CSS transition completes
-  setTimeout(() => {
-    window.dispatchEvent(new Event('resize'));
-  }, 220);
+  // Let ResizeObserver-driven rendering handle transition layout changes.
 }
 
 // Initialize right sidebar (closed by default)

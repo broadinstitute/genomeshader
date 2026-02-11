@@ -40,6 +40,9 @@ const state = {
   
   // variant layout mode: "equidistant" or "genomic"
   variantLayoutMode: null, // will be initialized from localStorage
+  // aggregate low-frequency alleles in flow nodes/ribbons
+  aggregateRareAlleles: false,
+  aggregateRareAllelesCutoffPct: 2.0,
   
   // allele order for each variant node: Map<trackId::variantId, string[]>
   variantAlleleOrder: new Map(),
@@ -80,8 +83,19 @@ const state = {
 // Initialize variant layout mode
 const storedVariantMode = getStoredVariantLayoutMode();
 state.variantLayoutMode = storedVariantMode ?? "equidistant";
+if (typeof getStoredAggregateRareAlleles === "function") {
+  state.aggregateRareAlleles = getStoredAggregateRareAlleles();
+}
+if (typeof getStoredAggregateRareAllelesCutoff === "function") {
+  state.aggregateRareAllelesCutoffPct = getStoredAggregateRareAllelesCutoff();
+}
 // Initialize label after DOM is ready
 setTimeout(() => updateVariantLayoutModeLabel(), 0);
+setTimeout(() => {
+  if (typeof updateAggregateRareAllelesControls === "function") {
+    updateAggregateRareAllelesControls();
+  }
+}, 0);
 
 // Chromosome lengths for bounds checking
 const chrLengths = {
@@ -312,11 +326,40 @@ async function initWebGPU() {
   }
 }
 
+function scheduleInitialWebGPURender() {
+  let attempts = 0;
+  const maxAttempts = 30;
+
+  const tryRender = () => {
+    attempts += 1;
+    if (typeof window.renderAll === "function") {
+      // Render once now and once on the next frame to handle first-layout settle.
+      window.renderAll();
+      requestAnimationFrame(() => {
+        if (typeof window.renderAll === "function") {
+          window.renderAll();
+        }
+      });
+      return;
+    }
+
+    if (attempts < maxAttempts) {
+      setTimeout(tryRender, 50);
+    }
+  };
+
+  tryRender();
+}
+
 // Initialize WebGPU after a short delay to ensure DOM is ready
 setTimeout(() => {
-  initWebGPU().catch(err => {
-    console.error("WebGPU initialization error:", err);
-  });
+  initWebGPU()
+    .then((ok) => {
+      if (ok) scheduleInitialWebGPURender();
+    })
+    .catch(err => {
+      console.error("WebGPU initialization error:", err);
+    });
 }, 100);
 
 // Initialize orientation state after DOM elements are available
