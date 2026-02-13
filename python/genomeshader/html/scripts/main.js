@@ -2722,6 +2722,652 @@ function setupCanvasHover() {
       variant
     };
   }
+
+  function getTrackLabel(trackId) {
+    if (!trackId) return "Variants";
+    const track = getVariantTrackById(trackId);
+    return track?.label || String(trackId);
+  }
+
+  const INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY = 'genomeshader.visibleInfoFieldsByTrack';
+  const INFO_COMMON_KEYS = [
+    'AC', 'AF', 'AN', 'DP', 'MQ', 'QD', 'FS', 'SOR',
+    'MQRankSum', 'ReadPosRankSum', 'GQ', 'SVLEN', 'SVTYPE', 'CLNSIG', 'CLNDN', 'CSQ'
+  ];
+  const DEFAULT_INFO_TRACK_KEY = '__default__';
+  let infoVisibleFieldsByTrack = null; // { [trackKey: string]: Set<string> }
+  let infoVisibilityInitialized = false;
+  let infoMenuOpenTrackKey = null;
+  let infoMenuActiveContainer = null;
+  let infoMenuActiveClose = null;
+  let infoMenuOutsideListenerAttached = false;
+  let infoMenuScrollTopByTrack = {};
+
+  function ensureInfoMenuOutsideListener() {
+    if (infoMenuOutsideListenerAttached) return;
+    document.addEventListener('click', (e) => {
+      if (!infoMenuActiveContainer || !infoMenuActiveClose) return;
+      if (!infoMenuActiveContainer.contains(e.target)) {
+        infoMenuActiveClose();
+      }
+    }, true);
+    infoMenuOutsideListenerAttached = true;
+  }
+
+  function normalizeInfoTrackKey(trackId) {
+    const key = String(trackId || '').trim();
+    return key.length > 0 ? key : DEFAULT_INFO_TRACK_KEY;
+  }
+
+  function loadInfoVisibleFieldsByTrackPreference() {
+    try {
+      const raw = localStorage.getItem(INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY);
+      const byTrack = {};
+      if (raw == null) return byTrack;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return byTrack;
+      Object.keys(parsed).forEach((trackKey) => {
+        const values = parsed[trackKey];
+        if (!Array.isArray(values)) return;
+        byTrack[trackKey] = new Set(values.filter(k => typeof k === 'string' && k.length > 0));
+      });
+      return byTrack;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function saveInfoVisibleFieldsByTrackPreference(byTrack) {
+    try {
+      const out = {};
+      Object.keys(byTrack || {}).forEach((trackKey) => {
+        const setVal = byTrack[trackKey];
+        out[trackKey] = Array.from(setVal || []).filter(k => typeof k === 'string' && k.length > 0);
+      });
+      localStorage.setItem(INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY, JSON.stringify(out));
+    } catch (_) {
+      // ignore storage errors
+    }
+  }
+
+  function defaultVisibleInfoKeys(allKeys) {
+    const common = INFO_COMMON_KEYS.filter(k => allKeys.includes(k));
+    if (common.length > 0) return new Set(common);
+    return new Set(allKeys.slice(0, 12));
+  }
+
+  function ensureVisibleInfoKeys(trackId, allKeys) {
+    const trackKey = normalizeInfoTrackKey(trackId);
+    if (!infoVisibilityInitialized) {
+      infoVisibleFieldsByTrack = loadInfoVisibleFieldsByTrackPreference();
+      infoVisibilityInitialized = true;
+    }
+    if (!infoVisibleFieldsByTrack) infoVisibleFieldsByTrack = {};
+    if (infoVisibleFieldsByTrack[trackKey] instanceof Set) {
+      return infoVisibleFieldsByTrack[trackKey];
+    }
+    if (!Array.isArray(allKeys) || allKeys.length === 0) {
+      infoVisibleFieldsByTrack[trackKey] = new Set();
+      return infoVisibleFieldsByTrack[trackKey];
+    }
+    infoVisibleFieldsByTrack[trackKey] = defaultVisibleInfoKeys(allKeys);
+    saveInfoVisibleFieldsByTrackPreference(infoVisibleFieldsByTrack);
+    return infoVisibleFieldsByTrack[trackKey];
+  }
+
+  function setVisibleInfoKeys(trackId, visibleSet) {
+    const trackKey = normalizeInfoTrackKey(trackId);
+    if (!infoVisibilityInitialized) {
+      infoVisibleFieldsByTrack = loadInfoVisibleFieldsByTrackPreference();
+      infoVisibilityInitialized = true;
+    }
+    if (!infoVisibleFieldsByTrack) infoVisibleFieldsByTrack = {};
+    infoVisibleFieldsByTrack[trackKey] = new Set(Array.from(visibleSet || []));
+    saveInfoVisibleFieldsByTrackPreference(infoVisibleFieldsByTrack);
+  }
+
+  function renderInfoFieldControls(trackId, allInfoKeys, visibleSet) {
+    if (!Array.isArray(allInfoKeys) || allInfoKeys.length === 0) return null;
+    const trackKey = normalizeInfoTrackKey(trackId);
+
+    const shownCount = allInfoKeys.filter(k => visibleSet.has(k)).length;
+
+    const container = document.createElement('div');
+    container.style.position = 'relative';
+    container.style.marginBottom = '8px';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    const setTriggerLabel = (open) => {
+      trigger.textContent = `INFO (${shownCount}/${allInfoKeys.length}) ${open ? '▴' : '▾'}`;
+    };
+    setTriggerLabel(false);
+    trigger.style.padding = '4px 8px';
+    trigger.style.borderRadius = '6px';
+    trigger.style.border = '1px solid var(--border2)';
+    trigger.style.background = 'var(--panel)';
+    trigger.style.color = 'var(--text)';
+    trigger.style.cursor = 'pointer';
+    trigger.style.fontSize = '11px';
+    trigger.style.fontWeight = '600';
+    container.appendChild(trigger);
+
+    const popover = document.createElement('div');
+    popover.style.display = 'none';
+    popover.style.position = 'absolute';
+    popover.style.top = 'calc(100% + 4px)';
+    popover.style.left = '0';
+    popover.style.right = '0';
+    popover.style.zIndex = '200';
+    popover.style.padding = '8px';
+    popover.style.borderRadius = '8px';
+    popover.style.border = '1px solid var(--border2)';
+    popover.style.background = 'var(--panel)';
+    popover.style.boxShadow = '0 6px 16px rgba(0, 0, 0, 0.22)';
+
+    const persistScrollTop = (listEl) => {
+      if (!listEl) return;
+      infoMenuScrollTopByTrack[trackKey] = listEl.scrollTop || 0;
+    };
+
+    const restoreScrollTop = (listEl) => {
+      if (!listEl) return;
+      const saved = infoMenuScrollTopByTrack[trackKey];
+      if (!Number.isFinite(saved) || saved <= 0) return;
+      requestAnimationFrame(() => {
+        listEl.scrollTop = saved;
+      });
+    };
+
+    const buttonRow = document.createElement('div');
+    buttonRow.style.display = 'flex';
+    buttonRow.style.gap = '6px';
+    buttonRow.style.marginBottom = '6px';
+
+    const mkBtn = (label) => {
+      const btn = document.createElement('button');
+      btn.textContent = label;
+      btn.style.padding = '3px 6px';
+      btn.style.borderRadius = '6px';
+      btn.style.border = '1px solid var(--border2)';
+      btn.style.background = 'var(--panel2)';
+      btn.style.color = 'var(--text)';
+      btn.style.cursor = 'pointer';
+      btn.style.fontSize = '11px';
+      return btn;
+    };
+
+    const allBtn = mkBtn('All');
+    allBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      persistScrollTop(list);
+      setVisibleInfoKeys(trackId, new Set(allInfoKeys));
+      renderVariantsTabSelection();
+    });
+    buttonRow.appendChild(allBtn);
+
+    const noneBtn = mkBtn('None');
+    noneBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      persistScrollTop(list);
+      setVisibleInfoKeys(trackId, new Set());
+      renderVariantsTabSelection();
+    });
+    buttonRow.appendChild(noneBtn);
+
+    const defaultBtn = mkBtn('Default');
+    defaultBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      persistScrollTop(list);
+      setVisibleInfoKeys(trackId, defaultVisibleInfoKeys(allInfoKeys));
+      renderVariantsTabSelection();
+    });
+    buttonRow.appendChild(defaultBtn);
+    popover.appendChild(buttonRow);
+
+    const list = document.createElement('div');
+    list.style.maxHeight = '180px';
+    list.style.overflowY = 'auto';
+    list.style.paddingRight = '2px';
+    list.addEventListener('scroll', () => {
+      persistScrollTop(list);
+    });
+    allInfoKeys.forEach((key) => {
+      const row = document.createElement('label');
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '6px';
+      row.style.padding = '2px 0';
+      row.style.cursor = 'pointer';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = visibleSet.has(key);
+      checkbox.addEventListener('change', () => {
+        persistScrollTop(list);
+        const next = new Set(ensureVisibleInfoKeys(trackId, allInfoKeys));
+        if (checkbox.checked) {
+          next.add(key);
+        } else {
+          next.delete(key);
+        }
+        setVisibleInfoKeys(trackId, next);
+        renderVariantsTabSelection();
+      });
+      row.appendChild(checkbox);
+
+      const text = document.createElement('span');
+      text.textContent = key;
+      row.appendChild(text);
+      list.appendChild(row);
+    });
+    popover.appendChild(list);
+    restoreScrollTop(list);
+    container.appendChild(popover);
+
+    const closePopover = () => {
+      popover.style.display = 'none';
+      setTriggerLabel(false);
+      if (infoMenuOpenTrackKey === trackKey) infoMenuOpenTrackKey = null;
+      if (infoMenuActiveContainer === container) {
+        infoMenuActiveContainer = null;
+        infoMenuActiveClose = null;
+      }
+    };
+    const openPopover = () => {
+      popover.style.display = 'block';
+      setTriggerLabel(true);
+      infoMenuOpenTrackKey = trackKey;
+      infoMenuActiveContainer = container;
+      infoMenuActiveClose = closePopover;
+      ensureInfoMenuOutsideListener();
+    };
+    const togglePopover = () => {
+      if (popover.style.display === 'block') closePopover();
+      else openPopover();
+    };
+
+    trigger.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      togglePopover();
+    });
+    popover.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+
+    if (infoMenuOpenTrackKey === trackKey) {
+      openPopover();
+    }
+
+    return container;
+  }
+
+  function renderVariantsTabSelection() {
+    const currentRoot = getCurrentRoot();
+    const variantsContentEl = byId(currentRoot, 'variantsContent');
+    if (!variantsContentEl) return;
+
+    while (variantsContentEl.firstChild) {
+      variantsContentEl.removeChild(variantsContentEl.firstChild);
+    }
+
+    const selectedInfo = getSelectedAlleleInfo();
+    if (selectedInfo.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.padding = '9px 10px';
+      empty.style.margin = '7px 0';
+      empty.style.borderRadius = '10px';
+      empty.style.background = 'var(--panel2)';
+      empty.style.fontSize = '11px';
+      empty.style.color = 'var(--muted)';
+      empty.textContent = 'Select an allele to view variant details.';
+      variantsContentEl.appendChild(empty);
+      return;
+    }
+
+    const allInfoKeysByTrack = {};
+    selectedInfo.forEach((entry) => {
+      const trackKey = normalizeInfoTrackKey(entry?.trackId);
+      const fields = (entry?.variant?.infoFields && typeof entry.variant.infoFields === 'object')
+        ? Object.keys(entry.variant.infoFields)
+        : [];
+      if (!allInfoKeysByTrack[trackKey]) allInfoKeysByTrack[trackKey] = [];
+      fields.forEach((k) => {
+        if (!allInfoKeysByTrack[trackKey].includes(k)) {
+          allInfoKeysByTrack[trackKey].push(k);
+        }
+      });
+    });
+    Object.keys(allInfoKeysByTrack).forEach((k) => {
+      allInfoKeysByTrack[k].sort((a, b) => a.localeCompare(b));
+    });
+
+    selectedInfo.forEach((entry, idx) => {
+      const variant = entry.variant || {};
+      const infoFields = (variant.infoFields && typeof variant.infoFields === 'object')
+        ? variant.infoFields
+        : {};
+      const trackKey = normalizeInfoTrackKey(entry?.trackId);
+      const allInfoKeys = allInfoKeysByTrack[trackKey] || [];
+      const visibleInfoKeys = ensureVisibleInfoKeys(entry?.trackId, allInfoKeys);
+      const infoKeys = Object.keys(infoFields).filter(k => visibleInfoKeys.has(k));
+
+      const card = document.createElement('div');
+      card.style.padding = '9px 10px';
+      card.style.margin = '7px 0';
+      card.style.borderRadius = '10px';
+      card.style.background = 'var(--panel2)';
+      card.style.fontSize = '11px';
+      card.style.color = 'var(--text)';
+
+      const title = document.createElement('div');
+      title.style.fontSize = '12px';
+      title.style.fontWeight = '600';
+      title.style.marginBottom = '6px';
+      title.textContent = `${getTrackLabel(entry.trackId)} · ${state.contig}:${Number(variant.pos || 0).toLocaleString()}`;
+      card.appendChild(title);
+
+      const filterBlock = document.createElement('div');
+      filterBlock.style.marginBottom = '6px';
+      const filterLabel = document.createElement('div');
+      filterLabel.style.fontWeight = '600';
+      filterLabel.style.marginBottom = '2px';
+      filterLabel.textContent = 'FILTER';
+      const filterValue = document.createElement('div');
+      filterValue.style.padding = '4px 6px';
+      filterValue.style.borderRadius = '6px';
+      filterValue.style.background = 'var(--panel)';
+      filterValue.style.border = '1px solid var(--border2)';
+      filterValue.textContent = String(variant.filterStatus || 'PASS');
+      filterBlock.appendChild(filterLabel);
+      filterBlock.appendChild(filterValue);
+      card.appendChild(filterBlock);
+
+      const refSeq = String(variant.refAllele || '.');
+      const selectedAltSeqs = [];
+      const seenAlt = new Set();
+      const alleleKeys = Array.isArray(entry.alleleKeys) ? entry.alleleKeys : [];
+      const variantAltAlleles = Array.isArray(variant.altAlleles) ? variant.altAlleles : [];
+
+      alleleKeys.forEach((k) => {
+        if (typeof k !== 'string' || !k.startsWith('a')) return;
+        const altIdx = parseInt(k.slice(1), 10);
+        if (!Number.isFinite(altIdx) || altIdx < 1) return;
+        const seq = variantAltAlleles[altIdx - 1];
+        if (typeof seq !== 'string' || seq.length === 0) return;
+        if (seenAlt.has(seq)) return;
+        seenAlt.add(seq);
+        selectedAltSeqs.push(seq);
+      });
+      const altSeq = selectedAltSeqs.length > 0 ? selectedAltSeqs.join(', ') : '.';
+
+      const refLen = refSeq && refSeq !== '.' ? refSeq.length : 0;
+      const makeRefLengthLabel = () => `VCF ${refLen.toLocaleString()} bp`;
+      const makeAltLengthLabel = (altSeqs) => {
+        if (!Array.isArray(altSeqs) || altSeqs.length === 0) return 'VCF 0 bp';
+        const lengths = altSeqs
+          .filter(s => typeof s === 'string' && s.length > 0)
+          .map(s => s.length);
+        if (lengths.length === 0) return 'VCF 0 bp';
+        if (lengths.length === 1) return `VCF ${lengths[0].toLocaleString()} bp`;
+        const minLen = Math.min(...lengths);
+        const maxLen = Math.max(...lengths);
+        return minLen === maxLen
+          ? `VCF ${minLen.toLocaleString()} bp`
+          : `VCF ${minLen.toLocaleString()}-${maxLen.toLocaleString()} bp`;
+      };
+
+      const summarizeChange = (ref, alt) => {
+        if (!ref || !alt || ref === '.' || alt === '.') return 'Unknown';
+        if (alt.startsWith('<') && alt.endsWith('>')) return alt; // symbolic ALT
+
+        let r = ref;
+        let a = alt;
+
+        // Trim shared prefix first
+        while (r.length > 0 && a.length > 0 && r[0] === a[0]) {
+          r = r.slice(1);
+          a = a.slice(1);
+        }
+        // Then trim shared suffix
+        while (r.length > 0 && a.length > 0 && r[r.length - 1] === a[a.length - 1]) {
+          r = r.slice(0, -1);
+          a = a.slice(0, -1);
+        }
+
+        const rLen = r.length;
+        const aLen = a.length;
+
+        if (rLen === 0 && aLen === 0) return 'No net change';
+        if (rLen === 0 && aLen > 0) return `INS ${aLen.toLocaleString()} bp`;
+        if (aLen === 0 && rLen > 0) return `DEL ${rLen.toLocaleString()} bp`;
+        if (rLen === 1 && aLen === 1) return 'SNV';
+        if (rLen === aLen) return `SUB ${rLen.toLocaleString()} bp`;
+        return `DEL ${rLen.toLocaleString()} bp / INS ${aLen.toLocaleString()} bp`;
+      };
+
+      const makeChangeSummary = (ref, altSeqs) => {
+        if (!Array.isArray(altSeqs) || altSeqs.length === 0) return 'No ALT selected';
+        const labels = [];
+        const seen = new Set();
+        for (const alt of altSeqs) {
+          const label = summarizeChange(ref, alt);
+          if (!seen.has(label)) {
+            seen.add(label);
+            labels.push(label);
+          }
+        }
+        if (labels.length === 0) return 'Unknown';
+        if (labels.length === 1) return labels[0];
+        if (labels.length <= 3) return labels.join(' | ');
+        return `${labels.length} change types`;
+      };
+
+      const makeAlleleBlock = (label, sequenceText, lengthLabel, options = {}) => {
+        const block = document.createElement('div');
+        block.style.marginBottom = '6px';
+
+        const header = document.createElement('div');
+        header.style.display = 'flex';
+        header.style.alignItems = 'center';
+        header.style.justifyContent = 'space-between';
+        header.style.marginBottom = '2px';
+
+        const name = document.createElement('span');
+        name.style.fontWeight = '600';
+        name.textContent = label;
+        header.appendChild(name);
+
+        const length = document.createElement('span');
+        length.style.fontSize = '10px';
+        length.style.color = 'var(--muted)';
+        length.style.background = 'var(--panel)';
+        length.style.border = '1px solid var(--border2)';
+        length.style.borderRadius = '999px';
+        length.style.padding = '1px 6px';
+        length.textContent = lengthLabel;
+        header.appendChild(length);
+
+        const seq = document.createElement('div');
+        seq.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+        seq.style.fontSize = '11px';
+        seq.style.padding = '4px 6px';
+        seq.style.borderRadius = '6px';
+        seq.style.background = 'var(--panel)';
+        seq.style.border = '1px solid var(--border2)';
+        seq.style.overflowX = 'hidden';
+        seq.style.overflowY = 'hidden';
+
+        const altList = Array.isArray(options.altList) ? options.altList : null;
+        if (altList && altList.length > 1) {
+          seq.style.maxHeight = '96px';
+          seq.style.overflowY = 'auto';
+          seq.style.padding = '4px';
+          for (let i = 0; i < altList.length; i++) {
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '6px';
+            row.style.marginBottom = i === altList.length - 1 ? '0' : '4px';
+
+            const tag = document.createElement('span');
+            tag.style.fontSize = '10px';
+            tag.style.color = 'var(--muted)';
+            tag.style.minWidth = '34px';
+            tag.textContent = `ALT${i + 1}`;
+            row.appendChild(tag);
+
+            const value = document.createElement('div');
+            value.style.flex = '1';
+            value.style.whiteSpace = 'nowrap';
+            value.style.overflowX = 'auto';
+            value.style.overflowY = 'hidden';
+            value.textContent = altList[i];
+            row.appendChild(value);
+            seq.appendChild(row);
+          }
+        } else {
+          seq.style.whiteSpace = 'nowrap';
+          seq.style.overflowX = 'auto';
+          seq.style.overflowY = 'hidden';
+          seq.textContent = sequenceText;
+        }
+
+        block.appendChild(header);
+        block.appendChild(seq);
+        return block;
+      };
+
+      card.appendChild(makeAlleleBlock('REF', refSeq, makeRefLengthLabel()));
+      card.appendChild(makeAlleleBlock('ALT', altSeq, makeAltLengthLabel(selectedAltSeqs), { altList: selectedAltSeqs }));
+
+      const changeRow = document.createElement('div');
+      changeRow.style.marginBottom = '6px';
+      changeRow.style.wordBreak = 'break-word';
+      const changeLabel = document.createElement('span');
+      changeLabel.style.fontWeight = '600';
+      changeLabel.textContent = 'Change: ';
+      const changeValue = document.createElement('span');
+      changeValue.textContent = makeChangeSummary(refSeq, selectedAltSeqs);
+      changeRow.appendChild(changeLabel);
+      changeRow.appendChild(changeValue);
+      card.appendChild(changeRow);
+
+      const infoDivider = document.createElement('div');
+      infoDivider.style.height = '1px';
+      infoDivider.style.background = 'var(--border2)';
+      infoDivider.style.margin = '8px 0';
+      card.appendChild(infoDivider);
+
+      if (idx === 0) {
+        const controls = renderInfoFieldControls(entry?.trackId, allInfoKeys, visibleInfoKeys);
+        if (controls) {
+          card.appendChild(controls);
+        }
+      }
+
+      if (infoKeys.length === 0) {
+        const none = document.createElement('div');
+        none.style.color = 'var(--muted)';
+        none.textContent = 'No visible INFO fields for this variant.';
+        card.appendChild(none);
+      } else {
+        const INFO_INITIAL_VISIBLE = 12;
+        const INFO_VALUE_PREVIEW_CHARS = 90;
+
+        infoKeys.sort((a, b) => a.localeCompare(b));
+
+        const infoRows = [];
+        infoKeys.forEach((key) => {
+          const row = document.createElement('div');
+          row.style.marginBottom = '4px';
+          row.style.padding = '4px 6px';
+          row.style.borderRadius = '6px';
+          row.style.background = 'var(--panel)';
+
+          const keyEl = document.createElement('div');
+          keyEl.style.fontWeight = '600';
+          keyEl.style.marginBottom = '2px';
+          keyEl.textContent = key;
+          row.appendChild(keyEl);
+
+          const valueEl = document.createElement('div');
+          valueEl.style.wordBreak = 'break-word';
+          valueEl.style.whiteSpace = 'normal';
+          const value = infoFields[key];
+          const valueText = value === true ? 'true' : String(value);
+          if (valueText.length > INFO_VALUE_PREVIEW_CHARS) {
+            const preview = `${valueText.slice(0, INFO_VALUE_PREVIEW_CHARS)}...`;
+            valueEl.textContent = preview;
+
+            const toggle = document.createElement('button');
+            toggle.textContent = 'more';
+            toggle.style.marginTop = '3px';
+            toggle.style.padding = '0';
+            toggle.style.border = 'none';
+            toggle.style.background = 'transparent';
+            toggle.style.color = 'var(--blue)';
+            toggle.style.cursor = 'pointer';
+            toggle.style.fontSize = '11px';
+
+            let expanded = false;
+            toggle.addEventListener('click', (e) => {
+              e.preventDefault();
+              expanded = !expanded;
+              valueEl.textContent = expanded ? valueText : preview;
+              toggle.textContent = expanded ? 'less' : 'more';
+            });
+            row.appendChild(valueEl);
+            row.appendChild(toggle);
+          } else {
+            valueEl.textContent = valueText;
+            row.appendChild(valueEl);
+          }
+
+          card.appendChild(row);
+          infoRows.push(row);
+        });
+
+        if (infoRows.length > INFO_INITIAL_VISIBLE) {
+          for (let i = INFO_INITIAL_VISIBLE; i < infoRows.length; i++) {
+            infoRows[i].style.display = 'none';
+          }
+
+          const toggleRows = document.createElement('button');
+          toggleRows.style.marginTop = '6px';
+          toggleRows.style.padding = '4px 6px';
+          toggleRows.style.borderRadius = '6px';
+          toggleRows.style.border = '1px solid var(--border2)';
+          toggleRows.style.background = 'var(--panel)';
+          toggleRows.style.color = 'var(--text)';
+          toggleRows.style.cursor = 'pointer';
+          toggleRows.style.fontSize = '11px';
+
+          let showingAll = false;
+          const updateToggleLabel = () => {
+            const hiddenCount = infoRows.length - INFO_INITIAL_VISIBLE;
+            toggleRows.textContent = showingAll
+              ? 'Show fewer INFO fields'
+              : `Show ${hiddenCount} more INFO field${hiddenCount === 1 ? '' : 's'}`;
+          };
+          updateToggleLabel();
+
+          toggleRows.addEventListener('click', (e) => {
+            e.preventDefault();
+            showingAll = !showingAll;
+            for (let i = INFO_INITIAL_VISIBLE; i < infoRows.length; i++) {
+              infoRows[i].style.display = showingAll ? 'block' : 'none';
+            }
+            updateToggleLabel();
+          });
+          card.appendChild(toggleRows);
+        }
+      }
+
+      variantsContentEl.appendChild(card);
+    });
+  }
   
   // Update context indicator (shows what's selected)
   function updateSampleContext() {
@@ -3773,6 +4419,7 @@ function setupCanvasHover() {
     updateSampleContext();
     updateSampleStrategySection();
     recomputeCandidateSamples();
+    renderVariantsTabSelection();
   }
   
   // Setup sample selection strategy controls

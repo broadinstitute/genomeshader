@@ -892,20 +892,6 @@ function renderFlowCanvas() {
     return match ? match[1] : label;
   }
   
-  // Convert HSLA to RGBA so WebGPU path (which only parses rgba) can draw all nodes opaque
-  function hslaToRgba(h, s, l, a) {
-    s /= 100;
-    l /= 100;
-    const c = (1 - Math.abs(2 * l - 1)) * s;
-    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
-    const m = l - c / 2;
-    let r = 0, g = 0, b = 0;
-    if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; }
-    else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; }
-    else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; }
-    return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255), a];
-  }
-
   // Helper function to get node colors based on allele type
   // Always returns rgba() so WebGPU fill path works for all colors (red/purple were hsla and were skipped)
   function getAlleleNodeColors(label, variant, actualAllele, isDragging) {
@@ -919,43 +905,41 @@ function renderFlowCanvas() {
       strokeColor = `rgba(200,200,200,${currentOpacity})`;
     } else {
       const allele = actualAllele || extractAlleleFromLabel(label);
-      const refLen = variant.refAllele ? variant.refAllele.length : 0;
-      const alleleLen = allele.length;
-      
-      if (alleleLen === 1) {
+      const refAllele = (variant && typeof variant.refAllele === "string") ? variant.refAllele : "";
+      const refLen = refAllele ? refAllele.length : 0;
+      const altLen = allele && allele !== "." ? allele.length : 0;
+
+      // Classify per displayed allele against REF, not at the whole-variant level.
+      let alleleType = "snv";
+      if (!allele || allele === ".") {
+        alleleType = "nocall";
+      } else if (refAllele && allele === refAllele) {
+        alleleType = "ref";
+      } else if (!refAllele || refAllele === ".") {
+        alleleType = altLen === 1 ? "snv" : "mnp";
+      } else {
+        const lenDelta = altLen - refLen;
+        if (lenDelta > 0) alleleType = "ins";
+        else if (lenDelta < 0) alleleType = "del";
+        else if (altLen === 1) alleleType = "snv";
+        else alleleType = "mnp";
+      }
+
+      if (alleleType === "ref") {
+        fillColor = `rgba(88,170,89,${currentOpacity})`;
+        strokeColor = `rgba(88,170,89,${currentOpacity})`;
+      } else if (alleleType === "del") {
+        fillColor = `rgba(214,67,67,${currentOpacity})`;
+        strokeColor = `rgba(214,67,67,${currentOpacity})`;
+      } else if (alleleType === "ins") {
+        fillColor = `rgba(156,90,214,${currentOpacity})`;
+        strokeColor = `rgba(156,90,214,${currentOpacity})`;
+      } else if (alleleType === "mnp") {
+        fillColor = `rgba(232,106,167,${currentOpacity})`;
+        strokeColor = `rgba(232,106,167,${currentOpacity})`;
+      } else {
         fillColor = `rgba(100,150,255,${currentOpacity})`;
         strokeColor = `rgba(100,150,255,${currentOpacity})`;
-      } else {
-        let isDeletion = false;
-        let isInsertion = false;
-        
-        if (variant.hasOwnProperty('variantType')) {
-          const variantType = variant.variantType;
-          isDeletion = variantType === 'deletion' || variantType === 'complex';
-          isInsertion = variantType === 'insertion' || variantType === 'complex';
-        } else {
-          if (variant.altAlleles && Array.isArray(variant.altAlleles) && variant.altAlleles.length > 0) {
-            const hasShorterAlt = variant.altAlleles.some(alt => alt.length < refLen);
-            const hasLongerAlt = variant.altAlleles.some(alt => alt.length > refLen);
-            if (hasShorterAlt && !hasLongerAlt) isDeletion = true;
-            else if (hasLongerAlt && !hasShorterAlt) isInsertion = true;
-          }
-        }
-        
-        if (isDeletion) {
-          // Single consistent red for all deletions (no lightness gradient)
-          const [r, g, b] = hslaToRgba(0, 70, 55, currentOpacity);
-          fillColor = `rgba(${r},${g},${b},${currentOpacity})`;
-          strokeColor = `rgba(${r},${g},${b},${currentOpacity})`;
-        } else if (isInsertion) {
-          // Single consistent purple for all insertions
-          const [r, g, b] = hslaToRgba(280, 70, 55, currentOpacity);
-          fillColor = `rgba(${r},${g},${b},${currentOpacity})`;
-          strokeColor = `rgba(${r},${g},${b},${currentOpacity})`;
-        } else {
-          fillColor = `rgba(100,150,255,${currentOpacity})`;
-          strokeColor = `rgba(100,150,255,${currentOpacity})`;
-        }
       }
     }
     
@@ -1071,6 +1055,7 @@ function renderFlowCanvas() {
         if (altLen > refLen) return "ins";
       }
       if (refLen === 1 && altLen === 1) return "snv";
+      if (refLen > 0 && altLen > 0 && altLen === refLen) return "mnp";
       return "other";
     };
     const alleleKeyToGenotypeIndex = (alleleKey) => {
@@ -1151,6 +1136,7 @@ function renderFlowCanvas() {
       if (t === "snv") return "Low-freq SNV";
       if (t === "del") return "Low-freq DEL";
       if (t === "ins") return "Low-freq INS";
+      if (t === "mnp") return "Low-freq MNP";
       return "Low-freq Other";
     };
     const groupState = new Map(); // type -> { members, totalFreq }

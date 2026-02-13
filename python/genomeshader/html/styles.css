@@ -190,7 +190,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   opacity: 0;
   pointer-events: none;
 }
-.app.sidebar-collapsed .sidebarContent {
+.app.sidebar-collapsed .sidebar-left .sidebarContent {
   opacity: 0;
   pointer-events: none;
 }

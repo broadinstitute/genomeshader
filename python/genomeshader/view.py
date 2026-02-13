@@ -406,6 +406,10 @@ class GenomeShader:
         select_cols = ["position", "ref_allele", "alt_allele", "variant_id"]
         if "vcf_id" in variants_df.columns:
             select_cols.append("vcf_id")
+        if "filter_status" in variants_df.columns:
+            select_cols.append("filter_status")
+        if "info_fields" in variants_df.columns:
+            select_cols.append("info_fields")
         unique_variants = (
             variants_df.select(select_cols)
             .unique(subset=["position", "ref_allele", "alt_allele"])
@@ -430,6 +434,8 @@ class GenomeShader:
                     "variant_id": variant_id,
                     "vcf_id": vcf_id,
                     "variant_display_ids": [],
+                    "filter_status": row.get("filter_status", "PASS"),
+                    "info_fields": row.get("info_fields", "."),
                 }
             row_display_id = str(vcf_id) if vcf_id else str(variant_id)
             if row_display_id not in variant_groups[pos]["variant_display_ids"]:
@@ -450,6 +456,11 @@ class GenomeShader:
             display_ids = variant_groups[pos].setdefault("variant_display_ids", [])
             if row_display_id not in display_ids:
                 display_ids.append(row_display_id)
+            group = variant_groups[pos]
+            if "filter_status" in row and row.get("filter_status") not in (None, "", "."):
+                group["filter_status"] = row["filter_status"]
+            if "info_fields" in row and row.get("info_fields") not in (None, "", "."):
+                group["info_fields"] = row["info_fields"]
 
         if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
             for pos, variant_info in variant_groups.items():
@@ -523,6 +534,26 @@ class GenomeShader:
             length_label = "1 bp" if length == 1 else f"{length} bp"
             display_allele = allele[:50] + "..." if length > 50 else allele
             return f"{display_allele} ({length_label})"
+
+        def parse_info_fields(info_raw):
+            if info_raw is None:
+                return {}
+            text = str(info_raw).strip()
+            if not text or text == ".":
+                return {}
+            parsed = {}
+            for token in text.split(";"):
+                token = token.strip()
+                if not token:
+                    continue
+                if "=" in token:
+                    key, value = token.split("=", 1)
+                    key = key.strip()
+                    if key:
+                        parsed[key] = value.strip()
+                else:
+                    parsed[token] = True
+            return parsed
 
         for pos, variant_info in sorted(variant_groups.items(), key=lambda x: x[0]):
             vcf_id = variant_info.get("vcf_id")
@@ -636,17 +667,27 @@ class GenomeShader:
             is_insertion = False
             max_insertion_length = 0
             is_deletion = False
+            alt_types = set()
             if alt_alleles:
                 for alt in alt_alleles:
                     alt_len = len(alt) if alt else 0
                     if alt_len > ref_len:
                         is_insertion = True
                         max_insertion_length = max(max_insertion_length, alt_len - ref_len)
+                        alt_types.add("insertion")
                     elif alt_len < ref_len:
                         is_deletion = True
-            variant_type = "complex" if (is_insertion and is_deletion) else (
-                "insertion" if is_insertion else ("deletion" if is_deletion else "snv")
-            )
+                        alt_types.add("deletion")
+                    elif alt_len == 1:
+                        alt_types.add("snv")
+                    else:
+                        alt_types.add("mnp")
+            if not alt_types:
+                variant_type = "snv"
+            elif len(alt_types) == 1:
+                variant_type = next(iter(alt_types))
+            else:
+                variant_type = "complex"
             insertion_gap_px = max_insertion_length * 8 if is_insertion else 0
             formatted_ref_allele = format_allele_label(ref_allele) if ref_allele else None
             formatted_alt_alleles = [format_allele_label(alt) for alt in alt_alleles] if alt_alleles else []
@@ -655,6 +696,9 @@ class GenomeShader:
                 "pos": variant_info["pos"],
                 "refAllele": variant_info["refAllele"],
                 "altAlleles": alt_alleles,
+                "filterStatus": variant_info.get("filter_status", "PASS"),
+                "infoRaw": variant_info.get("info_fields", "."),
+                "infoFields": parse_info_fields(variant_info.get("info_fields", ".")),
                 "alleles": ["ref"] + [f"a{i+1}" for i in range(len(alt_alleles))],
                 "alleleFrequencies": allele_frequencies,
                 "alleleSampleCounts": allele_sample_counts,
