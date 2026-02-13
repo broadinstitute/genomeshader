@@ -3,7 +3,109 @@ use std::collections::HashMap;
 
 use polars::prelude::*;
 
-use rust_htslib::bcf::{Read, Reader, record::GenotypeAllele};
+use rust_htslib::bcf::{
+    header::{HeaderRecord, TagType},
+    record::{GenotypeAllele, Numeric},
+    Read,
+    Reader,
+};
+
+fn is_vector_end_i32(v: i32) -> bool {
+    v == i32::MIN + 1
+}
+
+fn is_vector_end_f32(v: f32) -> bool {
+    v.to_bits() == 0x7F80_0002
+}
+
+fn extract_filter_value(
+    header: &rust_htslib::bcf::header::HeaderView,
+    record: &rust_htslib::bcf::record::Record,
+) -> String {
+    let filters: Vec<String> = record
+        .filters()
+        .map(|fid| String::from_utf8_lossy(&header.id_to_name(fid)).to_string())
+        .collect();
+    if filters.is_empty() {
+        "PASS".to_string()
+    } else {
+        filters.join(";")
+    }
+}
+
+fn extract_info_value(
+    header: &rust_htslib::bcf::header::HeaderView,
+    record: &rust_htslib::bcf::record::Record,
+    info_tags: &[String],
+) -> String {
+    let mut info_entries: Vec<String> = Vec::new();
+
+    for tag in info_tags {
+        let tag_bytes = tag.as_bytes();
+        let tag_type = match header.info_type(tag_bytes) {
+            Ok((ty, _)) => ty,
+            Err(_) => continue,
+        };
+
+        match tag_type {
+            TagType::Flag => {
+                if record.info(tag_bytes).flag().unwrap_or(false) {
+                    info_entries.push(tag.clone());
+                }
+            }
+            TagType::Integer => {
+                let val = match record.info(tag_bytes).integer() {
+                    Ok(Some(v)) => v,
+                    _ => continue,
+                };
+                let values: Vec<String> = val
+                    .iter()
+                    .take_while(|x| !is_vector_end_i32(**x))
+                    .filter(|x| !x.is_missing())
+                    .map(|x| x.to_string())
+                    .collect();
+                if !values.is_empty() {
+                    info_entries.push(format!("{}={}", tag, values.join(",")));
+                }
+            }
+            TagType::Float => {
+                let val = match record.info(tag_bytes).float() {
+                    Ok(Some(v)) => v,
+                    _ => continue,
+                };
+                let values: Vec<String> = val
+                    .iter()
+                    .take_while(|x| !is_vector_end_f32(**x))
+                    .filter(|x| !x.is_missing())
+                    .map(|x| x.to_string())
+                    .collect();
+                if !values.is_empty() {
+                    info_entries.push(format!("{}={}", tag, values.join(",")));
+                }
+            }
+            TagType::String => {
+                let val = match record.info(tag_bytes).string() {
+                    Ok(Some(v)) => v,
+                    _ => continue,
+                };
+                let values: Vec<String> = val
+                    .iter()
+                    .map(|x| String::from_utf8_lossy(x).to_string())
+                    .filter(|x| !x.is_empty() && x != ".")
+                    .collect();
+                if !values.is_empty() {
+                    info_entries.push(format!("{}={}", tag, values.join(",")));
+                }
+            }
+        }
+    }
+
+    if info_entries.is_empty() {
+        ".".to_string()
+    } else {
+        info_entries.join(";")
+    }
+}
 
 pub fn extract_variants(
     bcf_path: &str,
@@ -23,6 +125,14 @@ pub fn extract_variants(
         .iter()
         .map(|s| String::from_utf8_lossy(s).to_string())
         .collect();
+    let info_tags: Vec<String> = header
+        .header_records()
+        .iter()
+        .filter_map(|rec| match rec {
+            HeaderRecord::Info { values, .. } => values.get("ID").cloned(),
+            _ => None,
+        })
+        .collect();
     
     let mut chromosomes = Vec::new();
     let mut positions = Vec::new();
@@ -30,8 +140,11 @@ pub fn extract_variants(
     let mut alt_alleles = Vec::new();
     let mut sample_names_vec = Vec::new();
     let mut genotypes = Vec::new();
+    let mut alt_indices = Vec::new();
     let mut variant_ids = Vec::new();
     let mut vcf_ids = Vec::new();
+    let mut filter_statuses = Vec::new();
+    let mut info_values = Vec::new();
     
     // Track unique variants (position + allele combination)
     let mut variant_map: HashMap<(u64, String, String), u32> = HashMap::new();
@@ -54,6 +167,8 @@ pub fn extract_variants(
         } else {
             Some(String::from_utf8_lossy(&vcf_id_bytes).to_string())
         };
+        let filter_value = extract_filter_value(&header, &record);
+        let info_value = extract_info_value(&header, &record, &info_tags);
         
         // Get reference and alternate alleles
         let alleles = record.alleles();
@@ -64,7 +179,7 @@ pub fn extract_variants(
             .collect();
         
         // Process each alternate allele as a separate variant
-        for (_alt_idx, alt_allele) in alt_alleles_list.iter().enumerate() {
+        for (alt_idx, alt_allele) in alt_alleles_list.iter().enumerate() {
             let alt_allele_str: String = alt_allele.clone();
             
             // Get or create variant ID
@@ -83,7 +198,7 @@ pub fn extract_variants(
                 // Get genotype (GT field) for this sample
                 let gt = genotypes_array.get(sample_idx);
                 
-                // Format genotype as string (e.g., "0/1", "1/1", "./.")
+                // Format genotype as string: "0|1" (phased) or "0/1" (unphased)
                 let gt_str = if gt.len() >= 2 {
                     let a1 = match gt[0] {
                         GenotypeAllele::Unphased(idx) | GenotypeAllele::Phased(idx) => idx.to_string(),
@@ -93,7 +208,11 @@ pub fn extract_variants(
                         GenotypeAllele::Unphased(idx) | GenotypeAllele::Phased(idx) => idx.to_string(),
                         GenotypeAllele::UnphasedMissing | GenotypeAllele::PhasedMissing => ".".to_string(),
                     };
-                    format!("{}/{}", a1, a2)
+                    let sep = match (&gt[0], &gt[1]) {
+                        (GenotypeAllele::Phased(_) | GenotypeAllele::PhasedMissing, GenotypeAllele::Phased(_) | GenotypeAllele::PhasedMissing) => "|",
+                        _ => "/",
+                    };
+                    format!("{}{}{}", a1, sep, a2)
                 } else if gt.len() == 1 {
                     match gt[0] {
                         GenotypeAllele::Unphased(idx) | GenotypeAllele::Phased(idx) => idx.to_string(),
@@ -111,8 +230,11 @@ pub fn extract_variants(
                 alt_alleles.push(alt_allele_str.clone());
                 sample_names_vec.push(sample_name.clone());
                 genotypes.push(gt_str);
+                alt_indices.push((alt_idx + 1) as i32);
                 variant_ids.push(variant_id);
                 vcf_ids.push(vcf_id_str.clone());
+                filter_statuses.push(filter_value.clone());
+                info_values.push(info_value.clone());
             }
         }
     }
@@ -125,11 +247,13 @@ pub fn extract_variants(
             Series::new("alt_allele", alt_alleles),
             Series::new("sample_name", sample_names_vec),
             Series::new("genotype", genotypes),
+            Series::new("alt_index", alt_indices),
             Series::new("variant_id", variant_ids),
             Series::new("vcf_id", vcf_ids),
+            Series::new("filter_status", filter_statuses),
+            Series::new("info_fields", info_values),
         ]
     )?;
     
     Ok(df)
 }
-

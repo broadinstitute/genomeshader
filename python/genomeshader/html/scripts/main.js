@@ -252,8 +252,10 @@ function renderSmartTrack(trackId) {
   const grid = cssVar("--grid2");
   
   const bgHeight = (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) ? totalContentHeight : H;
-  ctx.fillStyle = "rgba(127,127,127,0.02)";
+  ctx.fillStyle = cssVar("--smart-track-bg");
   ctx.fillRect(0,0,W,bgHeight);
+  // Keep Reads-track variant guides aligned with ruler/multi-track ordering.
+  const rulerVariants = getRulerVariants();
   
   if (isVertical) {
     const coordHeight = H;
@@ -372,10 +374,10 @@ function renderSmartTrack(trackId) {
     }
     
     // Draw variant markers
-    for (let idx = 0; idx < variants.length; idx++) {
-      const v = variants[idx];
+    for (let idx = 0; idx < rulerVariants.length; idx++) {
+      const v = rulerVariants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
-      const isHovered = state.hoveredVariantIndex === idx;
+      const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
       ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
       ctx.globalAlpha = isHovered ? 0.7 : 0.3;
       ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -672,10 +674,10 @@ function renderSmartTrack(trackId) {
     }
     
     // Draw variant markers
-    for (let idx = 0; idx < variants.length; idx++) {
-      const v = variants[idx];
+    for (let idx = 0; idx < rulerVariants.length; idx++) {
+      const v = rulerVariants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
-      const isHovered = state.hoveredVariantIndex === idx;
+      const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
       ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
       ctx.globalAlpha = isHovered ? 0.7 : 0.3;
       ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -836,6 +838,9 @@ function getBasename(path) {
 const trackControls = document.getElementById("trackControls");
 // Standard tracks that have hover-only controls
 const STANDARD_TRACKS = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
+function isFlowTrack(trackId) {
+  return trackId === "flow" || (typeof trackId === "string" && trackId.startsWith("flow-"));
+}
 
 function renderTrackControls() {
   trackControls.innerHTML = "";
@@ -848,7 +853,7 @@ function renderTrackControls() {
     container.className = "track-control-container";
     
     // Check if this is a standard track - limit container to controls area only
-    const isStandardTrack = STANDARD_TRACKS.includes(track.id);
+    const isStandardTrack = STANDARD_TRACKS.includes(track.id) || isFlowTrack(track.id);
     
     if (isVertical) {
       container.style.position = "absolute";
@@ -1210,7 +1215,7 @@ function renderTrackControls() {
       resizeHandle.dataset.trackId = track.id;
       container.appendChild(resizeHandle);
     } else if (!isSmartTrack) {
-      // For standard tracks: add collapsed indicator and make clickable
+      // For standard tracks (including flow-N): add collapsed indicator and make clickable
       // Smart Tracks handle collapsed state differently (closed = single read, still visible)
       // Mark container as collapsed for CSS styling
       container.classList.add("track-collapsed");
@@ -1266,7 +1271,7 @@ function renderTrackControls() {
 
     // Add hover listeners for standard tracks to show/hide controls
     // Skip hover detection for collapsed tracks - they expand on click
-    if (STANDARD_TRACKS.includes(track.id) && !track.collapsed) {
+    if ((STANDARD_TRACKS.includes(track.id) || isFlowTrack(track.id)) && !track.collapsed) {
       // Mark container for standard track styling
       container.classList.add("standard-track");
       
@@ -1312,7 +1317,7 @@ function renderTrackControls() {
       
       // Setup after a short delay to ensure DOM is ready
       setTimeout(setupHoverDetection, 100);
-    } else if (STANDARD_TRACKS.includes(track.id) && track.collapsed) {
+    } else if ((STANDARD_TRACKS.includes(track.id) || isFlowTrack(track.id)) && track.collapsed) {
       // For collapsed standard tracks, mark as standard but don't set up hover
       // This ensures proper styling but prevents controls from showing
       container.classList.add("standard-track");
@@ -1359,6 +1364,11 @@ function updateTooltip() {
     tooltip.style.left = state.hoveredVariantLabelTooltip.x + 'px';
     tooltip.style.top = state.hoveredVariantLabelTooltip.y + 'px';
     tooltip.classList.add('visible');
+  } else if (state.hoveredAlleleNodeTooltip) {
+    tooltip.textContent = state.hoveredAlleleNodeTooltip.text;
+    tooltip.style.left = state.hoveredAlleleNodeTooltip.x + 'px';
+    tooltip.style.top = state.hoveredAlleleNodeTooltip.y + 'px';
+    tooltip.classList.add('visible');
   } else {
     tooltip.classList.remove('visible');
   }
@@ -1404,10 +1414,11 @@ function debounce(func, delay) {
   };
 }
 
-// Update Locus track variant element hover styles
+// Update Locus track variant element hover styles (use hoveredVariantId so multi-track ruler works)
 function updateLocusTrackHover() {
   state.locusVariantElements.forEach((elements, idx) => {
-    const isHovered = state.hoveredVariantIndex === idx;
+    const variantId = elements.lineEl && elements.lineEl.getAttribute("data-variant-id");
+    const isHovered = (state.hoveredVariantId != null && variantId != null && String(state.hoveredVariantId) === String(variantId)) || state.hoveredVariantIndex === idx;
     const strokeWidth = isHovered ? 2.5 : 1.2;
     const circleStrokeWidth = isHovered ? 2.2 : 1.4;
     const strokeColor = isHovered ? "var(--blue)" : "rgba(127,127,127,0.5)";
@@ -1423,6 +1434,100 @@ function updateLocusTrackHover() {
   });
 }
 
+// Helpers for multi-track variant hover: flat list of all variants (ruler order) and index/by-id lookup
+function getRulerVariants() {
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  return variantTracksConfig.length > 0
+    ? variantTracksConfig.flatMap(t => t.variants_data || [])
+    : variants;
+}
+function getRulerVariantIndex(variantId) {
+  const rulerVariants = getRulerVariants();
+  const idx = rulerVariants.findIndex(v => String(v.id) === String(variantId));
+  return idx >= 0 ? idx : null;
+}
+function findVariantById(variantId) {
+  const rulerVariants = getRulerVariants();
+  return rulerVariants.find(v => String(v.id) === String(variantId)) || null;
+}
+function getFlowBands() {
+  const layout = getTrackLayout();
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  const isVertical = isVerticalMode();
+  const bands = [];
+  if (variantTracksConfig.length > 0) {
+    let bandOffset = 0;
+    for (let i = 0; i < variantTracksConfig.length; i++) {
+      const trackConfig = variantTracksConfig[i];
+      const trackLayout = layout.find(l => l.track.id === trackConfig.id);
+      if (!trackLayout || trackLayout.track.collapsed) continue;
+      const bandHeight = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+      bands.push({ track: trackConfig, flowLayout: trackLayout, bandOffset, bandHeight });
+      bandOffset += bandHeight;
+    }
+  }
+  return bands;
+}
+
+function makeVariantOrderKeyCompat(trackId, variantId) {
+  return window.makeVariantOrderKey
+    ? window.makeVariantOrderKey(trackId, variantId)
+    : String(variantId);
+}
+
+function makeAlleleSelectionKeyCompat(trackId, variantId, alleleIndex) {
+  return window.makeAlleleSelectionKey
+    ? window.makeAlleleSelectionKey(trackId, variantId, alleleIndex)
+    : `${variantId}:${alleleIndex}`;
+}
+
+function parseAlleleSelectionKeyCompat(key) {
+  if (window.parseAlleleSelectionKey) {
+    return window.parseAlleleSelectionKey(key);
+  }
+  const idx = String(key).lastIndexOf(":");
+  if (idx <= 0) return null;
+  return {
+    trackId: "",
+    variantId: String(key).slice(0, idx),
+    alleleIndex: parseInt(String(key).slice(idx + 1), 10)
+  };
+}
+
+function getVariantTrackById(trackId) {
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  return variantTracksConfig.find(t => String(t.id) === String(trackId)) || null;
+}
+
+function findVariantByTrackAndId(trackId, variantId) {
+  if (trackId) {
+    const track = getVariantTrackById(trackId);
+    const fromTrack = track && Array.isArray(track.variants_data)
+      ? track.variants_data.find(v => String(v.id) === String(variantId))
+      : null;
+    if (fromTrack) return fromTrack;
+  }
+  return findVariantById(variantId);
+}
+
+function flowTrackDomId(trackId) {
+  return `flow-track-${encodeURIComponent(String(trackId || ""))}`;
+}
+
+function flowCanvasDomId(trackId) {
+  return `flowCanvas-${encodeURIComponent(String(trackId || ""))}`;
+}
+
+function findFlowTrackElementByTrackId(trackId) {
+  if (!flow) return null;
+  const target = String(trackId || "");
+  const tracks = flow.querySelectorAll(".flow-track");
+  for (const el of tracks) {
+    if ((el.dataset.trackId || "") === target) return el;
+  }
+  return null;
+}
+
 // Set up variant hover areas in canvas overlays
 function setupVariantHoverAreas() {
   if (!flowOverlay) return;
@@ -1430,24 +1535,28 @@ function setupVariantHoverAreas() {
   const isVertical = isVerticalMode();
   const clearSvg = (svg) => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
   
-  // Shared click handler for variant selection
-  const handleVariantRectClick = (e, variantId) => {
+  // Shared click handler for variant selection (variant may be from any track)
+  const handleVariantRectClick = (e, trackId, variantId) => {
     e.stopPropagation();
     
-    // Find variant by ID
-    const variant = variants.find(v => String(v.id) === String(variantId));
+    const variant = findVariantByTrackAndId(trackId, variantId);
     if (!variant) return;
     
-    // Get all alleles for this variant
-    const { labels } = getFormattedLabelsForVariant(variant);
-    let order = state.variantAlleleOrder.get(variant.id);
+    // Get all alleles for this variant (getFormattedLabelsForVariant is from interaction.js)
+    const getFormattedLabels = window.getFormattedLabelsForVariant;
+    if (!getFormattedLabels) return;
+    const { labels } = getFormattedLabels(variant);
+    const variantOrderKey = makeVariantOrderKeyCompat(trackId, variant.id);
+    let order = state.variantAlleleOrder.get(variantOrderKey);
     if (!order || order.length !== labels.length) {
       order = [...labels];
-      state.variantAlleleOrder.set(variant.id, order);
+      state.variantAlleleOrder.set(variantOrderKey, order);
     }
     
-    // Create label keys for all alleles: "variantId:alleleIndex"
-    const variantAlleleKeys = order.map((label, alleleIndex) => `${variant.id}:${alleleIndex}`);
+    // Create label keys for all alleles in this track/variant.
+    const variantAlleleKeys = order.map((label, alleleIndex) =>
+      makeAlleleSelectionKeyCompat(trackId, variant.id, alleleIndex)
+    );
     
     // Handle selection with Ctrl/Cmd for multi-select
     if (e.ctrlKey || e.metaKey) {
@@ -1487,102 +1596,208 @@ function setupVariantHoverAreas() {
   flowOverlay.setAttribute("height", flowH);
   flowOverlay.setAttribute("viewBox", `0 0 ${flowW} ${flowH}`);
   
-  // Create hover areas for Variants/Haplotypes track
-  const win = visibleVariantWindow();
   const variantMode = getVariantLayoutMode();
+  const flowBands = getFlowBands();
+  const multiTrack = flowBands.length > 1;
   
-  if (isVertical) {
-    const junctionX = 70;
-    const left = 8;
-    
-    for (let i = 0; i < win.length; i++) {
-      const v = win[i];
-      const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-      if (variantIdx === -1) continue;
-      
-      const cy = variantMode === "genomic"
-        ? yGenomeCanonical(v.pos, flowH)
-        : yColumn(i, win.length);
-      
-      // Create hover rectangle for the column
-      const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      hoverRect.setAttribute("x", junctionX);
-      hoverRect.setAttribute("y", cy - 8);
-      hoverRect.setAttribute("width", Math.max(0, flowW - junctionX - 10));
-      hoverRect.setAttribute("height", 16);
-      hoverRect.setAttribute("fill", "transparent");
-      hoverRect.setAttribute("data-variant-id", v.id);
-      hoverRect.style.cursor = "pointer";
-      hoverRect.style.pointerEvents = "auto";
-      hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, v.id));
-      flowOverlay.appendChild(hoverRect);
-    }
-  } else {
-    const junctionY = 40;
-    
-    for (let i = 0; i < win.length; i++) {
-      const v = win[i];
-      const variantIdx = state.firstVariantIndex + i;
-      if (variantIdx >= variants.length) continue;
-      const variant = variants[variantIdx];
-      
-      const cx = variantMode === "genomic"
-        ? xGenomeCanonical(v.pos, flowW)
-        : xColumn(i, win.length);
-      
-      // Create hover rectangle for the column
-      const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      hoverRect.setAttribute("x", cx - 8);
-      hoverRect.setAttribute("y", junctionY);
-      hoverRect.setAttribute("width", 16);
-      hoverRect.setAttribute("height", Math.max(0, flowH - junctionY - 10));
-      hoverRect.setAttribute("fill", "transparent");
-      hoverRect.setAttribute("data-variant-id", variant.id);
-      hoverRect.style.cursor = "pointer";
-      hoverRect.style.pointerEvents = "auto";
-      hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, variant.id));
-      flowOverlay.appendChild(hoverRect);
-    }
-  }
-  
-  // Set up event delegation for hover detection
-  // Use a single handler for all hover areas
+  // Hover handlers (used by both multi-track per-overlay and single-track shared overlay)
   const handleVariantHover = (e) => {
     const target = e.target;
     const variantId = target.getAttribute("data-variant-id");
     if (!variantId) return;
-    
-    // Find variant index by ID
-    const variantIdx = variants.findIndex(v => String(v.id) === String(variantId));
-    if (variantIdx === -1) return;
-    
+    state.hoveredVariantId = variantId;
+    const variantIdx = getRulerVariantIndex(variantId);
     if (state.hoveredVariantIndex !== variantIdx) {
       state.hoveredVariantIndex = variantIdx;
       renderHoverOnly();
+    } else {
+      renderHoverOnly();
     }
   };
-  
   const handleVariantLeave = (e) => {
     const target = e.target;
     if (target.hasAttribute("data-variant-id")) {
-      if (state.hoveredVariantIndex !== null) {
+      if (state.hoveredVariantIndex !== null || state.hoveredVariantId !== null) {
         state.hoveredVariantIndex = null;
+        state.hoveredVariantId = null;
         renderHoverOnly();
       }
     }
   };
   
+  if (multiTrack) {
+    // Per-track overlays so variant click works in every track (first track was blocked by shared overlay stacking)
+    flowOverlay.style.pointerEvents = "none";
+    flowOverlay.innerHTML = "";
+    const junctionY = 18;
+    const junctionX = 70;
+    for (const band of flowBands) {
+      const bandVariants = band.track.variants_data || [];
+      const win = typeof visibleVariantWindowFor === "function" ? visibleVariantWindowFor(bandVariants) : bandVariants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
+      const bandSize = band.bandHeight;
+      const trackEl = findFlowTrackElementByTrackId(band.track.id);
+      const bandOverlay = trackEl ? trackEl.querySelector(".flow-track-overlay") : null;
+      if (!bandOverlay) continue;
+      clearSvg(bandOverlay);
+      if (isVertical) {
+        bandOverlay.setAttribute("width", bandSize);
+        bandOverlay.setAttribute("height", flowH);
+        bandOverlay.setAttribute("viewBox", `0 0 ${bandSize} ${flowH}`);
+      } else {
+        bandOverlay.setAttribute("width", flowW);
+        bandOverlay.setAttribute("height", bandSize);
+        bandOverlay.setAttribute("viewBox", `0 0 ${flowW} ${bandSize}`);
+      }
+      bandOverlay.style.pointerEvents = "auto";
+      // Pass-through rect so clicks in the allele area go to the canvas (for per-allele selection/drag)
+      const passThrough = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      if (isVertical) {
+        passThrough.setAttribute("x", junctionX);
+        passThrough.setAttribute("y", 0);
+        passThrough.setAttribute("width", Math.max(0, bandSize - junctionX - 10));
+        passThrough.setAttribute("height", flowH);
+      } else {
+        passThrough.setAttribute("x", 0);
+        passThrough.setAttribute("y", junctionY);
+        passThrough.setAttribute("width", flowW);
+        passThrough.setAttribute("height", Math.max(0, bandSize - junctionY));
+      }
+      passThrough.setAttribute("fill", "transparent");
+      passThrough.style.pointerEvents = "none";
+      bandOverlay.appendChild(passThrough);
+      // Variant rects only in the label strip so allele-area clicks pass through to canvas hit test.
+      if (isVertical) {
+        const labelX = 0;
+        const labelW = Math.min(30, Math.max(0, bandSize));
+        for (let i = 0; i < win.length; i++) {
+          const v = win[i];
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, flowH)
+            : yColumn(i, win.length);
+          const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          hoverRect.setAttribute("x", labelX);
+          hoverRect.setAttribute("y", Math.max(0, cy - 8));
+          hoverRect.setAttribute("width", labelW);
+          hoverRect.setAttribute("height", 16);
+          hoverRect.setAttribute("fill", "transparent");
+          hoverRect.setAttribute("data-variant-id", v.id);
+          hoverRect.style.cursor = "pointer";
+          hoverRect.style.pointerEvents = "auto";
+          hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, band.track.id, v.id));
+          bandOverlay.appendChild(hoverRect);
+        }
+      } else {
+        for (let i = 0; i < win.length; i++) {
+          const v = win[i];
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, flowW)
+            : xColumn(i, win.length);
+          const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          hoverRect.setAttribute("x", cx - 8);
+          hoverRect.setAttribute("y", 0);
+          hoverRect.setAttribute("width", 16);
+          hoverRect.setAttribute("height", junctionY);
+          hoverRect.setAttribute("fill", "transparent");
+          hoverRect.setAttribute("data-variant-id", v.id);
+          hoverRect.style.cursor = "pointer";
+          hoverRect.style.pointerEvents = "auto";
+          hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, band.track.id, v.id));
+          bandOverlay.appendChild(hoverRect);
+        }
+      }
+      // Hover delegation on this band's overlay
+      bandOverlay._variantHoverHandler = handleVariantHover;
+      bandOverlay._variantLeaveHandler = handleVariantLeave;
+      bandOverlay.removeEventListener("mouseenter", bandOverlay._variantHoverHandler, true);
+      bandOverlay.removeEventListener("mouseleave", bandOverlay._variantLeaveHandler, true);
+      bandOverlay.addEventListener("mouseenter", handleVariantHover, true);
+      bandOverlay.addEventListener("mouseleave", handleVariantLeave, true);
+    }
+  } else {
+    flowOverlay.style.pointerEvents = "";
+  }
+  
+  if (!multiTrack) {
+    // Single track: pass-through in content area so allele clicks work; variant rects only in label strip
+    const junctionYSingle = 18;
+    const junctionXSingle = 70;
+    const passThroughSingle = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    if (isVertical) {
+      passThroughSingle.setAttribute("x", junctionXSingle);
+      passThroughSingle.setAttribute("y", 0);
+      passThroughSingle.setAttribute("width", Math.max(0, flowW - junctionXSingle - 10));
+      passThroughSingle.setAttribute("height", flowH);
+    } else {
+      passThroughSingle.setAttribute("x", 0);
+      passThroughSingle.setAttribute("y", junctionYSingle);
+      passThroughSingle.setAttribute("width", flowW);
+      passThroughSingle.setAttribute("height", Math.max(0, flowH - junctionYSingle));
+    }
+    passThroughSingle.setAttribute("fill", "transparent");
+    passThroughSingle.style.pointerEvents = "none";
+    flowOverlay.appendChild(passThroughSingle);
+    const win = visibleVariantWindow();
+    if (isVertical) {
+      const labelX = 0;
+      const labelW = Math.min(30, Math.max(0, flowW));
+      for (let i = 0; i < win.length; i++) {
+        const v = win[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        if (variantIdx === -1) continue;
+        const cy = variantMode === "genomic"
+          ? yGenomeCanonical(v.pos, flowH)
+          : yColumn(i, win.length);
+        const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        hoverRect.setAttribute("x", labelX);
+        hoverRect.setAttribute("y", Math.max(0, cy - 8));
+        hoverRect.setAttribute("width", labelW);
+        hoverRect.setAttribute("height", 16);
+        hoverRect.setAttribute("fill", "transparent");
+        hoverRect.setAttribute("data-variant-id", v.id);
+        hoverRect.style.cursor = "pointer";
+        hoverRect.style.pointerEvents = "auto";
+        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, "", v.id));
+        flowOverlay.appendChild(hoverRect);
+      }
+    } else {
+      for (let i = 0; i < win.length; i++) {
+        const v = win[i];
+        const variantIdx = state.firstVariantIndex + i;
+        if (variantIdx >= variants.length) continue;
+        const variant = variants[variantIdx];
+        const cx = variantMode === "genomic"
+          ? xGenomeCanonical(v.pos, flowW)
+          : xColumn(i, win.length);
+        const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        hoverRect.setAttribute("x", cx - 8);
+        hoverRect.setAttribute("y", 0);
+        hoverRect.setAttribute("width", 16);
+        hoverRect.setAttribute("height", junctionYSingle);
+        hoverRect.setAttribute("fill", "transparent");
+        hoverRect.setAttribute("data-variant-id", variant.id);
+        hoverRect.style.cursor = "pointer";
+        hoverRect.style.pointerEvents = "auto";
+        hoverRect.addEventListener("click", (e) => handleVariantRectClick(e, "", variant.id));
+        flowOverlay.appendChild(hoverRect);
+      }
+    }
+  }
+  
   // Remove old listeners if they exist (for hover only, clicks are now on rectangles)
   if (flowOverlay._variantHoverHandler) {
     flowOverlay.removeEventListener("mouseenter", flowOverlay._variantHoverHandler, true);
-    flowOverlay.removeEventListener("mouseleave", flowOverlay._variantHoverHandler, true);
+    flowOverlay.removeEventListener("mouseleave", flowOverlay._variantLeaveHandler, true);
   }
+  flowOverlay._variantHoverHandler = null;
+  flowOverlay._variantLeaveHandler = null;
   
-  // Add new listeners with capture phase to catch events on child elements (hover only)
-  flowOverlay._variantHoverHandler = handleVariantHover;
-  flowOverlay._variantLeaveHandler = handleVariantLeave;
-  flowOverlay.addEventListener("mouseenter", handleVariantHover, true);
-  flowOverlay.addEventListener("mouseleave", handleVariantLeave, true);
+  // Single-track: use shared overlay for hover; multi-track uses per-track overlays (already set up above)
+  if (!multiTrack) {
+    flowOverlay._variantHoverHandler = handleVariantHover;
+    flowOverlay._variantLeaveHandler = handleVariantLeave;
+    flowOverlay.addEventListener("mouseenter", handleVariantHover, true);
+    flowOverlay.addEventListener("mouseleave", handleVariantLeave, true);
+  }
 }
 
 // Selective rendering for hover-only state changes (no SVG rebuild)
@@ -1719,12 +1934,12 @@ function setupCanvasHover() {
     const y = e.clientY - rect.top;
     const isVertical = isVerticalMode();
     const variantMode = getVariantLayoutMode();
-    const win = visibleVariantWindow();
+    const flowBands = getFlowBands();
+    const multiTrack = flowBands.length > 1;
     
     if (isVertical) {
       const junctionX = 40;
       const H = flowHeightPx();
-      const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
       
       // Check if mouse is over a variant label
       if (window._variantLabelPositions && window._variantLabelPositions.length > 0) {
@@ -1751,48 +1966,55 @@ function setupCanvasHover() {
         }
       }
       
-      // Check if mouse is near a column line (horizontal in vertical mode)
-      for (let i = 0; i < sortedWin.length; i++) {
-        const v = sortedWin[i];
-        // Position based on variant layout mode
-        const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
-          : yColumn(i, sortedWin.length);
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        
-        if (Math.abs(y - cy) < 10 && x >= junctionX) {
-          if (state.hoveredVariantIndex !== variantIdx) {
-            state.hoveredVariantIndex = variantIdx;
-            renderHoverOnly();
-          }
-          // Clear variant label tooltip when hovering column
-          state.hoveredVariantLabelTooltip = null;
-          updateTooltip();
-          return;
-        }
-      }
-      
-      // Check if mouse is near a diagonal connector
+      // Check if mouse is near a column line or diagonal connector (vertical mode); per-band when multi-track (vertical mode: bands stacked along x)
       const x0 = 6;
-      for (let i = 0; i < sortedWin.length; i++) {
-        const v = sortedWin[i];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        const vy = yGenomeCanonical(v.pos, H); // always genomic for ruler connection
-        const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
-          : yColumn(i, sortedWin.length);
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        
-        const dist = Math.abs((x - x0) * (cy - vy) / (junctionX - x0) + vy - y);
-        if (dist < 5 && x >= x0 && x <= junctionX) {
-          if (state.hoveredVariantIndex !== variantIdx) {
-            state.hoveredVariantIndex = variantIdx;
-            renderHoverOnly();
+      const bandsToTestVertical = multiTrack
+        ? flowBands.filter(b => x >= b.bandOffset && x < b.bandOffset + b.bandHeight)
+        : [{ track: { variants_data: variants }, bandOffset: 0, bandHeight: H }];
+      for (const band of bandsToTestVertical) {
+        const bandVariants = band.track.variants_data || [];
+        const win = multiTrack && typeof visibleVariantWindowFor === "function"
+          ? visibleVariantWindowFor(bandVariants)
+          : visibleVariantWindow();
+        const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
+        for (let i = 0; i < sortedWin.length; i++) {
+          const v = sortedWin[i];
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          const variantIdx = getRulerVariantIndex(v.id);
+          if (variantIdx == null) continue;
+          if (Math.abs(y - cy) < 10 && x >= junctionX) {
+            if (state.hoveredVariantIndex !== variantIdx || state.hoveredVariantId !== v.id) {
+              state.hoveredVariantIndex = variantIdx;
+              state.hoveredVariantId = v.id;
+              renderHoverOnly();
+            }
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
+            return;
           }
-          // Clear variant label tooltip when hovering connector
-          state.hoveredVariantLabelTooltip = null;
-          updateTooltip();
-          return;
+        }
+        for (let i = 0; i < sortedWin.length; i++) {
+          const v = sortedWin[i];
+          if (v.pos < state.startBp || v.pos > state.endBp) continue;
+          const vy = yGenomeCanonical(v.pos, H);
+          const cy = variantMode === "genomic"
+            ? yGenomeCanonical(v.pos, H)
+            : yColumn(i, sortedWin.length);
+          const variantIdx = getRulerVariantIndex(v.id);
+          if (variantIdx == null) continue;
+          const dist = Math.abs((x - x0) * (cy - vy) / (junctionX - x0) + vy - y);
+          if (dist < 5 && x >= x0 && x <= junctionX) {
+            if (state.hoveredVariantIndex !== variantIdx || state.hoveredVariantId !== v.id) {
+              state.hoveredVariantIndex = variantIdx;
+              state.hoveredVariantId = v.id;
+              renderHoverOnly();
+            }
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
+            return;
+          }
         }
       }
     } else {
@@ -1822,51 +2044,64 @@ function setupCanvasHover() {
         }
       }
       
-      // Check if mouse is near a column line
-      for (let i = 0; i < win.length; i++) {
-        // Position based on variant layout mode
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(win[i].pos, W)
-          : xColumn(i, win.length);
-        const variantIdx = state.firstVariantIndex + i;
-        
-        if (Math.abs(x - cx) < 10 && y >= junctionY) {
-          if (state.hoveredVariantIndex !== variantIdx) {
-            state.hoveredVariantIndex = variantIdx;
-            renderHoverOnly();
-          }
-          // Clear variant label tooltip when hovering column
-          state.hoveredVariantLabelTooltip = null;
-          updateTooltip();
-          return;
-        }
-      }
-      
-      // Check if mouse is near a diagonal connector
+      // Check if mouse is near a column line or diagonal connector (horizontal mode); per-band when multi-track
       const y0 = 6;
-      for (let i = 0; i < win.length; i++) {
-        const v = win[i];
-        if (v.pos < state.startBp || v.pos > state.endBp) continue;
-        const vx = xGenomeCanonical(v.pos, W); // always genomic for ruler connection
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        const variantIdx = state.firstVariantIndex + i;
-        
-        const dist = Math.abs((y - y0) * (cx - vx) / (junctionY - y0) + vx - x);
-        if (dist < 5 && y >= y0 && y <= junctionY) {
-          if (state.hoveredVariantIndex !== variantIdx) {
-            state.hoveredVariantIndex = variantIdx;
-            renderHoverOnly();
+      const bandsToTestHorizontal = multiTrack
+        ? flowBands.filter(b => y >= b.bandOffset && y < b.bandOffset + b.bandHeight)
+        : [{ track: { variants_data: variants }, bandOffset: 0, bandHeight: flowHeightPx() }];
+      for (const band of bandsToTestHorizontal) {
+        const bandVariants = band.track.variants_data || [];
+        const win = multiTrack && typeof visibleVariantWindowFor === "function"
+          ? visibleVariantWindowFor(bandVariants)
+          : visibleVariantWindow();
+        for (let i = 0; i < win.length; i++) {
+          const v = win[i];
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          const variantIdx = getRulerVariantIndex(v.id);
+          if (variantIdx == null) continue;
+          const yInBand = y - band.bandOffset;
+          if (yInBand >= junctionY && Math.abs(x - cx) < 10) {
+            if (state.hoveredVariantIndex !== variantIdx || state.hoveredVariantId !== v.id) {
+              state.hoveredVariantIndex = variantIdx;
+              state.hoveredVariantId = v.id;
+              renderHoverOnly();
+            }
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
+            return;
           }
-          return;
+        }
+        for (let i = 0; i < win.length; i++) {
+          const v = win[i];
+          if (v.pos < state.startBp || v.pos > state.endBp) continue;
+          const vx = xGenomeCanonical(v.pos, W);
+          const cx = variantMode === "genomic"
+            ? xGenomeCanonical(v.pos, W)
+            : xColumn(i, win.length);
+          const variantIdx = getRulerVariantIndex(v.id);
+          if (variantIdx == null) continue;
+          const yInBand = y - band.bandOffset;
+          const dist = Math.abs((yInBand - y0) * (cx - vx) / (junctionY - y0) + vx - x);
+          if (dist < 5 && yInBand >= y0 && yInBand <= junctionY) {
+            if (state.hoveredVariantIndex !== variantIdx || state.hoveredVariantId !== v.id) {
+              state.hoveredVariantIndex = variantIdx;
+              state.hoveredVariantId = v.id;
+              renderHoverOnly();
+            }
+            state.hoveredVariantLabelTooltip = null;
+            updateTooltip();
+            return;
+          }
         }
       }
     }
     
     // No variant hovered
-    if (state.hoveredVariantIndex !== null) {
+    if (state.hoveredVariantIndex !== null || state.hoveredVariantId !== null) {
       state.hoveredVariantIndex = null;
+      state.hoveredVariantId = null;
       renderHoverOnly();
     }
     // Clear variant label tooltip when not hovering anything
@@ -1877,10 +2112,13 @@ function setupCanvasHover() {
   };
   
   flowLeaveHandler = () => {
-    if (state.hoveredVariantIndex !== null || state.hoveredAlleleNode !== null) {
+    if (state.hoveredVariantIndex !== null || state.hoveredVariantId !== null || state.hoveredAlleleNode !== null) {
       state.hoveredVariantIndex = null;
+      state.hoveredVariantId = null;
       state.hoveredAlleleNode = null;
+      state.hoveredAlleleNodeTooltip = null;
       renderHoverOnly();
+      updateTooltip();
     }
     // Clear variant label tooltip when leaving flow canvas
     if (state.hoveredVariantLabelTooltip !== null) {
@@ -1957,13 +2195,27 @@ function setupCanvasHover() {
   let alleleMouseUpHandler = null;
   
   function setupAlleleDragDrop() {
-    // Remove existing listeners
+    // Remove existing listeners from both possible targets
     if (alleleMouseDownHandler) {
-      const oldTarget = flowWebGPU || flow;
-      oldTarget.removeEventListener("mousedown", alleleMouseDownHandler);
+      if (flow) flow.removeEventListener("mousedown", alleleMouseDownHandler);
+      if (flowWebGPU) flowWebGPU.removeEventListener("mousedown", alleleMouseDownHandler);
       document.removeEventListener("mousemove", alleleMouseMoveHandler);
       document.removeEventListener("mouseup", alleleMouseUpHandler);
     }
+    
+    // With multiple variant tracks, flowWebGPU has pointer-events: none; attach to flow so overlays' events bubble here
+    const variantTracks = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+    const targetElement = variantTracks.length > 1 ? flow : (flowWebGPU || flow);
+    const getTrackIdAtClientPoint = (clientX, clientY) => {
+      const el = document.elementFromPoint(clientX, clientY);
+      const trackEl = el && el.closest ? el.closest(".flow-track") : null;
+      return trackEl ? String(trackEl.dataset.trackId || "") : "";
+    };
+    const filterNodesByTrack = (nodes, trackId) => {
+      if (!trackId) return nodes;
+      const filtered = nodes.filter(n => String(n.trackId || "") === trackId);
+      return filtered.length > 0 ? filtered : nodes;
+    };
     
     alleleMouseDownHandler = (e) => {
       if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) return;
@@ -1972,27 +2224,38 @@ function setupCanvasHover() {
       const rect = flow.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+      const activeTrackId = getTrackIdAtClientPoint(e.clientX, e.clientY);
+      const allNodes = window._alleleNodePositions;
+      const nodesToTest = filterNodesByTrack(allNodes, activeTrackId);
+      const tryStartDragForNodes = (nodes) => {
+        for (const node of nodes) {
+          if (x >= node.x && x <= node.x + node.w &&
+              y >= node.y && y <= node.y + node.h) {
+            e.preventDefault();
+            e.stopPropagation();
+            state.alleleDragState = {
+              trackId: node.trackId || "",
+              variantId: node.variantId,
+              alleleIndex: node.alleleIndex,
+              label: node.label,
+              startX: x,
+              startY: y,
+              offsetX: 0,
+              offsetY: 0,
+              isClick: true // Track if this might be a click (not a drag)
+            };
+            flowCanvas.style.cursor = "grabbing";
+            if (flowWebGPU) flowWebGPU.style.cursor = "grabbing";
+            return true;
+          }
+        }
+        return false;
+      };
       
       // Find which node was clicked
-      for (const node of window._alleleNodePositions) {
-        if (x >= node.x && x <= node.x + node.w && 
-            y >= node.y && y <= node.y + node.h) {
-          e.preventDefault();
-          e.stopPropagation();
-          state.alleleDragState = {
-            variantId: node.variantId,
-            alleleIndex: node.alleleIndex,
-            label: node.label,
-            startX: x,
-            startY: y,
-            offsetX: 0,
-            offsetY: 0,
-            isClick: true // Track if this might be a click (not a drag)
-          };
-          flowCanvas.style.cursor = "grabbing";
-          if (flowWebGPU) flowWebGPU.style.cursor = "grabbing";
-          return;
-        }
+      if (tryStartDragForNodes(nodesToTest)) return;
+      if (nodesToTest !== allNodes) {
+        tryStartDragForNodes(allNodes);
       }
     };
     
@@ -2000,6 +2263,8 @@ function setupCanvasHover() {
       const rect = flow.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+      const activeTrackId = getTrackIdAtClientPoint(e.clientX, e.clientY);
+      const nodesToTest = filterNodesByTrack(window._alleleNodePositions || [], activeTrackId);
       
       if (state.alleleDragState) {
         // Handle drag
@@ -2017,11 +2282,16 @@ function setupCanvasHover() {
       
       // Calculate drop position to show indicator
       const dragState = state.alleleDragState;
-      const order = state.variantAlleleOrder.get(dragState.variantId);
+      const variantOrderKey = makeVariantOrderKeyCompat(dragState.trackId, dragState.variantId);
+      const order = state.variantAlleleOrder.get(variantOrderKey);
       if (order) {
         const isVertical = isVerticalMode();
         const variantMode = getVariantLayoutMode();
-        const win = visibleVariantWindow();
+        const variantTrack = getVariantTrackById(dragState.trackId);
+        const dragTrackVariants = (variantTrack && Array.isArray(variantTrack.variants_data))
+          ? variantTrack.variants_data
+          : variants;
+        const win = dragTrackVariants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
         const constants = window._alleleNodeConstants || { baseNodeW: 4, baseNodeH: 14, gap: 8, MIN_NODE_SIZE: 4 };
         const gap = constants.gap;
         const MIN_NODE_SIZE = constants.MIN_NODE_SIZE;
@@ -2039,7 +2309,7 @@ function setupCanvasHover() {
         if (v) {
           // Get track dimension for size calculation
           const layout = getTrackLayout();
-          const flowLayout = layout.find(l => l.track.id === "flow");
+          const flowLayout = layout.find(l => l.track.id === "flow") || layout.find(l => l.track.id && l.track.id.startsWith("flow-"));
           const trackDimension = isVertical 
             ? (flowLayout ? flowLayout.contentWidth : 300)
             : (flowLayout ? flowLayout.contentHeight : 300);
@@ -2188,27 +2458,63 @@ function setupCanvasHover() {
         if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) {
           if (state.hoveredAlleleNode) {
             state.hoveredAlleleNode = null;
+            state.hoveredAlleleNodeTooltip = null;
             renderFlowCanvas();
+            updateTooltip();
           }
           return;
         }
         
-        // Find which node is hovered
+        // Find which node is hovered (nodesToTest is filtered by track in multi-track)
         let hoveredNode = null;
-        for (const node of window._alleleNodePositions) {
-          if (x >= node.x && x <= node.x + node.w && 
-              y >= node.y && y <= node.y + node.h) {
-            hoveredNode = { variantId: node.variantId, alleleIndex: node.alleleIndex };
-            break;
+        let hoveredNodeLabel = null;
+        const findHoveredInNodes = (nodes) => {
+          for (const node of nodes) {
+            if (x >= node.x && x <= node.x + node.w &&
+                y >= node.y && y <= node.y + node.h) {
+              return {
+                node: {
+                  trackId: node.trackId || "",
+                  variantId: node.variantId,
+                  alleleIndex: node.alleleIndex,
+                  sampleCount: node.sampleCount
+                },
+                label: node.label
+              };
+            }
           }
+          return null;
+        };
+        let hovered = findHoveredInNodes(nodesToTest);
+        if (!hovered && nodesToTest !== (window._alleleNodePositions || [])) {
+          hovered = findHoveredInNodes(window._alleleNodePositions || []);
+        }
+        if (hovered) {
+          hoveredNode = hovered.node;
+          const sampleCount = Number.isFinite(hovered.node.sampleCount)
+            ? hovered.node.sampleCount
+            : 0;
+          hoveredNodeLabel = `${hovered.label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
         }
         
-        // Update hover state if changed
+        // Update hover state and tooltip if changed
         const currentHover = state.hoveredAlleleNode;
-        if ((hoveredNode && (!currentHover || currentHover.variantId !== hoveredNode.variantId || currentHover.alleleIndex !== hoveredNode.alleleIndex)) ||
-            (!hoveredNode && currentHover)) {
+        const hoverChanged = (hoveredNode && (!currentHover ||
+            (currentHover.trackId || "") !== (hoveredNode.trackId || "") ||
+            currentHover.variantId !== hoveredNode.variantId ||
+            currentHover.alleleIndex !== hoveredNode.alleleIndex)) ||
+            (!hoveredNode && currentHover);
+        if (hoverChanged) {
           state.hoveredAlleleNode = hoveredNode;
+          state.hoveredAlleleNodeTooltip = hoveredNode && hoveredNodeLabel
+            ? { text: hoveredNodeLabel, x: e.clientX + 10, y: e.clientY + 10 }
+            : null;
           renderFlowCanvas();
+          updateTooltip();
+        } else if (hoveredNode && hoveredNodeLabel) {
+          // Same node: keep tooltip text but update position so it follows the cursor
+          state.hoveredAlleleNodeTooltip = { text: hoveredNodeLabel, x: e.clientX + 10, y: e.clientY + 10 };
+          updateTooltip();
         }
       }
     };
@@ -2224,7 +2530,7 @@ function setupCanvasHover() {
       
       // Check if this was a click (not a drag)
       if (dragState.isClick) {
-        const labelKey = `${dragState.variantId}:${dragState.alleleIndex}`;
+        const labelKey = makeAlleleSelectionKeyCompat(dragState.trackId, dragState.variantId, dragState.alleleIndex);
         
         // Handle selection with Ctrl/Cmd for multi-select
         if (e.ctrlKey || e.metaKey) {
@@ -2254,7 +2560,8 @@ function setupCanvasHover() {
       }
       
       // Otherwise, handle as a drag/drop
-      const order = state.variantAlleleOrder.get(dragState.variantId);
+      const variantOrderKey = makeVariantOrderKeyCompat(dragState.trackId, dragState.variantId);
+      const order = state.variantAlleleOrder.get(variantOrderKey);
       if (!order) {
         state.alleleDragState = null;
         flowCanvas.style.cursor = "";
@@ -2265,7 +2572,11 @@ function setupCanvasHover() {
       
       const isVertical = isVerticalMode();
       const variantMode = getVariantLayoutMode();
-      const win = visibleVariantWindow();
+      const variantTrack = getVariantTrackById(dragState.trackId);
+      const dragTrackVariants = (variantTrack && Array.isArray(variantTrack.variants_data))
+        ? variantTrack.variants_data
+        : variants;
+      const win = dragTrackVariants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
       const constants = window._alleleNodeConstants || { baseNodeW: 4, baseNodeH: 14, gap: 8, MIN_NODE_SIZE: 4 };
       const nodeW = constants.baseNodeW;
       const nodeH = constants.baseNodeH;
@@ -2344,7 +2655,7 @@ function setupCanvasHover() {
         const currentIndex = order.indexOf(dragState.label);
         order.splice(currentIndex, 1);
         order.splice(newIndex, 0, dragState.label);
-        state.variantAlleleOrder.set(dragState.variantId, order);
+        state.variantAlleleOrder.set(variantOrderKey, order);
       }
       
       state.alleleDragState = null;
@@ -2353,9 +2664,7 @@ function setupCanvasHover() {
       renderFlowCanvas();
     };
     
-    // Attach to flowWebGPU canvas (which is on top) or flow container
-    // Both flowCanvas and flowWebGPU are inside flow, so coordinates are relative to flow
-    const targetElement = flowWebGPU || flow;
+    // Attach to flow (when multi-track so overlays bubble) or flowWebGPU (single-track)
     targetElement.addEventListener("mousedown", alleleMouseDownHandler, { passive: false });
     document.addEventListener("mousemove", alleleMouseMoveHandler);
     document.addEventListener("mouseup", alleleMouseUpHandler);
@@ -2371,26 +2680,693 @@ function setupCanvasHover() {
   function getSelectedAlleleInfo() {
     const selectedInfo = [];
     for (const key of state.selectedAlleles) {
-      const [variantId, alleleIndexStr] = key.split(':');
-      const alleleIndex = parseInt(alleleIndexStr, 10);
-      
-      // Find the variant
-      const variant = variants.find(v => v.id === variantId);
-      if (!variant) continue;
-      
-      // Find the node position info to get the label
-      const nodeInfo = window._alleleNodePositions?.find(n => 
-        n.variantId === variantId && n.alleleIndex === alleleIndex
-      );
-      
-      selectedInfo.push({
-        variantId,
-        alleleIndex,
-        label: nodeInfo?.label || `Allele ${alleleIndex}`,
-        variant
-      });
+      const parsed = parseAlleleSelectionKeyCompat(key);
+      if (!parsed) continue;
+      const resolved = resolveSelectedAllelePair(parsed);
+      if (!resolved) continue;
+      selectedInfo.push(resolved);
     }
     return selectedInfo;
+  }
+
+  function getSelectedNodeInfo(trackId, variantId, alleleIndex) {
+    const trackKey = String(trackId || "");
+    const variantKey = String(variantId);
+    return (window._alleleNodePositions || []).find(n =>
+      String(n.trackId || "") === trackKey &&
+      String(n.variantId) === variantKey &&
+      Number(n.alleleIndex) === Number(alleleIndex)
+    ) || null;
+  }
+
+  function resolveSelectedAllelePair(parsed) {
+    if (!parsed) return null;
+    const { trackId, variantId, alleleIndex } = parsed;
+    const variant = findVariantByTrackAndId(trackId, variantId);
+    if (!variant) return null;
+    const nodeInfo = getSelectedNodeInfo(trackId, variantId, alleleIndex);
+    const sourceAlleleKeys = Array.isArray(nodeInfo?.sourceAlleleKeys)
+      ? nodeInfo.sourceAlleleKeys
+      : [];
+    const fallbackAlleleKey = alleleIndexToAlleleKey(alleleIndex);
+    const alleleKeys = (sourceAlleleKeys.length > 0 ? sourceAlleleKeys : [fallbackAlleleKey])
+      .filter(k => typeof k === 'string' && k.length > 0)
+      .filter((k, idx, arr) => arr.indexOf(k) === idx);
+
+    return {
+      trackId,
+      variantId,
+      alleleIndex,
+      alleleKeys,
+      label: nodeInfo?.label || `Allele ${alleleIndex}`,
+      variant
+    };
+  }
+
+  function getTrackLabel(trackId) {
+    if (!trackId) return "Variants";
+    const track = getVariantTrackById(trackId);
+    return track?.label || String(trackId);
+  }
+
+  const INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY = 'genomeshader.visibleInfoFieldsByTrack';
+  const INFO_COMMON_KEYS = [
+    'AC', 'AF', 'AN', 'DP', 'MQ', 'QD', 'FS', 'SOR',
+    'MQRankSum', 'ReadPosRankSum', 'GQ', 'SVLEN', 'SVTYPE', 'CLNSIG', 'CLNDN', 'CSQ'
+  ];
+  const DEFAULT_INFO_TRACK_KEY = '__default__';
+  let infoVisibleFieldsByTrack = null; // { [trackKey: string]: Set<string> }
+  let infoVisibilityInitialized = false;
+  let infoMenuOpenTrackKey = null;
+  let infoMenuActiveContainer = null;
+  let infoMenuActiveClose = null;
+  let infoMenuOutsideListenerAttached = false;
+  let infoMenuScrollTopByTrack = {};
+
+  function ensureInfoMenuOutsideListener() {
+    if (infoMenuOutsideListenerAttached) return;
+    document.addEventListener('click', (e) => {
+      if (!infoMenuActiveContainer || !infoMenuActiveClose) return;
+      if (!infoMenuActiveContainer.contains(e.target)) {
+        infoMenuActiveClose();
+      }
+    }, true);
+    infoMenuOutsideListenerAttached = true;
+  }
+
+  function normalizeInfoTrackKey(trackId) {
+    const key = String(trackId || '').trim();
+    return key.length > 0 ? key : DEFAULT_INFO_TRACK_KEY;
+  }
+
+  function loadInfoVisibleFieldsByTrackPreference() {
+    try {
+      const raw = localStorage.getItem(INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY);
+      const byTrack = {};
+      if (raw == null) return byTrack;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return byTrack;
+      Object.keys(parsed).forEach((trackKey) => {
+        const values = parsed[trackKey];
+        if (!Array.isArray(values)) return;
+        byTrack[trackKey] = new Set(values.filter(k => typeof k === 'string' && k.length > 0));
+      });
+      return byTrack;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function saveInfoVisibleFieldsByTrackPreference(byTrack) {
+    try {
+      const out = {};
+      Object.keys(byTrack || {}).forEach((trackKey) => {
+        const setVal = byTrack[trackKey];
+        out[trackKey] = Array.from(setVal || []).filter(k => typeof k === 'string' && k.length > 0);
+      });
+      localStorage.setItem(INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY, JSON.stringify(out));
+    } catch (_) {
+      // ignore storage errors
+    }
+  }
+
+  function defaultVisibleInfoKeys(allKeys) {
+    const common = INFO_COMMON_KEYS.filter(k => allKeys.includes(k));
+    if (common.length > 0) return new Set(common);
+    return new Set(allKeys.slice(0, 12));
+  }
+
+  function ensureVisibleInfoKeys(trackId, allKeys) {
+    const trackKey = normalizeInfoTrackKey(trackId);
+    if (!infoVisibilityInitialized) {
+      infoVisibleFieldsByTrack = loadInfoVisibleFieldsByTrackPreference();
+      infoVisibilityInitialized = true;
+    }
+    if (!infoVisibleFieldsByTrack) infoVisibleFieldsByTrack = {};
+    if (infoVisibleFieldsByTrack[trackKey] instanceof Set) {
+      return infoVisibleFieldsByTrack[trackKey];
+    }
+    if (!Array.isArray(allKeys) || allKeys.length === 0) {
+      infoVisibleFieldsByTrack[trackKey] = new Set();
+      return infoVisibleFieldsByTrack[trackKey];
+    }
+    infoVisibleFieldsByTrack[trackKey] = defaultVisibleInfoKeys(allKeys);
+    saveInfoVisibleFieldsByTrackPreference(infoVisibleFieldsByTrack);
+    return infoVisibleFieldsByTrack[trackKey];
+  }
+
+  function setVisibleInfoKeys(trackId, visibleSet) {
+    const trackKey = normalizeInfoTrackKey(trackId);
+    if (!infoVisibilityInitialized) {
+      infoVisibleFieldsByTrack = loadInfoVisibleFieldsByTrackPreference();
+      infoVisibilityInitialized = true;
+    }
+    if (!infoVisibleFieldsByTrack) infoVisibleFieldsByTrack = {};
+    infoVisibleFieldsByTrack[trackKey] = new Set(Array.from(visibleSet || []));
+    saveInfoVisibleFieldsByTrackPreference(infoVisibleFieldsByTrack);
+  }
+
+  function renderInfoFieldControls(trackId, allInfoKeys, visibleSet) {
+    if (!Array.isArray(allInfoKeys) || allInfoKeys.length === 0) return null;
+    const trackKey = normalizeInfoTrackKey(trackId);
+
+    const shownCount = allInfoKeys.filter(k => visibleSet.has(k)).length;
+
+    const container = document.createElement('div');
+    container.style.position = 'relative';
+    container.style.marginBottom = '8px';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    const setTriggerLabel = (open) => {
+      trigger.textContent = `INFO (${shownCount}/${allInfoKeys.length}) ${open ? '▴' : '▾'}`;
+    };
+    setTriggerLabel(false);
+    trigger.style.padding = '4px 8px';
+    trigger.style.borderRadius = '6px';
+    trigger.style.border = '1px solid var(--border2)';
+    trigger.style.background = 'var(--panel)';
+    trigger.style.color = 'var(--text)';
+    trigger.style.cursor = 'pointer';
+    trigger.style.fontSize = '11px';
+    trigger.style.fontWeight = '600';
+    container.appendChild(trigger);
+
+    const popover = document.createElement('div');
+    popover.style.display = 'none';
+    popover.style.position = 'absolute';
+    popover.style.top = 'calc(100% + 4px)';
+    popover.style.left = '0';
+    popover.style.right = '0';
+    popover.style.zIndex = '200';
+    popover.style.padding = '8px';
+    popover.style.borderRadius = '8px';
+    popover.style.border = '1px solid var(--border2)';
+    popover.style.background = 'var(--panel)';
+    popover.style.boxShadow = '0 6px 16px rgba(0, 0, 0, 0.22)';
+
+    const persistScrollTop = (listEl) => {
+      if (!listEl) return;
+      infoMenuScrollTopByTrack[trackKey] = listEl.scrollTop || 0;
+    };
+
+    const restoreScrollTop = (listEl) => {
+      if (!listEl) return;
+      const saved = infoMenuScrollTopByTrack[trackKey];
+      if (!Number.isFinite(saved) || saved <= 0) return;
+      requestAnimationFrame(() => {
+        listEl.scrollTop = saved;
+      });
+    };
+
+    const buttonRow = document.createElement('div');
+    buttonRow.style.display = 'flex';
+    buttonRow.style.gap = '6px';
+    buttonRow.style.marginBottom = '6px';
+
+    const mkBtn = (label) => {
+      const btn = document.createElement('button');
+      btn.textContent = label;
+      btn.style.padding = '3px 6px';
+      btn.style.borderRadius = '6px';
+      btn.style.border = '1px solid var(--border2)';
+      btn.style.background = 'var(--panel2)';
+      btn.style.color = 'var(--text)';
+      btn.style.cursor = 'pointer';
+      btn.style.fontSize = '11px';
+      return btn;
+    };
+
+    const allBtn = mkBtn('All');
+    allBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      persistScrollTop(list);
+      setVisibleInfoKeys(trackId, new Set(allInfoKeys));
+      renderVariantsTabSelection();
+    });
+    buttonRow.appendChild(allBtn);
+
+    const noneBtn = mkBtn('None');
+    noneBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      persistScrollTop(list);
+      setVisibleInfoKeys(trackId, new Set());
+      renderVariantsTabSelection();
+    });
+    buttonRow.appendChild(noneBtn);
+
+    const defaultBtn = mkBtn('Default');
+    defaultBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      persistScrollTop(list);
+      setVisibleInfoKeys(trackId, defaultVisibleInfoKeys(allInfoKeys));
+      renderVariantsTabSelection();
+    });
+    buttonRow.appendChild(defaultBtn);
+    popover.appendChild(buttonRow);
+
+    const list = document.createElement('div');
+    list.style.maxHeight = '180px';
+    list.style.overflowY = 'auto';
+    list.style.paddingRight = '2px';
+    list.addEventListener('scroll', () => {
+      persistScrollTop(list);
+    });
+    allInfoKeys.forEach((key) => {
+      const row = document.createElement('label');
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '6px';
+      row.style.padding = '2px 0';
+      row.style.cursor = 'pointer';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = visibleSet.has(key);
+      checkbox.addEventListener('change', () => {
+        persistScrollTop(list);
+        const next = new Set(ensureVisibleInfoKeys(trackId, allInfoKeys));
+        if (checkbox.checked) {
+          next.add(key);
+        } else {
+          next.delete(key);
+        }
+        setVisibleInfoKeys(trackId, next);
+        renderVariantsTabSelection();
+      });
+      row.appendChild(checkbox);
+
+      const text = document.createElement('span');
+      text.textContent = key;
+      row.appendChild(text);
+      list.appendChild(row);
+    });
+    popover.appendChild(list);
+    restoreScrollTop(list);
+    container.appendChild(popover);
+
+    const closePopover = () => {
+      popover.style.display = 'none';
+      setTriggerLabel(false);
+      if (infoMenuOpenTrackKey === trackKey) infoMenuOpenTrackKey = null;
+      if (infoMenuActiveContainer === container) {
+        infoMenuActiveContainer = null;
+        infoMenuActiveClose = null;
+      }
+    };
+    const openPopover = () => {
+      popover.style.display = 'block';
+      setTriggerLabel(true);
+      infoMenuOpenTrackKey = trackKey;
+      infoMenuActiveContainer = container;
+      infoMenuActiveClose = closePopover;
+      ensureInfoMenuOutsideListener();
+    };
+    const togglePopover = () => {
+      if (popover.style.display === 'block') closePopover();
+      else openPopover();
+    };
+
+    trigger.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      togglePopover();
+    });
+    popover.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+
+    if (infoMenuOpenTrackKey === trackKey) {
+      openPopover();
+    }
+
+    return container;
+  }
+
+  function renderVariantsTabSelection() {
+    const currentRoot = getCurrentRoot();
+    const variantsContentEl = byId(currentRoot, 'variantsContent');
+    if (!variantsContentEl) return;
+
+    while (variantsContentEl.firstChild) {
+      variantsContentEl.removeChild(variantsContentEl.firstChild);
+    }
+
+    const selectedInfo = getSelectedAlleleInfo();
+    if (selectedInfo.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.padding = '9px 10px';
+      empty.style.margin = '7px 0';
+      empty.style.borderRadius = '10px';
+      empty.style.background = 'var(--panel2)';
+      empty.style.fontSize = '11px';
+      empty.style.color = 'var(--muted)';
+      empty.textContent = 'Select an allele to view variant details.';
+      variantsContentEl.appendChild(empty);
+      return;
+    }
+
+    const allInfoKeysByTrack = {};
+    selectedInfo.forEach((entry) => {
+      const trackKey = normalizeInfoTrackKey(entry?.trackId);
+      const fields = (entry?.variant?.infoFields && typeof entry.variant.infoFields === 'object')
+        ? Object.keys(entry.variant.infoFields)
+        : [];
+      if (!allInfoKeysByTrack[trackKey]) allInfoKeysByTrack[trackKey] = [];
+      fields.forEach((k) => {
+        if (!allInfoKeysByTrack[trackKey].includes(k)) {
+          allInfoKeysByTrack[trackKey].push(k);
+        }
+      });
+    });
+    Object.keys(allInfoKeysByTrack).forEach((k) => {
+      allInfoKeysByTrack[k].sort((a, b) => a.localeCompare(b));
+    });
+
+    selectedInfo.forEach((entry, idx) => {
+      const variant = entry.variant || {};
+      const infoFields = (variant.infoFields && typeof variant.infoFields === 'object')
+        ? variant.infoFields
+        : {};
+      const trackKey = normalizeInfoTrackKey(entry?.trackId);
+      const allInfoKeys = allInfoKeysByTrack[trackKey] || [];
+      const visibleInfoKeys = ensureVisibleInfoKeys(entry?.trackId, allInfoKeys);
+      const infoKeys = Object.keys(infoFields).filter(k => visibleInfoKeys.has(k));
+
+      const card = document.createElement('div');
+      card.style.padding = '9px 10px';
+      card.style.margin = '7px 0';
+      card.style.borderRadius = '10px';
+      card.style.background = 'var(--panel2)';
+      card.style.fontSize = '11px';
+      card.style.color = 'var(--text)';
+
+      const title = document.createElement('div');
+      title.style.fontSize = '12px';
+      title.style.fontWeight = '600';
+      title.style.marginBottom = '6px';
+      title.textContent = `${getTrackLabel(entry.trackId)} · ${state.contig}:${Number(variant.pos || 0).toLocaleString()}`;
+      card.appendChild(title);
+
+      const filterBlock = document.createElement('div');
+      filterBlock.style.marginBottom = '6px';
+      const filterLabel = document.createElement('div');
+      filterLabel.style.fontWeight = '600';
+      filterLabel.style.marginBottom = '2px';
+      filterLabel.textContent = 'FILTER';
+      const filterValue = document.createElement('div');
+      filterValue.style.padding = '4px 6px';
+      filterValue.style.borderRadius = '6px';
+      filterValue.style.background = 'var(--panel)';
+      filterValue.style.border = '1px solid var(--border2)';
+      filterValue.textContent = String(variant.filterStatus || 'PASS');
+      filterBlock.appendChild(filterLabel);
+      filterBlock.appendChild(filterValue);
+      card.appendChild(filterBlock);
+
+      const refSeq = String(variant.refAllele || '.');
+      const selectedAltSeqs = [];
+      const seenAlt = new Set();
+      const alleleKeys = Array.isArray(entry.alleleKeys) ? entry.alleleKeys : [];
+      const variantAltAlleles = Array.isArray(variant.altAlleles) ? variant.altAlleles : [];
+
+      alleleKeys.forEach((k) => {
+        if (typeof k !== 'string' || !k.startsWith('a')) return;
+        const altIdx = parseInt(k.slice(1), 10);
+        if (!Number.isFinite(altIdx) || altIdx < 1) return;
+        const seq = variantAltAlleles[altIdx - 1];
+        if (typeof seq !== 'string' || seq.length === 0) return;
+        if (seenAlt.has(seq)) return;
+        seenAlt.add(seq);
+        selectedAltSeqs.push(seq);
+      });
+      const altSeq = selectedAltSeqs.length > 0 ? selectedAltSeqs.join(', ') : '.';
+
+      const refLen = refSeq && refSeq !== '.' ? refSeq.length : 0;
+      const makeRefLengthLabel = () => `VCF ${refLen.toLocaleString()} bp`;
+      const makeAltLengthLabel = (altSeqs) => {
+        if (!Array.isArray(altSeqs) || altSeqs.length === 0) return 'VCF 0 bp';
+        const lengths = altSeqs
+          .filter(s => typeof s === 'string' && s.length > 0)
+          .map(s => s.length);
+        if (lengths.length === 0) return 'VCF 0 bp';
+        if (lengths.length === 1) return `VCF ${lengths[0].toLocaleString()} bp`;
+        const minLen = Math.min(...lengths);
+        const maxLen = Math.max(...lengths);
+        return minLen === maxLen
+          ? `VCF ${minLen.toLocaleString()} bp`
+          : `VCF ${minLen.toLocaleString()}-${maxLen.toLocaleString()} bp`;
+      };
+
+      const summarizeChange = (ref, alt) => {
+        if (!ref || !alt || ref === '.' || alt === '.') return 'Unknown';
+        if (alt.startsWith('<') && alt.endsWith('>')) return alt; // symbolic ALT
+
+        let r = ref;
+        let a = alt;
+
+        // Trim shared prefix first
+        while (r.length > 0 && a.length > 0 && r[0] === a[0]) {
+          r = r.slice(1);
+          a = a.slice(1);
+        }
+        // Then trim shared suffix
+        while (r.length > 0 && a.length > 0 && r[r.length - 1] === a[a.length - 1]) {
+          r = r.slice(0, -1);
+          a = a.slice(0, -1);
+        }
+
+        const rLen = r.length;
+        const aLen = a.length;
+
+        if (rLen === 0 && aLen === 0) return 'No net change';
+        if (rLen === 0 && aLen > 0) return `INS ${aLen.toLocaleString()} bp`;
+        if (aLen === 0 && rLen > 0) return `DEL ${rLen.toLocaleString()} bp`;
+        if (rLen === 1 && aLen === 1) return 'SNV';
+        if (rLen === aLen) return `SUB ${rLen.toLocaleString()} bp`;
+        return `DEL ${rLen.toLocaleString()} bp / INS ${aLen.toLocaleString()} bp`;
+      };
+
+      const makeChangeSummary = (ref, altSeqs) => {
+        if (!Array.isArray(altSeqs) || altSeqs.length === 0) return 'No ALT selected';
+        const labels = [];
+        const seen = new Set();
+        for (const alt of altSeqs) {
+          const label = summarizeChange(ref, alt);
+          if (!seen.has(label)) {
+            seen.add(label);
+            labels.push(label);
+          }
+        }
+        if (labels.length === 0) return 'Unknown';
+        if (labels.length === 1) return labels[0];
+        if (labels.length <= 3) return labels.join(' | ');
+        return `${labels.length} change types`;
+      };
+
+      const makeAlleleBlock = (label, sequenceText, lengthLabel, options = {}) => {
+        const block = document.createElement('div');
+        block.style.marginBottom = '6px';
+
+        const header = document.createElement('div');
+        header.style.display = 'flex';
+        header.style.alignItems = 'center';
+        header.style.justifyContent = 'space-between';
+        header.style.marginBottom = '2px';
+
+        const name = document.createElement('span');
+        name.style.fontWeight = '600';
+        name.textContent = label;
+        header.appendChild(name);
+
+        const length = document.createElement('span');
+        length.style.fontSize = '10px';
+        length.style.color = 'var(--muted)';
+        length.style.background = 'var(--panel)';
+        length.style.border = '1px solid var(--border2)';
+        length.style.borderRadius = '999px';
+        length.style.padding = '1px 6px';
+        length.textContent = lengthLabel;
+        header.appendChild(length);
+
+        const seq = document.createElement('div');
+        seq.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+        seq.style.fontSize = '11px';
+        seq.style.padding = '4px 6px';
+        seq.style.borderRadius = '6px';
+        seq.style.background = 'var(--panel)';
+        seq.style.border = '1px solid var(--border2)';
+        seq.style.overflowX = 'hidden';
+        seq.style.overflowY = 'hidden';
+
+        const altList = Array.isArray(options.altList) ? options.altList : null;
+        if (altList && altList.length > 1) {
+          seq.style.maxHeight = '96px';
+          seq.style.overflowY = 'auto';
+          seq.style.padding = '4px';
+          for (let i = 0; i < altList.length; i++) {
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '6px';
+            row.style.marginBottom = i === altList.length - 1 ? '0' : '4px';
+
+            const tag = document.createElement('span');
+            tag.style.fontSize = '10px';
+            tag.style.color = 'var(--muted)';
+            tag.style.minWidth = '34px';
+            tag.textContent = `ALT${i + 1}`;
+            row.appendChild(tag);
+
+            const value = document.createElement('div');
+            value.style.flex = '1';
+            value.style.whiteSpace = 'nowrap';
+            value.style.overflowX = 'auto';
+            value.style.overflowY = 'hidden';
+            value.textContent = altList[i];
+            row.appendChild(value);
+            seq.appendChild(row);
+          }
+        } else {
+          seq.style.whiteSpace = 'nowrap';
+          seq.style.overflowX = 'auto';
+          seq.style.overflowY = 'hidden';
+          seq.textContent = sequenceText;
+        }
+
+        block.appendChild(header);
+        block.appendChild(seq);
+        return block;
+      };
+
+      card.appendChild(makeAlleleBlock('REF', refSeq, makeRefLengthLabel()));
+      card.appendChild(makeAlleleBlock('ALT', altSeq, makeAltLengthLabel(selectedAltSeqs), { altList: selectedAltSeqs }));
+
+      const changeRow = document.createElement('div');
+      changeRow.style.marginBottom = '6px';
+      changeRow.style.wordBreak = 'break-word';
+      const changeLabel = document.createElement('span');
+      changeLabel.style.fontWeight = '600';
+      changeLabel.textContent = 'Change: ';
+      const changeValue = document.createElement('span');
+      changeValue.textContent = makeChangeSummary(refSeq, selectedAltSeqs);
+      changeRow.appendChild(changeLabel);
+      changeRow.appendChild(changeValue);
+      card.appendChild(changeRow);
+
+      const infoDivider = document.createElement('div');
+      infoDivider.style.height = '1px';
+      infoDivider.style.background = 'var(--border2)';
+      infoDivider.style.margin = '8px 0';
+      card.appendChild(infoDivider);
+
+      if (idx === 0) {
+        const controls = renderInfoFieldControls(entry?.trackId, allInfoKeys, visibleInfoKeys);
+        if (controls) {
+          card.appendChild(controls);
+        }
+      }
+
+      if (infoKeys.length === 0) {
+        const none = document.createElement('div');
+        none.style.color = 'var(--muted)';
+        none.textContent = 'No visible INFO fields for this variant.';
+        card.appendChild(none);
+      } else {
+        const INFO_INITIAL_VISIBLE = 12;
+        const INFO_VALUE_PREVIEW_CHARS = 90;
+
+        infoKeys.sort((a, b) => a.localeCompare(b));
+
+        const infoRows = [];
+        infoKeys.forEach((key) => {
+          const row = document.createElement('div');
+          row.style.marginBottom = '4px';
+          row.style.padding = '4px 6px';
+          row.style.borderRadius = '6px';
+          row.style.background = 'var(--panel)';
+
+          const keyEl = document.createElement('div');
+          keyEl.style.fontWeight = '600';
+          keyEl.style.marginBottom = '2px';
+          keyEl.textContent = key;
+          row.appendChild(keyEl);
+
+          const valueEl = document.createElement('div');
+          valueEl.style.wordBreak = 'break-word';
+          valueEl.style.whiteSpace = 'normal';
+          const value = infoFields[key];
+          const valueText = value === true ? 'true' : String(value);
+          if (valueText.length > INFO_VALUE_PREVIEW_CHARS) {
+            const preview = `${valueText.slice(0, INFO_VALUE_PREVIEW_CHARS)}...`;
+            valueEl.textContent = preview;
+
+            const toggle = document.createElement('button');
+            toggle.textContent = 'more';
+            toggle.style.marginTop = '3px';
+            toggle.style.padding = '0';
+            toggle.style.border = 'none';
+            toggle.style.background = 'transparent';
+            toggle.style.color = 'var(--blue)';
+            toggle.style.cursor = 'pointer';
+            toggle.style.fontSize = '11px';
+
+            let expanded = false;
+            toggle.addEventListener('click', (e) => {
+              e.preventDefault();
+              expanded = !expanded;
+              valueEl.textContent = expanded ? valueText : preview;
+              toggle.textContent = expanded ? 'less' : 'more';
+            });
+            row.appendChild(valueEl);
+            row.appendChild(toggle);
+          } else {
+            valueEl.textContent = valueText;
+            row.appendChild(valueEl);
+          }
+
+          card.appendChild(row);
+          infoRows.push(row);
+        });
+
+        if (infoRows.length > INFO_INITIAL_VISIBLE) {
+          for (let i = INFO_INITIAL_VISIBLE; i < infoRows.length; i++) {
+            infoRows[i].style.display = 'none';
+          }
+
+          const toggleRows = document.createElement('button');
+          toggleRows.style.marginTop = '6px';
+          toggleRows.style.padding = '4px 6px';
+          toggleRows.style.borderRadius = '6px';
+          toggleRows.style.border = '1px solid var(--border2)';
+          toggleRows.style.background = 'var(--panel)';
+          toggleRows.style.color = 'var(--text)';
+          toggleRows.style.cursor = 'pointer';
+          toggleRows.style.fontSize = '11px';
+
+          let showingAll = false;
+          const updateToggleLabel = () => {
+            const hiddenCount = infoRows.length - INFO_INITIAL_VISIBLE;
+            toggleRows.textContent = showingAll
+              ? 'Show fewer INFO fields'
+              : `Show ${hiddenCount} more INFO field${hiddenCount === 1 ? '' : 's'}`;
+          };
+          updateToggleLabel();
+
+          toggleRows.addEventListener('click', (e) => {
+            e.preventDefault();
+            showingAll = !showingAll;
+            for (let i = INFO_INITIAL_VISIBLE; i < infoRows.length; i++) {
+              infoRows[i].style.display = showingAll ? 'block' : 'none';
+            }
+            updateToggleLabel();
+          });
+          card.appendChild(toggleRows);
+        }
+      }
+
+      variantsContentEl.appendChild(card);
+    });
   }
   
   // Update context indicator (shows what's selected)
@@ -2523,17 +3499,11 @@ function setupCanvasHover() {
     // Parse selected alleles into variant/allele pairs
     const selectedAllelePairs = [];
     for (const key of state.selectedAlleles) {
-      const [variantId, alleleIndexStr] = key.split(':');
-      const alleleIndex = parseInt(alleleIndexStr, 10);
-      
-      const variant = variants.find(v => v.id === variantId);
-      if (!variant) continue;
-      
-      selectedAllelePairs.push({
-        variantId,
-        alleleIndex,
-        variant
-      });
+      const parsed = parseAlleleSelectionKeyCompat(key);
+      if (!parsed) continue;
+      const resolved = resolveSelectedAllelePair(parsed);
+      if (!resolved) continue;
+      selectedAllelePairs.push(resolved);
     }
     
     if (selectedAllelePairs.length === 0) {
@@ -2544,8 +3514,12 @@ function setupCanvasHover() {
     // Collect all sample IDs from variant data (for allSampleIds if not populated)
     const allSamplesSet = new Set();
     for (const pair of selectedAllelePairs) {
-      const sampleGenotypes = pair.variant.sampleGenotypes || {};
-      Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
+      if (pair.variant.sampleAlleles) {
+        Object.keys(pair.variant.sampleAlleles).forEach(sampleId => allSamplesSet.add(sampleId));
+      } else {
+        const sampleGenotypes = pair.variant.sampleGenotypes || {};
+        Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
+      }
     }
     
     // Also add sample names from sample_mapping (both keys and values)
@@ -2576,55 +3550,28 @@ function setupCanvasHover() {
       // Sample must have ALL selected alleles
       // Start with samples from first variant, then filter by others
       const firstPair = selectedAllelePairs[0];
-      const firstGenotypes = firstPair.variant.sampleGenotypes || {};
-      const firstGenotypeIndex = alleleIndexToGenotypeIndex(firstPair.alleleIndex);
-      
-      // Only process if first allele is valid
-      if (firstGenotypeIndex !== null) {
-        for (const sampleId of Object.keys(firstGenotypes)) {
-          const genotype = firstGenotypes[sampleId];
-          
-          // Check if this sample has the first allele
-          if (hasAlleleInGenotype(genotype, firstGenotypeIndex)) {
-            // Check if this sample has ALL other selected alleles
-            let hasAllAlleles = true;
-            for (let i = 1; i < selectedAllelePairs.length; i++) {
-              const pair = selectedAllelePairs[i];
-              const pairGenotypes = pair.variant.sampleGenotypes || {};
-              const pairGenotype = pairGenotypes[sampleId];
-              
-              if (!pairGenotype) {
-                hasAllAlleles = false;
-                break;
-              }
-              
-              const pairGenotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-              if (pairGenotypeIndex === null || !hasAlleleInGenotype(pairGenotype, pairGenotypeIndex)) {
-                hasAllAlleles = false;
-                break;
-              }
-            }
-            
-            if (hasAllAlleles) {
-              candidateSamplesSet.add(sampleId);
-            }
+      const firstSamples = getVariantSampleIds(firstPair.variant);
+      for (const sampleId of firstSamples) {
+        if (!sampleHasSelectedAllele(firstPair.variant, sampleId, firstPair.alleleIndex, firstPair.alleleKeys)) {
+          continue;
+        }
+        let hasAllAlleles = true;
+        for (let i = 1; i < selectedAllelePairs.length; i++) {
+          const pair = selectedAllelePairs[i];
+          if (!sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
+            hasAllAlleles = false;
+            break;
           }
+        }
+        if (hasAllAlleles) {
+          candidateSamplesSet.add(sampleId);
         }
       }
     } else {
       // OR mode: Sample must have ANY of the selected alleles
-      // Iterate through each variant's samples directly (more efficient than collecting all first)
       for (const pair of selectedAllelePairs) {
-        const sampleGenotypes = pair.variant.sampleGenotypes || {};
-        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        
-        // Skip no-call alleles (alleleIndex 0)
-        if (genotypeIndex === null) continue;
-        
-        // Iterate through samples that have genotype data for this variant
-        for (const sampleId of Object.keys(sampleGenotypes)) {
-          const genotype = sampleGenotypes[sampleId];
-          if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+        for (const sampleId of getVariantSampleIds(pair.variant)) {
+          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
             candidateSamplesSet.add(sampleId);
           }
         }
@@ -2653,6 +3600,67 @@ function setupCanvasHover() {
     }
     return alleleIndex - 1;
   }
+
+  function alleleIndexToAlleleKey(alleleIndex) {
+    if (alleleIndex === 0) return ".";
+    if (alleleIndex === 1) return "ref";
+    return `a${alleleIndex - 1}`;
+  }
+
+  function getVariantSampleIds(variant) {
+    if (!variant) return [];
+    if (variant.sampleAlleles) {
+      return Object.keys(variant.sampleAlleles);
+    }
+    return Object.keys(variant.sampleGenotypes || {});
+  }
+
+  function variantHasSampleAlleles(variant) {
+    return !!(variant && variant.sampleAlleles);
+  }
+
+  function alleleKeyToGenotypeIndex(alleleKey) {
+    if (alleleKey === "ref") return 0;
+    if (typeof alleleKey === "string" && alleleKey.startsWith("a")) {
+      const altIdx = parseInt(alleleKey.slice(1), 10);
+      if (Number.isFinite(altIdx) && altIdx > 0) return altIdx;
+    }
+    return null;
+  }
+
+  function countMatchingGenotypeAlleles(genotype, genotypeIndices) {
+    if (!genotype || genotype === './.' || genotype === '.') return 0;
+    const indexSet = new Set((genotypeIndices || []).filter(i => Number.isFinite(i) && i >= 0));
+    if (indexSet.size === 0) return 0;
+    let matches = 0;
+    const alleles = genotype.split(/[\/|]/);
+    for (const allele of alleles) {
+      const alleleStr = allele.trim();
+      if (alleleStr === '.' || alleleStr === '') continue;
+      const idx = parseInt(alleleStr, 10);
+      if (!isNaN(idx) && indexSet.has(idx)) matches++;
+    }
+    return matches;
+  }
+
+  function sampleHasSelectedAllele(variant, sampleId, alleleIndex, alleleKeys) {
+    if (!variant || sampleId == null || alleleIndex == null) return false;
+    const resolvedAlleleKeys = Array.isArray(alleleKeys) && alleleKeys.length > 0
+      ? alleleKeys
+      : [alleleIndexToAlleleKey(alleleIndex)];
+
+    if (variant.sampleAlleles) {
+      const sampleAlleles = variant.sampleAlleles[sampleId] || [];
+      return resolvedAlleleKeys.some(k => sampleAlleles.includes(k));
+    }
+    const genotypeIndices = resolvedAlleleKeys
+      .map(alleleKeyToGenotypeIndex)
+      .filter(idx => idx !== null);
+    if (genotypeIndices.length === 0) return false;
+    const sampleGenotypes = variant.sampleGenotypes || {};
+    const genotype = sampleGenotypes[sampleId];
+    return countMatchingGenotypeAlleles(genotype, genotypeIndices) > 0;
+  }
   
   // Helper: Check if a genotype string contains a specific allele index
   // Genotype format: "0/1", "1/1", "./.", "0|1", etc.
@@ -2680,7 +3688,7 @@ function setupCanvasHover() {
     
     return false;
   }
-  
+
   // Helper: Compute candidate samples for a specific set of alleles
   // This is used by shuffle to get candidates for a track's specific alleles
   function computeCandidateSamplesForAlleles(selectedAllelesSet, combineMode) {
@@ -2692,17 +3700,11 @@ function setupCanvasHover() {
     // Parse selected alleles into variant/allele pairs
     const selectedAllelePairs = [];
     for (const key of selectedAlleles) {
-      const [variantId, alleleIndexStr] = key.split(':');
-      const alleleIndex = parseInt(alleleIndexStr, 10);
-      
-      const variant = variants.find(v => v.id === variantId);
-      if (!variant) continue;
-      
-      selectedAllelePairs.push({
-        variantId,
-        alleleIndex,
-        variant
-      });
+      const parsed = parseAlleleSelectionKeyCompat(key);
+      if (!parsed) continue;
+      const resolved = resolveSelectedAllelePair(parsed);
+      if (!resolved) continue;
+      selectedAllelePairs.push(resolved);
     }
     
     if (selectedAllelePairs.length === 0) {
@@ -2715,49 +3717,27 @@ function setupCanvasHover() {
     if (combineMode === 'AND') {
       // Sample must have ALL selected alleles
       const firstPair = selectedAllelePairs[0];
-      const firstGenotypes = firstPair.variant.sampleGenotypes || {};
-      const firstGenotypeIndex = alleleIndexToGenotypeIndex(firstPair.alleleIndex);
-      
-      if (firstGenotypeIndex !== null) {
-        for (const sampleId of Object.keys(firstGenotypes)) {
-          const genotype = firstGenotypes[sampleId];
-          
-          if (hasAlleleInGenotype(genotype, firstGenotypeIndex)) {
-            let hasAllAlleles = true;
-            for (let i = 1; i < selectedAllelePairs.length; i++) {
-              const pair = selectedAllelePairs[i];
-              const pairGenotypes = pair.variant.sampleGenotypes || {};
-              const pairGenotype = pairGenotypes[sampleId];
-              
-              if (!pairGenotype) {
-                hasAllAlleles = false;
-                break;
-              }
-              
-              const pairGenotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-              if (pairGenotypeIndex === null || !hasAlleleInGenotype(pairGenotype, pairGenotypeIndex)) {
-                hasAllAlleles = false;
-                break;
-              }
-            }
-            
-            if (hasAllAlleles) {
-              candidateSamplesSet.add(sampleId);
-            }
+      for (const sampleId of getVariantSampleIds(firstPair.variant)) {
+        if (!sampleHasSelectedAllele(firstPair.variant, sampleId, firstPair.alleleIndex, firstPair.alleleKeys)) {
+          continue;
+        }
+        let hasAllAlleles = true;
+        for (let i = 1; i < selectedAllelePairs.length; i++) {
+          const pair = selectedAllelePairs[i];
+          if (!sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
+            hasAllAlleles = false;
+            break;
           }
+        }
+        if (hasAllAlleles) {
+          candidateSamplesSet.add(sampleId);
         }
       }
     } else {
       // OR mode: Sample must have ANY of the selected alleles
       for (const pair of selectedAllelePairs) {
-        const sampleGenotypes = pair.variant.sampleGenotypes || {};
-        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        
-        if (genotypeIndex === null) continue;
-        
-        for (const sampleId of Object.keys(sampleGenotypes)) {
-          const genotype = sampleGenotypes[sampleId];
-          if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+        for (const sampleId of getVariantSampleIds(pair.variant)) {
+          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
             candidateSamplesSet.add(sampleId);
           }
         }
@@ -2782,17 +3762,11 @@ function setupCanvasHover() {
     // Parse selected alleles into variant/allele pairs
     const selectedAllelePairs = [];
     for (const key of selectedAlleles) {
-      const [variantId, alleleIndexStr] = key.split(':');
-      const alleleIndex = parseInt(alleleIndexStr, 10);
-      
-      const variant = variants.find(v => v.id === variantId);
-      if (!variant) continue;
-      
-      selectedAllelePairs.push({
-        variantId,
-        alleleIndex,
-        variant
-      });
+      const parsed = parseAlleleSelectionKeyCompat(key);
+      if (!parsed) continue;
+      const resolved = resolveSelectedAllelePair(parsed);
+      if (!resolved) continue;
+      selectedAllelePairs.push(resolved);
     }
     
     if (selectedAllelePairs.length === 0) {
@@ -2808,38 +3782,28 @@ function setupCanvasHover() {
       for (const pair of selectedAllelePairs) {
         const sampleGenotypes = pair.variant.sampleGenotypes || {};
         const genotype = sampleGenotypes[sampleId];
-        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        
-        if (!genotype || genotypeIndex === null) {
+        const hasAllele = sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys);
+
+        if (!hasAllele) {
           // Missing genotype or no-call allele - penalize heavily
           return -1000;
         }
-        
-        if (hasAlleleInGenotype(genotype, genotypeIndex)) {
-          matchingAlleles++;
-          
-          // Score based on homozygosity
-          // Parse genotype to count how many copies of the allele
-          const alleles = genotype.split(/[\/|]/);
-          let alleleCount = 0;
-          for (const allele of alleles) {
-            const alleleStr = allele.trim();
-            if (alleleStr === '.' || alleleStr === '') continue;
-            const idx = parseInt(alleleStr, 10);
-            if (!isNaN(idx) && idx === genotypeIndex) {
-              alleleCount++;
-            }
-          }
-          
-          // Homozygous (2 copies) scores higher than heterozygous (1 copy)
-          // Score: 10 for homozygous, 5 for heterozygous
-          if (alleleCount >= 2) {
-            totalScore += 10; // Homozygous - strongest evidence
-          } else if (alleleCount === 1) {
-            totalScore += 5;  // Heterozygous - good evidence
-          }
+        matchingAlleles++;
+
+        if (variantHasSampleAlleles(pair.variant)) {
+          totalScore += 5;
+          continue;
+        }
+        const genotypeIndices = (pair.alleleKeys || [])
+          .map(alleleKeyToGenotypeIndex)
+          .filter(idx => idx !== null);
+        if (!genotype || genotypeIndices.length === 0) return -1000;
+        const alleleCount = countMatchingGenotypeAlleles(genotype, genotypeIndices);
+        if (alleleCount >= 2) {
+          totalScore += 10;
+        } else if (alleleCount === 1) {
+          totalScore += 5;
         } else {
-          // Sample doesn't have this required allele - disqualify
           return -1000;
         }
       }
@@ -2854,32 +3818,21 @@ function setupCanvasHover() {
       for (const pair of selectedAllelePairs) {
         const sampleGenotypes = pair.variant.sampleGenotypes || {};
         const genotype = sampleGenotypes[sampleId];
-        const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-        
-        if (!genotype || genotypeIndex === null) {
-          continue; // Skip missing genotypes in OR mode
-        }
-        
-        if (hasAlleleInGenotype(genotype, genotypeIndex)) {
+        if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
           matchingAlleles++;
-          
-          // Score based on homozygosity
-          const alleles = genotype.split(/[\/|]/);
-          let alleleCount = 0;
-          for (const allele of alleles) {
-            const alleleStr = allele.trim();
-            if (alleleStr === '.' || alleleStr === '') continue;
-            const idx = parseInt(alleleStr, 10);
-            if (!isNaN(idx) && idx === genotypeIndex) {
-              alleleCount++;
-            }
+          if (variantHasSampleAlleles(pair.variant)) {
+            totalScore += 5;
+            continue;
           }
-          
-          // Homozygous scores higher than heterozygous
+          const genotypeIndices = (pair.alleleKeys || [])
+            .map(alleleKeyToGenotypeIndex)
+            .filter(idx => idx !== null);
+          if (!genotype || genotypeIndices.length === 0) continue;
+          const alleleCount = countMatchingGenotypeAlleles(genotype, genotypeIndices);
           if (alleleCount >= 2) {
-            totalScore += 10; // Homozygous
+            totalScore += 10;
           } else if (alleleCount === 1) {
-            totalScore += 5;  // Heterozygous
+            totalScore += 5;
           }
         }
       }
@@ -3059,12 +4012,19 @@ function setupCanvasHover() {
       
       if (selectedAlleles.size > 0) {
         // If alleles are selected, only consider those variants
-        const variantIds = new Set();
+        const selectedVariants = [];
+        const selectedVariantKeys = new Set();
         for (const key of selectedAlleles) {
-          const [variantId] = key.split(':');
-          variantIds.add(variantId);
+          const parsed = parseAlleleSelectionKeyCompat(key);
+          if (!parsed) continue;
+          const composite = `${parsed.trackId || ""}::${parsed.variantId}`;
+          if (selectedVariantKeys.has(composite)) continue;
+          const variant = findVariantByTrackAndId(parsed.trackId, parsed.variantId);
+          if (!variant) continue;
+          selectedVariantKeys.add(composite);
+          selectedVariants.push(variant);
         }
-        variantsToConsider = variants.filter(v => variantIds.has(v.id));
+        variantsToConsider = selectedVariants;
       } else {
         // If no alleles selected, consider all variants
         variantsToConsider = variants;
@@ -3225,17 +4185,11 @@ function setupCanvasHover() {
       // Parse selected alleles into variant/allele pairs
       const selectedAllelePairs = [];
       for (const key of selectedAlleles) {
-        const [variantId, alleleIndexStr] = key.split(':');
-        const alleleIndex = parseInt(alleleIndexStr, 10);
-        
-        const variant = variants.find(v => v.id === variantId);
-        if (!variant) continue;
-        
-        selectedAllelePairs.push({
-          variantId,
-          alleleIndex,
-          variant
-        });
+        const parsed = parseAlleleSelectionKeyCompat(key);
+        if (!parsed) continue;
+        const resolved = resolveSelectedAllelePair(parsed);
+        if (!resolved) continue;
+        selectedAllelePairs.push(resolved);
       }
       
       if (selectedAllelePairs.length < 2) {
@@ -3248,11 +4202,7 @@ function setupCanvasHover() {
       function computeBranchSignature(sampleId) {
         const signature = [];
         for (const pair of selectedAllelePairs) {
-          const sampleGenotypes = pair.variant.sampleGenotypes || {};
-          const genotype = sampleGenotypes[sampleId];
-          const genotypeIndex = alleleIndexToGenotypeIndex(pair.alleleIndex);
-          
-          if (genotypeIndex !== null && hasAlleleInGenotype(genotype, genotypeIndex)) {
+          if (sampleHasSelectedAllele(pair.variant, sampleId, pair.alleleIndex, pair.alleleKeys)) {
             signature.push(1); // Sample has this allele
           } else {
             signature.push(0); // Sample doesn't have this allele
@@ -3469,6 +4419,7 @@ function setupCanvasHover() {
     updateSampleContext();
     updateSampleStrategySection();
     recomputeCandidateSamples();
+    renderVariantsTabSelection();
   }
   
   // Setup sample selection strategy controls
@@ -3670,24 +4621,100 @@ function setupCanvasHover() {
   window.updateSelectionDisplay = updateSelectionDisplay;
 }
 
+function ensureFlowContainers(flowLayouts) {
+  if (!flow || flowLayouts.length <= 1) return;
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  if (variantTracksConfig.length <= 1) return;
+
+  const expectedTrackIds = flowLayouts.map(l => String(l.track.id));
+  const existingTrackEls = Array.from(flow.querySelectorAll(".flow-track"));
+  const existingTrackIds = existingTrackEls.map(el => String(el.dataset.trackId || ""));
+  const hasAllTracks = expectedTrackIds.length === existingTrackIds.length &&
+    expectedTrackIds.every(id => existingTrackIds.includes(id));
+  if (hasAllTracks) return;
+
+  const flowWebGPUEl = document.getElementById("flowWebGPU");
+  const flowOverlayEl = document.getElementById("flowOverlay");
+  while (flow.firstChild) flow.removeChild(flow.firstChild);
+  // Append flowWebGPU first so it is behind flow-tracks; then clicks in each track hit the correct track
+  if (flowWebGPUEl) {
+    flow.appendChild(flowWebGPUEl);
+    flowWebGPUEl.style.pointerEvents = "none";
+  }
+  const flowTrackDivs = [];
+  for (let i = 0; i < flowLayouts.length; i++) {
+    const track = flowLayouts[i].track;
+    const div = document.createElement("div");
+    div.className = "flow-track";
+    div.id = flowTrackDomId(track.id);
+    div.dataset.trackId = String(track.id || "");
+    div.style.position = "absolute";
+    div.style.left = "0";
+    div.style.width = "100%";
+    const canvas = document.createElement("canvas");
+    canvas.className = "canvas";
+    canvas.id = flowCanvasDomId(track.id);
+    div.appendChild(canvas);
+    const overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    overlay.setAttribute("class", "overlay flow-track-overlay");
+    overlay.setAttribute("data-track-id", track.id);
+    overlay.style.pointerEvents = "auto";
+    div.appendChild(overlay);
+    flowTrackDivs.push(div);
+  }
+  // Append in reverse order so the first configured track is on top.
+  for (let i = flowTrackDivs.length - 1; i >= 0; i--) {
+    flow.appendChild(flowTrackDivs[i]);
+  }
+  if (flowOverlayEl) flow.appendChild(flowOverlayEl);
+}
+
 function updateFlowAndReadsPosition() {
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
-  
-  const flowLayout = layout.find(l => l.track.id === "flow");
-  if (flowLayout && flow) {
-    if (isVertical) {
-      flow.style.left = `${flowLayout.contentLeft}px`;
-      flow.style.width = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentWidth}px`;
-      flow.style.top = "0";
-      flow.style.height = "100%";
+  const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
+  if (flowLayouts.length > 0 && flow) {
+    ensureFlowContainers(flowLayouts);
+    const visible = flowLayouts.filter(l => !l.track.collapsed);
+    if (visible.length === 0) {
+      flow.style.display = "none";
     } else {
-      flow.style.top = `${flowLayout.contentTop}px`;
-      flow.style.height = flowLayout.track.collapsed ? "0px" : `${flowLayout.contentHeight}px`;
-      flow.style.left = "0";
-      flow.style.width = "100%";
+      if (isVertical) {
+        const left = Math.min(...visible.map(l => l.contentLeft));
+        const right = Math.max(...visible.map(l => l.contentLeft + l.contentWidth));
+        flow.style.left = `${left}px`;
+        flow.style.width = `${right - left}px`;
+        flow.style.top = "0";
+        flow.style.height = "100%";
+      } else {
+        const top = Math.min(...visible.map(l => l.contentTop));
+        const bottom = Math.max(...visible.map(l => l.contentTop + l.contentHeight));
+        flow.style.top = `${top}px`;
+        flow.style.height = `${bottom - top}px`;
+        flow.style.left = "0";
+        flow.style.width = "100%";
+      }
+      flow.style.display = "block";
+      let offset = 0;
+      for (let i = 0; i < visible.length; i++) {
+        const flowTrackEl = findFlowTrackElementByTrackId(visible[i].track.id);
+        if (flowTrackEl) {
+          const ch = visible[i].contentHeight;
+          const cw = visible[i].contentWidth;
+          if (isVertical) {
+            flowTrackEl.style.top = "0";
+            flowTrackEl.style.left = `${offset}px`;
+            flowTrackEl.style.width = `${cw}px`;
+            flowTrackEl.style.height = "100%";
+            offset += cw;
+          } else {
+            flowTrackEl.style.top = `${offset}px`;
+            flowTrackEl.style.height = `${ch}px`;
+            offset += ch;
+          }
+        }
+      }
     }
-    flow.style.display = flowLayout.track.collapsed ? "none" : "block";
   }
   
   // Update Smart track container positions (actual rendering is done in renderSmartTrack)
@@ -3936,17 +4963,16 @@ function bindInteractions(root, state, main) {
   };
 
   const onPointerDown = (e) => {
-    // Don't start drag if clicking on a variant (for insertion expansion)
-    // Check if clicking on SVG elements that are variants
     const target = e.target;
+    // Don't start pan/drag if clicking on variant selection rects (flow overlay or per-track overlay)
+    if (target && target.getAttribute && target.getAttribute("data-variant-id")) return;
+    if (target && target.closest && (target.closest(".flow-track-overlay") || target.closest("#flowOverlay"))) return;
+    // Don't start drag if clicking on a variant (for insertion expansion) in Locus track
     if (target && target.tagName && (target.tagName === "line" || target.tagName === "circle" || target.tagName === "rect")) {
-      // Check if this is a variant element (has blue stroke or is in the variant area)
       const stroke = target.getAttribute ? target.getAttribute("stroke") : null;
       if (stroke && (stroke === "var(--blue)" || stroke === cssVar("--blue") || stroke.includes("blue"))) {
-        // This might be a variant - don't start dragging, let click handler work
         return;
       }
-      // Also check if it's the invisible click area for insertions
       if (target.getAttribute && target.getAttribute("fill") === "transparent" && target.getAttribute("width") === "10") {
         return;
       }

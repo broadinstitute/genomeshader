@@ -13,9 +13,13 @@ function resizeCanvasTo(el, canvas) {
 
 function visibleVariantWindow() {
   // Return all variants in the visible genomic range, not limited by state.K
-  // state.K is just used for initial window sizing
   const visibleVariants = variants.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
   return visibleVariants;
+}
+
+function visibleVariantWindowFor(variantsList) {
+  if (!variantsList || !Array.isArray(variantsList)) return [];
+  return variantsList.filter(v => v.pos >= state.startBp && v.pos <= state.endBp);
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -32,42 +36,146 @@ function roundRect(ctx, x, y, w, h, r) {
 // Sankey placeholder (Canvas2D)
 // -----------------------------
 function renderFlowCanvas() {
-  const layout = getTrackLayout();
-  const flowLayout = layout.find(l => l.track.id === "flow");
-  if (!flowLayout || flowLayout.track.collapsed) {
-    // Clear canvas if collapsed
-    const ctx = flowCanvas.getContext("2d");
-    ctx.clearRect(0, 0, flowCanvas.width, flowCanvas.height);
-    // Clear WebGPU renderer instances
-    if (flowInstancedRenderer) {
-      flowInstancedRenderer.clear();
+  const variantOrderKeyFor = (trackId, variantId) => (
+    window.makeVariantOrderKey
+      ? window.makeVariantOrderKey(trackId, variantId)
+      : String(variantId)
+  );
+  const selectionKeyFor = (trackId, variantId, alleleIndex) => (
+    window.makeAlleleSelectionKey
+      ? window.makeAlleleSelectionKey(trackId, variantId, alleleIndex)
+      : `${variantId}:${alleleIndex}`
+  );
+  const findBandFlowTrackEl = (trackId) => {
+    const flowEl = document.getElementById("flow");
+    if (!flowEl) return null;
+    const target = String(trackId || "");
+    const tracks = flowEl.querySelectorAll(".flow-track");
+    for (const el of tracks) {
+      if ((el.dataset.trackId || "") === target) return el;
     }
+    return null;
+  };
+
+  const layout = getTrackLayout();
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
+  const visibleFlowLayouts = flowLayouts.filter(l => !l.track.collapsed);
+  if (visibleFlowLayouts.length === 0) {
+    window._alleleNodePositions = [];
+    const fc = document.getElementById("flowCanvas") || document.getElementById("flowCanvas-0");
+    if (fc) {
+      const ctx = fc.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, fc.width, fc.height);
+    }
+    if (flowInstancedRenderer) flowInstancedRenderer.clear();
     return;
   }
 
-  const dpr = resizeCanvasTo(flow, flowCanvas);
-  const ctx = flowCanvas.getContext("2d");
-  
-  // Clear and set up canvas
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.clearRect(0,0,flowCanvas.width,flowCanvas.height);
-  ctx.scale(dpr, dpr);
-  
-  // Clear WebGPU renderer instances
-  if (flowInstancedRenderer) {
-    flowInstancedRenderer.clear();
-  }
-  if (flowRibbonRenderer) {
-    flowRibbonRenderer.clear();
-  }
-
+  const multiTrack = variantTracksConfig.length > 1;
   const isVertical = isVerticalMode();
   const variantMode = getVariantLayoutMode();
   const junctionY = 40;
   const junctionX = 40;
+  const W = flowWidthPx();
+  const totalFlowH = flowHeightPx();
 
-  const W = flowWidthPx(), H = flowHeightPx();
+  // Build list of bands: one per variant track (or single band when using legacy single "flow")
+  const flowBands = [];
+  if (variantTracksConfig.length > 0) {
+    let bandOffset = 0;
+    for (let i = 0; i < variantTracksConfig.length; i++) {
+      const trackConfig = variantTracksConfig[i];
+      const trackLayout = layout.find(l => l.track.id === trackConfig.id);
+      if (!trackLayout || trackLayout.track.collapsed) continue;
+      const bandHeight = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
+      flowBands.push({
+        track: trackConfig,
+        flowLayout: trackLayout,
+        bandOffset,
+        bandHeight,
+      });
+      bandOffset += bandHeight;
+    }
+  } else {
+    const flowLayout = layout.find(l => l.track.id === "flow");
+    if (flowLayout && !flowLayout.track.collapsed) {
+      const bandHeight = isVertical ? flowLayout.contentWidth : flowLayout.contentHeight;
+      flowBands.push({
+        track: { variants_data: variants, variants_phased: (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variants_phased) !== false },
+        flowLayout,
+        bandOffset: 0,
+        bandHeight,
+      });
+    }
+  }
 
+  if (!multiTrack && flowBands.length > 0) {
+    const dpr = resizeCanvasTo(flow, flowCanvas);
+    const ctx = flowCanvas.getContext("2d");
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,flowCanvas.width,flowCanvas.height);
+    ctx.scale(dpr, dpr);
+  }
+  if (flowInstancedRenderer) flowInstancedRenderer.clear();
+  if (flowRibbonRenderer) flowRibbonRenderer.clear();
+  const allBandNodePositions = [];
+
+  for (let bandIdx = 0; bandIdx < flowBands.length; bandIdx++) {
+    const band = flowBands[bandIdx];
+    const { track, flowLayout, bandOffset, bandHeight } = band;
+    const variants = track.variants_data || [];
+    const win = visibleVariantWindowFor(variants);
+    const variantsPhased = track.variants_phased !== false;
+    const H = bandHeight;
+
+    let ctx;
+    if (multiTrack) {
+      const flowEl = document.getElementById("flow");
+      let bandFlowEl = findBandFlowTrackEl(track.id);
+      if (!bandFlowEl) {
+        const candidate = document.getElementById(track.id);
+        if (candidate && candidate.classList && candidate.classList.contains("flow-track")) {
+          bandFlowEl = candidate;
+        }
+      }
+      let bandCanvas = bandFlowEl ? bandFlowEl.querySelector("canvas.canvas") : null;
+      // Fallback by track order if id/data-track-id lookup fails.
+      if ((!bandFlowEl || !bandCanvas) && flowEl) {
+        const trackEls = Array.from(flowEl.querySelectorAll(".flow-track"));
+        const orderTrack = trackEls[bandIdx] || trackEls[0] || null;
+        if (orderTrack) {
+          bandFlowEl = orderTrack;
+          bandCanvas = orderTrack.querySelector("canvas.canvas") || orderTrack.querySelector("canvas");
+        }
+      }
+      // Final fallback to shared flow canvas to avoid dropping all hit-test nodes.
+      if (!bandFlowEl && flowEl) {
+        bandFlowEl = flowEl;
+      }
+      if (!bandCanvas) {
+        bandCanvas = document.getElementById("flowCanvas");
+      }
+      if (!bandFlowEl || !bandCanvas) continue;
+      const dpr = resizeCanvasTo(bandFlowEl, bandCanvas);
+      ctx = bandCanvas.getContext("2d");
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.clearRect(0, 0, bandCanvas.width, bandCanvas.height);
+      ctx.scale(dpr, dpr);
+    } else {
+      ctx = flowCanvas.getContext("2d");
+      ctx.save();
+      ctx.translate(0, bandOffset);
+      ctx.beginPath();
+      ctx.rect(0, 0, W, bandHeight);
+      ctx.clip();
+    }
+
+    // yBandToFlow / xBandToFlow: add bandOffset for WebGPU (multi-track); for 2D multi-track we draw in local 0..H
+    const yBandToFlow = (y) => y + bandOffset;
+    const xBandToFlow = (x) => x + (isVertical ? bandOffset : 0);
+
+    (function drawOneFlowBand() {
   const colLines = cssVar("--grid");
   const colGrid  = cssVar("--grid2");
   const colText  = cssVar("--muted");
@@ -117,17 +225,17 @@ function renderFlowCanvas() {
     const base = dx * 0.40;
     const handle = Math.max(1.0, Math.min(base, dx * 0.45));
 
-    // Scale all coordinates to physical pixels for WebGPU
-    const topP0 = [srcX * devicePixelRatio, sTop * devicePixelRatio];
-    const topP3 = [dstX * devicePixelRatio, dTop * devicePixelRatio];
-    const botP0 = [srcX * devicePixelRatio, sBot * devicePixelRatio];
-    const botP3 = [dstX * devicePixelRatio, dBot * devicePixelRatio];
+    // Scale all coordinates to physical pixels for WebGPU (yBandToFlow for multi-track offset)
+    const topP0 = [srcX * devicePixelRatio, yBandToFlow(sTop) * devicePixelRatio];
+    const topP3 = [dstX * devicePixelRatio, yBandToFlow(dTop) * devicePixelRatio];
+    const botP0 = [srcX * devicePixelRatio, yBandToFlow(sBot) * devicePixelRatio];
+    const botP3 = [dstX * devicePixelRatio, yBandToFlow(dBot) * devicePixelRatio];
 
     // Horizontal tangents at endpoints (classic Sankey look)
-    const topP1 = [(srcX + handle) * devicePixelRatio, sTop * devicePixelRatio];
-    const topP2 = [(dstX - handle) * devicePixelRatio, dTop * devicePixelRatio];
-    const botP1 = [(srcX + handle) * devicePixelRatio, sBot * devicePixelRatio];
-    const botP2 = [(dstX - handle) * devicePixelRatio, dBot * devicePixelRatio];
+    const topP1 = [(srcX + handle) * devicePixelRatio, yBandToFlow(sTop) * devicePixelRatio];
+    const topP2 = [(dstX - handle) * devicePixelRatio, yBandToFlow(dTop) * devicePixelRatio];
+    const botP1 = [(srcX + handle) * devicePixelRatio, yBandToFlow(sBot) * devicePixelRatio];
+    const botP2 = [(dstX - handle) * devicePixelRatio, yBandToFlow(dBot) * devicePixelRatio];
 
     // Parse color string to RGBA floats (expects "rgba(r,g,b,a)" or similar)
     const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
@@ -191,18 +299,16 @@ function renderFlowCanvas() {
     const base = dy * 0.40;
     const handle = Math.max(1.0, Math.min(base, dy * 0.45));
 
-    // Scale all coordinates to physical pixels for WebGPU
-    // Ribbon flows from bottom (srcY, larger) to top (dstY, smaller)
-    const leftP0 = [sLeft * devicePixelRatio, srcY * devicePixelRatio];
-    const leftP3 = [dLeft * devicePixelRatio, dstY * devicePixelRatio];
-    const rightP0 = [sRight * devicePixelRatio, srcY * devicePixelRatio];
-    const rightP3 = [dRight * devicePixelRatio, dstY * devicePixelRatio];
+    // Scale all coordinates to physical pixels for WebGPU (vertical: xBandToFlow for x, yBandToFlow for y)
+    const leftP0 = [xBandToFlow(sLeft) * devicePixelRatio, yBandToFlow(srcY) * devicePixelRatio];
+    const leftP3 = [xBandToFlow(dLeft) * devicePixelRatio, yBandToFlow(dstY) * devicePixelRatio];
+    const rightP0 = [xBandToFlow(sRight) * devicePixelRatio, yBandToFlow(srcY) * devicePixelRatio];
+    const rightP3 = [xBandToFlow(dRight) * devicePixelRatio, yBandToFlow(dstY) * devicePixelRatio];
 
-    // Vertical tangents at endpoints (flowing upward: srcY decreases toward dstY)
-    const leftP1 = [sLeft * devicePixelRatio, (srcY - handle) * devicePixelRatio];
-    const leftP2 = [dLeft * devicePixelRatio, (dstY + handle) * devicePixelRatio];
-    const rightP1 = [sRight * devicePixelRatio, (srcY - handle) * devicePixelRatio];
-    const rightP2 = [dRight * devicePixelRatio, (dstY + handle) * devicePixelRatio];
+    const leftP1 = [xBandToFlow(sLeft) * devicePixelRatio, yBandToFlow(srcY - handle) * devicePixelRatio];
+    const leftP2 = [xBandToFlow(dLeft) * devicePixelRatio, yBandToFlow(dstY + handle) * devicePixelRatio];
+    const rightP1 = [xBandToFlow(sRight) * devicePixelRatio, yBandToFlow(srcY - handle) * devicePixelRatio];
+    const rightP2 = [xBandToFlow(dRight) * devicePixelRatio, yBandToFlow(dstY + handle) * devicePixelRatio];
 
     // Parse color string to RGBA floats (expects "rgba(r,g,b,a)" or similar)
     const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
@@ -233,12 +339,68 @@ function renderFlowCanvas() {
     return 0x78B4FF;
   }
 
-  // background
-  ctx.fillStyle = "rgba(127,127,127,0.035)";
+  // Background wash. When WebGPU ribbons are active (drawn underneath this canvas),
+  // keep this overlay very light so it doesn't wash out ribbon colors.
+  const baseFlowBandBg = cssVar("--flow-band-bg");
+  let flowBandBg = baseFlowBandBg;
+  if (webgpuSupported && flowRibbonRenderer) {
+    const m = baseFlowBandBg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+    if (m) {
+      const r = parseInt(m[1], 10);
+      const g = parseInt(m[2], 10);
+      const b = parseInt(m[3], 10);
+      const a = m[4] !== undefined ? parseFloat(m[4]) : 1.0;
+      flowBandBg = `rgba(${r}, ${g}, ${b}, ${(a * 0.18).toFixed(3)})`;
+    }
+  }
+  ctx.fillStyle = flowBandBg;
   ctx.fillRect(0,0,W,H);
 
+  // Out-of-bounds shading on variant tracks (flow bands), matching tracks pane behavior.
+  if (dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
+    const dataStartPos = isVertical
+      ? yGenomeCanonical(dataBounds.start, H)
+      : xGenomeCanonical(dataBounds.start, W);
+    const dataEndPos = isVertical
+      ? yGenomeCanonical(dataBounds.end, H)
+      : xGenomeCanonical(dataBounds.end, W);
+
+    // Flow bands have a base background wash (0.035), so use a lighter overlay
+    // to visually match tracksSvg out-of-bounds shading (0.15 over white).
+    ctx.fillStyle = "rgba(127,127,127,0.12)";
+
+    if (isVertical) {
+      // Vertical mode has inverted genomic Y: lower bp is lower on screen.
+      if (dataBounds.start > state.startBp) {
+        const y1 = Math.max(0, Math.min(H, dataStartPos));
+        if (H > y1) {
+          ctx.fillRect(0, y1, W, H - y1);
+        }
+      }
+      if (dataBounds.end < state.endBp) {
+        const y2 = Math.max(0, Math.min(H, dataEndPos));
+        if (y2 > 0) {
+          ctx.fillRect(0, 0, W, y2);
+        }
+      }
+    } else {
+      if (dataBounds.start > state.startBp) {
+        const x1 = Math.max(0, Math.min(W, dataStartPos));
+        if (x1 > 0) {
+          ctx.fillRect(0, 0, x1, H);
+        }
+      }
+      if (dataBounds.end < state.endBp) {
+        const x2 = Math.max(0, Math.min(W, dataEndPos));
+        if (W > x2) {
+          ctx.fillRect(x2, 0, W - x2, H);
+        }
+      }
+    }
+  }
+
   // connectors (diagonal lines - make them meet the ruler variant position precisely)
-  const win = visibleVariantWindow();
+  // Use this band's win (from visibleVariantWindowFor(variants) above), not global visibleVariantWindow()
   
   // Use WebGPU for variant columns if available, otherwise fall back to Canvas 2D
   // Use flowWebGPU instead of tracksWebGPU for variant columns
@@ -256,8 +418,7 @@ function renderFlowCanvas() {
     const left = 70;
     const marginPercent = 0.1;
     const minMargin = 10;
-    const flowLayoutForStems = layout.find(l => l.track.id === "flow");
-    const trackWidth = flowLayoutForStems ? flowLayoutForStems.contentWidth : 300;
+    const trackWidth = flowLayout ? flowLayout.contentWidth : 300;
     const margin = Math.max(minMargin, trackWidth * marginPercent);
     // Estimate where nodes start - use a reasonable default if we can't calculate exactly
     const nodeStartX = left + margin + 20; // Add some buffer for centering offset
@@ -269,14 +430,14 @@ function renderFlowCanvas() {
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
         const y = variantMode === "genomic" 
           ? yGenomeCanonical(v.pos, H)
           : yColumn(i, sortedWin.length);
-        const yScaled = y * devicePixelRatio;
+        const yScaled = yBandToFlow(y) * devicePixelRatio;
         flowInstancedRenderer.addLine(
           junctionX * devicePixelRatio, yScaled,
           stemEndX * devicePixelRatio, yScaled,
@@ -287,7 +448,7 @@ function renderFlowCanvas() {
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -378,7 +539,7 @@ function renderFlowCanvas() {
       }
       
       // Determine if we should show this label
-      const isHovered = variantsAtPos.some(v => state.hoveredVariantIndex === variants.findIndex(v2 => v2.id === v.id));
+      const isHovered = variantsAtPos.some(v => state.hoveredVariantId === v.id);
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
@@ -425,7 +586,7 @@ function renderFlowCanvas() {
       for (let i=0; i<sortedWin.length; i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
@@ -433,8 +594,8 @@ function renderFlowCanvas() {
           ? yGenomeCanonical(v.pos, H)
           : yColumn(i, sortedWin.length);
         flowInstancedRenderer.addLine(
-          x0 * devicePixelRatio, vy * devicePixelRatio,
-          junctionX * devicePixelRatio, cy * devicePixelRatio,
+          x0 * devicePixelRatio, yBandToFlow(vy) * devicePixelRatio,
+          junctionX * devicePixelRatio, yBandToFlow(cy) * devicePixelRatio,
           color, alpha
         );
       }
@@ -442,7 +603,7 @@ function renderFlowCanvas() {
       for (let i=0; i<sortedWin.length; i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -463,8 +624,7 @@ function renderFlowCanvas() {
     const top = 0;
     const marginPercent = 0.1;
     const minMargin = 10;
-    const flowLayoutForStems = layout.find(l => l.track.id === "flow");
-    const trackHeight = flowLayoutForStems ? flowLayoutForStems.contentHeight : 300;
+    const trackHeight = flowLayout ? flowLayout.contentHeight : 300;
     const margin = Math.max(minMargin, trackHeight * marginPercent);
     // Estimate where nodes start - use a reasonable default if we can't calculate exactly
     const nodeStartY = top + margin + 20; // Add some buffer for centering offset
@@ -476,7 +636,7 @@ function renderFlowCanvas() {
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
@@ -485,8 +645,8 @@ function renderFlowCanvas() {
           : xColumn(i, win.length);
         const xScaled = x * devicePixelRatio;
         flowInstancedRenderer.addLine(
-          xScaled, junctionY * devicePixelRatio,
-          xScaled, stemEndY * devicePixelRatio,
+          xScaled, yBandToFlow(junctionY) * devicePixelRatio,
+          xScaled, yBandToFlow(stemEndY) * devicePixelRatio,
           color, alpha
         );
       }
@@ -494,7 +654,7 @@ function renderFlowCanvas() {
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -562,7 +722,7 @@ function renderFlowCanvas() {
       }
       
       // Determine if we should show this label
-      const isHovered = variantsAtPos.some(v => state.hoveredVariantIndex === variants.findIndex(v2 => v2.id === v.id));
+      const isHovered = variantsAtPos.some(v => state.hoveredVariantId === v.id);
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
@@ -604,7 +764,7 @@ function renderFlowCanvas() {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         const vx = xGenomeCanonical(v.pos, W);
@@ -612,8 +772,8 @@ function renderFlowCanvas() {
           ? xGenomeCanonical(v.pos, W)
           : xColumn(i, win.length);
         flowInstancedRenderer.addLine(
-          vx * devicePixelRatio, y0 * devicePixelRatio,
-          cx * devicePixelRatio, junctionY * devicePixelRatio,
+          vx * devicePixelRatio, yBandToFlow(y0) * devicePixelRatio,
+          cx * devicePixelRatio, yBandToFlow(junctionY) * devicePixelRatio,
           color, alpha
         );
       }
@@ -621,7 +781,7 @@ function renderFlowCanvas() {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = state.hoveredVariantIndex === variantIdx;
+        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -673,7 +833,8 @@ function renderFlowCanvas() {
   
   // Helper function to get all formatted labels for a variant
   // Uses precomputed formatted labels from backend if available for performance
-  function getFormattedLabelsForVariant(variant) {
+  // Exposed on window for handleVariantRectClick (main.js)
+  window.getFormattedLabelsForVariant = function getFormattedLabelsForVariant(variant) {
     const labels = [];
     const labelToAllele = new Map();
     
@@ -721,7 +882,7 @@ function renderFlowCanvas() {
     }
     
     return { labels, labelToAllele };
-  }
+  };
   
   // Helper function to extract allele string from formatted label
   function extractAlleleFromLabel(label) {
@@ -732,77 +893,53 @@ function renderFlowCanvas() {
   }
   
   // Helper function to get node colors based on allele type
+  // Always returns rgba() so WebGPU fill path works for all colors (red/purple were hsla and were skipped)
   function getAlleleNodeColors(label, variant, actualAllele, isDragging) {
     const noCallLabel = formatAlleleLabel(".");
-    const opacity = 0.65; // Light translucency
-    const opacityDragging = 0.85; // Slightly more opaque when dragging
-    const currentOpacity = isDragging ? opacityDragging : opacity;
+    const currentOpacity = 1.0; // Opaque nodes (WebGPU only parses rgba, so we always use rgba)
     
     let fillColor, strokeColor;
     
     if (label === noCallLabel) {
-      // No-call allele: gray with translucency
       fillColor = `rgba(200,200,200,${currentOpacity})`;
       strokeColor = `rgba(200,200,200,${currentOpacity})`;
     } else {
-      // Determine allele type based on variant context and length
-      // Use actualAllele if provided (to avoid truncation issues), otherwise extract from label
       const allele = actualAllele || extractAlleleFromLabel(label);
-      const refLen = variant.refAllele ? variant.refAllele.length : 0;
-      const alleleLen = allele.length;
-      
-      // 1 bp alleles are always SNVs (blue), regardless of reference length
-      if (alleleLen === 1) {
+      const refAllele = (variant && typeof variant.refAllele === "string") ? variant.refAllele : "";
+      const refLen = refAllele ? refAllele.length : 0;
+      const altLen = allele && allele !== "." ? allele.length : 0;
+
+      // Classify per displayed allele against REF, not at the whole-variant level.
+      let alleleType = "snv";
+      if (!allele || allele === ".") {
+        alleleType = "nocall";
+      } else if (refAllele && allele === refAllele) {
+        alleleType = "ref";
+      } else if (!refAllele || refAllele === ".") {
+        alleleType = altLen === 1 ? "snv" : "mnp";
+      } else {
+        const lenDelta = altLen - refLen;
+        if (lenDelta > 0) alleleType = "ins";
+        else if (lenDelta < 0) alleleType = "del";
+        else if (altLen === 1) alleleType = "snv";
+        else alleleType = "mnp";
+      }
+
+      if (alleleType === "ref") {
+        fillColor = `rgba(88,170,89,${currentOpacity})`;
+        strokeColor = `rgba(88,170,89,${currentOpacity})`;
+      } else if (alleleType === "del") {
+        fillColor = `rgba(214,67,67,${currentOpacity})`;
+        strokeColor = `rgba(214,67,67,${currentOpacity})`;
+      } else if (alleleType === "ins") {
+        fillColor = `rgba(156,90,214,${currentOpacity})`;
+        strokeColor = `rgba(156,90,214,${currentOpacity})`;
+      } else if (alleleType === "mnp") {
+        fillColor = `rgba(232,106,167,${currentOpacity})`;
+        strokeColor = `rgba(232,106,167,${currentOpacity})`;
+      } else {
         fillColor = `rgba(100,150,255,${currentOpacity})`;
         strokeColor = `rgba(100,150,255,${currentOpacity})`;
-      } else {
-        // Determine variant type by comparing ref to alts
-        // Use precomputed variantType if available (performance optimization)
-        let isDeletion = false;
-        let isInsertion = false;
-        
-        if (variant.hasOwnProperty('variantType')) {
-          // Use precomputed variant type
-          const variantType = variant.variantType;
-          isDeletion = variantType === 'deletion' || variantType === 'complex';
-          isInsertion = variantType === 'insertion' || variantType === 'complex';
-        } else {
-          // Fallback to computation for backward compatibility
-          if (variant.altAlleles && Array.isArray(variant.altAlleles) && variant.altAlleles.length > 0) {
-            // Check if any alt is shorter than ref (deletion) or longer than ref (insertion)
-            const hasShorterAlt = variant.altAlleles.some(alt => alt.length < refLen);
-            const hasLongerAlt = variant.altAlleles.some(alt => alt.length > refLen);
-            
-            if (hasShorterAlt && !hasLongerAlt) {
-              isDeletion = true;
-            } else if (hasLongerAlt && !hasShorterAlt) {
-              isInsertion = true;
-            }
-          }
-        }
-        
-        // Color based on variant type and allele length
-        if (isDeletion) {
-          // In deletion variants, longer alleles are deletions (yellow)
-          // Shorter alleles (if > 1 bp) would also be deletions, but 1 bp is already handled above
-          const maxDiff = 100;
-          const normalizedDiff = Math.min((alleleLen - 1) / maxDiff, 1.0); // Compare to 1 bp minimum
-          const lightness = 70 - (normalizedDiff * 40); // 70% to 30%
-          fillColor = `hsla(60, 80%, ${lightness}%, ${currentOpacity})`;
-          strokeColor = `hsla(60, 80%, ${lightness}%, ${currentOpacity})`;
-        } else if (isInsertion) {
-          // In insertion variants, longer alleles are insertions (purple)
-          const lengthDiff = alleleLen - refLen;
-          const maxDiff = 100;
-          const normalizedDiff = Math.min(lengthDiff / maxDiff, 1.0);
-          const lightness = 70 - (normalizedDiff * 40); // 70% to 30%
-          fillColor = `hsla(280, 70%, ${lightness}%, ${currentOpacity})`;
-          strokeColor = `hsla(280, 70%, ${lightness}%, ${currentOpacity})`;
-        } else {
-          // SNV or substitution (same length): blue
-          fillColor = `rgba(100,150,255,${currentOpacity})`;
-          strokeColor = `rgba(100,150,255,${currentOpacity})`;
-        }
       }
     }
     
@@ -887,12 +1024,231 @@ function renderFlowCanvas() {
     
     return finalSizes;
   }
+  function buildVariantDisplaySpec(variant, rawOrder, labels, labelToAllele) {
+    const noCallLabel = ". (no-call)";
+    const refLabel = variant.hasOwnProperty('formattedRefAllele') && variant.formattedRefAllele
+      ? variant.formattedRefAllele
+      : (variant.refAllele ? formatAlleleLabel(variant.refAllele) : null);
+    const keyForRawLabel = (label) => {
+      if (label === noCallLabel) return ".";
+      if (label === refLabel) return "ref";
+      const actualAllele = labelToAllele.get(label);
+      if (actualAllele && variant.altAlleles && Array.isArray(variant.altAlleles)) {
+        const altIndex = variant.altAlleles.indexOf(actualAllele);
+        if (altIndex >= 0) return `a${altIndex + 1}`;
+      }
+      if (variant.altAlleles && Array.isArray(variant.altAlleles)) {
+        const altIndex = variant.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
+        if (altIndex >= 0) return `a${altIndex + 1}`;
+      }
+      return ".";
+    };
+    const alleleTypeForRawLabel = (label) => {
+      const key = keyForRawLabel(label);
+      if (key === "." || label === noCallLabel) return "nocall";
+      if (key === "ref" || label === refLabel) return "ref";
+      const allele = labelToAllele.get(label) || ".";
+      const refLen = variant.refAllele ? variant.refAllele.length : 0;
+      const altLen = allele && allele !== "." ? allele.length : 0;
+      if (refLen > 0 && altLen > 0) {
+        if (altLen < refLen) return "del";
+        if (altLen > refLen) return "ins";
+      }
+      if (refLen === 1 && altLen === 1) return "snv";
+      if (refLen > 0 && altLen > 0 && altLen === refLen) return "mnp";
+      return "other";
+    };
+    const alleleKeyToGenotypeIndex = (alleleKey) => {
+      if (alleleKey === "ref") return 0;
+      if (typeof alleleKey === "string" && alleleKey.startsWith("a")) {
+        const altIdx = parseInt(alleleKey.slice(1), 10);
+        if (Number.isFinite(altIdx) && altIdx > 0) return altIdx;
+      }
+      return null;
+    };
+    const uniqueCarrierCountForAlleleKeys = (alleleKeys) => {
+      const keys = Array.isArray(alleleKeys)
+        ? alleleKeys.filter((k, idx, arr) => typeof k === "string" && arr.indexOf(k) === idx)
+        : [];
+      if (keys.length === 0) return 0;
+      if (variant.sampleAlleles) {
+        let count = 0;
+        for (const sampleAlleles of Object.values(variant.sampleAlleles)) {
+          if (!Array.isArray(sampleAlleles)) continue;
+          if (keys.some(k => sampleAlleles.includes(k))) count++;
+        }
+        return count;
+      }
+      const genotypeIndices = keys
+        .map(alleleKeyToGenotypeIndex)
+        .filter(idx => idx !== null);
+      if (genotypeIndices.length === 0) return 0;
+      const indexSet = new Set(genotypeIndices);
+      const sampleGenotypes = variant.sampleGenotypes || {};
+      let count = 0;
+      for (const genotype of Object.values(sampleGenotypes)) {
+        if (!genotype || genotype === "./." || genotype === ".") continue;
+        const alleles = String(genotype).split(/[\/|]/);
+        let hasAny = false;
+        for (const allele of alleles) {
+          const alleleStr = allele.trim();
+          if (alleleStr === "." || alleleStr === "") continue;
+          const idx = parseInt(alleleStr, 10);
+          if (!isNaN(idx) && indexSet.has(idx)) {
+            hasAny = true;
+            break;
+          }
+        }
+        if (hasAny) count++;
+      }
+      return count;
+    };
+
+    const spec = {
+      order: [...rawOrder],
+      keyForLabel: new Map(),
+      rawLabelToKey: new Map(),
+      displayLabelToAllele: new Map(),
+      rawToDisplayLabel: new Map(),
+      displayToRawLabels: new Map(),
+      frequencyByKey: {},
+      sampleCountByKey: {},
+    };
+    for (const rawLabel of rawOrder) {
+      const key = keyForRawLabel(rawLabel);
+      spec.keyForLabel.set(rawLabel, key);
+      spec.rawLabelToKey.set(rawLabel, key);
+      spec.displayLabelToAllele.set(rawLabel, labelToAllele.get(rawLabel) || ".");
+      spec.rawToDisplayLabel.set(rawLabel, rawLabel);
+      spec.displayToRawLabels.set(rawLabel, [rawLabel]);
+      spec.frequencyByKey[key] = variant.alleleFrequencies && variant.alleleFrequencies.hasOwnProperty(key)
+        ? variant.alleleFrequencies[key]
+        : (spec.frequencyByKey[key] || 0);
+      spec.sampleCountByKey[key] = variant.alleleSampleCounts && variant.alleleSampleCounts.hasOwnProperty(key)
+        ? variant.alleleSampleCounts[key]
+        : (spec.sampleCountByKey[key] || 0);
+    }
+
+    if (state.aggregateRareAlleles !== true) return spec;
+
+    const cutoff = Math.max(0, Math.min(0.5, (state.aggregateRareAllelesCutoffPct ?? 2.0) / 100));
+    const groupLabelForType = (t) => {
+      if (t === "snv") return "Low-freq SNV";
+      if (t === "del") return "Low-freq DEL";
+      if (t === "ins") return "Low-freq INS";
+      if (t === "mnp") return "Low-freq MNP";
+      return "Low-freq Other";
+    };
+    const groupState = new Map(); // type -> { members, totalFreq }
+    const expandedOrder = [];
+    for (const rawLabel of rawOrder) {
+      const key = keyForRawLabel(rawLabel);
+      const type = alleleTypeForRawLabel(rawLabel);
+      const freq = variant.alleleFrequencies && variant.alleleFrequencies.hasOwnProperty(key)
+        ? variant.alleleFrequencies[key]
+        : 0;
+      const eligible = (type !== "nocall" && type !== "ref" && freq < cutoff);
+      if (!eligible) {
+        expandedOrder.push({ kind: "raw", rawLabel });
+        continue;
+      }
+      if (!groupState.has(type)) {
+        groupState.set(type, { members: [], totalFreq: 0 });
+        expandedOrder.push({ kind: "group", type });
+      }
+      const g = groupState.get(type);
+      g.members.push(rawLabel);
+      g.totalFreq += freq;
+    }
+
+    if (groupState.size === 0) return spec;
+
+    const merged = {
+      order: [],
+      keyForLabel: new Map(),
+      rawLabelToKey: new Map(),
+      displayLabelToAllele: new Map(),
+      rawToDisplayLabel: new Map(),
+      displayToRawLabels: new Map(),
+      frequencyByKey: {},
+      sampleCountByKey: {},
+    };
+    for (const entry of expandedOrder) {
+      if (entry.kind === "raw") {
+        const rawLabel = entry.rawLabel;
+        const key = keyForRawLabel(rawLabel);
+        merged.order.push(rawLabel);
+        merged.keyForLabel.set(rawLabel, key);
+        merged.rawLabelToKey.set(rawLabel, key);
+        merged.displayLabelToAllele.set(rawLabel, labelToAllele.get(rawLabel) || ".");
+        merged.rawToDisplayLabel.set(rawLabel, rawLabel);
+        merged.displayToRawLabels.set(rawLabel, [rawLabel]);
+        merged.frequencyByKey[key] = variant.alleleFrequencies && variant.alleleFrequencies.hasOwnProperty(key)
+          ? variant.alleleFrequencies[key]
+          : (merged.frequencyByKey[key] || 0);
+        merged.sampleCountByKey[key] = variant.alleleSampleCounts && variant.alleleSampleCounts.hasOwnProperty(key)
+          ? variant.alleleSampleCounts[key]
+          : (merged.sampleCountByKey[key] || 0);
+      } else {
+        const g = groupState.get(entry.type);
+        const label = `${groupLabelForType(entry.type)} (${g.members.length})`;
+        const aggKey = `agg:${entry.type}`;
+        merged.order.push(label);
+        merged.keyForLabel.set(label, aggKey);
+        merged.displayLabelToAllele.set(label, labelToAllele.get(g.members[0]) || ".");
+        merged.displayToRawLabels.set(label, [...g.members]);
+        merged.frequencyByKey[aggKey] = g.totalFreq;
+        const memberKeys = g.members.map(rawLabel => keyForRawLabel(rawLabel));
+        merged.sampleCountByKey[aggKey] = uniqueCarrierCountForAlleleKeys(memberKeys);
+        for (const rawLabel of g.members) {
+          merged.rawLabelToKey.set(rawLabel, keyForRawLabel(rawLabel));
+          merged.rawToDisplayLabel.set(rawLabel, label);
+        }
+      }
+    }
+    return merged;
+  }
+  function calculateDisplayAlleleSizes(order, keyForLabel, frequencyByKey, totalSpace, minSize, gap) {
+    const marginPercent = 0.1;
+    const minMargin = 10;
+    const margin = Math.max(minMargin, totalSpace * marginPercent);
+    const availableSpace = totalSpace - (2 * margin);
+    const totalGapSize = Math.max(0, (order.length - 1) * gap);
+    const totalMinSize = order.length * minSize;
+    const remainingSpace = availableSpace - totalGapSize - totalMinSize;
+    const out = {};
+    if (remainingSpace <= 0 || order.length === 0) {
+      for (const label of order) {
+        const k = keyForLabel.get(label) || ".";
+        out[k] = minSize;
+      }
+      return out;
+    }
+    let totalFreq = 0;
+    for (const label of order) {
+      const k = keyForLabel.get(label) || ".";
+      totalFreq += (frequencyByKey[k] || 0);
+    }
+    if (!(totalFreq > 0)) {
+      const equalSize = Math.max(minSize, (availableSpace - totalGapSize) / Math.max(1, order.length));
+      for (const label of order) {
+        const k = keyForLabel.get(label) || ".";
+        out[k] = equalSize;
+      }
+      return out;
+    }
+    for (const label of order) {
+      const k = keyForLabel.get(label) || ".";
+      const f = frequencyByKey[k] || 0;
+      out[k] = minSize + (f / totalFreq) * remainingSpace;
+    }
+    return out;
+  }
   
-  // Get track dimensions for sizing (reuse flowLayout from earlier in function)
-  const flowLayoutForSizing = layout.find(l => l.track.id === "flow");
+  // Get track dimensions for sizing (current band's flowLayout)
   const trackDimension = isVertical 
-    ? (flowLayoutForSizing ? flowLayoutForSizing.contentWidth : 300)
-    : (flowLayoutForSizing ? flowLayoutForSizing.contentHeight : 300);
+    ? (flowLayout ? flowLayout.contentWidth : 300)
+    : (flowLayout ? flowLayout.contentHeight : 300);
   
   // Allele nodes with drag-and-drop support
   // Define constants at function scope so they're accessible in nested functions
@@ -905,6 +1261,7 @@ function renderFlowCanvas() {
   
   // Store node info for ribbon drawing: Map<variantIndex, Map<alleleLabel, {x, y, w, h, top, bottom, left, right}>>
   const nodeInfoByVariant = new Map();
+  const variantDisplaySpecById = new Map();
   
   // Collect all labels to draw at the very end (after all nodes and indicators)
   const allLabelsToDraw = [];
@@ -927,36 +1284,27 @@ function renderFlowCanvas() {
       const { labels, labelToAllele } = getFormattedLabelsForVariant(v);
       
       // Get order from state, or use default
-      let order = state.variantAlleleOrder.get(v.id);
-      if (!order || order.length !== labels.length) {
+      const variantOrderKey = variantOrderKeyFor(track.id, v.id);
+      let rawOrder = state.variantAlleleOrder.get(variantOrderKey);
+      if (!rawOrder || rawOrder.length !== labels.length) {
+        rawOrder = [...labels];
+        state.variantAlleleOrder.set(variantOrderKey, rawOrder);
+      }
+      const displaySpec = buildVariantDisplaySpec(v, rawOrder, labels, labelToAllele);
+      variantDisplaySpecById.set(String(v.id), displaySpec);
+      let order = displaySpec.order;
+      if (order.length === 0) {
         order = [...labels];
-        state.variantAlleleOrder.set(v.id, order);
+        state.variantAlleleOrder.set(variantOrderKey, order);
       }
       
       // Calculate allele sizes based on frequencies
-      const alleleSizes = calculateAlleleSizes(v, trackDimension, MIN_NODE_SIZE, gap, order.length);
+      const alleleSizes = calculateDisplayAlleleSizes(order, displaySpec.keyForLabel, displaySpec.frequencyByKey, trackDimension, MIN_NODE_SIZE, gap);
       
       // Map labels to allele keys for size lookup
       // Use precomputed labels if available
-      const noCallLabel = ". (no-call)";
-      const refLabel = v.hasOwnProperty('formattedRefAllele') && v.formattedRefAllele
-        ? v.formattedRefAllele
-        : (v.refAllele ? formatAlleleLabel(v.refAllele) : null);
       function getAlleleKey(label) {
-        if (label === noCallLabel) return ".";
-        if (label === refLabel) return "ref";
-        // Use labelToAllele map for efficient lookup
-        const actualAllele = labelToAllele.get(label);
-        if (actualAllele && v.altAlleles && Array.isArray(v.altAlleles)) {
-          const altIndex = v.altAlleles.indexOf(actualAllele);
-          if (altIndex >= 0) return `a${altIndex + 1}`;
-        }
-        // Fallback: find by comparing formatted labels
-        if (v.altAlleles && Array.isArray(v.altAlleles)) {
-          const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
-          if (altIndex >= 0) return `a${altIndex + 1}`;
-        }
-        return "."; // fallback
+        return displaySpec.keyForLabel.get(label) || ".";
       }
       
       // Position based on variant layout mode
@@ -985,7 +1333,7 @@ function renderFlowCanvas() {
       let currentX = left + horizontalOffset;
       
       // Check if this variant column is hovered
-      const isVariantHovered = state.hoveredVariantIndex === variantIdx;
+      const isVariantHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
       
       // Draw nodes in current order
       for (let j=0;j<order.length;j++){
@@ -1002,7 +1350,8 @@ function renderFlowCanvas() {
         const x = currentX;
         
         // Check if this node is being dragged
-        const isDragging = state.alleleDragState && 
+        const isDragging = state.alleleDragState &&
+          (state.alleleDragState.trackId || "") === (track.id || "") &&
           state.alleleDragState.variantId === v.id && 
           state.alleleDragState.alleleIndex === order.indexOf(label);
         const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
@@ -1012,7 +1361,7 @@ function renderFlowCanvas() {
         const nodeY = cy - nodeH/2 + dragOffsetY;
 
         // Get colors based on allele type (use actual allele from map, not extracted from label)
-        const actualAllele = labelToAllele.get(label) || extractAlleleFromLabel(label);
+        const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
         const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
@@ -1027,10 +1376,10 @@ function renderFlowCanvas() {
             const g = parseInt(fillMatch[2]) / 255;
             const b = parseInt(fillMatch[3]) / 255;
             const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
-            // Scale coordinates to physical pixels for WebGPU
+            // Scale coordinates to physical pixels for WebGPU (yBandToFlow for multi-track)
             flowInstancedRenderer.addRect(
               nodeX * devicePixelRatio,
-              nodeY * devicePixelRatio,
+              yBandToFlow(nodeY) * devicePixelRatio,
               nodeW * devicePixelRatio,
               nodeH * devicePixelRatio,
               [r, g, b, a]
@@ -1045,7 +1394,7 @@ function renderFlowCanvas() {
         }
         
         // Check if this allele is selected
-        const selectionKey = `${v.id}:${order.indexOf(label)}`;
+        const selectionKey = selectionKeyFor(track.id, v.id, order.indexOf(label));
         const isSelected = state.selectedAlleles.has(selectionKey);
         
         // Stroke always uses Canvas2D (minimal overhead for borders)
@@ -1062,15 +1411,28 @@ function renderFlowCanvas() {
         ctx.stroke();
 
         // Store label info for drawing after all nodes
-        const labelKey = `${v.id}:${order.indexOf(label)}`;
-        const isHovered = state.hoveredAlleleNode && 
+        const labelKey = selectionKeyFor(track.id, v.id, order.indexOf(label));
+        const isHovered = state.hoveredAlleleNode &&
+          (state.hoveredAlleleNode.trackId || "") === (track.id || "") &&
           state.hoveredAlleleNode.variantId === v.id && 
           state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
         const isPinned = state.pinnedAlleleLabels.has(labelKey);
+        const sampleCount = displaySpec.sampleCountByKey && Object.prototype.hasOwnProperty.call(displaySpec.sampleCountByKey, alleleKey)
+          ? displaySpec.sampleCountByKey[alleleKey]
+          : ((v.alleleSampleCounts && Object.prototype.hasOwnProperty.call(v.alleleSampleCounts, alleleKey))
+              ? v.alleleSampleCounts[alleleKey]
+              : 0);
+        const sourceRawLabels = displaySpec.displayToRawLabels && displaySpec.displayToRawLabels.has(label)
+          ? displaySpec.displayToRawLabels.get(label)
+          : [label];
+        const sourceAlleleKeys = sourceRawLabels.map(rawLabel => displaySpec.rawLabelToKey.get(rawLabel) || ".")
+          .filter((k, idx, arr) => arr.indexOf(k) === idx);
         
         if (isHovered || isPinned || isSelected) {
+          const labelText = `${label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
           allLabelsToDraw.push({
             label: label,
+            text: labelText,
             nodeX: nodeX,
             nodeY: nodeY,
             nodeW: nodeW,
@@ -1079,15 +1441,20 @@ function renderFlowCanvas() {
           });
         }
         
-        // Store position for hit testing
+        // Store position for hit testing (global flow coords + bandOffset for multi-track)
         nodePositions.push({
+          trackId: track.id,
           variantId: v.id,
           alleleIndex: order.indexOf(label),
+          alleleKey: alleleKey,
+          sourceAlleleKeys: sourceAlleleKeys,
+          sampleCount: sampleCount,
           label: label,
-          x: nodeX,
+          x: xBandToFlow(nodeX),
           y: nodeY,
           w: nodeW,
           h: nodeH,
+          bandOffset: bandOffset,
           isSelected: isSelected
         });
         
@@ -1112,7 +1479,9 @@ function renderFlowCanvas() {
       }
       
       // Draw drop indicator if dragging this variant
-      if (state.alleleDragState && state.alleleDragState.variantId === v.id && 
+      if (state.alleleDragState &&
+          (state.alleleDragState.trackId || "") === (track.id || "") &&
+          state.alleleDragState.variantId === v.id &&
           state.alleleDragState.dropIndex !== null && state.alleleDragState.dropIndex !== undefined) {
         const dropIdx = state.alleleDragState.dropIndex;
         const currentIdx = order.indexOf(state.alleleDragState.label);
@@ -1167,36 +1536,27 @@ function renderFlowCanvas() {
       const { labels, labelToAllele } = getFormattedLabelsForVariant(v);
       
       // Get order from state, or use default
-      let order = state.variantAlleleOrder.get(v.id);
-      if (!order || order.length !== labels.length) {
+      const variantOrderKey = variantOrderKeyFor(track.id, v.id);
+      let rawOrder = state.variantAlleleOrder.get(variantOrderKey);
+      if (!rawOrder || rawOrder.length !== labels.length) {
+        rawOrder = [...labels];
+        state.variantAlleleOrder.set(variantOrderKey, rawOrder);
+      }
+      const displaySpec = buildVariantDisplaySpec(v, rawOrder, labels, labelToAllele);
+      variantDisplaySpecById.set(String(v.id), displaySpec);
+      let order = displaySpec.order;
+      if (order.length === 0) {
         order = [...labels];
-        state.variantAlleleOrder.set(v.id, order);
+        state.variantAlleleOrder.set(variantOrderKey, order);
       }
       
       // Calculate allele sizes based on frequencies
-      const alleleSizes = calculateAlleleSizes(v, trackDimension, MIN_NODE_SIZE, gap, order.length);
+      const alleleSizes = calculateDisplayAlleleSizes(order, displaySpec.keyForLabel, displaySpec.frequencyByKey, trackDimension, MIN_NODE_SIZE, gap);
       
       // Map labels to allele keys for size lookup
       // Use precomputed labels if available
-      const noCallLabel = ". (no-call)";
-      const refLabel = v.hasOwnProperty('formattedRefAllele') && v.formattedRefAllele
-        ? v.formattedRefAllele
-        : (v.refAllele ? formatAlleleLabel(v.refAllele) : null);
       function getAlleleKey(label) {
-        if (label === noCallLabel) return ".";
-        if (label === refLabel) return "ref";
-        // Use labelToAllele map for efficient lookup
-        const actualAllele = labelToAllele.get(label);
-        if (actualAllele && v.altAlleles && Array.isArray(v.altAlleles)) {
-          const altIndex = v.altAlleles.indexOf(actualAllele);
-          if (altIndex >= 0) return `a${altIndex + 1}`;
-        }
-        // Fallback: find by comparing formatted labels
-        if (v.altAlleles && Array.isArray(v.altAlleles)) {
-          const altIndex = v.altAlleles.findIndex(alt => formatAlleleLabel(alt) === label);
-          if (altIndex >= 0) return `a${altIndex + 1}`;
-        }
-        return "."; // fallback
+        return displaySpec.keyForLabel.get(label) || ".";
       }
       
       // Position based on variant layout mode
@@ -1231,7 +1591,7 @@ function renderFlowCanvas() {
       let currentY = top + verticalOffset;
 
       // Check if this variant column is hovered
-      const isVariantHovered = state.hoveredVariantIndex === variantIdx;
+      const isVariantHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
       
       // Draw nodes in current order
       for (let j=0;j<order.length;j++){
@@ -1248,7 +1608,8 @@ function renderFlowCanvas() {
         const y = currentY;
         
         // Check if this node is being dragged
-        const isDragging = state.alleleDragState && 
+        const isDragging = state.alleleDragState &&
+          (state.alleleDragState.trackId || "") === (track.id || "") &&
           state.alleleDragState.variantId === v.id && 
           state.alleleDragState.alleleIndex === order.indexOf(label);
         const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
@@ -1258,7 +1619,7 @@ function renderFlowCanvas() {
         const nodeY = y + dragOffsetY;
 
         // Get colors based on allele type (use actual allele from map, not extracted from label)
-        const actualAllele = labelToAllele.get(label) || extractAlleleFromLabel(label);
+        const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
         const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
@@ -1276,7 +1637,7 @@ function renderFlowCanvas() {
             // Scale coordinates to physical pixels for WebGPU
             flowInstancedRenderer.addRect(
               nodeX * devicePixelRatio,
-              nodeY * devicePixelRatio,
+              yBandToFlow(nodeY) * devicePixelRatio,
               nodeW * devicePixelRatio,
               nodeH * devicePixelRatio,
               [r, g, b, a]
@@ -1291,7 +1652,7 @@ function renderFlowCanvas() {
         }
         
         // Check if this allele is selected
-        const selectionKey = `${v.id}:${order.indexOf(label)}`;
+        const selectionKey = selectionKeyFor(track.id, v.id, order.indexOf(label));
         const isSelected = state.selectedAlleles.has(selectionKey);
         
         // Stroke always uses Canvas2D (minimal overhead for borders)
@@ -1308,15 +1669,28 @@ function renderFlowCanvas() {
         ctx.stroke();
 
         // Store label info for drawing after all nodes
-        const labelKey = `${v.id}:${order.indexOf(label)}`;
-        const isHovered = state.hoveredAlleleNode && 
+        const labelKey = selectionKeyFor(track.id, v.id, order.indexOf(label));
+        const isHovered = state.hoveredAlleleNode &&
+          (state.hoveredAlleleNode.trackId || "") === (track.id || "") &&
           state.hoveredAlleleNode.variantId === v.id && 
           state.hoveredAlleleNode.alleleIndex === order.indexOf(label);
         const isPinned = state.pinnedAlleleLabels.has(labelKey);
+        const sampleCount = displaySpec.sampleCountByKey && Object.prototype.hasOwnProperty.call(displaySpec.sampleCountByKey, alleleKey)
+          ? displaySpec.sampleCountByKey[alleleKey]
+          : ((v.alleleSampleCounts && Object.prototype.hasOwnProperty.call(v.alleleSampleCounts, alleleKey))
+              ? v.alleleSampleCounts[alleleKey]
+              : 0);
+        const sourceRawLabels = displaySpec.displayToRawLabels && displaySpec.displayToRawLabels.has(label)
+          ? displaySpec.displayToRawLabels.get(label)
+          : [label];
+        const sourceAlleleKeys = sourceRawLabels.map(rawLabel => displaySpec.rawLabelToKey.get(rawLabel) || ".")
+          .filter((k, idx, arr) => arr.indexOf(k) === idx);
         
         if (isHovered || isPinned || isSelected) {
+          const labelText = `${label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
           allLabelsToDraw.push({
             label: label,
+            text: labelText,
             nodeX: nodeX,
             nodeY: nodeY,
             nodeW: nodeW,
@@ -1325,15 +1699,20 @@ function renderFlowCanvas() {
           });
         }
         
-        // Store position for hit testing
+        // Store position for hit testing (global flow coords + bandOffset for multi-track)
         nodePositions.push({
+          trackId: track.id,
           variantId: v.id,
           alleleIndex: order.indexOf(label),
+          alleleKey: alleleKey,
+          sourceAlleleKeys: sourceAlleleKeys,
+          sampleCount: sampleCount,
           label: label,
           x: nodeX,
-          y: nodeY,
+          y: yBandToFlow(nodeY),
           w: nodeW,
           h: nodeH,
+          bandOffset: bandOffset,
           isSelected: isSelected
         });
         
@@ -1358,7 +1737,9 @@ function renderFlowCanvas() {
       }
       
       // Draw drop indicator if dragging this variant
-      if (state.alleleDragState && state.alleleDragState.variantId === v.id && 
+      if (state.alleleDragState &&
+          (state.alleleDragState.trackId || "") === (track.id || "") &&
+          state.alleleDragState.variantId === v.id &&
           state.alleleDragState.dropIndex !== null && state.alleleDragState.dropIndex !== undefined) {
         const dropIdx = state.alleleDragState.dropIndex;
         const currentIdx = order.indexOf(state.alleleDragState.label);
@@ -1405,10 +1786,8 @@ function renderFlowCanvas() {
     }
   }
   
-  // Draw ribbons between alleles based on haplotype transitions (not matching labels)
-  // For each pair of adjacent variants, we compute which alleles each sample has at both variants
-  // and draw ribbons proportional to the number of haplotypes making each transition
-  if (nodeInfoByVariant.size > 1) {
+  // Draw ribbons only when variants are phased (|). Unphased (/) data does not have haplotype order.
+  if (nodeInfoByVariant.size > 1 && variantsPhased) {
     const sortedVariantIdxs = Array.from(nodeInfoByVariant.keys()).sort((a, b) => a - b);
     
     // Get the actual variant list (sorted for vertical mode, original order for horizontal)
@@ -1443,22 +1822,29 @@ function renderFlowCanvas() {
     
     // Helper to get allele label from genotype index for a variant
     function getAlleleLabelForIndex(variant, alleleIdx) {
+      let rawLabel;
       if (alleleIdx === null || alleleIdx === undefined || alleleIdx === "." || isNaN(alleleIdx)) {
-        return formatAlleleLabel(".");
+        rawLabel = formatAlleleLabel(".");
+      } else if (alleleIdx === 0) {
+        rawLabel = variant.refAllele ? formatAlleleLabel(variant.refAllele) : formatAlleleLabel(".");
+      } else if (variant.altAlleles && variant.altAlleles[alleleIdx - 1]) {
+        rawLabel = formatAlleleLabel(variant.altAlleles[alleleIdx - 1]);
+      } else {
+        rawLabel = formatAlleleLabel(".");
       }
-      if (alleleIdx === 0) {
-        // Reference allele
-        return variant.refAllele ? formatAlleleLabel(variant.refAllele) : formatAlleleLabel(".");
+      const spec = variantDisplaySpecById.get(String(variant.id));
+      if (spec && spec.rawToDisplayLabel) {
+        return spec.rawToDisplayLabel.get(rawLabel) || rawLabel;
       }
-      // Alt allele (1-indexed in genotype, but 0-indexed in altAlleles array)
-      if (variant.altAlleles && variant.altAlleles[alleleIdx - 1]) {
-        return formatAlleleLabel(variant.altAlleles[alleleIdx - 1]);
-      }
-      return formatAlleleLabel(".");
+      return rawLabel;
     }
     
     // Helper to get actual allele string from label for a variant
     function getActualAlleleFromLabel(variant, label) {
+      const spec = variantDisplaySpecById.get(String(variant.id));
+      if (spec && spec.displayLabelToAllele && spec.displayLabelToAllele.has(label)) {
+        return spec.displayLabelToAllele.get(label) || ".";
+      }
       const noCallLabel = formatAlleleLabel(".");
       if (label === noCallLabel) return ".";
       if (variant.refAllele && label === formatAlleleLabel(variant.refAllele)) {
@@ -1516,6 +1902,20 @@ function renderFlowCanvas() {
       
       return transitions;
     }
+
+    // Strong-contrast, hue-preserving ribbon color transform.
+    // Keeps allele colors distinguishable while staying very dark on light backgrounds.
+    function toDarkRibbonColor(baseColor, alpha, darken = 0.80) {
+      const m = baseColor && baseColor.match
+        ? baseColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/)
+        : null;
+      if (!m) return `rgba(18, 18, 18, ${alpha.toFixed(3)})`;
+      // Keep hue ratios, just compress luminance hard so color remains visible but very dark.
+      const r = Math.max(0, Math.min(255, Math.round(parseInt(m[1], 10) * darken)));
+      const g = Math.max(0, Math.min(255, Math.round(parseInt(m[2], 10) * darken)));
+      const b = Math.max(0, Math.min(255, Math.round(parseInt(m[3], 10) * darken)));
+      return `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
+    }
     
     for (let i = 0; i < sortedVariantIdxs.length - 1; i++) {
       const srcIdx = sortedVariantIdxs[i];
@@ -1529,9 +1929,12 @@ function renderFlowCanvas() {
       const srcVariant = variantList[srcIdx];
       const dstVariant = variantList[dstIdx];
       if (!srcVariant || !dstVariant) continue;
+      const noCallLabel = formatAlleleLabel(".");
       
       // Cache key: variant pair IDs (variant objects are the same regardless of which list they come from)
-      const cacheKey = `${srcVariant.id}-${dstVariant.id}`;
+      const aggCutoff = Number(state.aggregateRareAllelesCutoffPct ?? 2.0).toFixed(2);
+      const aggEnabled = state.aggregateRareAlleles === true ? "1" : "0";
+      const cacheKey = `${srcVariant.id}-${dstVariant.id}-agg${aggEnabled}:${aggCutoff}`;
       
       // Get or compute transitions (cached to avoid recalculating on every pan/zoom)
       // The cache includes transitions for variants in the expanded window, so when variants
@@ -1569,7 +1972,11 @@ function renderFlowCanvas() {
             const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
             const colorMatch = colors.fillColor.match(/rgba?\([^)]+,\s*([\d.]+)\)/);
             const alpha = colorMatch ? parseFloat(colorMatch[1]) : 0.65;
-            const ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha * 0.3})`);
+            const isNoCallFlow = (srcLabel === noCallLabel || dstLabel === noCallLabel);
+            const fallbackRibbonAlpha = Math.max(0.36, Math.min(0.62, alpha * 0.95));
+            const noCallAlpha = isNoCallFlow ? fallbackRibbonAlpha * 0.82 : fallbackRibbonAlpha;
+            const noCallDarken = isNoCallFlow ? 0.92 : 0.80;
+            const ribbonColor = toDarkRibbonColor(colors.fillColor, noCallAlpha, noCallDarken);
             
             if (isVertical) {
               // Draw thin connecting ribbon (vertical flow)
@@ -1690,10 +2097,11 @@ function renderFlowCanvas() {
           
           // Check if this is a reference-to-reference flow (background persistence)
           const isRefFlow = srcLabel === srcRefLabel && dstLabel === dstRefLabel;
+          const isNoCallFlow = (srcLabel === noCallLabel || dstLabel === noCallLabel);
           
           ribbonData.push({
             srcNode, dstNode, src0, src1, dst0, dst1,
-            srcLabel, count, isRefFlow
+            srcLabel, count, isRefFlow, isNoCallFlow
           });
         }
       }
@@ -1709,7 +2117,7 @@ function renderFlowCanvas() {
       const viewportBottom = H;
       
       for (const ribbon of ribbonData) {
-        const { srcNode, dstNode, src0, src1, dst0, dst1, srcLabel, count, isRefFlow } = ribbon;
+        const { srcNode, dstNode, src0, src1, dst0, dst1, srcLabel, count, isRefFlow, isNoCallFlow } = ribbon;
         
         // Viewport clipping: skip if both nodes are completely off-screen
         // This avoids rendering ribbons that are outside the visible area
@@ -1746,26 +2154,33 @@ function renderFlowCanvas() {
         // Check if source or destination node is selected
         const isEdgeSelected = srcNode.isSelected || dstNode.isSelected;
         
-        // Sqrt-scaled opacity: prevents dominant flows from drowning minor ones
+        // Sqrt-scaled opacity with higher floor for visibility on light backgrounds.
         const frac = count / Math.max(1, totalHaplotypes);
-        let alpha = 0.05 + 0.25 * Math.sqrt(frac);
+        let alpha = 0.30 + 0.16 * Math.sqrt(frac);
         
         // De-emphasize reference flows further (lower saturation via reduced alpha)
         if (isRefFlow) {
-          alpha *= 0.6; // 40% reduction for background persistence flows
+          alpha *= 0.70; // Keep persistence flows visible but less dominant.
         }
         
         // Boost opacity for edges connected to selected alleles
         if (isEdgeSelected) {
           alpha = Math.min(1.0, alpha * 3.0); // Triple the opacity for selected edges
         }
+        if (isNoCallFlow && !isEdgeSelected) {
+          // Make no-call ribbons a bit lighter/softer than called-allele ribbons.
+          alpha *= 0.82;
+        }
         
         let ribbonColor;
         if (isEdgeSelected) {
           // Use gold highlight color for selected edges
           ribbonColor = `rgba(255, 215, 0, ${alpha.toFixed(3)})`;
+        } else if (isRefFlow) {
+          // Dominant reference ribbons should stay dark-neutral so colored non-ref ribbons stand out.
+          ribbonColor = `rgba(34, 34, 34, ${alpha.toFixed(3)})`;
         } else {
-          ribbonColor = colors.fillColor.replace(/[\d.]+\)$/, `${alpha.toFixed(3)})`);
+          ribbonColor = toDarkRibbonColor(colors.fillColor, alpha, isNoCallFlow ? 0.92 : 0.80);
         }
         
         if (isVertical) {
@@ -1779,8 +2194,8 @@ function renderFlowCanvas() {
     }
   }
   
-  // Store node positions globally for hit testing
-  window._alleleNodePositions = nodePositions;
+  // Accumulate node positions across all flow bands.
+  allBandNodePositions.push(...nodePositions);
   
   // Draw all labels at the very end with tooltip-style rounded rectangles (to bring them to foreground)
   ctx.font = "11px ui-monospace, 'SF Mono', Monaco, 'Consolas', 'Courier New', monospace";
@@ -1791,7 +2206,7 @@ function renderFlowCanvas() {
   const labelTextColor = "rgba(255, 255, 255, 0.95)";
   
   for (const labelInfo of allLabelsToDraw) {
-    const text = labelInfo.label;
+    const text = labelInfo.text || labelInfo.label;
     const textMetrics = ctx.measureText(text);
     const textWidth = textMetrics.width;
     const textHeight = 11; // font size
@@ -1849,7 +2264,14 @@ function renderFlowCanvas() {
       ctx.fillStyle = labelTextColor;
       ctx.fillText(text, labelX, labelY);
     }
+    }
+
+    if (!multiTrack) ctx.restore();
+    })();
   }
+
+  // Store node positions globally for hit testing (across all tracks/bands).
+  window._alleleNodePositions = allBandNodePositions;
 
   // Execute WebGPU render pass after variant columns are added
   // Render to flowWebGPU canvas (separate from tracksWebGPU)
@@ -1884,6 +2306,16 @@ function renderFlowCanvas() {
       flowInstancedRenderer.render(encoder, renderPass);
       renderPass.end();
       flowWebGPUCore.submit([encoder.finish()]);
+
+      // Ensure alleuvial diagram appears on first paint: schedule one deferred redraw
+      // when we have ribbons so the next frame runs again (handles zero-sized canvas on
+      // first run or WebGPU presenting after first frame). Only once per page load.
+      if (hasRibbonInstances && flowWebGPU && !window._flowRibbonDeferDone) {
+        window._flowRibbonDeferDone = true;
+        requestAnimationFrame(() => {
+          if (typeof renderFlowCanvas === 'function') renderFlowCanvas();
+        });
+      }
     } catch (error) {
       console.error("Flow WebGPU render error:", error);
       // Fallback: clear instances and continue with Canvas 2D only

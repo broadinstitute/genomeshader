@@ -75,27 +75,31 @@ function trimZeros(s) {
   return s.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
 }
 function formatBp(bp, spanBp = null) {
-  // Determine precision based on span if provided
-  let kbPrecision = 1;
-  
-  if (spanBp !== null) {
-    if (spanBp < 100) {
-      // Very zoomed in - show full base pair position with commas
-      return `${Math.round(bp).toLocaleString()} bp`;
-    } else if (spanBp < 1_000) {
-      // Zoomed in - show more decimal places for kb
-      kbPrecision = 2;
-    } else if (spanBp < 10_000) {
-      // Moderately zoomed - show 2 decimal places
-      kbPrecision = 2;
-    } else {
-      // Normal zoom - show 1 decimal place
-      kbPrecision = 1;
-    }
+  // At very high zoom, always show exact base-pair coordinates.
+  if (spanBp !== null && spanBp < 100) {
+    return `${Math.round(bp).toLocaleString()} bp`;
   }
-  
-  if (bp >= 1_000_000) return `${trimZeros((bp / 1_000_000).toFixed(2))} Mb`;
-  if (bp >= 1_000)     return `${trimZeros((bp / 1_000).toFixed(kbPrecision))} kb`;
+
+  const precisionFromSpan = (scale, minPrecision, maxPrecision, fallbackPrecision) => {
+    if (spanBp === null || !isFinite(spanBp) || spanBp <= 0) return fallbackPrecision;
+    // Approximate major-tick spacing (ruler targets ~5-10 major ticks).
+    const approxTickInUnit = (spanBp / 8) / scale;
+    if (!isFinite(approxTickInUnit) || approxTickInUnit <= 0) return fallbackPrecision;
+    // Keep at least one more decimal than the tick magnitude to avoid duplicate labels.
+    const precision = Math.ceil(-Math.log10(approxTickInUnit)) + 1;
+    return Math.max(minPrecision, Math.min(maxPrecision, precision));
+  };
+
+  if (bp >= 1_000_000) {
+    const mbPrecision = precisionFromSpan(1_000_000, 2, 6, 2);
+    const mb = (bp / 1_000_000).toFixed(mbPrecision);
+    return spanBp !== null ? `${mb} Mb` : `${trimZeros(mb)} Mb`;
+  }
+  if (bp >= 1_000) {
+    const kbPrecision = precisionFromSpan(1_000, 1, 4, 1);
+    const kb = (bp / 1_000).toFixed(kbPrecision);
+    return spanBp !== null ? `${kb} kb` : `${trimZeros(kb)} kb`;
+  }
   return `${bp} bp`;
 }
 function chooseNiceTickBp(spanBp, desiredTicks) {
@@ -121,9 +125,8 @@ function getTrackLayout() {
   
   // Standard tracks that should have hover-only controls (no reserved space)
   const standardTracks = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
-  
   function isStandardTrack(trackId) {
-    return standardTracks.includes(trackId);
+    return standardTracks.includes(trackId) || (typeof trackId === "string" && trackId.startsWith("flow-"));
   }
 
   if (isVertical) {
@@ -264,8 +267,8 @@ function getTrackLayout() {
 function updateTracksHeight() {
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
-  // Exclude flow and reads from tracks height/width since they're positioned separately
-  const tracksLayout = layout.filter(l => l.track.id !== "flow" && l.track.id !== "reads");
+  // Exclude flow (and flow-N) and reads from tracks height/width since they're positioned separately
+  const tracksLayout = layout.filter(l => l.track.id !== "flow" && !l.track.id.startsWith("flow-") && l.track.id !== "reads");
   if (isVertical) {
     const totalW = tracksLayout.length > 0 
       ? tracksLayout[tracksLayout.length - 1].left + tracksLayout[tracksLayout.length - 1].width

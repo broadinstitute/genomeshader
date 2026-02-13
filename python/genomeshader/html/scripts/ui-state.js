@@ -9,6 +9,7 @@ const state = {
   firstVariantIndex: 0,
   K: 8,
   hoveredVariantIndex: null, // index of hovered variant, or null
+  hoveredVariantId: null,    // id of hovered variant (for multi-track ruler/flow), or null
   expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
   hoveredRepeatTooltip: null, // { text, x, y } or null
   hoveredVariantLabelTooltip: null, // { text, x, y } or null
@@ -25,7 +26,7 @@ const state = {
   pinchStartSpan: null,
   pinchAnchorBp: null,
 
-  // track management
+  // track management (flow tracks are injected from config.variant_tracks when present)
   tracks: [
     { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
@@ -39,23 +40,27 @@ const state = {
   
   // variant layout mode: "equidistant" or "genomic"
   variantLayoutMode: null, // will be initialized from localStorage
+  // aggregate low-frequency alleles in flow nodes/ribbons
+  aggregateRareAlleles: false,
+  aggregateRareAllelesCutoffPct: 2.0,
   
-  // allele order for each variant: Map<variantId, string[]> where array is ['.', '(N bp) refAllele', '(N bp) altAllele1', ...]
+  // allele order for each variant node: Map<trackId::variantId, string[]>
   variantAlleleOrder: new Map(),
   
   // drag state for allele reordering
-  alleleDragState: null, // { variantId, alleleIndex, label, startX, startY, offsetX, offsetY, dropIndex }
+  alleleDragState: null, // { trackId, variantId, alleleIndex, label, startX, startY, offsetX, offsetY, dropIndex }
   
-  // hovered allele node: { variantId, alleleIndex } or null
+  // hovered allele node: { trackId, variantId, alleleIndex } or null
   hoveredAlleleNode: null,
-  
-  // pinned allele labels: Set of strings like "variantId:alleleIndex"
+  hoveredAlleleNodeTooltip: null, // { text, x, y } when hovering an allele node
+
+  // pinned allele labels: Set of keys from makeAlleleSelectionKey()
   pinnedAlleleLabels: new Set(),
   
   // pinned variant labels: Set of variant IDs (strings)
   pinnedVariantLabels: new Set(),
   
-  // selected alleles for multi-select: Set of strings like "variantId:alleleIndex"
+  // selected alleles for multi-select: Set of keys from makeAlleleSelectionKey()
   selectedAlleles: new Set(),
   
   // sample selection state
@@ -78,8 +83,19 @@ const state = {
 // Initialize variant layout mode
 const storedVariantMode = getStoredVariantLayoutMode();
 state.variantLayoutMode = storedVariantMode ?? "equidistant";
+if (typeof getStoredAggregateRareAlleles === "function") {
+  state.aggregateRareAlleles = getStoredAggregateRareAlleles();
+}
+if (typeof getStoredAggregateRareAllelesCutoff === "function") {
+  state.aggregateRareAllelesCutoffPct = getStoredAggregateRareAllelesCutoff();
+}
 // Initialize label after DOM is ready
 setTimeout(() => updateVariantLayoutModeLabel(), 0);
+setTimeout(() => {
+  if (typeof updateAggregateRareAllelesControls === "function") {
+    updateAggregateRareAllelesControls();
+  }
+}, 0);
 
 // Chromosome lengths for bounds checking
 const chrLengths = {
@@ -163,6 +179,21 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
   updateDocumentTitle();
 }
 
+// Replace single "flow" track with one track per variant dataset when config.variant_tracks is provided
+if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && window.GENOMESHADER_CONFIG.variant_tracks.length > 0) {
+  const variantTracksConfig = window.GENOMESHADER_CONFIG.variant_tracks;
+  state.tracks = state.tracks.filter(t => t.id !== "flow");
+  variantTracksConfig.forEach(t => {
+    state.tracks.push({
+      id: t.id,
+      label: t.label,
+      collapsed: false,
+      height: 130,
+      minHeight: 100
+    });
+  });
+}
+
 const main = byId(root, "main");
 const tracksSvg = byId(root, "tracksSvg");
 const tracksContainer = byId(root, "tracksContainer");
@@ -189,6 +220,49 @@ const ribbonTransitionCache = new Map();
 const MAX_CACHE_SIZE = 1000; // Limit cache size to prevent unbounded growth
 let cachedVisibleVariantIds = null; // Track which variants were used for cache
 let cachedViewportRange = null; // Track the viewport range used for cache (with padding)
+
+// Selection/order key helpers (track-aware; with legacy parsing fallback).
+function makeVariantOrderKey(trackId, variantId) {
+  return `${String(trackId || "")}::${String(variantId)}`;
+}
+
+function makeAlleleSelectionKey(trackId, variantId, alleleIndex) {
+  const t = encodeURIComponent(String(trackId || ""));
+  const v = encodeURIComponent(String(variantId));
+  return `t=${t};v=${v};a=${Number(alleleIndex)}`;
+}
+
+function parseAlleleSelectionKey(key) {
+  if (typeof key !== "string") return null;
+
+  // New track-aware format.
+  if (key.startsWith("t=") && key.includes(";v=") && key.includes(";a=")) {
+    const fields = key.split(";");
+    const tField = fields.find(f => f.startsWith("t="));
+    const vField = fields.find(f => f.startsWith("v="));
+    const aField = fields.find(f => f.startsWith("a="));
+    if (!vField || !aField) return null;
+    const alleleIndex = parseInt(aField.slice(2), 10);
+    if (!Number.isFinite(alleleIndex)) return null;
+    return {
+      trackId: tField ? decodeURIComponent(tField.slice(2)) : "",
+      variantId: decodeURIComponent(vField.slice(2)),
+      alleleIndex
+    };
+  }
+
+  // Legacy format: "variantId:alleleIndex"
+  const idx = key.lastIndexOf(":");
+  if (idx <= 0) return null;
+  const variantId = key.slice(0, idx);
+  const alleleIndex = parseInt(key.slice(idx + 1), 10);
+  if (!Number.isFinite(alleleIndex)) return null;
+  return { trackId: "", variantId, alleleIndex };
+}
+
+window.makeVariantOrderKey = makeVariantOrderKey;
+window.makeAlleleSelectionKey = makeAlleleSelectionKey;
+window.parseAlleleSelectionKey = parseAlleleSelectionKey;
 
 // Expanded variant window with padding to reduce cache invalidation during pan/zoom
 // Returns variants within viewport + padding (e.g., 30% on each side)
@@ -252,11 +326,40 @@ async function initWebGPU() {
   }
 }
 
+function scheduleInitialWebGPURender() {
+  let attempts = 0;
+  const maxAttempts = 30;
+
+  const tryRender = () => {
+    attempts += 1;
+    if (typeof window.renderAll === "function") {
+      // Render once now and once on the next frame to handle first-layout settle.
+      window.renderAll();
+      requestAnimationFrame(() => {
+        if (typeof window.renderAll === "function") {
+          window.renderAll();
+        }
+      });
+      return;
+    }
+
+    if (attempts < maxAttempts) {
+      setTimeout(tryRender, 50);
+    }
+  };
+
+  tryRender();
+}
+
 // Initialize WebGPU after a short delay to ensure DOM is ready
 setTimeout(() => {
-  initWebGPU().catch(err => {
-    console.error("WebGPU initialization error:", err);
-  });
+  initWebGPU()
+    .then((ok) => {
+      if (ok) scheduleInitialWebGPURender();
+    })
+    .catch(err => {
+      console.error("WebGPU initialization error:", err);
+    });
 }, 100);
 
 // Initialize orientation state after DOM elements are available

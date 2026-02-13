@@ -56,13 +56,17 @@ const getElementById = (id) => {
 };
 
 const app = querySelector(".app");
-const sidebar = getElementById("sidebar");
+const sidebar = getElementById("sidebarLeft") || getElementById("sidebar");
 const menuBtn = getElementById("menuBtn");
 const ctxMenu = getElementById("ctxMenu");
 const themeItem = getElementById("themeItem");
 const themeLabel = getElementById("themeLabel");
 const orientationItem = getElementById("orientationItem");
 const orientationLabel = getElementById("orientationLabel");
+const aggregateRareAllelesItem = getElementById("aggregateRareAllelesItem");
+const aggregateRareAllelesToggle = getElementById("aggregateRareAllelesToggle");
+const aggregateRareAllelesCutoffItem = getElementById("aggregateRareAllelesCutoffItem");
+const aggregateRareAllelesCutoffInput = getElementById("aggregateRareAllelesCutoffInput");
 
 // Debug: Check if elements are found
 
@@ -90,11 +94,7 @@ function updateSidebarState() {
   } else {
     app.classList.remove("sidebar-collapsed");
   }
-  // Trigger resize after CSS transition completes to ensure tracks re-render
-  // The CSS transition is 0.2s, so wait for it to complete
-  setTimeout(() => {
-    window.dispatchEvent(new Event('resize'));
-  }, 220);
+  // Let ResizeObserver-driven rendering handle transition layout changes.
 }
 
 // Make sidebar border clickable - always bind regardless of hostMode
@@ -189,6 +189,35 @@ function updateVariantLayoutModeLabel() {
 function getVariantLayoutMode() {
   return state.variantLayoutMode || "equidistant";
 }
+function getStoredAggregateRareAlleles() {
+  return localStorage.getItem("genomeshader.aggregateRareAlleles") === "true";
+}
+function setAggregateRareAlleles(enabled) {
+  const v = enabled === true;
+  localStorage.setItem("genomeshader.aggregateRareAlleles", v ? "true" : "false");
+  state.aggregateRareAlleles = v;
+  updateAggregateRareAllelesControls();
+}
+function getStoredAggregateRareAllelesCutoff() {
+  const raw = parseFloat(localStorage.getItem("genomeshader.aggregateRareAllelesCutoffPct"));
+  if (!isFinite(raw)) return 2.0;
+  return Math.max(0, Math.min(50, raw));
+}
+function setAggregateRareAllelesCutoff(cutoffPct) {
+  const clamped = Math.max(0, Math.min(50, Number(cutoffPct)));
+  localStorage.setItem("genomeshader.aggregateRareAllelesCutoffPct", String(clamped));
+  state.aggregateRareAllelesCutoffPct = clamped;
+  updateAggregateRareAllelesControls();
+}
+function updateAggregateRareAllelesControls() {
+  if (aggregateRareAllelesToggle) {
+    aggregateRareAllelesToggle.checked = state.aggregateRareAlleles === true;
+  }
+  if (aggregateRareAllelesCutoffInput) {
+    aggregateRareAllelesCutoffInput.value = String((state.aggregateRareAllelesCutoffPct ?? 2.0).toFixed(1));
+    aggregateRareAllelesCutoffInput.disabled = state.aggregateRareAlleles !== true;
+  }
+}
 
 const stored = getStoredTheme();
 document.documentElement.setAttribute("data-theme", stored ?? "auto");
@@ -263,6 +292,7 @@ function openMenu() {
 
   // Update variant layout mode label when menu opens
   updateVariantLayoutModeLabel();
+  updateAggregateRareAllelesControls();
 }
 function closeMenu() {
   ctxMenu.classList.remove("open");
@@ -375,6 +405,39 @@ if (variantLayoutModeItem) {
     const next = (cur === "equidistant") ? "genomic" : "equidistant";
     setVariantLayoutMode(next);
     renderAll();
+  });
+}
+
+if (aggregateRareAllelesItem && aggregateRareAllelesToggle) {
+  aggregateRareAllelesItem.addEventListener("click", (e) => {
+    if (e.target === aggregateRareAllelesToggle) return;
+    const next = !(state.aggregateRareAlleles === true);
+    setAggregateRareAlleles(next);
+    renderAll();
+  });
+  aggregateRareAllelesToggle.addEventListener("change", () => {
+    setAggregateRareAlleles(aggregateRareAllelesToggle.checked);
+    renderAll();
+  });
+}
+if (aggregateRareAllelesCutoffItem && aggregateRareAllelesCutoffInput) {
+  aggregateRareAllelesCutoffItem.addEventListener("click", (e) => {
+    if (e.target === aggregateRareAllelesCutoffInput) return;
+    aggregateRareAllelesCutoffInput.focus();
+  });
+  const applyCutoffFromInput = () => {
+    const raw = parseFloat(aggregateRareAllelesCutoffInput.value);
+    const next = isFinite(raw) ? raw : 2.0;
+    setAggregateRareAllelesCutoff(next);
+    renderAll();
+  };
+  aggregateRareAllelesCutoffInput.addEventListener("change", applyCutoffFromInput);
+  aggregateRareAllelesCutoffInput.addEventListener("blur", applyCutoffFromInput);
+  aggregateRareAllelesCutoffInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      applyCutoffFromInput();
+      aggregateRareAllelesCutoffInput.blur();
+    }
   });
 }
 

@@ -27,7 +27,8 @@ pub struct Session {
     reads_cohort: HashSet<(Url, String)>,
     loci: HashSet<(String, u64, u64)>,
     staged_tree: HashMap<String, IntervalMap<u64, PathBuf>>,
-    variant_files: HashSet<String>,
+    /// Each element is a group of variant files (one track). attach_variants adds a new group.
+    variant_file_groups: Vec<Vec<String>>,
 }
 
 #[pymethods]
@@ -38,7 +39,7 @@ impl Session {
             reads_cohort: HashSet::new(),
             loci: HashSet::new(),
             staged_tree: HashMap::new(),
-            variant_files: HashSet::new(),
+            variant_file_groups: Vec::new(),
         }
     }
 
@@ -193,6 +194,7 @@ impl Session {
         )
     }
 
+    /// Append a new variant track (group of files). Each call adds a separate track.
     fn attach_variants(&mut self, variant_files: Vec<String>) -> PyResult<()> {
         for variant_file in &variant_files {
             if !variant_file.ends_with(".bcf") && !variant_file.ends_with(".vcf") && !variant_file.ends_with(".vcf.gz") {
@@ -202,17 +204,17 @@ impl Session {
                     )
                 );
             }
-
-            self.variant_files.insert(variant_file.clone());
         }
-
+        self.variant_file_groups.push(variant_files);
         Ok(())
     }
 
+    /// Returns variant data for the locus. DataFrame includes column "variant_track_id" (0, 1, ...)
+    /// so the caller can split rows by track.
     fn get_locus_variants(&self, locus: String) -> PyResult<PyDataFrame> {
         let l_fmt = self.parse_locus(locus.clone())?;
 
-        if self.variant_files.is_empty() {
+        if self.variant_file_groups.is_empty() {
             return Err(
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(
                     format!("No variant files attached. Use attach_variants() first.")
@@ -222,27 +224,52 @@ impl Session {
 
         let mut combined_df: Option<DataFrame> = None;
 
-        for variant_file in &self.variant_files {
-            match variants::extract_variants(variant_file, &l_fmt.0, &l_fmt.1, &l_fmt.2) {
-                Ok(df) => {
-                    if let Some(existing_df) = combined_df {
-                        // Combine with existing dataframe
-                        combined_df = Some(
-                            existing_df
-                                .vstack(&df)
-                                .map_err(|e| {
-                                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                                        format!("Failed to combine variant dataframes: {}", e)
-                                    )
-                                })?
-                        );
-                    } else {
-                        combined_df = Some(df);
+        for (group_index, file_list) in self.variant_file_groups.iter().enumerate() {
+            let mut group_df: Option<DataFrame> = None;
+            for variant_file in file_list {
+                match variants::extract_variants(variant_file, &l_fmt.0, &l_fmt.1, &l_fmt.2) {
+                    Ok(df) => {
+                        if let Some(existing) = group_df {
+                            group_df = Some(
+                                existing
+                                    .vstack(&df)
+                                    .map_err(|e| {
+                                        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                                            format!("Failed to combine variant dataframes: {}", e)
+                                        )
+                                    })?
+                            );
+                        } else {
+                            group_df = Some(df);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to extract variants from {}: {}", variant_file, e);
                     }
                 }
-                Err(e) => {
-                    // Log error but continue with other files
-                    eprintln!("Warning: Failed to extract variants from {}: {}", variant_file, e);
+            }
+            if let Some(mut df) = group_df {
+                let n = df.height();
+                let track_ids: Vec<u32> = (0..n).map(|_| group_index as u32).collect();
+                df.with_column(
+                    Series::new("variant_track_id", track_ids)
+                ).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        format!("Failed to add variant_track_id: {}", e)
+                    )
+                })?;
+                if let Some(existing_df) = combined_df {
+                    combined_df = Some(
+                        existing_df
+                            .vstack(&df)
+                            .map_err(|e| {
+                                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                                    format!("Failed to combine variant dataframes: {}", e)
+                                )
+                            })?
+                    );
+                } else {
+                    combined_df = Some(df);
                 }
             }
         }
@@ -261,7 +288,7 @@ impl Session {
         self.reads_cohort = HashSet::new();
         self.loci = HashSet::new();
         self.staged_tree = HashMap::new();
-        self.variant_files = HashSet::new();
+        self.variant_file_groups = Vec::new();
 
         Ok(())
     }

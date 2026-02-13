@@ -64,7 +64,7 @@ function renderTracks() {
   const repeatsLayout = layout.find(l => l.track.id === "repeats");
   const rulerLayout = layout.find(l => l.track.id === "ruler");
   const referenceLayout = layout.find(l => l.track.id === "reference");
-  const flowLayout = layout.find(l => l.track.id === "flow");
+  const flowLayout = layout.find(l => l.track.id === "flow") || layout.find(l => l.track.id && l.track.id.startsWith("flow-"));
   
   // Calculate ideogram track bounds to exclude from shading (including track controls header)
   let ideogramTrackStart = 0;
@@ -1211,12 +1211,16 @@ function renderTracks() {
     }
   }
 
-  // Variant marks
-  for (let idx = 0; idx < variants.length; idx++) {
-    const v = variants[idx];
+  // Variant marks: use all variant tracks so every track adds a marker to the ruler
+  const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  const rulerVariants = variantTracksConfig.length > 0
+    ? variantTracksConfig.flatMap(t => t.variants_data || [])
+    : variants;
+  for (let idx = 0; idx < rulerVariants.length; idx++) {
+    const v = rulerVariants[idx];
     if (v.pos < state.startBp || v.pos > state.endBp) continue;
     const pos = genomePos(v.pos);
-    const isHovered = state.hoveredVariantIndex === idx;
+    const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
     const strokeWidth = isHovered ? 2.5 : 1.2;
     const circleStrokeWidth = isHovered ? 2.2 : 1.4;
     const isIns = isInsertion(v);
@@ -1244,10 +1248,12 @@ function renderTracks() {
     }
     lineEl.addEventListener("mouseenter", () => {
       state.hoveredVariantIndex = idx;
+      state.hoveredVariantId = v.id;
       renderHoverOnly();
     });
     lineEl.addEventListener("mouseleave", () => {
       state.hoveredVariantIndex = null;
+      state.hoveredVariantId = null;
       renderHoverOnly();
     });
     
@@ -1332,10 +1338,12 @@ function renderTracks() {
     }
     circleEl.addEventListener("mouseenter", () => {
       state.hoveredVariantIndex = idx;
+      state.hoveredVariantId = v.id;
       renderHoverOnly();
     });
     circleEl.addEventListener("mouseleave", () => {
       state.hoveredVariantIndex = null;
+      state.hoveredVariantId = null;
       renderHoverOnly();
     });
     // Pointerdown handler to toggle insertion expansion
