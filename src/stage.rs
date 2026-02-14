@@ -39,8 +39,7 @@ fn stage_data_from_one_file(
     reads_url: &Url,
     cohort: &String,
     loci: &HashSet<(String, u64, u64)>,
-    cache_path: &PathBuf,
-    use_cache: bool
+    cache_path: &PathBuf
 ) -> Result<DataFrame> {
     let mut bam = open_bam(reads_url, cache_path)?;
     let mut outer_df = DataFrame::default();
@@ -58,14 +57,13 @@ fn stage_data_from_one_file(
 fn stage_data_from_all_files(
     reads_cohort: &HashSet<(Url, String)>,
     loci: &HashSet<(String, u64, u64)>,
-    cache_path: &PathBuf,
-    use_cache: bool
+    cache_path: &PathBuf
 ) -> Result<Vec<DataFrame>> {
     let dfs: Vec<_> = reads_cohort
         .par_iter()
         .map(|(reads_url, cohort)| {
             let op = || {
-                let df = stage_data_from_one_file(reads_url, cohort, loci, cache_path, use_cache)?;
+                let df = stage_data_from_one_file(reads_url, cohort, loci, cache_path)?;
                 Ok(df)
             };
 
@@ -92,26 +90,46 @@ fn write_to_disk(
 
     let mut locus_to_file = HashMap::new();
 
-    let groups = outer_df.group_by(["chunk"]).unwrap();
-    if let Ok(group) = groups.groups() {
-        let l_fmt = group.column("chunk").unwrap().str().unwrap().get(0).unwrap().to_string();
-        let parts: Vec<&str> = l_fmt.split(|c| c == ':' || c == '-').collect();
+    if outer_df.height() == 0 {
+        return Ok(locus_to_file);
+    }
+
+    let chunk_values: Vec<String> = outer_df
+        .column("chunk")?
+        .str()?
+        .into_iter()
+        .flatten()
+        .map(|s| s.to_string())
+        .collect();
+
+    let unique_chunks: HashSet<String> = chunk_values.into_iter().collect();
+
+    for chunk in unique_chunks {
+        let parts: Vec<&str> = chunk.split(|c| c == ':' || c == '-').collect();
+        if parts.len() != 3 {
+            continue;
+        }
 
         let chr = parts[0].to_string();
-        let start = parts[1].parse::<u64>().unwrap();
-        let stop = parts[2].parse::<u64>().unwrap();
+        let start = match parts[1].parse::<u64>() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let stop = match parts[2].parse::<u64>() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
 
         let mut subset_df = outer_df
             .clone()
             .lazy()
-            .filter(col("chunk").eq(lit(l_fmt)))
+            .filter(col("chunk").eq(lit(chunk.clone())))
             .collect()?
             .drop("chunk")?;
 
         let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
-        let file = std::fs::File::create(&filename).unwrap();
+        let file = std::fs::File::create(&filename)?;
         let writer = ParquetWriter::new(file);
-
         let _ = writer.finish(&mut subset_df);
         locus_to_file.insert((chr, start, stop), filename);
     }
@@ -246,10 +264,36 @@ pub fn stage_data(
     // that the Jupyter notebook user doesn't get confused by intermediate
     // error messages that are nothing to worry about. The gag will end
     // automatically when it goes out of scope at the end of the function.
-    let stderr_gag = Gag::stderr().unwrap();
+    let _stderr_gag = Gag::stderr().unwrap();
 
-    let dfs = stage_data_from_all_files(reads_cohort, loci, cache_path, use_cache)?;
-    let locus_to_file = write_to_disk(dfs, cache_path)?;
+    let reads_paths: HashSet<(String, String)> = reads_cohort
+        .iter()
+        .map(|(url, cohort)| (url.to_string(), cohort.to_string()))
+        .collect();
+
+    let mut loci_to_fetch: HashSet<(String, u64, u64)> = HashSet::new();
+    let mut locus_to_file: HashMap<(String, u64, u64), PathBuf> = HashMap::new();
+
+    for (chr, start, stop) in loci {
+        let should_fetch = if use_cache {
+            locus_should_be_fetched(chr, start, stop, &reads_paths, cache_path)
+        } else {
+            true
+        };
+
+        if should_fetch {
+            loci_to_fetch.insert((chr.to_string(), *start, *stop));
+        } else {
+            let filename = cache_path.join(format!("{}_{}_{}.parquet", chr, start, stop));
+            locus_to_file.insert((chr.to_string(), *start, *stop), filename);
+        }
+    }
+
+    if !loci_to_fetch.is_empty() {
+        let dfs = stage_data_from_all_files(reads_cohort, &loci_to_fetch, cache_path)?;
+        let written = write_to_disk(dfs, cache_path)?;
+        locus_to_file.extend(written);
+    }
 
     Ok(locus_to_file)
 }

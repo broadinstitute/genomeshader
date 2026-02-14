@@ -52,7 +52,7 @@ class GenomeShader:
 
         requests_cache.install_cache('gs_rest_cache')
 
-        self._session = gs._init()
+        self._session = gs._init(self.gcs_session_dir)
         
         # Localhost HTTP server for serving staged files
         self._localhost_server: Optional[HTTPServer] = None
