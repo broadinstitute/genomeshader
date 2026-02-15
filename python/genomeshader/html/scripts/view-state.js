@@ -1,11 +1,64 @@
 // Variant data: load from config or use demo data
 // -----------------------------
 let variants = [];
+let loadedVariantTracks = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+
+// Prefer loading heavy variant payload via Jupyter comms (works in Terra).
+if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_payload_via_comm) {
+  try {
+    const response = await sendCommMessage(
+      "fetch_variant_payload",
+      { view_id: window.GENOMESHADER_VIEW_ID },
+      120000
+    );
+    if (response && response.type === "fetch_variant_payload_response" && response.payload) {
+      const payload = response.payload;
+      if (payload && Array.isArray(payload.variant_tracks)) {
+        loadedVariantTracks = payload.variant_tracks;
+        window.GENOMESHADER_CONFIG.variant_tracks = payload.variant_tracks;
+      }
+      if (payload && Array.isArray(payload.insertion_variants_lookup)) {
+        window.GENOMESHADER_CONFIG.insertion_variants_lookup = payload.insertion_variants_lookup;
+      }
+      console.log("Loaded variant payload via Jupyter comms");
+    } else if (response && response.type === "fetch_variant_payload_error") {
+      console.warn("Failed to fetch variant payload via comms:", response.error);
+    }
+  } catch (err) {
+    console.warn("Failed to fetch variant payload via comms:", err);
+  }
+}
+
+// Fallback for environments where comms are unavailable.
+if (
+  window.GENOMESHADER_CONFIG &&
+  window.GENOMESHADER_CONFIG.variant_payload_url &&
+  (!loadedVariantTracks || loadedVariantTracks.length === 0 || !loadedVariantTracks[0].variants_data)
+) {
+  try {
+    const resp = await fetch(window.GENOMESHADER_CONFIG.variant_payload_url, { cache: "no-store" });
+    if (resp.ok) {
+      const payload = await resp.json();
+      if (payload && Array.isArray(payload.variant_tracks)) {
+        loadedVariantTracks = payload.variant_tracks;
+        window.GENOMESHADER_CONFIG.variant_tracks = payload.variant_tracks;
+      }
+      if (payload && Array.isArray(payload.insertion_variants_lookup)) {
+        window.GENOMESHADER_CONFIG.insertion_variants_lookup = payload.insertion_variants_lookup;
+      }
+      console.log(`Loaded variant payload from URL: ${window.GENOMESHADER_CONFIG.variant_payload_url}`);
+    } else {
+      console.warn(`Failed to fetch variant payload URL (${resp.status}):`, window.GENOMESHADER_CONFIG.variant_payload_url);
+    }
+  } catch (err) {
+    console.warn("Failed to fetch variant payload URL:", err);
+  }
+}
 // Prefer variant_tracks (one entry per variant dataset); fall back to legacy variants_data
-if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && window.GENOMESHADER_CONFIG.variant_tracks.length > 0) {
+if (loadedVariantTracks && loadedVariantTracks.length > 0) {
   // Use first track's data for global `variants` (used by code that expects a single list)
-  variants = window.GENOMESHADER_CONFIG.variant_tracks[0].variants_data || [];
-  console.log(`Loaded ${window.GENOMESHADER_CONFIG.variant_tracks.length} variant track(s) from config`);
+  variants = loadedVariantTracks[0].variants_data || [];
+  console.log(`Loaded ${loadedVariantTracks.length} variant track(s) from config`);
 } else if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variants_data) {
   const data = window.GENOMESHADER_CONFIG.variants_data;
   if (Array.isArray(data) && data.length > 0) {

@@ -32,6 +32,7 @@ pub struct Session {
     cache_base_uri: Option<String>,
     /// Each element is a group of variant files (one track). attach_variants adds a new group.
     variant_file_groups: Vec<Vec<String>>,
+    variant_df_cache: HashMap<String, DataFrame>,
 }
 
 impl Session {
@@ -109,6 +110,31 @@ impl Session {
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(
                     format!("Failed to collect parquet uri '{}': {}", uri, e)
+                )
+            })
+    }
+
+    fn read_parquet_uri_filtered(
+        &self,
+        uri: &str,
+        start: u64,
+        stop: u64,
+    ) -> PyResult<DataFrame> {
+        LazyFrame::scan_parquet(uri, Default::default())
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("Failed to open parquet uri '{}': {}", uri, e)
+                )
+            })?
+            .filter(
+                col("position")
+                    .gt_eq(lit(start))
+                    .and(col("position").lt_eq(lit(stop))),
+            )
+            .collect()
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("Failed to collect filtered parquet uri '{}': {}", uri, e)
                 )
             })
     }
@@ -248,19 +274,14 @@ impl Session {
         hasher.finish()
     }
 
-    fn filter_variant_df(&self, df: DataFrame, start: u64, stop: u64) -> PyResult<DataFrame> {
-        df.lazy()
-            .filter(
-                col("position")
-                    .gt_eq(lit(start))
-                    .and(col("position").lt_eq(lit(stop))),
-            )
-            .collect()
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("Failed to filter cached variant data: {}", e)
-                )
-            })
+    fn variant_cache_key(
+        &self,
+        chr: &str,
+        start: u64,
+        stop: u64,
+        dataset_hash: u64,
+    ) -> String {
+        format!("{}:{}-{}:{}", chr, start, stop, dataset_hash)
     }
 
     fn compute_variants_for_locus(
@@ -423,6 +444,7 @@ impl Session {
             staged_tree: HashMap::new(),
             cache_base_uri,
             variant_file_groups: Vec::new(),
+            variant_df_cache: HashMap::new(),
         }
     }
 
@@ -584,6 +606,7 @@ impl Session {
             }
         }
         self.variant_file_groups.push(variant_files);
+        self.variant_df_cache.clear();
         Ok(())
     }
 
@@ -601,6 +624,11 @@ impl Session {
         }
 
         let dataset_hash = self.variant_dataset_hash();
+        let cache_key = self.variant_cache_key(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash);
+
+        if let Some(cached_df) = self.variant_df_cache.get(&cache_key) {
+            return Ok(PyDataFrame(cached_df.clone()));
+        }
 
         if let Some((staged_start, staged_stop, _staged_marker)) =
             self.find_covering_variant_staged_file(&l_fmt.0, l_fmt.1, l_fmt.2)
@@ -611,8 +639,10 @@ impl Session {
                 staged_stop,
                 dataset_hash,
             ) {
-                if let Ok(staged_df) = self.read_parquet_uri(&remote_uri) {
-                    let filtered = self.filter_variant_df(staged_df, l_fmt.1, l_fmt.2)?;
+                if let Ok(filtered) =
+                    self.read_parquet_uri_filtered(&remote_uri, l_fmt.1, l_fmt.2)
+                {
+                    self.variant_df_cache.insert(cache_key.clone(), filtered.clone());
                     return Ok(PyDataFrame(filtered));
                 }
             }
@@ -622,6 +652,7 @@ impl Session {
             self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
         {
             if let Ok(cached_df) = self.read_parquet_uri(&remote_uri) {
+                self.variant_df_cache.insert(cache_key.clone(), cached_df.clone());
                 return Ok(PyDataFrame(cached_df));
             }
         }
@@ -650,6 +681,8 @@ impl Session {
                 .or_insert(PathBuf::from(remote_uri));
         }
 
+        self.variant_df_cache.insert(cache_key, df.clone());
+
         Ok(PyDataFrame(df))
     }
 
@@ -658,6 +691,7 @@ impl Session {
         self.loci = HashSet::new();
         self.staged_tree = HashMap::new();
         self.variant_file_groups = Vec::new();
+        self.variant_df_cache = HashMap::new();
 
         Ok(())
     }

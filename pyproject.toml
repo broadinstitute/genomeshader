@@ -10,6 +10,7 @@ dependencies = [
     "requests",
     "requests-cache",
     "ipywidgets>=8.0.0",
+    "google-cloud-storage",
 ]
 
 [tool.maturin]

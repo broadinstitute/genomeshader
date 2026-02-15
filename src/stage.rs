@@ -216,40 +216,45 @@ pub fn fetch_reads_from_bam_urls(
     if reads_urls.is_empty() {
         return Ok(DataFrame::default());
     }
-    
-    let mut all_dfs = Vec::new();
-    
-    for reads_url in reads_urls {
-        match open_bam(reads_url, cache_path) {
-            Ok(mut bam) => {
-                match extract_reads(&mut bam, reads_url, cohort, chr, start, stop) {
-                    Ok(df) => {
-                        if df.height() > 0 {
-                            all_dfs.push(df);
+
+    // Parallelize per-BAM fetch while preserving deterministic merge order.
+    let mut indexed_dfs: Vec<(usize, DataFrame)> = reads_urls
+        .par_iter()
+        .enumerate()
+        .filter_map(|(idx, reads_url)| {
+            match open_bam(reads_url, cache_path) {
+                Ok(mut bam) => {
+                    match extract_reads(&mut bam, reads_url, cohort, chr, start, stop) {
+                        Ok(df) if df.height() > 0 => Some((idx, df)),
+                        Ok(_) => None,
+                        Err(e) => {
+                            eprintln!("Warning: Failed to extract reads from {}: {}", reads_url, e);
+                            None
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Warning: Failed to extract reads from {}: {}", reads_url, e);
-                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to open BAM file {}: {}", reads_url, e);
+                    None
                 }
             }
-            Err(e) => {
-                eprintln!("Warning: Failed to open BAM file {}: {}", reads_url, e);
-            }
-        }
-    }
-    
+        })
+        .collect();
+
+    indexed_dfs.sort_by_key(|(idx, _)| *idx);
+    let all_dfs: Vec<DataFrame> = indexed_dfs.into_iter().map(|(_, df)| df).collect();
+
     if all_dfs.is_empty() {
         // Return empty DataFrame with correct schema
         return Ok(DataFrame::default());
     }
-    
+
     // Merge all DataFrames
     let mut result = all_dfs[0].clone();
     for df in all_dfs.iter().skip(1) {
         let _ = result.vstack_mut(df);
     }
-    
+
     result.align_chunks();
     Ok(result)
 }
