@@ -948,6 +948,11 @@ svg.overlay {
   z-index: 1;
 }
 
+/* Keep tracks SVG interactive (ruler insertion hover/click) */
+#tracksWebGPU {
+  pointer-events: none;
+}
+
 /* Single-track legacy flow canvas also sits above WebGPU */
 .flow > canvas.canvas {
   z-index: 2;

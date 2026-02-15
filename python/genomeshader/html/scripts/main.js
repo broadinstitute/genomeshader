@@ -337,7 +337,8 @@ function renderSmartTrack(trackId) {
               // Calculate actual base height
               const nextBp = elem.start + 1;
               const nextY = (nextBp <= state.endBp ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(state.endBp, coordHeight));
-              const actualBaseHeight = Math.max(2, Math.abs(nextY - ey));
+              const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
+              const actualBaseHeight = Math.max(1, Math.abs(nextY - ey) - gapAfterPx);
               
               // Color based on nucleotide
               const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
@@ -345,7 +346,7 @@ function renderSmartTrack(trackId) {
               const bgColor = nucColors[nuc] || '#9C27B0';
               
               // Draw background
-              const drawHeight = Math.max(2, actualBaseHeight);
+              const drawHeight = Math.max(1, actualBaseHeight - BASE_TILE_INSET_PX);
               ctx.fillStyle = bgColor;
               ctx.fillRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight);
               
@@ -377,7 +378,7 @@ function renderSmartTrack(trackId) {
     for (let idx = 0; idx < rulerVariants.length; idx++) {
       const v = rulerVariants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
-      const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
+      const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
       ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
       ctx.globalAlpha = isHovered ? 0.7 : 0.3;
       ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -474,12 +475,9 @@ function renderSmartTrack(trackId) {
         }
         
         if (minStart !== Infinity && maxEnd !== -Infinity) {
-          // Use simple linear transformation (self-consistent, no dependency on global state.pxPerBp)
-          const leftPad = 16, rightPad = 16;
-          const innerW = W - leftPad - rightPad;
-          const span = state.endBp - state.startBp;
-          const x1 = leftPad + ((minStart - state.startBp) / span) * innerW;
-          const x2 = leftPad + ((maxEnd - state.startBp) / span) * innerW;
+          // Use canonical mapping so collapsed pseudo-read aligns with insertion-expanded coordinates.
+          const x1 = xGenomeCanonical(minStart, W);
+          const x2 = xGenomeCanonical(maxEnd, W);
           
           const y = top + 0 * rowH + 2;
           const h = rowH - 4;
@@ -525,12 +523,9 @@ function renderSmartTrack(trackId) {
           }
           if (!read.isForward) baseAlpha *= 0.7;
           
-          // Use simple linear transformation (self-consistent, no dependency on global state.pxPerBp)
-          const leftPad = 16, rightPad = 16;
-          const innerW = W - leftPad - rightPad;
-          const span = state.endBp - state.startBp;
-          const x1 = leftPad + ((read.start - state.startBp) / span) * innerW;
-          const x2 = leftPad + ((read.end - state.startBp) / span) * innerW;
+          // Use canonical mapping so read spans align with insertion-expanded coordinates.
+          const x1 = xGenomeCanonical(read.start, W);
+          const x2 = xGenomeCanonical(read.end, W);
           
           const y = top + read.row * rowH + 2;
           const h = rowH - 4;
@@ -637,7 +632,8 @@ function renderSmartTrack(trackId) {
               // Calculate actual base width
               const nextBp = elem.start + 1;
               const nextX = nextBp <= state.endBp ? xGenomeCanonical(nextBp, W) : xGenomeCanonical(state.endBp, W);
-              const actualBaseWidth = Math.max(2, Math.abs(nextX - ex));
+              const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
+              const actualBaseWidth = Math.max(1, Math.abs(nextX - ex) - gapAfterPx);
               
               // Color based on nucleotide
               const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
@@ -650,7 +646,7 @@ function renderSmartTrack(trackId) {
               const b = parseInt(bgColor.slice(5, 7), 16);
               
               // Draw background
-              const drawWidth = Math.max(2, actualBaseWidth);
+              const drawWidth = Math.max(1, actualBaseWidth - BASE_TILE_INSET_PX);
               ctx.fillStyle = `rgba(${r},${g},${b},${elemAlpha})`;
               ctx.fillRect(ex, ey + 1, drawWidth, eh - 2);
               
@@ -677,7 +673,7 @@ function renderSmartTrack(trackId) {
     for (let idx = 0; idx < rulerVariants.length; idx++) {
       const v = rulerVariants[idx];
       if (v.pos < state.startBp || v.pos > state.endBp) continue;
-      const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
+      const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
       ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
       ctx.globalAlpha = isHovered ? 0.7 : 0.3;
       ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -1437,9 +1433,18 @@ function updateLocusTrackHover() {
 // Helpers for multi-track variant hover: flat list of all variants (ruler order) and index/by-id lookup
 function getRulerVariants() {
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
-  return variantTracksConfig.length > 0
+  const rawVariants = variantTracksConfig.length > 0
     ? variantTracksConfig.flatMap(t => t.variants_data || [])
     : variants;
+  const seenIds = new Set();
+  const deduped = [];
+  for (const v of rawVariants) {
+    const id = String(v.id);
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+    deduped.push(v);
+  }
+  return deduped;
 }
 function getRulerVariantIndex(variantId) {
   const rulerVariants = getRulerVariants();
@@ -1836,12 +1841,13 @@ function renderAll() {
 }
 
 // Hit testing for WebGPU-rendered repeats (only add listeners once)
-if (tracksWebGPU && !tracksWebGPU._tooltipListenersAdded) {
-  tracksWebGPU._tooltipListenersAdded = true;
+const tracksHoverTarget = tracksContainer || tracksSvg;
+if (tracksHoverTarget && !tracksHoverTarget._tooltipListenersAdded) {
+  tracksHoverTarget._tooltipListenersAdded = true;
   const tracksWebGPUHoverHandler = (e) => {
     if (!webgpuSupported || repeatHitTestData.length === 0) return;
     
-    const rect = tracksWebGPU.getBoundingClientRect();
+    const rect = tracksHoverTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const isVertical = isVerticalMode();
@@ -1908,9 +1914,9 @@ if (tracksWebGPU && !tracksWebGPU._tooltipListenersAdded) {
   
   // Throttle mousemove handler to 16ms (60fps)
   const throttledTracksWebGPUHoverHandler = throttle(tracksWebGPUHoverHandler, 16);
-  tracksWebGPU.addEventListener('mousemove', throttledTracksWebGPUHoverHandler);
+  tracksHoverTarget.addEventListener('mousemove', throttledTracksWebGPUHoverHandler);
   
-  tracksWebGPU.addEventListener('mouseleave', () => {
+  tracksHoverTarget.addEventListener('mouseleave', () => {
     state.hoveredRepeatTooltip = null;
     updateTooltip();
   });
@@ -4824,6 +4830,70 @@ function bindInteractions(root, state, main) {
     return { destroy() {} };
   }
 
+  function toggleInsertionVariantById(variantId) {
+    const id = String(variantId);
+    if (!id) return false;
+    if (state.expandedInsertions.has(id)) {
+      state.expandedInsertions.delete(id);
+    } else {
+      state.expandedInsertions.add(id);
+    }
+    renderAll();
+    return true;
+  }
+
+  function tryToggleInsertionFromRulerHit(e) {
+    if (e.button !== 0) return false;
+    if (!tracksContainer) return false;
+    const layout = getTrackLayout();
+    const rulerLayout = layout.find(l => l.track.id === "ruler");
+    if (!rulerLayout || rulerLayout.track.collapsed) return false;
+
+    const rect = tracksContainer.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) return false;
+
+    const isVertical = isVerticalMode();
+    const markerHalfThickness = 5;
+    const rulerBandHalfThickness = 24;
+    const rulerVariants = getRulerVariants();
+
+    let nearest = null;
+    let nearestDist = Infinity;
+
+    if (isVertical) {
+      const baseX = (rulerLayout.contentLeft + 8) + 14;
+      if (Math.abs(x - baseX) > rulerBandHalfThickness) return false;
+      for (const v of rulerVariants) {
+        const pos = Number(v.pos);
+        if (!Number.isFinite(pos) || pos < state.startBp || pos > state.endBp || !isInsertion(v)) continue;
+        const markerY = yGenome(pos);
+        const d = Math.abs(y - markerY);
+        if (d <= markerHalfThickness && d < nearestDist) {
+          nearestDist = d;
+          nearest = v;
+        }
+      }
+    } else {
+      const baseY = (rulerLayout.contentTop + 8) + 14;
+      if (Math.abs(y - baseY) > rulerBandHalfThickness) return false;
+      for (const v of rulerVariants) {
+        const pos = Number(v.pos);
+        if (!Number.isFinite(pos) || pos < state.startBp || pos > state.endBp || !isInsertion(v)) continue;
+        const markerX = xGenome(pos);
+        const d = Math.abs(x - markerX);
+        if (d <= markerHalfThickness && d < nearestDist) {
+          nearestDist = d;
+          nearest = v;
+        }
+      }
+    }
+
+    if (!nearest) return false;
+    return toggleInsertionVariantById(nearest.id);
+  }
+
   // Wheel: pan/zoom gestures
   // Use composedPath() as primary gate to ensure event is over viewport
   function shouldHandleWheel(e) {
@@ -4963,6 +5033,12 @@ function bindInteractions(root, state, main) {
   };
 
   const onPointerDown = (e) => {
+    if (tryToggleInsertionFromRulerHit(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
     const target = e.target;
     // Don't start pan/drag if clicking on variant selection rects (flow overlay or per-track overlay)
     if (target && target.getAttribute && target.getAttribute("data-variant-id")) return;

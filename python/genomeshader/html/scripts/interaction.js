@@ -430,7 +430,7 @@ function renderFlowCanvas() {
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
@@ -448,7 +448,7 @@ function renderFlowCanvas() {
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -539,7 +539,7 @@ function renderFlowCanvas() {
       }
       
       // Determine if we should show this label
-      const isHovered = variantsAtPos.some(v => state.hoveredVariantId === v.id);
+      const isHovered = variantsAtPos.some(v => String(state.hoveredVariantId) === String(v.id));
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
@@ -586,7 +586,7 @@ function renderFlowCanvas() {
       for (let i=0; i<sortedWin.length; i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
@@ -603,7 +603,7 @@ function renderFlowCanvas() {
       for (let i=0; i<sortedWin.length; i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -636,7 +636,7 @@ function renderFlowCanvas() {
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
@@ -654,7 +654,7 @@ function renderFlowCanvas() {
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -722,7 +722,7 @@ function renderFlowCanvas() {
       }
       
       // Determine if we should show this label
-      const isHovered = variantsAtPos.some(v => state.hoveredVariantId === v.id);
+      const isHovered = variantsAtPos.some(v => String(state.hoveredVariantId) === String(v.id));
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
@@ -764,7 +764,7 @@ function renderFlowCanvas() {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         const vx = xGenomeCanonical(v.pos, W);
@@ -781,7 +781,7 @@ function renderFlowCanvas() {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -1333,7 +1333,7 @@ function renderFlowCanvas() {
       let currentX = left + horizontalOffset;
       
       // Check if this variant column is hovered
-      const isVariantHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+      const isVariantHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
       
       // Draw nodes in current order
       for (let j=0;j<order.length;j++){
@@ -1591,7 +1591,7 @@ function renderFlowCanvas() {
       let currentY = top + verticalOffset;
 
       // Check if this variant column is hovered
-      const isVariantHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+      const isVariantHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
       
       // Draw nodes in current order
       for (let j=0;j<order.length;j++){

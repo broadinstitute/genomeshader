@@ -1213,14 +1213,23 @@ function renderTracks() {
 
   // Variant marks: use all variant tracks so every track adds a marker to the ruler
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
-  const rulerVariants = variantTracksConfig.length > 0
+  const rulerVariantsRaw = variantTracksConfig.length > 0
     ? variantTracksConfig.flatMap(t => t.variants_data || [])
     : variants;
+  const seenRulerVariantIds = new Set();
+  const rulerVariants = [];
+  for (const rv of rulerVariantsRaw) {
+    const rid = String(rv.id);
+    if (seenRulerVariantIds.has(rid)) continue;
+    seenRulerVariantIds.add(rid);
+    rulerVariants.push(rv);
+  }
   for (let idx = 0; idx < rulerVariants.length; idx++) {
     const v = rulerVariants[idx];
+    const variantId = String(v.id);
     if (v.pos < state.startBp || v.pos > state.endBp) continue;
     const pos = genomePos(v.pos);
-    const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
+    const isHovered = (state.hoveredVariantId != null && variantId === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
     const strokeWidth = isHovered ? 2.5 : 1.2;
     const circleStrokeWidth = isHovered ? 2.2 : 1.4;
     const isIns = isInsertion(v);
@@ -1234,7 +1243,7 @@ function renderTracks() {
         stroke: strokeColor,
         "stroke-width": strokeWidth,
         style: "cursor: pointer;",
-        "data-variant-id": v.id
+        "data-variant-id": variantId
       });
     } else {
       lineEl = el("line", {
@@ -1243,12 +1252,12 @@ function renderTracks() {
         stroke: strokeColor,
         "stroke-width": strokeWidth,
         style: "cursor: pointer;",
-        "data-variant-id": v.id
+        "data-variant-id": variantId
       });
     }
     lineEl.addEventListener("mouseenter", () => {
       state.hoveredVariantIndex = idx;
-      state.hoveredVariantId = v.id;
+      state.hoveredVariantId = variantId;
       renderHoverOnly();
     });
     lineEl.addEventListener("mouseleave", () => {
@@ -1260,13 +1269,14 @@ function renderTracks() {
     // For insertions, add pointerdown handler to the line itself
     if (isInsertion(v)) {
       lineEl.style.pointerEvents = "auto";
+      lineEl.setAttribute("title", "Click to expand insertion");
       lineEl.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(v.id)) {
-          state.expandedInsertions.delete(v.id);
+        if (state.expandedInsertions.has(variantId)) {
+          state.expandedInsertions.delete(variantId);
         } else {
-          state.expandedInsertions.add(v.id);
+          state.expandedInsertions.add(variantId);
         }
         renderAll();
       });
@@ -1290,7 +1300,8 @@ function renderTracks() {
           width: 40,
           height: 10,
           fill: "transparent",
-          style: "cursor: pointer; pointer-events: auto;"
+          style: "cursor: pointer; pointer-events: auto;",
+          "data-variant-id": variantId
         });
       } else {
         clickArea = el("rect", {
@@ -1299,16 +1310,28 @@ function renderTracks() {
           width: 10,
           height: 40,
           fill: "transparent",
-          style: "cursor: pointer; pointer-events: auto;"
+          style: "cursor: pointer; pointer-events: auto;",
+          "data-variant-id": variantId
         });
       }
+      clickArea.setAttribute("title", "Click to expand insertion");
+      clickArea.addEventListener("mouseenter", () => {
+        state.hoveredVariantIndex = idx;
+        state.hoveredVariantId = variantId;
+        renderHoverOnly();
+      });
+      clickArea.addEventListener("mouseleave", () => {
+        state.hoveredVariantIndex = null;
+        state.hoveredVariantId = null;
+        renderHoverOnly();
+      });
       clickArea.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(v.id)) {
-          state.expandedInsertions.delete(v.id);
+        if (state.expandedInsertions.has(variantId)) {
+          state.expandedInsertions.delete(variantId);
         } else {
-          state.expandedInsertions.add(v.id);
+          state.expandedInsertions.add(variantId);
         }
         renderAll();
       });
@@ -1324,7 +1347,7 @@ function renderTracks() {
         stroke: circleStrokeColor,
         "stroke-width": circleStrokeWidth,
         style: "cursor: pointer;",
-        "data-variant-id": v.id
+        "data-variant-id": variantId
       });
     } else {
       circleEl = el("circle", {
@@ -1333,12 +1356,12 @@ function renderTracks() {
         stroke: circleStrokeColor,
         "stroke-width": circleStrokeWidth,
         style: "cursor: pointer;",
-        "data-variant-id": v.id
+        "data-variant-id": variantId
       });
     }
     circleEl.addEventListener("mouseenter", () => {
       state.hoveredVariantIndex = idx;
-      state.hoveredVariantId = v.id;
+      state.hoveredVariantId = variantId;
       renderHoverOnly();
     });
     circleEl.addEventListener("mouseleave", () => {
@@ -1349,13 +1372,14 @@ function renderTracks() {
     // Pointerdown handler to toggle insertion expansion
     if (isInsertion(v)) {
       circleEl.style.pointerEvents = "auto";
+      circleEl.setAttribute("title", "Click to expand insertion");
       circleEl.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(v.id)) {
-          state.expandedInsertions.delete(v.id);
+        if (state.expandedInsertions.has(variantId)) {
+          state.expandedInsertions.delete(variantId);
         } else {
-          state.expandedInsertions.add(v.id);
+          state.expandedInsertions.add(variantId);
         }
         renderAll();
       });
@@ -1369,21 +1393,22 @@ function renderTracks() {
     state.locusVariantElements.get(idx).circleEl = circleEl;
     
     // Draw expanded insertion sequence if expanded
-    if (state.expandedInsertions.has(v.id) && isInsertion(v)) {
-      // Use precomputed gap width if available (performance optimization)
-      let gapSize;
-      if (v.hasOwnProperty('insertionGapPx')) {
-        gapSize = v.insertionGapPx;
-      } else {
-        // Fallback to computation for backward compatibility
-        const maxInsertLen = getMaxInsertionLength(v);
-        gapSize = maxInsertLen * 8;
-      }
+    if (state.expandedInsertions.has(variantId) && isInsertion(v)) {
+      // Use the exact same gap width as canonical coordinate mapping/reference rendering.
+      const gapSize = getGapAfterBpPx(v.pos, state.expandedInsertions);
+      if (!(gapSize > 0)) continue;
+      const paintSizeFromVariant = (typeof getInsertionPaintPxForVariant === "function")
+        ? getInsertionPaintPxForVariant(v)
+        : gapSize;
+      const paintSize = Math.max(0, Math.min(gapSize, paintSizeFromVariant));
+      const useWebGPUInsertionRects = webgpuSupported && instancedRenderer;
+      const insertionDpr = window.devicePixelRatio || 1;
+      const nextBpAtVariant = Math.min(state.endBp, Number(v.pos) + 1);
+      const nextPosAtVariant = genomePosCanonical(nextBpAtVariant);
       
       // Draw inserted sequence (use longest alt allele)
       const longestAlt = v.altAlleles.reduce((a, b) => a.length > b.length ? a : b);
       const insertedSeq = longestAlt.substring(v.refAllele.length);
-      const baseSize = gapSize / insertedSeq.length;
       
       const nucleotideColors = {
         'A': 'rgba(0, 200, 0, 0.8)',      // green
@@ -1391,10 +1416,19 @@ function renderTracks() {
         'G': 'rgba(255, 165, 0, 0.8)',    // orange
         'T': 'rgba(255, 0, 0, 0.8)'       // red
       };
+      const nucleotideRgba = {
+        'A': [0 / 255, 200 / 255, 0 / 255, 0.8],
+        'C': [0 / 255, 0 / 255, 255 / 255, 0.8],
+        'G': [255 / 255, 165 / 255, 0 / 255, 0.8],
+        'T': [255 / 255, 0 / 255, 0 / 255, 0.8]
+      };
+      const defaultRgba = [127 / 255, 127 / 255, 127 / 255, 0.8];
       
       if (isVertical) {
-        const gapStartY = pos;
-        const gapEndY = gapStartY - gapSize; // going up (toward start)
+        const gapEndY = nextPosAtVariant;
+        const gapStartY = gapEndY + gapSize;
+        const paintStartY = gapStartY;
+        const paintEndY = Math.max(gapEndY, gapStartY - paintSize);
         
         // Draw gap background
         tracksSvg.appendChild(el("rect", {
@@ -1408,67 +1442,114 @@ function renderTracks() {
           "stroke-dasharray": "2,2"
         }));
         
+        const paintSpanY = Math.max(0, paintStartY - paintEndY);
+        const paintBaseSize = insertedSeq.length > 0 ? (paintSpanY / insertedSeq.length) : 0;
         for (let i = 0; i < insertedSeq.length; i++) {
           const base = insertedSeq[i].toUpperCase();
-          const baseY = gapStartY - (i + 1) * baseSize;
+          const baseY = paintStartY - (i + 1) * paintBaseSize;
           const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
-          
-          tracksSvg.appendChild(el("rect", {
-            x: baseX - 16,
-            y: baseY,
-            width: 32,
-            height: baseSize - 1,
-            fill: color
-          }));
+          const unclampedHeight = Math.max(0, paintBaseSize - BASE_TILE_INSET_PX);
+          const clampedY = Math.max(paintEndY, baseY);
+          const clampedBottom = Math.min(paintStartY, baseY + unclampedHeight);
+          const clampedHeight = Math.max(0, clampedBottom - clampedY);
+          if (clampedHeight <= 0) continue;
+          if (useWebGPUInsertionRects) {
+            const rgba = nucleotideRgba[base] || defaultRgba;
+            instancedRenderer.addRect(
+              (baseX - 16) * insertionDpr,
+              clampedY * insertionDpr,
+              32 * insertionDpr,
+              clampedHeight * insertionDpr,
+              rgba
+            );
+          } else {
+            tracksSvg.appendChild(el("rect", {
+              x: baseX - 16,
+              y: clampedY,
+              width: 32,
+              height: clampedHeight,
+              fill: color
+            }));
+          }
           
           // Draw base letter if space allows
-          if (baseSize >= 8) {
+          if (paintBaseSize >= 8) {
             const textEl = el("text", {
               x: baseX,
-              y: baseY + baseSize / 2,
+              y: baseY + paintBaseSize / 2,
               class: "svg-small",
               "text-anchor": "middle",
               fill: "white",
               "font-weight": "bold",
               "dominant-baseline": "middle",
-              transform: "rotate(-90 " + baseX + " " + (baseY + baseSize / 2) + ")"
+              transform: "rotate(-90 " + baseX + " " + (baseY + paintBaseSize / 2) + ")"
             }, base);
             tracksSvg.appendChild(textEl);
           }
         }
       } else {
-        const gapStartX = pos;
-        const gapEndX = gapStartX + gapSize;
+        const gapEndX = nextPosAtVariant;
+        const variantPosAtVariant = genomePosCanonical(Number(v.pos));
+        const rawSegmentSizeAtVariant = Math.abs(gapEndX - variantPosAtVariant);
+        const renderedRefBaseSizeAtVariant = Math.max(1, rawSegmentSizeAtVariant - gapSize);
+        // Match the visible reference-gap start exactly (reference base end after clamping).
+        const gapStartXFromReference = variantPosAtVariant + renderedRefBaseSizeAtVariant;
+        const canonicalGapStartX = gapEndX - gapSize;
+        const gapStartX = Math.max(canonicalGapStartX, gapStartXFromReference);
+        const displayedGapSizeX = Math.max(0, gapEndX - gapStartX);
+        const displayedPaintSizeX = Math.min(displayedGapSizeX, paintSize);
+        if (!(displayedGapSizeX > 0)) continue;
+        const paintStartX = gapStartX;
+        const paintEndX = Math.min(gapEndX, gapStartX + displayedPaintSizeX);
+        const insertionBandHeight = 24;
+        const insertionBandY = baseY - insertionBandHeight / 2;
         
         // Draw gap background
         tracksSvg.appendChild(el("rect", {
           x: gapStartX,
-          y: baseY - 18,
-          width: gapSize,
-          height: 36,
+          y: insertionBandY,
+          width: displayedGapSizeX,
+          height: insertionBandHeight,
           fill: "rgba(255,255,255,0.1)",
           stroke: "rgba(127,127,127,0.3)",
           "stroke-width": 1,
           "stroke-dasharray": "2,2"
         }));
         
+        const paintSpanX = Math.max(0, paintEndX - paintStartX);
+        const paintBaseSize = insertedSeq.length > 0 ? (paintSpanX / insertedSeq.length) : 0;
         for (let i = 0; i < insertedSeq.length; i++) {
           const base = insertedSeq[i].toUpperCase();
-          const baseX = gapStartX + i * baseSize;
+          const baseX = paintStartX + i * paintBaseSize;
           const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
-          
-          tracksSvg.appendChild(el("rect", {
-            x: baseX,
-            y: baseY - 16,
-            width: baseSize - 1,
-            height: 32,
-            fill: color
-          }));
+          const unclampedWidth = Math.max(0, paintBaseSize - BASE_TILE_INSET_PX);
+          const clampedX = Math.max(paintStartX, baseX);
+          const clampedRight = Math.min(paintEndX, baseX + unclampedWidth);
+          const clampedWidth = Math.max(0, clampedRight - clampedX);
+          if (clampedWidth <= 0) continue;
+          if (useWebGPUInsertionRects) {
+            const rgba = nucleotideRgba[base] || defaultRgba;
+            instancedRenderer.addRect(
+              clampedX * insertionDpr,
+              insertionBandY * insertionDpr,
+              clampedWidth * insertionDpr,
+              insertionBandHeight * insertionDpr,
+              rgba
+            );
+          } else {
+            tracksSvg.appendChild(el("rect", {
+              x: clampedX,
+              y: insertionBandY,
+              width: clampedWidth,
+              height: insertionBandHeight,
+              fill: color
+            }));
+          }
           
           // Draw base letter if space allows
-          if (baseSize >= 8) {
+          if (paintBaseSize >= 8) {
             tracksSvg.appendChild(el("text", {
-              x: baseX + baseSize / 2,
+              x: baseX + paintBaseSize / 2,
               y: baseY,
               class: "svg-small",
               "text-anchor": "middle",
@@ -1571,11 +1652,11 @@ function renderTracks() {
     }
 
     // Calculate base size based on zoom level
-    const minBaseSize = 2; // Minimum size per base in pixels
-    const baseSize = Math.max(minBaseSize, state.pxPerBp);
+    const minBaseSize = 1; // Keep visual continuity without forcing systematic overflow
+    const baseSize = Math.max(minBaseSize, getDisplayPxPerBp());
 
     // Only show individual bases if zoomed in enough (at least 2 actual pixels per base)
-    const showIndividualBases = state.pxPerBp >= 2;
+    const showIndividualBases = getDisplayPxPerBp() >= 1;
 
     // Performance limit: maximum number of bases to render
     const maxBasesToRender = 10000;
@@ -1596,7 +1677,9 @@ function renderTracks() {
         const pos = genomePosCanonical(bp);
         const nextBp = bp + 1;
         const nextPos = nextBp <= state.endBp ? genomePosCanonical(nextBp) : genomePosCanonical(state.endBp);
-        const actualSize = Math.max(minBaseSize, Math.abs(nextPos - pos));
+        const gapAfterPx = getGapAfterBpPx(bp, state.expandedInsertions);
+        const rawSegmentSize = Math.abs(nextPos - pos);
+        const actualSize = Math.max(minBaseSize, rawSegmentSize - gapAfterPx);
         
         // Skip bases that are too small to render
         if (actualSize < minBaseSize) continue;
@@ -1635,11 +1718,11 @@ function renderTracks() {
             x = referenceX;
             y = pos;
             w = referenceW;
-            h = actualSize - 0.5;
+            h = Math.max(0, actualSize - BASE_TILE_INSET_PX);
           } else {
             x = pos;
             y = referenceY;
-            w = actualSize - 0.5;
+            w = Math.max(0, actualSize - BASE_TILE_INSET_PX);
             h = referenceH;
           }
           
@@ -1709,7 +1792,7 @@ function renderTracks() {
               x: referenceX,
               y: pos,
               width: referenceW,
-              height: actualSize - 0.5,
+              height: Math.max(0, actualSize - BASE_TILE_INSET_PX),
               fill: rectColor
             }));
 
@@ -1729,7 +1812,7 @@ function renderTracks() {
             fragment.appendChild(el("rect", {
               x: pos,
               y: referenceY,
-              width: actualSize - 0.5,
+              width: Math.max(0, actualSize - BASE_TILE_INSET_PX),
               height: referenceH,
               fill: rectColor
             }));
