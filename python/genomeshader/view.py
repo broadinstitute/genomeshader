@@ -3,10 +3,15 @@ import re
 import hashlib
 import threading
 import socket
+import copy
+import subprocess
+import tempfile
+import time
 from typing import Union, List, Optional, Tuple
 from pathlib import Path
 import importlib.resources
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 import requests_cache
@@ -52,7 +57,7 @@ class GenomeShader:
 
         requests_cache.install_cache('gs_rest_cache')
 
-        self._session = gs._init()
+        self._session = gs._init(self.gcs_session_dir)
         
         # Localhost HTTP server for serving staged files
         self._localhost_server: Optional[HTTPServer] = None
@@ -72,6 +77,41 @@ class GenomeShader:
 
         # One entry per variant track: (track_name, list of paths). Order matches session's variant_file_groups.
         self._variant_datasets: List[Tuple[str, List[str]]] = []
+        
+        # In-memory caches to avoid repeated template assembly and UCSC transformations.
+        self._template_html_cache: Optional[str] = None
+        self._ideogram_cache: dict = {}
+        self._genes_cache: dict = {}
+        self._repeats_cache: dict = {}
+        self._reference_cache: dict = {}
+        self._ucsc_interval_index: dict = {
+            "ideogram": [],
+            "genes": [],
+            "repeats": [],
+            "reference": [],
+        }
+        self._ucsc_index_loaded: dict = {
+            "ideogram": False,
+            "genes": False,
+            "repeats": False,
+            "reference": False,
+        }
+        self._cache_debug_counts: dict = {
+            "template": {"mem": 0, "build": 0},
+            "ideogram": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
+            "genes": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
+            "repeats": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
+            "reference": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
+            "variant_payload": {"mem": 0, "gcs": 0, "build": 0, "gcs_write": 0},
+        }
+        self._variant_payload_cache: dict = {}
+        self._variant_payload_index: dict = {}
+        self._variant_payload_index_loaded: dict = {}
+        self._variant_payload_by_view: dict = {}
+
+        # Optional native GCS client; falls back to CLI cp/ls if unavailable.
+        self._gcs_client = None
+        self._gcs_client_init_attempted = False
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
@@ -106,6 +146,10 @@ class GenomeShader:
         Returns:
             str: The template HTML content as a string
         """
+        if self._template_html_cache is not None:
+            self._cache_debug_bump("template", "mem")
+            return self._template_html_cache
+
         from pathlib import Path
         
         # Determine base directory for HTML files
@@ -177,7 +221,352 @@ class GenomeShader:
         template = template.replace("<!--__GENOMESHADER_BODY__-->", body_content)
         template = template.replace("<!--__GENOMESHADER_SCRIPTS__-->", f"<script type=\"module\">\n{js_content}\n</script>")
         
+        self._template_html_cache = template
+        self._cache_debug_bump("template", "build")
         return template
+
+    def _cache_debug_bump(self, kind: str, source: str):
+        if kind not in self._cache_debug_counts:
+            self._cache_debug_counts[kind] = {}
+        if source not in self._cache_debug_counts[kind]:
+            self._cache_debug_counts[kind][source] = 0
+        self._cache_debug_counts[kind][source] += 1
+
+    def _cache_debug_snapshot(self) -> dict:
+        return copy.deepcopy(self._cache_debug_counts)
+
+    def _cache_debug_delta(self, start_snapshot: dict) -> dict:
+        delta = {}
+        for kind, counters in self._cache_debug_counts.items():
+            start_counters = start_snapshot.get(kind, {})
+            for source, value in counters.items():
+                start_value = start_counters.get(source, 0)
+                diff = value - start_value
+                if diff != 0:
+                    if kind not in delta:
+                        delta[kind] = {}
+                    delta[kind][source] = diff
+        return delta
+
+    def clear_cache(self):
+        """
+        Clears in-memory caches and debug counters for the current GenomeShader instance.
+        This does not delete GCS-backed cache artifacts.
+        """
+        self._template_html_cache = None
+        self._ideogram_cache.clear()
+        self._genes_cache.clear()
+        self._repeats_cache.clear()
+        self._reference_cache.clear()
+        self._ucsc_interval_index = {
+            "ideogram": [],
+            "genes": [],
+            "repeats": [],
+            "reference": [],
+        }
+        self._ucsc_index_loaded = {
+            "ideogram": False,
+            "genes": False,
+            "repeats": False,
+            "reference": False,
+        }
+        self._cache_debug_counts = {
+            "template": {"mem": 0, "build": 0},
+            "ideogram": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
+            "genes": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
+            "repeats": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
+            "reference": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
+            "variant_payload": {"mem": 0, "gcs": 0, "build": 0, "gcs_write": 0},
+        }
+        self._variant_payload_cache.clear()
+        self._variant_payload_index.clear()
+        self._variant_payload_index_loaded.clear()
+        self._variant_payload_by_view.clear()
+
+    def _cache_id(self, s: str) -> str:
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
+    def _parse_gcs_uri(self, uri: str) -> Tuple[str, str]:
+        prefix = "gs://"
+        if not isinstance(uri, str) or not uri.startswith(prefix):
+            raise ValueError(f"Invalid GCS URI: {uri}")
+        rest = uri[len(prefix):]
+        parts = rest.split("/", 1)
+        bucket = parts[0]
+        key = parts[1] if len(parts) > 1 else ""
+        if not bucket:
+            raise ValueError(f"Invalid GCS URI bucket: {uri}")
+        return bucket, key
+
+    def _get_gcs_client(self):
+        if self._gcs_client_init_attempted:
+            return self._gcs_client
+        self._gcs_client_init_attempted = True
+        try:
+            from google.cloud import storage
+            self._gcs_client = storage.Client()
+        except Exception:
+            self._gcs_client = None
+        return self._gcs_client
+
+    def _gcs_cp(self, src: str, dst: str, quiet: bool = True) -> bool:
+        gcloud_cmd = ["gcloud", "storage", "cp", src, dst]
+        if quiet:
+            gcloud_cmd.insert(2, "--quiet")
+        try:
+            rc = subprocess.run(
+                gcloud_cmd,
+                stdout=subprocess.DEVNULL if quiet else None,
+                stderr=subprocess.DEVNULL if quiet else None,
+                check=False,
+            ).returncode
+            if rc == 0:
+                return True
+        except FileNotFoundError:
+            pass
+
+        gsutil_cmd = ["gsutil", "-q", "cp", src, dst] if quiet else ["gsutil", "cp", src, dst]
+        try:
+            rc = subprocess.run(
+                gsutil_cmd,
+                stdout=subprocess.DEVNULL if quiet else None,
+                stderr=subprocess.DEVNULL if quiet else None,
+                check=False,
+            ).returncode
+            return rc == 0
+        except FileNotFoundError:
+            return False
+
+    def _gcs_exists(self, uri: str) -> bool:
+        client = self._get_gcs_client()
+        if client is not None:
+            try:
+                bucket_name, blob_name = self._parse_gcs_uri(uri)
+                bucket = client.bucket(bucket_name)
+                return bucket.blob(blob_name).exists(client=client)
+            except Exception:
+                pass
+
+        try:
+            rc = subprocess.run(
+                ["gcloud", "storage", "ls", uri],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode
+            if rc == 0:
+                return True
+        except FileNotFoundError:
+            pass
+        try:
+            rc = subprocess.run(
+                ["gsutil", "ls", uri],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode
+            return rc == 0
+        except FileNotFoundError:
+            return False
+
+    def _gcs_read_json(self, uri: str):
+        client = self._get_gcs_client()
+        if client is not None:
+            try:
+                bucket_name, blob_name = self._parse_gcs_uri(uri)
+                bucket = client.bucket(bucket_name)
+                blob = bucket.blob(blob_name)
+                if not blob.exists(client=client):
+                    return None
+                payload = blob.download_as_text(encoding="utf-8", client=client)
+                return json.loads(payload)
+            except Exception:
+                pass
+
+        if not self._gcs_exists(uri):
+            return None
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            local_path = tmp.name
+        try:
+            if not self._gcs_cp(uri, local_path, quiet=True):
+                return None
+            with open(local_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+        finally:
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
+
+    def _gcs_write_json(self, uri: str, payload) -> bool:
+        client = self._get_gcs_client()
+        if client is not None:
+            try:
+                bucket_name, blob_name = self._parse_gcs_uri(uri)
+                bucket = client.bucket(bucket_name)
+                blob = bucket.blob(blob_name)
+                blob.upload_from_string(
+                    json.dumps(payload),
+                    content_type="application/json",
+                    client=client,
+                )
+                return True
+            except Exception:
+                pass
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8") as tmp:
+            json.dump(payload, tmp)
+            local_path = tmp.name
+        try:
+            return self._gcs_cp(local_path, uri, quiet=True)
+        finally:
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
+
+    def _ucsc_index_uri(self, kind: str) -> str:
+        return f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/index/{kind}.json"
+
+    def _variant_payload_index_uri(self, dataset_sig: str) -> str:
+        return (
+            f"{self.gcs_session_dir.rstrip('/')}/cache/variants/payload/index/"
+            f"{self.genome_build}/{dataset_sig}.json"
+        )
+
+    def _load_ucsc_index(self, kind: str):
+        if self._ucsc_index_loaded.get(kind, False):
+            return
+        payload = self._gcs_read_json(self._ucsc_index_uri(kind))
+        if isinstance(payload, list):
+            self._ucsc_interval_index[kind] = payload
+        else:
+            self._ucsc_interval_index[kind] = []
+        self._ucsc_index_loaded[kind] = True
+
+    def _persist_ucsc_index(self, kind: str):
+        self._gcs_write_json(self._ucsc_index_uri(kind), self._ucsc_interval_index.get(kind, []))
+
+    def _load_variant_payload_index(self, dataset_sig: str):
+        if self._variant_payload_index_loaded.get(dataset_sig, False):
+            return
+        payload = self._gcs_read_json(self._variant_payload_index_uri(dataset_sig))
+        if isinstance(payload, list):
+            self._variant_payload_index[dataset_sig] = payload
+        else:
+            self._variant_payload_index[dataset_sig] = []
+        self._variant_payload_index_loaded[dataset_sig] = True
+
+    def _persist_variant_payload_index(self, dataset_sig: str):
+        self._gcs_write_json(
+            self._variant_payload_index_uri(dataset_sig),
+            self._variant_payload_index.get(dataset_sig, []),
+        )
+
+    def _find_covering_ucsc_interval(self, kind: str, contig: str, start: int, end: int, track: Optional[str] = None):
+        self._load_ucsc_index(kind)
+        candidates = []
+        for entry in self._ucsc_interval_index.get(kind, []):
+            if entry.get("genome_build") != self.genome_build:
+                continue
+            if entry.get("contig") != contig:
+                continue
+            if track is not None and entry.get("track") != track:
+                continue
+            e_start = int(entry.get("start", -1))
+            e_end = int(entry.get("end", -1))
+            if e_start <= start and e_end >= end:
+                candidates.append(entry)
+        if not candidates:
+            return None
+        return min(candidates, key=lambda e: int(e["end"]) - int(e["start"]))
+
+    def _record_ucsc_interval(self, kind: str, entry: dict):
+        self._load_ucsc_index(kind)
+        items = self._ucsc_interval_index.get(kind, [])
+        for cur in items:
+            if (
+                cur.get("genome_build") == entry.get("genome_build")
+                and cur.get("contig") == entry.get("contig")
+                and cur.get("track") == entry.get("track")
+                and int(cur.get("start", -1)) == int(entry.get("start", -2))
+                and int(cur.get("end", -1)) == int(entry.get("end", -2))
+                and cur.get("uri") == entry.get("uri")
+            ):
+                return
+        items.append(entry)
+        self._ucsc_interval_index[kind] = items
+        self._persist_ucsc_index(kind)
+
+    def _parse_locus(self, locus: str) -> Tuple[str, int, int]:
+        m = re.match(r"^([^:]+):([\d,]+)(?:-([\d,]+))?$", str(locus).strip())
+        if not m:
+            raise ValueError(f"Invalid locus format: {locus}")
+        contig = m.group(1)
+        start = int(m.group(2).replace(",", ""))
+        end = int((m.group(3) or m.group(2)).replace(",", ""))
+        if end < start:
+            start, end = end, start
+        return contig, start, end
+
+    def _variant_payload_cache_uri(self, dataset_sig: str, contig: str, start: int, end: int) -> str:
+        token = self._cache_id(f"{contig}:{start}:{end}")
+        return (
+            f"{self.gcs_session_dir.rstrip('/')}/cache/variants/payload/data/"
+            f"{self.genome_build}/{dataset_sig}/{contig}_{start}_{end}_{token}.json"
+        )
+
+    def _find_covering_variant_payload_interval(
+        self, dataset_sig: str, contig: str, start: int, end: int
+    ):
+        self._load_variant_payload_index(dataset_sig)
+        candidates = []
+        for entry in self._variant_payload_index.get(dataset_sig, []):
+            if entry.get("genome_build") != self.genome_build:
+                continue
+            if entry.get("contig") != contig:
+                continue
+            e_start = int(entry.get("start", -1))
+            e_end = int(entry.get("end", -1))
+            if e_start <= start and e_end >= end:
+                candidates.append(entry)
+        if not candidates:
+            return None
+        return min(candidates, key=lambda e: int(e["end"]) - int(e["start"]))
+
+    def _record_variant_payload_interval(self, dataset_sig: str, entry: dict):
+        self._load_variant_payload_index(dataset_sig)
+        items = self._variant_payload_index.get(dataset_sig, [])
+        for cur in items:
+            if (
+                cur.get("genome_build") == entry.get("genome_build")
+                and cur.get("contig") == entry.get("contig")
+                and int(cur.get("start", -1)) == int(entry.get("start", -2))
+                and int(cur.get("end", -1)) == int(entry.get("end", -2))
+                and cur.get("uri") == entry.get("uri")
+            ):
+                return
+        items.append(entry)
+        self._variant_payload_index[dataset_sig] = items
+        self._persist_variant_payload_index(dataset_sig)
+
+    def _subset_variant_payload(self, payload: dict, start: int, end: int) -> dict:
+        tracks = payload.get("variant_tracks", [])
+        subset_tracks = []
+        for track in tracks:
+            vdata = track.get("variants_data", [])
+            subset_vdata = [v for v in vdata if start <= int(v.get("pos", -1)) <= end]
+            t = dict(track)
+            t["variants_data"] = subset_vdata
+            subset_tracks.append(t)
+        insertion = payload.get("insertion_variants_lookup", [])
+        subset_insertion = [v for v in insertion if start <= int(v.get("pos", -1)) <= end]
+        return {
+            "variant_tracks": subset_tracks,
+            "insertion_variants_lookup": subset_insertion,
+        }
 
     def session_name(self):
         """
@@ -393,6 +782,48 @@ class GenomeShader:
                 - vcf_id: VCF/BCF ID field from the variant record (None if not present)
         """
         return self._session.get_locus_variants(locus)
+
+    def _variant_dataset_signature(self) -> str:
+        serialized = json.dumps(self._variant_datasets, sort_keys=True)
+        return self._cache_id(serialized)
+
+    def _build_variant_payload(
+        self, variants_df: pl.DataFrame
+    ) -> Tuple[List[dict], List[dict]]:
+        """Build variant_tracks and insertion_variants_lookup for render config."""
+        variant_tracks = []
+        insertion_variants_lookup = []
+        if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
+            if "variant_track_id" in variants_df.columns:
+                n_tracks = len(self._variant_datasets)
+                for track_id_val in range(n_tracks):
+                    subset = variants_df.filter(
+                        pl.col("variant_track_id").cast(pl.Int64) == pl.lit(track_id_val)
+                    )
+                    track_name = (
+                        self._variant_datasets[track_id_val][0]
+                        if track_id_val < len(self._variant_datasets)
+                        else f"Variants {track_id_val}"
+                    )
+                    vdata, ins_lookup, phased = self._build_variants_data_for_track(subset)
+                    variant_tracks.append({
+                        "id": f"flow-{track_id_val}",
+                        "label": track_name,
+                        "variants_data": list(vdata),
+                        "variants_phased": phased,
+                    })
+                    insertion_variants_lookup.extend(ins_lookup)
+                insertion_variants_lookup.sort(key=lambda v: v["pos"])
+            else:
+                track_name = self._variant_datasets[0][0] if self._variant_datasets else "Variants/Haplotypes"
+                vdata, insertion_variants_lookup, phased = self._build_variants_data_for_track(variants_df)
+                variant_tracks.append({
+                    "id": "flow-0",
+                    "label": track_name,
+                    "variants_data": vdata,
+                    "variants_phased": phased,
+                })
+        return variant_tracks, insertion_variants_lookup
 
     def _build_variants_data_for_track(
         self, variants_df: pl.DataFrame
@@ -727,12 +1158,26 @@ class GenomeShader:
         return variants_data, insertion_variants_lookup, variants_phased
 
     def ideogram(self, contig: str) -> pl.DataFrame:
+        cache_key = (self.genome_build, contig)
+        if cache_key in self._ideogram_cache:
+            self._cache_debug_bump("ideogram", "mem")
+            return copy.deepcopy(self._ideogram_cache[cache_key])
+
+        cached_entry = self._find_covering_ucsc_interval("ideogram", contig, 0, 1, track="cytoBandIdeo")
+        if cached_entry is not None:
+            cached_payload = self._gcs_read_json(cached_entry["uri"])
+            if isinstance(cached_payload, list):
+                self._cache_debug_bump("ideogram", "gcs")
+                self._ideogram_cache[cache_key] = cached_payload
+                return copy.deepcopy(cached_payload)
+
         # Define the API endpoint with the contig parameter
         api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track=cytoBandIdeo"
 
         # Make a GET request to the API endpoint
         response = requests.get(api_endpoint)
         if response.status_code == 200:
+            self._cache_debug_bump("ideogram", "api")
             data = response.json()
 
             # Extract the 'contig' sub-key from the 'cytoBandIdeo' key
@@ -759,15 +1204,49 @@ class GenomeShader:
         )
 
         # Convert to list of dictionaries for JSON serialization
-        return ideo_df.to_dicts()
+        result = ideo_df.to_dicts()
+        self._ideogram_cache[cache_key] = result
+        uri = f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/ideogram/{self.genome_build}/{contig}.json"
+        if self._gcs_write_json(uri, result):
+            self._cache_debug_bump("ideogram", "gcs_write")
+            self._record_ucsc_interval(
+                "ideogram",
+                {
+                    "genome_build": self.genome_build,
+                    "track": "cytoBandIdeo",
+                    "contig": contig,
+                    "start": 0,
+                    "end": 1,
+                    "uri": uri,
+                },
+            )
+        return copy.deepcopy(result)
 
     def genes(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> List[dict]:
+        cache_key = (self.genome_build, track, contig, int(start), int(end))
+        if cache_key in self._genes_cache:
+            self._cache_debug_bump("genes", "mem")
+            return copy.deepcopy(self._genes_cache[cache_key])
+
+        cached_entry = self._find_covering_ucsc_interval("genes", contig, int(start), int(end), track=track)
+        if cached_entry is not None:
+            cached_payload = self._gcs_read_json(cached_entry["uri"])
+            if isinstance(cached_payload, list):
+                self._cache_debug_bump("genes", "gcs")
+                subset = [
+                    g for g in cached_payload
+                    if int(g.get("end", -1)) >= int(start) and int(g.get("start", -1)) <= int(end)
+                ]
+                self._genes_cache[cache_key] = subset
+                return copy.deepcopy(subset)
+
         # Define the API endpoint with the track, contig, start, end parameters
         api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
 
         # Make a GET request to the API endpoint
         response = requests.get(api_endpoint)
         if response.status_code == 200:
+            self._cache_debug_bump("genes", "api")
             data = response.json()
 
             # Extract the gene data from the response
@@ -1008,7 +1487,25 @@ class GenomeShader:
                 gene_model['lane'] = 0
                 lanes[0].append(gene_model)
         
-        return gene_models
+        self._genes_cache[cache_key] = gene_models
+        uri = (
+            f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/genes/{self.genome_build}/"
+            f"{track}/{contig}_{int(start)}_{int(end)}_{self._cache_id(f'{track}:{contig}:{start}:{end}')}.json"
+        )
+        if self._gcs_write_json(uri, gene_models):
+            self._cache_debug_bump("genes", "gcs_write")
+            self._record_ucsc_interval(
+                "genes",
+                {
+                    "genome_build": self.genome_build,
+                    "track": track,
+                    "contig": contig,
+                    "start": int(start),
+                    "end": int(end),
+                    "uri": uri,
+                },
+            )
+        return copy.deepcopy(gene_models)
 
     def repeats(self, contig: str, start: int, end: int, track: str = "rmsk") -> List[dict]:
         """
@@ -1023,12 +1520,30 @@ class GenomeShader:
         Returns:
             List[dict]: List of repeat intervals, each with 'start', 'end', and 'cls' fields.
         """
+        cache_key = (self.genome_build, track, contig, int(start), int(end))
+        if cache_key in self._repeats_cache:
+            self._cache_debug_bump("repeats", "mem")
+            return copy.deepcopy(self._repeats_cache[cache_key])
+
+        cached_entry = self._find_covering_ucsc_interval("repeats", contig, int(start), int(end), track=track)
+        if cached_entry is not None:
+            cached_payload = self._gcs_read_json(cached_entry["uri"])
+            if isinstance(cached_payload, list):
+                self._cache_debug_bump("repeats", "gcs")
+                subset = [
+                    r for r in cached_payload
+                    if int(r.get("end", -1)) >= int(start) and int(r.get("start", -1)) <= int(end)
+                ]
+                self._repeats_cache[cache_key] = subset
+                return copy.deepcopy(subset)
+
         # Define the API endpoint with the track, contig, start, end parameters
         api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
 
         # Make a GET request to the API endpoint
         response = requests.get(api_endpoint)
         if response.status_code == 200:
+            self._cache_debug_bump("repeats", "api")
             data = response.json()
             
             # Check for API errors in response
@@ -1167,7 +1682,25 @@ class GenomeShader:
         # Sort repeats by start position
         repeats.sort(key=lambda r: r['start'])
         
-        return repeats
+        self._repeats_cache[cache_key] = repeats
+        uri = (
+            f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/repeats/{self.genome_build}/"
+            f"{track}/{contig}_{int(start)}_{int(end)}_{self._cache_id(f'{track}:{contig}:{start}:{end}')}.json"
+        )
+        if self._gcs_write_json(uri, repeats):
+            self._cache_debug_bump("repeats", "gcs_write")
+            self._record_ucsc_interval(
+                "repeats",
+                {
+                    "genome_build": self.genome_build,
+                    "track": track,
+                    "contig": contig,
+                    "start": int(start),
+                    "end": int(end),
+                    "uri": uri,
+                },
+            )
+        return copy.deepcopy(repeats)
 
     def reference(self, contig: str, start: int, end: int, track: str = "ncbiRefSeq") -> str:
         """
@@ -1182,12 +1715,33 @@ class GenomeShader:
         Returns:
             str: DNA sequence string for the specified region.
         """
+        cache_key = (self.genome_build, track, contig, int(start), int(end))
+        if cache_key in self._reference_cache:
+            self._cache_debug_bump("reference", "mem")
+            return self._reference_cache[cache_key]
+
+        cached_entry = self._find_covering_ucsc_interval("reference", contig, int(start), int(end), track=track)
+        if cached_entry is not None:
+            cached_payload = self._gcs_read_json(cached_entry["uri"])
+            if isinstance(cached_payload, dict) and "sequence" in cached_payload:
+                seq = cached_payload.get("sequence", "")
+                src_start = int(cached_payload.get("start", start))
+                src_end = int(cached_payload.get("end", src_start + len(seq)))
+                if isinstance(seq, str) and src_start <= int(start) and src_end >= int(end):
+                    self._cache_debug_bump("reference", "gcs")
+                    left = max(0, int(start) - src_start)
+                    right = max(left, min(len(seq), int(end) - src_start))
+                    subset = seq[left:right]
+                    self._reference_cache[cache_key] = subset
+                    return subset
+
         # Define the API endpoint with the track, contig, start, end parameters
         api_endpoint = f"https://api.genome.ucsc.edu/getData/sequence?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
 
         # Make a GET request to the API endpoint
         response = requests.get(api_endpoint)
         if response.status_code == 200:
+            self._cache_debug_bump("reference", "api")
             data = response.json()
             
             # Check for API errors in response
@@ -1204,6 +1758,32 @@ class GenomeShader:
                 print(f"Warning: Empty sequence data from UCSC API for {contig}:{start}-{end}")
                 return ""
             
+            self._reference_cache[cache_key] = sequence
+            uri = (
+                f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/reference/{self.genome_build}/"
+                f"{track}/{contig}_{int(start)}_{int(end)}_{self._cache_id(f'{track}:{contig}:{start}:{end}')}.json"
+            )
+            payload = {
+                "genome_build": self.genome_build,
+                "track": track,
+                "contig": contig,
+                "start": int(start),
+                "end": int(end),
+                "sequence": sequence,
+            }
+            if self._gcs_write_json(uri, payload):
+                self._cache_debug_bump("reference", "gcs_write")
+                self._record_ucsc_interval(
+                    "reference",
+                    {
+                        "genome_build": self.genome_build,
+                        "track": track,
+                        "contig": contig,
+                        "start": int(start),
+                        "end": int(end),
+                        "uri": uri,
+                    },
+                )
             return sequence
         else:
             raise ConnectionError(f"Failed to retrieve reference sequence from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
@@ -1285,9 +1865,19 @@ class GenomeShader:
         
         return f"http://127.0.0.1:{port}/{rel_path_str}"
 
+    def _get_local_file_url(self, file_path: Path, serve_dir: Path) -> str:
+        """
+        Gets localhost URL for a file under serve_dir.
+        """
+        port = self._start_localhost_server(serve_dir)
+        rel_path = file_path.relative_to(serve_dir)
+        return f"http://127.0.0.1:{port}/{rel_path.as_posix()}"
+
     def render(
         self,
         locus_or_dataframe: Union[str, pl.DataFrame],
+        precomputed_variant_payload: Optional[dict] = None,
+        show_timing: Optional[dict] = None,
     ) -> str:
         """
         Visualizes genomic data by rendering a graphical representation of a genomic locus.
@@ -1303,8 +1893,13 @@ class GenomeShader:
             str: an html object that can be displayed (via IPython display) or saved to disk.
         """
 
+        render_start = time.perf_counter()
+        cache_debug_start = self._cache_debug_snapshot()
+        timing_debug = {}
+
         # Try to get variant data if locus is a string
         variants_df = None
+        input_resolve_start = time.perf_counter()
         if isinstance(locus_or_dataframe, str):
             try:
                 # Try to get variant data first
@@ -1330,6 +1925,7 @@ class GenomeShader:
             raise ValueError(
                 "locus_or_dataframe must be a locus string or a Polars DataFrame."
             )
+        timing_debug["input_resolution_ms"] = round((time.perf_counter() - input_resolve_start) * 1000.0, 1)
 
         # Determine if we have variant data or read data
         is_variant_data = (
@@ -1379,8 +1975,12 @@ class GenomeShader:
         # Write track.json file
         try:
             if len(samples_df) > 0:
-                # Convert DataFrame to list of dicts
-                track_data = samples_df.to_dicts()
+                # Avoid expensive DataFrame->dict conversion for variant-only views.
+                if is_variant_data:
+                    track_data = []
+                else:
+                    # Convert read DataFrame to list of dicts
+                    track_data = samples_df.to_dicts()
             else:
                 # Use dummy data if dataframe is empty
                 track_data = [{"x": 1, "label": "a"}, {"x": 2, "label": "b"}]
@@ -1412,79 +2012,103 @@ class GenomeShader:
         except Exception as e:
             raise RuntimeError(f"Failed to write manifest file: {e}")
 
-        # Load cytoband data for the chromosome
-        ideogram_data = self.ideogram(ref_chr)
+        def _timed_track_load(name: str):
+            t0 = time.perf_counter()
+            if name == "ideogram":
+                return name, self.ideogram(ref_chr), None, round((time.perf_counter() - t0) * 1000.0, 1)
+            if name == "genes":
+                try:
+                    data = self.genes(ref_chr, ref_start, ref_end)
+                    return name, data, None, round((time.perf_counter() - t0) * 1000.0, 1)
+                except Exception as e:
+                    return name, [], e, round((time.perf_counter() - t0) * 1000.0, 1)
+            if name == "repeats":
+                try:
+                    data = self.repeats(ref_chr, ref_start, ref_end)
+                    return name, data, None, round((time.perf_counter() - t0) * 1000.0, 1)
+                except Exception as e:
+                    return name, [], e, round((time.perf_counter() - t0) * 1000.0, 1)
+            if name == "reference":
+                try:
+                    data = self.reference(ref_chr, ref_start, ref_end)
+                    return name, data, None, round((time.perf_counter() - t0) * 1000.0, 1)
+                except Exception as e:
+                    return name, "", e, round((time.perf_counter() - t0) * 1000.0, 1)
+            return name, None, None, round((time.perf_counter() - t0) * 1000.0, 1)
 
-        # Load gene/transcript data for the region
-        try:
-            transcripts_data = self.genes(ref_chr, ref_start, ref_end)
-        except Exception as e:
-            # If gene data retrieval fails, use empty list but don't crash
-            print(f"Warning: Failed to load gene data: {e}")
-            transcripts_data = []
+        # Load UCSC-derived tracks concurrently (these are independent network/cache lookups).
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [
+                executor.submit(_timed_track_load, "ideogram"),
+                executor.submit(_timed_track_load, "genes"),
+                executor.submit(_timed_track_load, "repeats"),
+                executor.submit(_timed_track_load, "reference"),
+            ]
+            results = [f.result() for f in futures]
 
-        # Load RepeatMasker data for the region
-        try:
-            repeats_data = self.repeats(ref_chr, ref_start, ref_end)
-        except Exception as e:
-            # If repeat data retrieval fails, use empty list but don't crash
-            print(f"Warning: Failed to load RepeatMasker data: {e}")
-            repeats_data = []
-
-        # Load reference sequence data for the region
-        try:
-            reference_sequence = self.reference(ref_chr, ref_start, ref_end)
-        except Exception as e:
-            # If reference data retrieval fails, use empty string but don't crash
-            print(f"Warning: Failed to load reference sequence data: {e}")
-            reference_sequence = ""
+        ideogram_data = []
+        transcripts_data = []
+        repeats_data = []
+        reference_sequence = ""
+        for name, data, err, elapsed in results:
+            timing_debug[f"{name}_ms"] = elapsed
+            if name == "ideogram":
+                ideogram_data = data
+            elif name == "genes":
+                transcripts_data = data
+                if err is not None:
+                    print(f"Warning: Failed to load gene data: {err}")
+            elif name == "repeats":
+                repeats_data = data
+                if err is not None:
+                    print(f"Warning: Failed to load RepeatMasker data: {err}")
+            elif name == "reference":
+                reference_sequence = data
+                if err is not None:
+                    print(f"Warning: Failed to load reference sequence data: {err}")
 
         # Build variant_tracks: one entry per attached variant dataset (each with its own track)
-        variant_tracks = []
-        insertion_variants_lookup = []
-        if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
-            if "variant_track_id" in variants_df.columns:
-                # Iterate by attached-dataset index so we get exactly one track per dataset.
-                # Use pl.lit() in the filter so Polars does a proper scalar comparison (column may be UInt32 from Rust).
-                n_tracks = len(self._variant_datasets)
-                for track_id_val in range(n_tracks):
-                    subset = variants_df.filter(
-                        pl.col("variant_track_id").cast(pl.Int64) == pl.lit(track_id_val)
-                    )
-                    track_name = (
-                        self._variant_datasets[track_id_val][0]
-                        if track_id_val < len(self._variant_datasets)
-                        else f"Variants {track_id_val}"
-                    )
-                    vdata, ins_lookup, phased = self._build_variants_data_for_track(subset)
-                    # Append a copy of the list so we never share references between tracks
-                    variant_tracks.append({
-                        "id": f"flow-{track_id_val}",
-                        "label": track_name,
-                        "variants_data": list(vdata),
-                        "variants_phased": phased,
-                    })
-                    insertion_variants_lookup.extend(ins_lookup)
-                insertion_variants_lookup.sort(key=lambda v: v["pos"])
-            else:
-                # Fallback: single track (e.g. old backend or no track_id)
-                track_name = self._variant_datasets[0][0] if self._variant_datasets else "Variants/Haplotypes"
-                vdata, insertion_variants_lookup, phased = self._build_variants_data_for_track(variants_df)
-                variant_tracks.append({
-                    "id": "flow-0",
-                    "label": track_name,
-                    "variants_data": vdata,
-                    "variants_phased": phased,
-                })
+        t_variant_payload = time.perf_counter()
+        if precomputed_variant_payload is not None:
+            variant_tracks = precomputed_variant_payload.get("variant_tracks", [])
+            insertion_variants_lookup = precomputed_variant_payload.get("insertion_variants_lookup", [])
+        else:
+            variant_tracks, insertion_variants_lookup = self._build_variant_payload(variants_df)
+        timing_debug["variant_payload_ms"] = round((time.perf_counter() - t_variant_payload) * 1000.0, 1)
 
         # Load template HTML
+        t_template = time.perf_counter()
         template_html = self._load_template_html()
+        timing_debug["template_ms"] = round((time.perf_counter() - t_template) * 1000.0, 1)
 
         # Get manifest URL using localhost server (available if needed later)
         _ = self._get_manifest_url(manifest_path)
 
         # Check if comms are available for bidirectional communication
         comm_available = COMM_AVAILABLE
+
+        # Prefer Jupyter comms for variant payload transport (works in Terra).
+        use_payload_comm = bool(comm_available and precomputed_variant_payload is not None)
+        variant_payload_url = None
+        use_payload_url = False
+        if not use_payload_comm:
+            # Fallback: write payload to a local URL when comms are unavailable.
+            try:
+                payload = {
+                    "variant_tracks": variant_tracks,
+                    "insertion_variants_lookup": insertion_variants_lookup,
+                }
+                payload_path = tracks_dir / "variant_payload.json"
+                staging.write_json(payload_path, payload)
+                variant_payload_url = self._get_local_file_url(payload_path, run_dir)
+                use_payload_url = variant_payload_url is not None
+            except Exception:
+                variant_payload_url = None
+                use_payload_url = False
+        variant_tracks_meta = [
+            {"id": t.get("id"), "label": t.get("label")}
+            for t in variant_tracks
+        ]
 
         # Build config dict first, then JSON-encode it
         config = {
@@ -1496,15 +2120,23 @@ class GenomeShader:
             'transcripts_data': transcripts_data,
             'repeats_data': repeats_data,
             'reference_data': reference_sequence,
-            'variant_tracks': variant_tracks,  # One track per attached variant dataset: [{ id, label, variants_data, variants_phased }, ...]
-            'insertion_variants_lookup': insertion_variants_lookup,  # Merged across tracks for coordinate transformations
+            # Keep config small; detailed variant payload is loaded from URL when available.
+            'variant_tracks': variant_tracks_meta if (use_payload_url or use_payload_comm) else variant_tracks,
+            'insertion_variants_lookup': [] if (use_payload_url or use_payload_comm) else insertion_variants_lookup,
+            'variant_payload_url': variant_payload_url,
+            'variant_payload_via_comm': use_payload_comm,
             'data_bounds': {
                 'start': data_start,
                 'end': data_end,
             },
             'comm_available': comm_available,  # Indicates if Jupyter comms are available
             'sample_mapping': self._sample_mapping,  # Sample mapping: VCF sample names -> BAM sample names
+            'cache_debug': self._cache_debug_delta(cache_debug_start),
         }
+        if show_timing:
+            timing_debug.update(show_timing)
+        timing_debug["render_total_ms"] = round((time.perf_counter() - render_start) * 1000.0, 1)
+        config['timing_debug'] = timing_debug
 
         # Get Jupyter origin for constructing absolute URLs
         # Try to get it from environment or use a default
@@ -1575,6 +2207,12 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             "  hasConfig: !!window.GENOMESHADER_CONFIG,\n"
             "  viewId: window.GENOMESHADER_VIEW_ID\n"
             "});\n"
+            "if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.cache_debug) {\n"
+            "  console.info('Genomeshader cache debug', window.GENOMESHADER_CONFIG.cache_debug);\n"
+            "}\n"
+            "if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.timing_debug) {\n"
+            "  console.info('Genomeshader timing debug', window.GENOMESHADER_CONFIG.timing_debug);\n"
+            "}\n"
             "</script>"
         )
         
@@ -1700,10 +2338,81 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         Returns:
             None: Displays the visualization in the notebook.
         """
+        show_start = time.perf_counter()
+
         # Fetch variant data for the locus
+        t_get_variants = time.perf_counter()
         variants_df = self.get_locus_variants(locus)
-        html_script = self.render(variants_df)
+        get_variants_ms = round((time.perf_counter() - t_get_variants) * 1000.0, 1)
+
+        dataset_sig = self._variant_dataset_signature()
+        payload_cache_key = (self.genome_build, dataset_sig, locus)
+        locus_contig, locus_start, locus_end = self._parse_locus(locus)
+        t_variant_payload = time.perf_counter()
+        if payload_cache_key in self._variant_payload_cache:
+            self._cache_debug_bump("variant_payload", "mem")
+            precomputed_payload = copy.deepcopy(self._variant_payload_cache[payload_cache_key])
+        else:
+            precomputed_payload = None
+            cached_entry = self._find_covering_variant_payload_interval(
+                dataset_sig, locus_contig, int(locus_start), int(locus_end)
+            )
+            if cached_entry is not None:
+                cached_payload = self._gcs_read_json(cached_entry["uri"])
+                if isinstance(cached_payload, dict):
+                    precomputed_payload = self._subset_variant_payload(
+                        cached_payload, int(locus_start), int(locus_end)
+                    )
+                    self._cache_debug_bump("variant_payload", "gcs")
+
+            if precomputed_payload is None:
+                pre_tracks, pre_insertion = self._build_variant_payload(variants_df)
+                precomputed_payload = {
+                    "variant_tracks": pre_tracks,
+                    "insertion_variants_lookup": pre_insertion,
+                }
+                self._cache_debug_bump("variant_payload", "build")
+
+                uri = self._variant_payload_cache_uri(
+                    dataset_sig, locus_contig, int(locus_start), int(locus_end)
+                )
+                payload_to_store = {
+                    "genome_build": self.genome_build,
+                    "contig": locus_contig,
+                    "start": int(locus_start),
+                    "end": int(locus_end),
+                    "variant_tracks": pre_tracks,
+                    "insertion_variants_lookup": pre_insertion,
+                }
+                if self._gcs_write_json(uri, payload_to_store):
+                    self._cache_debug_bump("variant_payload", "gcs_write")
+                    self._record_variant_payload_interval(
+                        dataset_sig,
+                        {
+                            "genome_build": self.genome_build,
+                            "contig": locus_contig,
+                            "start": int(locus_start),
+                            "end": int(locus_end),
+                            "uri": uri,
+                        },
+                    )
+
+            self._variant_payload_cache[payload_cache_key] = copy.deepcopy(precomputed_payload)
+        variant_payload_cache_ms = round((time.perf_counter() - t_variant_payload) * 1000.0, 1)
+
+        t_render = time.perf_counter()
+        html_script = self.render(
+            variants_df,
+            precomputed_variant_payload=precomputed_payload,
+            show_timing={
+                "show_get_variants_ms": get_variants_ms,
+                "show_variant_payload_cache_ms": variant_payload_cache_ms,
+            },
+        )
+        render_ms = round((time.perf_counter() - t_render) * 1000.0, 1)
         # view_id available via self._last_view_id if needed
+        if hasattr(self, "_last_view_id") and self._last_view_id:
+            self._variant_payload_by_view[self._last_view_id] = copy.deepcopy(precomputed_payload)
 
         # Register comm target for JavaScript to connect to
         if COMM_AVAILABLE:
@@ -1729,6 +2438,34 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
                                     'request_id': request_id,
                                     'message': f'Hello from Python! Got: {data.get("message", "")}',
                                 })
+
+                            elif msg_type == 'fetch_variant_payload':
+                                try:
+                                    requested_view_id = data.get('view_id')
+                                    payload = None
+                                    if requested_view_id:
+                                        payload = gs_instance._variant_payload_by_view.get(requested_view_id)
+                                    if payload is None and hasattr(gs_instance, "_last_view_id"):
+                                        payload = gs_instance._variant_payload_by_view.get(gs_instance._last_view_id)
+                                    if payload is None:
+                                        comm.send({
+                                            'type': 'fetch_variant_payload_error',
+                                            'request_id': request_id,
+                                            'error': 'Variant payload not available for this view',
+                                        })
+                                    else:
+                                        comm.send({
+                                            'type': 'fetch_variant_payload_response',
+                                            'request_id': request_id,
+                                            'view_id': requested_view_id or getattr(gs_instance, "_last_view_id", None),
+                                            'payload': payload,
+                                        })
+                                except Exception as e:
+                                    comm.send({
+                                        'type': 'fetch_variant_payload_error',
+                                        'request_id': request_id,
+                                        'error': str(e),
+                                    })
                             
                             elif msg_type == 'fetch_reads':
                                 # Fetch reads for the current locus from attached BAM files
@@ -1841,8 +2578,16 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             except Exception as e:
                 print(f"Genomeshader: Failed to register comm target: {e}")
         
-        # Display the HTML
-        display(HTML(html_script))
+        show_elapsed_ms = (time.perf_counter() - show_start) * 1000.0
+        timing_script = (
+            "<script type=\"text/javascript\">"
+            f"console.info('Genomeshader show() timing: {show_elapsed_ms:.1f} ms');"
+            f"console.info('Genomeshader show() phases', {{get_variants_ms: {get_variants_ms:.1f}, variant_payload_cache_ms: {variant_payload_cache_ms:.1f}, render_ms: {render_ms:.1f}}});"
+            "</script>"
+        )
+
+        # Display the HTML plus timing log script.
+        display(HTML(html_script + timing_script))
 
 
     def save(
