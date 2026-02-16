@@ -945,6 +945,158 @@ function renderFlowCanvas() {
     
     return { fillColor, strokeColor };
   }
+
+  function getMaxInsertionLengthForVariantDisplay(variant) {
+    const directLen = Number(variant && variant.maxInsertionLength);
+    if (Number.isFinite(directLen) && directLen > 0) return directLen;
+    if (!variant || !Array.isArray(variant.altAlleles)) return 0;
+    const refLen = ((variant.refAllele || "").length);
+    let maxLen = 0;
+    for (const alt of variant.altAlleles) {
+      const altStr = String(alt || "");
+      const delta = altStr.length - refLen;
+      if (delta > maxLen) maxLen = delta;
+    }
+    return maxLen;
+  }
+
+  function getInsertedSequenceForAllele(variant, allele) {
+    if (!variant) return "";
+    const alt = String(allele || "");
+    if (!alt || alt === ".") return "";
+    const ref = String(variant.refAllele || "");
+    if (alt === ref) return "";
+    const delta = alt.length - ref.length;
+    if (!(delta > 0)) return "";
+    if (ref && alt.startsWith(ref)) return alt.slice(ref.length);
+    // Fallback for non-prefix normalized representations.
+    return alt.slice(Math.max(0, alt.length - delta));
+  }
+
+  const insertionNucleotideColors = {
+    A: "rgba(0,200,0,0.85)",
+    C: "rgba(0,0,255,0.85)",
+    G: "rgba(255,165,0,0.85)",
+    T: "rgba(255,0,0,0.85)"
+  };
+
+  function drawInsertionSequenceStrip(ctx, x, y, width, height, insertedSeq, maxInsertionLen) {
+    if (!(width > 1) || !(height > 1)) return;
+    const innerPadX = 1;
+    const innerPadY = 1;
+    const innerX = x + innerPadX;
+    const innerY = y + innerPadY;
+    const innerW = Math.max(0, width - (2 * innerPadX));
+    const innerH = Math.max(0, height - (2 * innerPadY));
+    if (!(innerW > 0) || !(innerH > 0)) return;
+
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeStyle = "rgba(127,127,127,0.35)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    ctx.strokeRect(x, y, width, height);
+    ctx.setLineDash([]);
+
+    if (!insertedSeq || !(maxInsertionLen > 0)) {
+      ctx.restore();
+      return;
+    }
+
+    const basePitch = innerW / maxInsertionLen;
+    const innerRight = innerX + innerW;
+    for (let i = 0; i < insertedSeq.length && i < maxInsertionLen; i++) {
+      const base = insertedSeq[i].toUpperCase();
+      const slotStart = innerX + i * basePitch;
+      const slotEnd = innerX + (i + 1) * basePitch;
+      const bx = Math.max(innerX, slotStart);
+      const bw = Math.max(0, Math.min(innerRight, slotEnd - 0.2) - bx);
+      if (!(bw > 0)) continue;
+      ctx.fillStyle = insertionNucleotideColors[base] || "rgba(127,127,127,0.85)";
+      ctx.fillRect(bx, innerY, bw, innerH);
+      if (basePitch >= 7 && innerH >= 9) {
+        ctx.fillStyle = "white";
+        ctx.font = "bold 9px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(base, bx + (bw / 2), innerY + (innerH / 2));
+      }
+    }
+    ctx.restore();
+  }
+
+  function getDisplayedInsertionGapBounds(variant, isVertical, W, H) {
+    if (!variant || !isInsertion(variant)) return null;
+    const gapSize = getGapAfterBpPx(variant.pos, state.expandedInsertions);
+    if (!(gapSize > 0)) return null;
+    const posNum = Number(variant.pos);
+    const nextBpAtVariant = Math.min(state.endBp, posNum + 1);
+    if (!Number.isFinite(posNum) || !Number.isFinite(nextBpAtVariant)) return null;
+
+    if (isVertical) {
+      const gapEndY = yGenomeCanonical(nextBpAtVariant, H);
+      const gapStartY = gapEndY + gapSize;
+      return {
+        axis: "y",
+        start: gapEndY,
+        end: gapStartY,
+        size: Math.max(0, gapStartY - gapEndY)
+      };
+    }
+
+    // Horizontal mode: match the same displayed-gap start logic used in tracks.js.
+    const gapEndX = xGenomeCanonical(nextBpAtVariant, W);
+    const variantPosAtVariant = xGenomeCanonical(posNum, W);
+    const rawSegmentSizeAtVariant = Math.abs(gapEndX - variantPosAtVariant);
+    const renderedRefBaseSizeAtVariant = Math.max(1, rawSegmentSizeAtVariant - gapSize);
+    const gapStartXFromReference = variantPosAtVariant + renderedRefBaseSizeAtVariant;
+    const canonicalGapStartX = gapEndX - gapSize;
+    const gapStartX = Math.max(canonicalGapStartX, gapStartXFromReference);
+    const displayedGapSizeX = Math.max(0, gapEndX - gapStartX);
+
+    return {
+      axis: "x",
+      start: gapStartX,
+      end: gapEndX,
+      size: displayedGapSizeX
+    };
+  }
+
+  function drawExpandedInsertionAlleleRows(ctx, variant, rows, isVertical, W, H) {
+    if (!variant || !rows || rows.length === 0) return;
+    if (!state.expandedInsertions || !state.expandedInsertions.has(String(variant.id))) return;
+    if (!isInsertion(variant)) return;
+
+    const maxInsertionLen = getMaxInsertionLengthForVariantDisplay(variant);
+    if (!(maxInsertionLen > 0)) return;
+    const gapBounds = getDisplayedInsertionGapBounds(variant, isVertical, W, H);
+    if (!gapBounds || !(gapBounds.size > 0)) return;
+
+    if (isVertical) {
+      // Align with the same insertion gap on the genomic (vertical) axis.
+      const stripY = gapBounds.start;
+      const stripH = gapBounds.size;
+      for (const row of rows) {
+        const stripW = Math.max(12, row.nodeW);
+        const stripX = Math.max(2, Math.min(W - stripW - 2, row.nodeX));
+        const insertedSeq = getInsertedSequenceForAllele(variant, row.actualAllele);
+        drawInsertionSequenceStrip(ctx, stripX, stripY, stripW, stripH, insertedSeq, maxInsertionLen);
+      }
+      return;
+    }
+
+    // Horizontal mode: draw per-allele strips aligned to the opened insertion gap.
+    const panelX = gapBounds.start;
+    const panelW = gapBounds.size;
+
+    for (const row of rows) {
+      const rowH = Math.max(8, Math.min(16, row.nodeH));
+      const rowY = row.nodeY + (row.nodeH - rowH) / 2;
+      const insertedSeq = getInsertedSequenceForAllele(variant, row.actualAllele);
+      drawInsertionSequenceStrip(ctx, panelX, rowY, panelW, rowH, insertedSeq, maxInsertionLen);
+    }
+  }
   
   // Helper function to calculate allele node sizes based on frequencies
   // Make it globally accessible for drag handlers
@@ -1278,6 +1430,7 @@ function renderFlowCanvas() {
     for (let i=0;i<sortedWin.length;i++){
       const v = sortedWin[i];
       const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+      const insertionRows = [];
       
       // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
       // Use helper function to get formatted labels (uses precomputed values if available)
@@ -1457,6 +1610,13 @@ function renderFlowCanvas() {
           bandOffset: bandOffset,
           isSelected: isSelected
         });
+        insertionRows.push({
+          nodeX: nodeX,
+          nodeY: nodeY,
+          nodeW: nodeW,
+          nodeH: nodeH,
+          actualAllele: actualAllele
+        });
         
         // Store node info for ribbon drawing
         if (!nodeInfoByVariant.has(i)) {
@@ -1525,11 +1685,13 @@ function renderFlowCanvas() {
           ctx.stroke();
         }
       }
+      drawExpandedInsertionAlleleRows(ctx, v, insertionRows, true, W, H);
     }
   } else {
     for (let i=0;i<win.length;i++){
       const v = win[i];
       const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+      const insertionRows = [];
       
       // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
       // Use helper function to get formatted labels (uses precomputed values if available)
@@ -1715,6 +1877,13 @@ function renderFlowCanvas() {
           bandOffset: bandOffset,
           isSelected: isSelected
         });
+        insertionRows.push({
+          nodeX: nodeX,
+          nodeY: nodeY,
+          nodeW: nodeW,
+          nodeH: nodeH,
+          actualAllele: actualAllele
+        });
         
         // Store node info for ribbon drawing
         if (!nodeInfoByVariant.has(i)) {
@@ -1783,6 +1952,7 @@ function renderFlowCanvas() {
           ctx.stroke();
         }
       }
+      drawExpandedInsertionAlleleRows(ctx, v, insertionRows, false, W, H);
     }
   }
   

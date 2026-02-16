@@ -1397,38 +1397,12 @@ function renderTracks() {
       // Use the exact same gap width as canonical coordinate mapping/reference rendering.
       const gapSize = getGapAfterBpPx(v.pos, state.expandedInsertions);
       if (!(gapSize > 0)) continue;
-      const paintSizeFromVariant = (typeof getInsertionPaintPxForVariant === "function")
-        ? getInsertionPaintPxForVariant(v)
-        : gapSize;
-      const paintSize = Math.max(0, Math.min(gapSize, paintSizeFromVariant));
-      const useWebGPUInsertionRects = webgpuSupported && instancedRenderer;
-      const insertionDpr = window.devicePixelRatio || 1;
       const nextBpAtVariant = Math.min(state.endBp, Number(v.pos) + 1);
       const nextPosAtVariant = genomePosCanonical(nextBpAtVariant);
-      
-      // Draw inserted sequence (use longest alt allele)
-      const longestAlt = v.altAlleles.reduce((a, b) => a.length > b.length ? a : b);
-      const insertedSeq = longestAlt.substring(v.refAllele.length);
-      
-      const nucleotideColors = {
-        'A': 'rgba(0, 200, 0, 0.8)',      // green
-        'C': 'rgba(0, 0, 255, 0.8)',      // blue
-        'G': 'rgba(255, 165, 0, 0.8)',    // orange
-        'T': 'rgba(255, 0, 0, 0.8)'       // red
-      };
-      const nucleotideRgba = {
-        'A': [0 / 255, 200 / 255, 0 / 255, 0.8],
-        'C': [0 / 255, 0 / 255, 255 / 255, 0.8],
-        'G': [255 / 255, 165 / 255, 0 / 255, 0.8],
-        'T': [255 / 255, 0 / 255, 0 / 255, 0.8]
-      };
-      const defaultRgba = [127 / 255, 127 / 255, 127 / 255, 0.8];
       
       if (isVertical) {
         const gapEndY = nextPosAtVariant;
         const gapStartY = gapEndY + gapSize;
-        const paintStartY = gapStartY;
-        const paintEndY = Math.max(gapEndY, gapStartY - paintSize);
         
         // Draw gap background
         tracksSvg.appendChild(el("rect", {
@@ -1441,52 +1415,6 @@ function renderTracks() {
           "stroke-width": 1,
           "stroke-dasharray": "2,2"
         }));
-        
-        const paintSpanY = Math.max(0, paintStartY - paintEndY);
-        const paintBaseSize = insertedSeq.length > 0 ? (paintSpanY / insertedSeq.length) : 0;
-        for (let i = 0; i < insertedSeq.length; i++) {
-          const base = insertedSeq[i].toUpperCase();
-          const baseY = paintStartY - (i + 1) * paintBaseSize;
-          const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
-          const unclampedHeight = Math.max(0, paintBaseSize - BASE_TILE_INSET_PX);
-          const clampedY = Math.max(paintEndY, baseY);
-          const clampedBottom = Math.min(paintStartY, baseY + unclampedHeight);
-          const clampedHeight = Math.max(0, clampedBottom - clampedY);
-          if (clampedHeight <= 0) continue;
-          if (useWebGPUInsertionRects) {
-            const rgba = nucleotideRgba[base] || defaultRgba;
-            instancedRenderer.addRect(
-              (baseX - 16) * insertionDpr,
-              clampedY * insertionDpr,
-              32 * insertionDpr,
-              clampedHeight * insertionDpr,
-              rgba
-            );
-          } else {
-            tracksSvg.appendChild(el("rect", {
-              x: baseX - 16,
-              y: clampedY,
-              width: 32,
-              height: clampedHeight,
-              fill: color
-            }));
-          }
-          
-          // Draw base letter if space allows
-          if (paintBaseSize >= 8) {
-            const textEl = el("text", {
-              x: baseX,
-              y: baseY + paintBaseSize / 2,
-              class: "svg-small",
-              "text-anchor": "middle",
-              fill: "white",
-              "font-weight": "bold",
-              "dominant-baseline": "middle",
-              transform: "rotate(-90 " + baseX + " " + (baseY + paintBaseSize / 2) + ")"
-            }, base);
-            tracksSvg.appendChild(textEl);
-          }
-        }
       } else {
         const gapEndX = nextPosAtVariant;
         const variantPosAtVariant = genomePosCanonical(Number(v.pos));
@@ -1497,10 +1425,7 @@ function renderTracks() {
         const canonicalGapStartX = gapEndX - gapSize;
         const gapStartX = Math.max(canonicalGapStartX, gapStartXFromReference);
         const displayedGapSizeX = Math.max(0, gapEndX - gapStartX);
-        const displayedPaintSizeX = Math.min(displayedGapSizeX, paintSize);
         if (!(displayedGapSizeX > 0)) continue;
-        const paintStartX = gapStartX;
-        const paintEndX = Math.min(gapEndX, gapStartX + displayedPaintSizeX);
         const insertionBandHeight = 24;
         const insertionBandY = baseY - insertionBandHeight / 2;
         
@@ -1515,50 +1440,6 @@ function renderTracks() {
           "stroke-width": 1,
           "stroke-dasharray": "2,2"
         }));
-        
-        const paintSpanX = Math.max(0, paintEndX - paintStartX);
-        const paintBaseSize = insertedSeq.length > 0 ? (paintSpanX / insertedSeq.length) : 0;
-        for (let i = 0; i < insertedSeq.length; i++) {
-          const base = insertedSeq[i].toUpperCase();
-          const baseX = paintStartX + i * paintBaseSize;
-          const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
-          const unclampedWidth = Math.max(0, paintBaseSize - BASE_TILE_INSET_PX);
-          const clampedX = Math.max(paintStartX, baseX);
-          const clampedRight = Math.min(paintEndX, baseX + unclampedWidth);
-          const clampedWidth = Math.max(0, clampedRight - clampedX);
-          if (clampedWidth <= 0) continue;
-          if (useWebGPUInsertionRects) {
-            const rgba = nucleotideRgba[base] || defaultRgba;
-            instancedRenderer.addRect(
-              clampedX * insertionDpr,
-              insertionBandY * insertionDpr,
-              clampedWidth * insertionDpr,
-              insertionBandHeight * insertionDpr,
-              rgba
-            );
-          } else {
-            tracksSvg.appendChild(el("rect", {
-              x: clampedX,
-              y: insertionBandY,
-              width: clampedWidth,
-              height: insertionBandHeight,
-              fill: color
-            }));
-          }
-          
-          // Draw base letter if space allows
-          if (paintBaseSize >= 8) {
-            tracksSvg.appendChild(el("text", {
-              x: baseX + paintBaseSize / 2,
-              y: baseY,
-              class: "svg-small",
-              "text-anchor": "middle",
-              fill: "white",
-              "font-weight": "bold",
-              "dominant-baseline": "middle"
-            }, base));
-          }
-        }
       }
     }
   }
