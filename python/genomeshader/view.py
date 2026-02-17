@@ -80,6 +80,7 @@ class GenomeShader:
         
         # In-memory caches to avoid repeated template assembly and UCSC transformations.
         self._template_html_cache: Optional[str] = None
+        self._template_html_signature: Optional[tuple] = None
         self._ideogram_cache: dict = {}
         self._genes_cache: dict = {}
         self._repeats_cache: dict = {}
@@ -146,10 +147,6 @@ class GenomeShader:
         Returns:
             str: The template HTML content as a string
         """
-        if self._template_html_cache is not None:
-            self._cache_debug_bump("template", "mem")
-            return self._template_html_cache
-
         from pathlib import Path
         
         # Determine base directory for HTML files
@@ -181,19 +178,7 @@ class GenomeShader:
                 # Last resort: use current file's directory
                 base_dir = Path(__file__).parent / 'html'
         
-        # Load template skeleton
-        template_path = base_dir / "template.html"
-        template = template_path.read_text(encoding='utf-8')
-        
-        # Load CSS
-        css_path = base_dir / "styles.css"
-        css_content = css_path.read_text(encoding='utf-8')
-        
-        # Load body
-        body_path = base_dir / "body.html"
-        body_content = body_path.read_text(encoding='utf-8')
-        
-        # Load and concatenate JavaScript files in explicit order
+        # Build a source signature so template cache is invalidated when any html/css/js file changes.
         scripts_dir = base_dir / "scripts"
         script_order = [
             "cleanup.js",
@@ -210,6 +195,35 @@ class GenomeShader:
             "interaction.js",
             "main.js"
         ]
+        source_files = [
+            base_dir / "template.html",
+            base_dir / "styles.css",
+            base_dir / "body.html",
+            *[(scripts_dir / name) for name in script_order if (scripts_dir / name).exists()],
+        ]
+        signature_parts = []
+        for path in source_files:
+            stat = path.stat()
+            signature_parts.append((str(path), stat.st_mtime_ns, stat.st_size))
+        source_signature = tuple(signature_parts)
+
+        if self._template_html_cache is not None and self._template_html_signature == source_signature:
+            self._cache_debug_bump("template", "mem")
+            return self._template_html_cache
+
+        # Load template skeleton
+        template_path = base_dir / "template.html"
+        template = template_path.read_text(encoding='utf-8')
+        
+        # Load CSS
+        css_path = base_dir / "styles.css"
+        css_content = css_path.read_text(encoding='utf-8')
+        
+        # Load body
+        body_path = base_dir / "body.html"
+        body_content = body_path.read_text(encoding='utf-8')
+        
+        # Load and concatenate JavaScript files in explicit order
         js_content = "\n".join(
             (scripts_dir / name).read_text(encoding='utf-8')
             for name in script_order
@@ -222,6 +236,7 @@ class GenomeShader:
         template = template.replace("<!--__GENOMESHADER_SCRIPTS__-->", f"<script type=\"module\">\n{js_content}\n</script>")
         
         self._template_html_cache = template
+        self._template_html_signature = source_signature
         self._cache_debug_bump("template", "build")
         return template
 
@@ -254,6 +269,7 @@ class GenomeShader:
         This does not delete GCS-backed cache artifacts.
         """
         self._template_html_cache = None
+        self._template_html_signature = None
         self._ideogram_cache.clear()
         self._genes_cache.clear()
         self._repeats_cache.clear()
@@ -1147,6 +1163,7 @@ class GenomeShader:
                 insertion_variants_lookup.append({
                     "id": variant_display_id,
                     "pos": pos,
+                    "maxInsertionLength": max_insertion_length,
                     "insertionGapPx": insertion_gap_px,
                 })
         insertion_variants_lookup.sort(key=lambda v: v["pos"])

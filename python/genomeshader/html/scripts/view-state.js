@@ -117,25 +117,218 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.insertion_variants_
   insertionVariantsLookup = window.GENOMESHADER_CONFIG.insertion_variants_lookup;
   console.log(`Loaded ${insertionVariantsLookup.length} insertion variants for coordinate transformation lookup`);
 }
+const INSERTION_GAP_SAFETY_PX = 0.0; // Keep opened-gap geometry exact; locus painting uses identical bounds
+const BASE_TILE_INSET_PX = 0.0; // Shared base tile inset for both Reference and alternate-allele painting
+const INSERTION_GAP_EXPANSION_FACTOR = 1.10; // Open the reference/canonical gap slightly wider than painted allele
+
+let insertionMaxLenById = null;
+function getInsertionMaxLenById() {
+  if (insertionMaxLenById) return insertionMaxLenById;
+  insertionMaxLenById = new Map();
+  const tracks = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  for (const track of tracks) {
+    const vdata = track.variants_data || [];
+    for (const v of vdata) {
+      const key = String(v.id);
+      const maxLen = Number(v.maxInsertionLength);
+      if (Number.isFinite(maxLen) && maxLen > 0) {
+        const prev = insertionMaxLenById.get(key) || 0;
+        if (maxLen > prev) insertionMaxLenById.set(key, maxLen);
+      }
+    }
+  }
+  for (const v of variants) {
+    const key = String(v.id);
+    const maxLen = Number(v.maxInsertionLength);
+    if (Number.isFinite(maxLen) && maxLen > 0) {
+      const prev = insertionMaxLenById.get(key) || 0;
+      if (maxLen > prev) insertionMaxLenById.set(key, maxLen);
+    }
+  }
+  return insertionMaxLenById;
+}
+
+function getInsertionPaintBpForVariant(variant) {
+  if (!variant) return 0;
+  const directLen = Number(variant.maxInsertionLength);
+  const idMaxLen = getInsertionMaxLenById().get(String(variant.id));
+  const maxLen = Math.max(
+    Number.isFinite(directLen) ? directLen : 0,
+    Number.isFinite(idMaxLen) ? idMaxLen : 0
+  );
+  if (maxLen > 0) return maxLen;
+  if (variant.refAllele && Array.isArray(variant.altAlleles) && variant.altAlleles.length > 0) {
+    const refLen = variant.refAllele.length;
+    let best = 0;
+    for (const alt of variant.altAlleles) {
+      const altLen = (alt || "").length;
+      if (altLen > refLen) best = Math.max(best, altLen - refLen);
+    }
+    if (best > 0) return best;
+  }
+  return 0;
+}
+
+function getInsertionPaintBpForLookupEntry(entry) {
+  if (!entry) return 0;
+  const entryMaxLen = Number(entry.maxInsertionLength);
+  const idMaxLen = getInsertionMaxLenById().get(String(entry.id));
+  const maxLen = Math.max(
+    Number.isFinite(entryMaxLen) ? entryMaxLen : 0,
+    Number.isFinite(idMaxLen) ? idMaxLen : 0
+  );
+  if (maxLen > 0) return maxLen;
+  const precomputedGap = Number(entry.insertionGapPx);
+  const pxPerBp = (state && Number.isFinite(state.pxPerBp) && state.pxPerBp > 0) ? state.pxPerBp : 1;
+  return (Number.isFinite(precomputedGap) && precomputedGap > 0) ? (precomputedGap / pxPerBp) : 0;
+}
+
+function getInsertionGapBpForVariant(variant) {
+  return getInsertionPaintBpForVariant(variant) * INSERTION_GAP_EXPANSION_FACTOR;
+}
+
+function getInsertionGapBpForLookupEntry(entry) {
+  return getInsertionPaintBpForLookupEntry(entry) * INSERTION_GAP_EXPANSION_FACTOR;
+}
+
+function isInsertionPosWithinCurrentView(pos) {
+  const posNum = Number(pos);
+  if (!Number.isFinite(posNum) || !state) return false;
+  return posNum >= state.startBp && posNum <= state.endBp;
+}
+
+function getTotalExpandedInsertionGapBp(expandedInsertions) {
+  const expanded = expandedInsertions || (state && state.expandedInsertions);
+  if (!expanded) return 0;
+
+  if (insertionVariantsLookup && insertionVariantsLookup.length > 0) {
+    let totalBp = 0;
+    const countedIds = new Set();
+    for (const entry of insertionVariantsLookup) {
+      const id = String(entry.id);
+      if (countedIds.has(id)) continue;
+      if (!expanded.has(id)) continue;
+      if (!isInsertionPosWithinCurrentView(entry.pos)) continue;
+      countedIds.add(id);
+      totalBp += getInsertionGapBpForLookupEntry(entry);
+    }
+    return totalBp;
+  }
+
+  let totalBp = 0;
+  const countedIds = new Set();
+  for (const variant of variants) {
+    const id = String(variant.id);
+    if (countedIds.has(id)) continue;
+    if (expanded.has(id) && isInsertion(variant) && isInsertionPosWithinCurrentView(variant.pos)) {
+      countedIds.add(id);
+      totalBp += getInsertionGapBpForVariant(variant);
+    }
+  }
+  return totalBp;
+}
+
+function getDisplayPxPerBp() {
+  const pxPerBp = (state && Number.isFinite(state.pxPerBp) && state.pxPerBp > 0) ? state.pxPerBp : 1;
+  const span = (state && Number.isFinite(state.endBp - state.startBp)) ? (state.endBp - state.startBp) : 0;
+  if (!(span > 0)) return pxPerBp;
+  const totalGapBp = getTotalExpandedInsertionGapBp(state && state.expandedInsertions);
+  const effectiveSpan = span + totalGapBp;
+  if (!(effectiveSpan > 0)) return pxPerBp;
+  return pxPerBp * (span / effectiveSpan);
+}
+
+function getInsertionGapPxForVariant(variant) {
+  return (getInsertionGapBpForVariant(variant) * getDisplayPxPerBp()) + INSERTION_GAP_SAFETY_PX;
+}
+
+function getInsertionGapPxForLookupEntry(entry) {
+  return (getInsertionGapBpForLookupEntry(entry) * getDisplayPxPerBp()) + INSERTION_GAP_SAFETY_PX;
+}
+
+function getInsertionPaintPxForVariant(variant) {
+  return getInsertionPaintBpForVariant(variant) * getDisplayPxPerBp();
+}
+
+function getInsertionPaintPxForLookupEntry(entry) {
+  return getInsertionPaintBpForLookupEntry(entry) * getDisplayPxPerBp();
+}
+
+function getGapAfterBpPx(bp, expandedInsertions) {
+  if (!expandedInsertions) return 0;
+  const bpNum = Number(bp);
+  if (!Number.isFinite(bpNum)) return 0;
+  if (!isInsertionPosWithinCurrentView(bpNum)) return 0;
+
+  if (insertionVariantsLookup && insertionVariantsLookup.length > 0) {
+    let left = 0;
+    let right = insertionVariantsLookup.length - 1;
+    let firstIndex = -1;
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      const midPos = Number(insertionVariantsLookup[mid].pos);
+      if (midPos >= bpNum) {
+        if (midPos === bpNum) firstIndex = mid;
+        right = mid - 1;
+      } else {
+        left = mid + 1;
+      }
+    }
+    if (firstIndex === -1) return 0;
+    let gapPx = 0;
+    const countedIds = new Set();
+    for (let i = firstIndex; i < insertionVariantsLookup.length; i++) {
+      const entry = insertionVariantsLookup[i];
+      if (Number(entry.pos) !== bpNum) break;
+      const entryId = String(entry.id);
+      if (countedIds.has(entryId)) continue;
+      if (expandedInsertions.has(entryId)) {
+        countedIds.add(entryId);
+        gapPx += getInsertionGapPxForLookupEntry(entry);
+      }
+    }
+    return gapPx;
+  }
+
+  let gapPx = 0;
+  for (const variant of variants) {
+    if (Number(variant.pos) !== bpNum) continue;
+    if (expandedInsertions.has(String(variant.id)) && isInsertion(variant)) {
+      gapPx += getInsertionGapPxForVariant(variant);
+    }
+  }
+  return gapPx;
+}
 
 // Optimized function to get accumulated gap pixels up to a position
 // Uses binary search on precomputed sorted list for O(log n) performance
 // Filters by expanded insertions at runtime (since that's dynamic state)
 function getAccumulatedGapPx(bp, expandedInsertions) {
+  return getAccumulatedGapBp(bp, expandedInsertions) * getDisplayPxPerBp();
+}
+
+function getAccumulatedGapBp(bp, expandedInsertions) {
+  if (!expandedInsertions) return 0;
+  const viewStart = (state && Number.isFinite(state.startBp)) ? state.startBp : -Infinity;
+  const bpNum = Number(bp);
+  if (!Number.isFinite(bpNum)) return 0;
+
   if (!insertionVariantsLookup || insertionVariantsLookup.length === 0) {
     // Fallback to linear search if lookup table not available
-    let accumulatedGapPx = 0;
+    let accumulatedGapBp = 0;
+    const countedIds = new Set();
     for (const variant of variants) {
-      if (variant.pos < bp && expandedInsertions.has(variant.id) && isInsertion(variant)) {
-        if (variant.hasOwnProperty('insertionGapPx')) {
-          accumulatedGapPx += variant.insertionGapPx;
-        } else {
-          const maxInsertLen = getMaxInsertionLength(variant);
-          accumulatedGapPx += maxInsertLen * 8;
-        }
+      const id = String(variant.id);
+      if (countedIds.has(id)) continue;
+      const posNum = Number(variant.pos);
+      if (!Number.isFinite(posNum)) continue;
+      if (posNum < viewStart) continue;
+      if (posNum < bpNum && expandedInsertions.has(id) && isInsertion(variant)) {
+        countedIds.add(id);
+        accumulatedGapBp += getInsertionGapBpForVariant(variant);
       }
     }
-    return accumulatedGapPx;
+    return accumulatedGapBp;
   }
 
   // Binary search to find all insertion variants before position bp
@@ -146,7 +339,7 @@ function getAccumulatedGapPx(bp, expandedInsertions) {
   // Find the rightmost insertion variant with pos < bp
   while (left <= right) {
     const mid = Math.floor((left + right) / 2);
-    if (insertionVariantsLookup[mid].pos < bp) {
+    if (insertionVariantsLookup[mid].pos < bpNum) {
       lastIndex = mid;
       left = mid + 1;
     } else {
@@ -155,15 +348,22 @@ function getAccumulatedGapPx(bp, expandedInsertions) {
   }
   
   // Sum gaps for all variants up to lastIndex that are expanded
-  let accumulatedGapPx = 0;
+  let accumulatedGapBp = 0;
+  const countedIds = new Set();
   for (let i = 0; i <= lastIndex; i++) {
     const lookupVariant = insertionVariantsLookup[i];
-    if (expandedInsertions.has(lookupVariant.id)) {
-      accumulatedGapPx += lookupVariant.insertionGapPx;
+    const posNum = Number(lookupVariant.pos);
+    if (!Number.isFinite(posNum)) continue;
+    if (posNum < viewStart) continue;
+    const lookupId = String(lookupVariant.id);
+    if (countedIds.has(lookupId)) continue;
+    if (expandedInsertions.has(lookupId)) {
+      countedIds.add(lookupId);
+      accumulatedGapBp += getInsertionGapBpForLookupEntry(lookupVariant);
     }
   }
   
-  return accumulatedGapPx;
+  return accumulatedGapBp;
 }
 
 // Genes: load from config or use empty array as fallback

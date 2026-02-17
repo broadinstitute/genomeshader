@@ -79,6 +79,97 @@ function renderFlowCanvas() {
   const junctionX = 40;
   const W = flowWidthPx();
   const totalFlowH = flowHeightPx();
+  const expandedInsertionsForFlow = state.expandedInsertions || new Set();
+  const insertionLookupForFlow = (typeof insertionVariantsLookup !== "undefined" && Array.isArray(insertionVariantsLookup))
+    ? insertionVariantsLookup
+    : (((window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.insertion_variants_lookup) || []));
+  const getTotalExpandedInsertionGapBpForFlowAll = () => {
+    let totalBp = 0;
+    const countedIds = new Set();
+    if (insertionLookupForFlow && insertionLookupForFlow.length > 0 && typeof getInsertionGapBpForLookupEntry === "function") {
+      for (const entry of insertionLookupForFlow) {
+        const id = String(entry && entry.id);
+        if (!id || countedIds.has(id)) continue;
+        if (!expandedInsertionsForFlow.has(id)) continue;
+        countedIds.add(id);
+        totalBp += getInsertionGapBpForLookupEntry(entry);
+      }
+      return totalBp;
+    }
+    for (const v of variants) {
+      const id = String(v && v.id);
+      if (!id || countedIds.has(id)) continue;
+      if (!expandedInsertionsForFlow.has(id) || !isInsertion(v)) continue;
+      countedIds.add(id);
+      totalBp += (typeof getInsertionGapBpForVariant === "function")
+        ? getInsertionGapBpForVariant(v)
+        : 0;
+    }
+    return totalBp;
+  };
+  const getAccumulatedGapBpForFlowAll = (bp) => {
+    const bpNum = Number(bp);
+    if (!Number.isFinite(bpNum)) return 0;
+    let accumulated = 0;
+    const countedIds = new Set();
+    if (insertionLookupForFlow && insertionLookupForFlow.length > 0 && typeof getInsertionGapBpForLookupEntry === "function") {
+      for (const entry of insertionLookupForFlow) {
+        const pos = Number(entry && entry.pos);
+        if (!Number.isFinite(pos) || !(pos < bpNum)) continue;
+        const id = String(entry && entry.id);
+        if (!id || countedIds.has(id)) continue;
+        if (!expandedInsertionsForFlow.has(id)) continue;
+        countedIds.add(id);
+        accumulated += getInsertionGapBpForLookupEntry(entry);
+      }
+      return accumulated;
+    }
+    for (const v of variants) {
+      const pos = Number(v && v.pos);
+      if (!Number.isFinite(pos) || !(pos < bpNum)) continue;
+      const id = String(v && v.id);
+      if (!id || countedIds.has(id)) continue;
+      if (!expandedInsertionsForFlow.has(id) || !isInsertion(v)) continue;
+      countedIds.add(id);
+      accumulated += (typeof getInsertionGapBpForVariant === "function")
+        ? getInsertionGapBpForVariant(v)
+        : 0;
+    }
+    return accumulated;
+  };
+  const totalExpandedGapBpForFlow = getTotalExpandedInsertionGapBpForFlowAll();
+  const flowSpanBp = state.endBp - state.startBp;
+  const flowEffectiveSpanBp = flowSpanBp + totalExpandedGapBpForFlow;
+  const basePxPerBpForFlow = (state && Number.isFinite(state.pxPerBp) && state.pxPerBp > 0) ? state.pxPerBp : 1;
+  const flowDisplayPxPerBp = (flowSpanBp > 0 && flowEffectiveSpanBp > 0)
+    ? (basePxPerBpForFlow * (flowSpanBp / flowEffectiveSpanBp))
+    : basePxPerBpForFlow;
+  // Use an unclamped all-expanded mapping in flow so offscreen expanded insertion
+  // strips continue translating off-canvas smoothly.
+  const xGenomeCanonical = (bp, widthPx) => {
+    const WW = (Number.isFinite(widthPx) && widthPx > 0) ? widthPx : W;
+    const leftPad = 16, rightPad = 16;
+    const innerW = Math.max(0, WW - leftPad - rightPad);
+    const span = state.endBp - state.startBp;
+    if (!(innerW > 0) || !(span > 0)) return leftPad;
+    const effectiveSpan = span + totalExpandedGapBpForFlow;
+    if (!(effectiveSpan > 0)) return leftPad;
+    const accumulatedGapBp = getAccumulatedGapBpForFlowAll(bp);
+    const normalizedPos = ((bp - state.startBp) + accumulatedGapBp) / effectiveSpan;
+    return leftPad + normalizedPos * innerW;
+  };
+  const yGenomeCanonical = (bp, heightPx) => {
+    const HH = (Number.isFinite(heightPx) && heightPx > 0) ? heightPx : totalFlowH;
+    const topPad = 16, bottomPad = 16;
+    const innerH = Math.max(0, HH - topPad - bottomPad);
+    const span = state.endBp - state.startBp;
+    if (!(innerH > 0) || !(span > 0)) return topPad;
+    const effectiveSpan = span + totalExpandedGapBpForFlow;
+    if (!(effectiveSpan > 0)) return topPad;
+    const accumulatedGapBp = getAccumulatedGapBpForFlowAll(bp);
+    const normalizedPos = ((bp - state.startBp) + accumulatedGapBp) / effectiveSpan;
+    return HH - bottomPad - normalizedPos * innerH;
+  };
 
   // Build list of bands: one per variant track (or single band when using legacy single "flow")
   const flowBands = [];
@@ -125,7 +216,14 @@ function renderFlowCanvas() {
     const band = flowBands[bandIdx];
     const { track, flowLayout, bandOffset, bandHeight } = band;
     const variants = track.variants_data || [];
-    const win = visibleVariantWindowFor(variants);
+    const expandedInsertions = state.expandedInsertions || new Set();
+    const win = variants.filter(v => {
+      const pos = Number(v && v.pos);
+      const inViewport = Number.isFinite(pos) && pos >= state.startBp && pos <= state.endBp;
+      if (inViewport) return true;
+      const id = String(v && v.id);
+      return !!id && expandedInsertions.has(id) && isInsertion(v);
+    });
     const variantsPhased = track.variants_phased !== false;
     const H = bandHeight;
 
@@ -430,7 +528,7 @@ function renderFlowCanvas() {
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
@@ -448,7 +546,7 @@ function renderFlowCanvas() {
       for (let i=0;i<sortedWin.length;i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -539,7 +637,7 @@ function renderFlowCanvas() {
       }
       
       // Determine if we should show this label
-      const isHovered = variantsAtPos.some(v => state.hoveredVariantId === v.id);
+      const isHovered = variantsAtPos.some(v => String(state.hoveredVariantId) === String(v.id));
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
@@ -586,7 +684,7 @@ function renderFlowCanvas() {
       for (let i=0; i<sortedWin.length; i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
@@ -603,7 +701,7 @@ function renderFlowCanvas() {
       for (let i=0; i<sortedWin.length; i++) {
         const v = sortedWin[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -636,7 +734,7 @@ function renderFlowCanvas() {
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
@@ -654,7 +752,7 @@ function renderFlowCanvas() {
       for (let i=0;i<win.length;i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -722,7 +820,7 @@ function renderFlowCanvas() {
       }
       
       // Determine if we should show this label
-      const isHovered = variantsAtPos.some(v => state.hoveredVariantId === v.id);
+      const isHovered = variantsAtPos.some(v => String(state.hoveredVariantId) === String(v.id));
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
@@ -764,7 +862,7 @@ function renderFlowCanvas() {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
         const vx = xGenomeCanonical(v.pos, W);
@@ -781,7 +879,7 @@ function renderFlowCanvas() {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
@@ -944,6 +1042,161 @@ function renderFlowCanvas() {
     }
     
     return { fillColor, strokeColor };
+  }
+
+  function getMaxInsertionLengthForVariantDisplay(variant) {
+    const directLen = Number(variant && variant.maxInsertionLength);
+    if (Number.isFinite(directLen) && directLen > 0) return directLen;
+    if (!variant || !Array.isArray(variant.altAlleles)) return 0;
+    const refLen = ((variant.refAllele || "").length);
+    let maxLen = 0;
+    for (const alt of variant.altAlleles) {
+      const altStr = String(alt || "");
+      const delta = altStr.length - refLen;
+      if (delta > maxLen) maxLen = delta;
+    }
+    return maxLen;
+  }
+
+  function getInsertedSequenceForAllele(variant, allele) {
+    if (!variant) return "";
+    const alt = String(allele || "");
+    if (!alt || alt === ".") return "";
+    const ref = String(variant.refAllele || "");
+    if (alt === ref) return "";
+    const delta = alt.length - ref.length;
+    if (!(delta > 0)) return "";
+    if (ref && alt.startsWith(ref)) return alt.slice(ref.length);
+    // Fallback for non-prefix normalized representations.
+    return alt.slice(Math.max(0, alt.length - delta));
+  }
+
+  const insertionNucleotideColors = {
+    A: "rgba(0,200,0,0.85)",
+    C: "rgba(0,0,255,0.85)",
+    G: "rgba(255,165,0,0.85)",
+    T: "rgba(255,0,0,0.85)"
+  };
+
+  function drawInsertionSequenceStrip(ctx, x, y, width, height, insertedSeq, maxInsertionLen) {
+    if (!(width > 1) || !(height > 1)) return;
+    const innerPadX = 1;
+    const innerPadY = 1;
+    const innerX = x + innerPadX;
+    const innerY = y + innerPadY;
+    const innerW = Math.max(0, width - (2 * innerPadX));
+    const innerH = Math.max(0, height - (2 * innerPadY));
+    if (!(innerW > 0) || !(innerH > 0)) return;
+
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeStyle = "rgba(127,127,127,0.35)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    ctx.strokeRect(x, y, width, height);
+    ctx.setLineDash([]);
+
+    if (!insertedSeq || !(maxInsertionLen > 0)) {
+      ctx.restore();
+      return;
+    }
+
+    const basePitch = innerW / maxInsertionLen;
+    const innerRight = innerX + innerW;
+    for (let i = 0; i < insertedSeq.length && i < maxInsertionLen; i++) {
+      const base = insertedSeq[i].toUpperCase();
+      const slotStart = innerX + i * basePitch;
+      const slotEnd = innerX + (i + 1) * basePitch;
+      const bx = Math.max(innerX, slotStart);
+      const bw = Math.max(0, Math.min(innerRight, slotEnd - 0.2) - bx);
+      if (!(bw > 0)) continue;
+      ctx.fillStyle = insertionNucleotideColors[base] || "rgba(127,127,127,0.85)";
+      ctx.fillRect(bx, innerY, bw, innerH);
+      if (basePitch >= 7 && innerH >= 9) {
+        ctx.fillStyle = "white";
+        ctx.font = "bold 9px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(base, bx + (bw / 2), innerY + (innerH / 2));
+      }
+    }
+    ctx.restore();
+  }
+
+  function getDisplayedInsertionGapBounds(variant, isVertical, W, H) {
+    if (!variant || !isInsertion(variant)) return null;
+    const gapSizeBp = (typeof getInsertionGapBpForVariant === "function")
+      ? getInsertionGapBpForVariant(variant)
+      : 0;
+    const gapSize = gapSizeBp * flowDisplayPxPerBp;
+    if (!(gapSize > 0)) return null;
+    const posNum = Number(variant.pos);
+    const nextBpAtVariant = posNum + 1;
+    if (!Number.isFinite(posNum) || !Number.isFinite(nextBpAtVariant)) return null;
+
+    if (isVertical) {
+      const gapEndY = yGenomeCanonical(nextBpAtVariant, H);
+      const gapStartY = gapEndY + gapSize;
+      return {
+        axis: "y",
+        start: gapEndY,
+        end: gapStartY,
+        size: Math.max(0, gapStartY - gapEndY)
+      };
+    }
+
+    // Horizontal mode: match the same displayed-gap start logic used in tracks.js.
+    const gapEndX = xGenomeCanonical(nextBpAtVariant, W);
+    const variantPosAtVariant = xGenomeCanonical(posNum, W);
+    const rawSegmentSizeAtVariant = Math.abs(gapEndX - variantPosAtVariant);
+    const renderedRefBaseSizeAtVariant = Math.max(1, rawSegmentSizeAtVariant - gapSize);
+    const gapStartXFromReference = variantPosAtVariant + renderedRefBaseSizeAtVariant;
+    const canonicalGapStartX = gapEndX - gapSize;
+    const gapStartX = Math.max(canonicalGapStartX, gapStartXFromReference);
+    const displayedGapSizeX = Math.max(0, gapEndX - gapStartX);
+
+    return {
+      axis: "x",
+      start: gapStartX,
+      end: gapEndX,
+      size: displayedGapSizeX
+    };
+  }
+
+  function drawExpandedInsertionAlleleRows(ctx, variant, rows, isVertical, W, H) {
+    if (!variant || !rows || rows.length === 0) return;
+    if (!state.expandedInsertions || !state.expandedInsertions.has(String(variant.id))) return;
+    if (!isInsertion(variant)) return;
+
+    const maxInsertionLen = getMaxInsertionLengthForVariantDisplay(variant);
+    if (!(maxInsertionLen > 0)) return;
+    const gapBounds = getDisplayedInsertionGapBounds(variant, isVertical, W, H);
+    if (!gapBounds || !(gapBounds.size > 0)) return;
+
+    if (isVertical) {
+      // Align with the same insertion gap on the genomic (vertical) axis.
+      const stripY = gapBounds.start;
+      const stripH = gapBounds.size;
+      for (const row of rows) {
+        const stripW = Math.max(12, row.nodeW);
+        const stripX = Math.max(2, Math.min(W - stripW - 2, row.nodeX));
+        const insertedSeq = getInsertedSequenceForAllele(variant, row.actualAllele);
+        drawInsertionSequenceStrip(ctx, stripX, stripY, stripW, stripH, insertedSeq, maxInsertionLen);
+      }
+      return;
+    }
+
+    // Horizontal mode: draw per-allele strips aligned to the opened insertion gap.
+    const panelX = gapBounds.start;
+    const panelW = gapBounds.size;
+
+    for (const row of rows) {
+      const rowH = Math.max(8, Math.min(16, row.nodeH));
+      const rowY = row.nodeY + (row.nodeH - rowH) / 2;
+      const insertedSeq = getInsertedSequenceForAllele(variant, row.actualAllele);
+      drawInsertionSequenceStrip(ctx, panelX, rowY, panelW, rowH, insertedSeq, maxInsertionLen);
+    }
   }
   
   // Helper function to calculate allele node sizes based on frequencies
@@ -1278,6 +1531,7 @@ function renderFlowCanvas() {
     for (let i=0;i<sortedWin.length;i++){
       const v = sortedWin[i];
       const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+      const insertionRows = [];
       
       // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
       // Use helper function to get formatted labels (uses precomputed values if available)
@@ -1333,7 +1587,7 @@ function renderFlowCanvas() {
       let currentX = left + horizontalOffset;
       
       // Check if this variant column is hovered
-      const isVariantHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+      const isVariantHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
       
       // Draw nodes in current order
       for (let j=0;j<order.length;j++){
@@ -1457,6 +1711,13 @@ function renderFlowCanvas() {
           bandOffset: bandOffset,
           isSelected: isSelected
         });
+        insertionRows.push({
+          nodeX: nodeX,
+          nodeY: nodeY,
+          nodeW: nodeW,
+          nodeH: nodeH,
+          actualAllele: actualAllele
+        });
         
         // Store node info for ribbon drawing
         if (!nodeInfoByVariant.has(i)) {
@@ -1525,11 +1786,13 @@ function renderFlowCanvas() {
           ctx.stroke();
         }
       }
+      drawExpandedInsertionAlleleRows(ctx, v, insertionRows, true, W, H);
     }
   } else {
     for (let i=0;i<win.length;i++){
       const v = win[i];
       const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+      const insertionRows = [];
       
       // Get allele labels with actual alleles: ['.', refAllele, altAllele1, altAllele2, ...]
       // Use helper function to get formatted labels (uses precomputed values if available)
@@ -1591,7 +1854,7 @@ function renderFlowCanvas() {
       let currentY = top + verticalOffset;
 
       // Check if this variant column is hovered
-      const isVariantHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId);
+      const isVariantHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
       
       // Draw nodes in current order
       for (let j=0;j<order.length;j++){
@@ -1715,6 +1978,13 @@ function renderFlowCanvas() {
           bandOffset: bandOffset,
           isSelected: isSelected
         });
+        insertionRows.push({
+          nodeX: nodeX,
+          nodeY: nodeY,
+          nodeW: nodeW,
+          nodeH: nodeH,
+          actualAllele: actualAllele
+        });
         
         // Store node info for ribbon drawing
         if (!nodeInfoByVariant.has(i)) {
@@ -1783,6 +2053,7 @@ function renderFlowCanvas() {
           ctx.stroke();
         }
       }
+      drawExpandedInsertionAlleleRows(ctx, v, insertionRows, false, W, H);
     }
   }
   

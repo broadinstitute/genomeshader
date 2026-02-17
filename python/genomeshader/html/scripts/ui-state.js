@@ -427,20 +427,13 @@ function updateDerived() {
 // Calculate total insertion gap width for expanded insertions (in pixels)
 // Uses precomputed insertionGapPx from backend if available for performance
 function getTotalInsertionGapWidth() {
-  let totalGap = 0;
-  for (const variant of variants) {
-    if (state.expandedInsertions.has(variant.id) && isInsertion(variant)) {
-      // Use precomputed gap width if available (performance optimization)
-      if (variant.hasOwnProperty('insertionGapPx')) {
-        totalGap += variant.insertionGapPx;
-      } else {
-        // Fallback to computation for backward compatibility
-        const maxInsertLen = getMaxInsertionLength(variant);
-        totalGap += maxInsertLen * 8;
-      }
-    }
-  }
-  return totalGap;
+  const totalGapBp = (typeof getTotalExpandedInsertionGapBp === "function")
+    ? getTotalExpandedInsertionGapBp(state.expandedInsertions)
+    : 0;
+  const pxPerBpDisplay = (typeof getDisplayPxPerBp === "function")
+    ? getDisplayPxPerBp()
+    : (Number.isFinite(state.pxPerBp) && state.pxPerBp > 0 ? state.pxPerBp : 1);
+  return totalGapBp * pxPerBpDisplay;
 }
 
 // IMPORTANT: canonical genome-x mapping for the right pane (tracks/canvases)
@@ -459,12 +452,9 @@ function xGenomeCanonical(bp, W) {
   if (span <= 0 || isNaN(span)) {
     return leftPad;
   }
-  // Guard against invalid pxPerBp
-  if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
-    return leftPad;
-  }
-  const totalGapPx = getTotalInsertionGapWidth();
-  const totalGapBp = totalGapPx / state.pxPerBp;
+  const totalGapBp = (typeof getTotalExpandedInsertionGapBp === "function")
+    ? getTotalExpandedInsertionGapBp(state.expandedInsertions)
+    : 0;
   if (isNaN(totalGapBp)) {
     return leftPad;
   }
@@ -475,10 +465,11 @@ function xGenomeCanonical(bp, W) {
   
   // Calculate x position, accounting for insertion gaps before this position
   // Uses optimized binary search lookup if available for O(log n) performance
-  const accumulatedGapPx = getAccumulatedGapPx(bp, state.expandedInsertions);
+  const accumulatedGapBp = (typeof getAccumulatedGapBp === "function")
+    ? getAccumulatedGapBp(bp, state.expandedInsertions)
+    : (getAccumulatedGapPx(bp, state.expandedInsertions) / (state.pxPerBp || 1));
   
   const bpOffset = bp - state.startBp;
-  const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
   if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
     return leftPad;
   }
@@ -499,8 +490,9 @@ function bpFromXGenome(xPx, W) {
   const leftPad = 16, rightPad = 16;
   const innerW = W - leftPad - rightPad;
   const span = state.endBp - state.startBp;
-  const totalGapPx = getTotalInsertionGapWidth();
-  const totalGapBp = totalGapPx / state.pxPerBp;
+  const totalGapBp = (typeof getTotalExpandedInsertionGapBp === "function")
+    ? getTotalExpandedInsertionGapBp(state.expandedInsertions)
+    : 0;
   const effectiveSpan = span + totalGapBp;
   const t = (xPx - leftPad) / innerW;
   
@@ -508,8 +500,9 @@ function bpFromXGenome(xPx, W) {
   // Uses optimized binary search lookup for O(log n) performance per iteration
   let bpEstimate = state.startBp + t * effectiveSpan;
   for (let iter = 0; iter < 5; iter++) {
-    const accumulatedGapPx = getAccumulatedGapPx(bpEstimate, state.expandedInsertions);
-    const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    const accumulatedGapBp = (typeof getAccumulatedGapBp === "function")
+      ? getAccumulatedGapBp(bpEstimate, state.expandedInsertions)
+      : (getAccumulatedGapPx(bpEstimate, state.expandedInsertions) / (state.pxPerBp || 1));
     bpEstimate = state.startBp + (t * effectiveSpan) - accumulatedGapBp;
   }
   
@@ -531,12 +524,9 @@ function yGenomeCanonical(bp, H) {
   if (span <= 0 || isNaN(span)) {
     return topPad;
   }
-  // Guard against invalid pxPerBp
-  if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
-    return topPad;
-  }
-  const totalGapPx = getTotalInsertionGapWidth();
-  const totalGapBp = totalGapPx / state.pxPerBp;
+  const totalGapBp = (typeof getTotalExpandedInsertionGapBp === "function")
+    ? getTotalExpandedInsertionGapBp(state.expandedInsertions)
+    : 0;
   if (isNaN(totalGapBp)) {
     return topPad;
   }
@@ -547,10 +537,11 @@ function yGenomeCanonical(bp, H) {
   
   // Calculate y position, accounting for insertion gaps before this position
   // Uses optimized binary search lookup if available for O(log n) performance
-  const accumulatedGapPx = getAccumulatedGapPx(bp, state.expandedInsertions);
+  const accumulatedGapBp = (typeof getAccumulatedGapBp === "function")
+    ? getAccumulatedGapBp(bp, state.expandedInsertions)
+    : (getAccumulatedGapPx(bp, state.expandedInsertions) / (state.pxPerBp || 1));
   
   const bpOffset = bp - state.startBp;
-  const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
   if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
     return topPad;
   }
@@ -584,8 +575,9 @@ function bpFromYGenome(yPx, H) {
   const topPad = 16, bottomPad = 16;
   const innerH = H - topPad - bottomPad;
   const span = state.endBp - state.startBp;
-  const totalGapPx = getTotalInsertionGapWidth();
-  const totalGapBp = totalGapPx / state.pxPerBp;
+  const totalGapBp = (typeof getTotalExpandedInsertionGapBp === "function")
+    ? getTotalExpandedInsertionGapBp(state.expandedInsertions)
+    : 0;
   const effectiveSpan = span + totalGapBp;
   
   // Invert: yPx is from top, but we want position from bottom
@@ -596,8 +588,9 @@ function bpFromYGenome(yPx, H) {
   // Uses optimized binary search lookup for O(log n) performance per iteration
   let bpEstimate = state.startBp + t * effectiveSpan;
   for (let iter = 0; iter < 5; iter++) {
-    const accumulatedGapPx = getAccumulatedGapPx(bpEstimate, state.expandedInsertions);
-    const accumulatedGapBp = accumulatedGapPx / state.pxPerBp;
+    const accumulatedGapBp = (typeof getAccumulatedGapBp === "function")
+      ? getAccumulatedGapBp(bpEstimate, state.expandedInsertions)
+      : (getAccumulatedGapPx(bpEstimate, state.expandedInsertions) / (state.pxPerBp || 1));
     bpEstimate = state.startBp + (t * effectiveSpan) - accumulatedGapBp;
   }
   

@@ -1213,14 +1213,23 @@ function renderTracks() {
 
   // Variant marks: use all variant tracks so every track adds a marker to the ruler
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
-  const rulerVariants = variantTracksConfig.length > 0
+  const rulerVariantsRaw = variantTracksConfig.length > 0
     ? variantTracksConfig.flatMap(t => t.variants_data || [])
     : variants;
+  const seenRulerVariantIds = new Set();
+  const rulerVariants = [];
+  for (const rv of rulerVariantsRaw) {
+    const rid = String(rv.id);
+    if (seenRulerVariantIds.has(rid)) continue;
+    seenRulerVariantIds.add(rid);
+    rulerVariants.push(rv);
+  }
   for (let idx = 0; idx < rulerVariants.length; idx++) {
     const v = rulerVariants[idx];
+    const variantId = String(v.id);
     if (v.pos < state.startBp || v.pos > state.endBp) continue;
     const pos = genomePos(v.pos);
-    const isHovered = (state.hoveredVariantId != null && v.id === state.hoveredVariantId) || state.hoveredVariantIndex === idx;
+    const isHovered = (state.hoveredVariantId != null && variantId === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
     const strokeWidth = isHovered ? 2.5 : 1.2;
     const circleStrokeWidth = isHovered ? 2.2 : 1.4;
     const isIns = isInsertion(v);
@@ -1234,7 +1243,7 @@ function renderTracks() {
         stroke: strokeColor,
         "stroke-width": strokeWidth,
         style: "cursor: pointer;",
-        "data-variant-id": v.id
+        "data-variant-id": variantId
       });
     } else {
       lineEl = el("line", {
@@ -1243,12 +1252,12 @@ function renderTracks() {
         stroke: strokeColor,
         "stroke-width": strokeWidth,
         style: "cursor: pointer;",
-        "data-variant-id": v.id
+        "data-variant-id": variantId
       });
     }
     lineEl.addEventListener("mouseenter", () => {
       state.hoveredVariantIndex = idx;
-      state.hoveredVariantId = v.id;
+      state.hoveredVariantId = variantId;
       renderHoverOnly();
     });
     lineEl.addEventListener("mouseleave", () => {
@@ -1260,13 +1269,14 @@ function renderTracks() {
     // For insertions, add pointerdown handler to the line itself
     if (isInsertion(v)) {
       lineEl.style.pointerEvents = "auto";
+      lineEl.setAttribute("title", "Click to expand insertion");
       lineEl.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(v.id)) {
-          state.expandedInsertions.delete(v.id);
+        if (state.expandedInsertions.has(variantId)) {
+          state.expandedInsertions.delete(variantId);
         } else {
-          state.expandedInsertions.add(v.id);
+          state.expandedInsertions.add(variantId);
         }
         renderAll();
       });
@@ -1290,7 +1300,8 @@ function renderTracks() {
           width: 40,
           height: 10,
           fill: "transparent",
-          style: "cursor: pointer; pointer-events: auto;"
+          style: "cursor: pointer; pointer-events: auto;",
+          "data-variant-id": variantId
         });
       } else {
         clickArea = el("rect", {
@@ -1299,16 +1310,28 @@ function renderTracks() {
           width: 10,
           height: 40,
           fill: "transparent",
-          style: "cursor: pointer; pointer-events: auto;"
+          style: "cursor: pointer; pointer-events: auto;",
+          "data-variant-id": variantId
         });
       }
+      clickArea.setAttribute("title", "Click to expand insertion");
+      clickArea.addEventListener("mouseenter", () => {
+        state.hoveredVariantIndex = idx;
+        state.hoveredVariantId = variantId;
+        renderHoverOnly();
+      });
+      clickArea.addEventListener("mouseleave", () => {
+        state.hoveredVariantIndex = null;
+        state.hoveredVariantId = null;
+        renderHoverOnly();
+      });
       clickArea.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(v.id)) {
-          state.expandedInsertions.delete(v.id);
+        if (state.expandedInsertions.has(variantId)) {
+          state.expandedInsertions.delete(variantId);
         } else {
-          state.expandedInsertions.add(v.id);
+          state.expandedInsertions.add(variantId);
         }
         renderAll();
       });
@@ -1324,7 +1347,7 @@ function renderTracks() {
         stroke: circleStrokeColor,
         "stroke-width": circleStrokeWidth,
         style: "cursor: pointer;",
-        "data-variant-id": v.id
+        "data-variant-id": variantId
       });
     } else {
       circleEl = el("circle", {
@@ -1333,12 +1356,12 @@ function renderTracks() {
         stroke: circleStrokeColor,
         "stroke-width": circleStrokeWidth,
         style: "cursor: pointer;",
-        "data-variant-id": v.id
+        "data-variant-id": variantId
       });
     }
     circleEl.addEventListener("mouseenter", () => {
       state.hoveredVariantIndex = idx;
-      state.hoveredVariantId = v.id;
+      state.hoveredVariantId = variantId;
       renderHoverOnly();
     });
     circleEl.addEventListener("mouseleave", () => {
@@ -1349,13 +1372,14 @@ function renderTracks() {
     // Pointerdown handler to toggle insertion expansion
     if (isInsertion(v)) {
       circleEl.style.pointerEvents = "auto";
+      circleEl.setAttribute("title", "Click to expand insertion");
       circleEl.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(v.id)) {
-          state.expandedInsertions.delete(v.id);
+        if (state.expandedInsertions.has(variantId)) {
+          state.expandedInsertions.delete(variantId);
         } else {
-          state.expandedInsertions.add(v.id);
+          state.expandedInsertions.add(variantId);
         }
         renderAll();
       });
@@ -1367,36 +1391,16 @@ function renderTracks() {
       state.locusVariantElements.set(idx, { lineEl: null, circleEl: null });
     }
     state.locusVariantElements.get(idx).circleEl = circleEl;
-    
-    // Draw expanded insertion sequence if expanded
-    if (state.expandedInsertions.has(v.id) && isInsertion(v)) {
-      // Use precomputed gap width if available (performance optimization)
-      let gapSize;
-      if (v.hasOwnProperty('insertionGapPx')) {
-        gapSize = v.insertionGapPx;
-      } else {
-        // Fallback to computation for backward compatibility
-        const maxInsertLen = getMaxInsertionLength(v);
-        gapSize = maxInsertLen * 8;
-      }
-      
-      // Draw inserted sequence (use longest alt allele)
-      const longestAlt = v.altAlleles.reduce((a, b) => a.length > b.length ? a : b);
-      const insertedSeq = longestAlt.substring(v.refAllele.length);
-      const baseSize = gapSize / insertedSeq.length;
-      
-      const nucleotideColors = {
-        'A': 'rgba(0, 200, 0, 0.8)',      // green
-        'C': 'rgba(0, 0, 255, 0.8)',      // blue
-        'G': 'rgba(255, 165, 0, 0.8)',    // orange
-        'T': 'rgba(255, 0, 0, 0.8)'       // red
-      };
-      
+
+    // Draw expanded insertion sequence gap only while this variant marker is in view.
+    if (state.expandedInsertions.has(variantId) && isInsertion(v)) {
+      const gapSize = getGapAfterBpPx(v.pos, state.expandedInsertions);
+      if (!(gapSize > 0)) continue;
+      const nextBpAtVariant = Math.min(state.endBp, Number(v.pos) + 1);
+      const nextPosAtVariant = genomePosCanonical(nextBpAtVariant);
+
       if (isVertical) {
-        const gapStartY = pos;
-        const gapEndY = gapStartY - gapSize; // going up (toward start)
-        
-        // Draw gap background
+        const gapEndY = nextPosAtVariant;
         tracksSvg.appendChild(el("rect", {
           x: baseX - 18,
           y: gapEndY,
@@ -1407,77 +1411,29 @@ function renderTracks() {
           "stroke-width": 1,
           "stroke-dasharray": "2,2"
         }));
-        
-        for (let i = 0; i < insertedSeq.length; i++) {
-          const base = insertedSeq[i].toUpperCase();
-          const baseY = gapStartY - (i + 1) * baseSize;
-          const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
-          
-          tracksSvg.appendChild(el("rect", {
-            x: baseX - 16,
-            y: baseY,
-            width: 32,
-            height: baseSize - 1,
-            fill: color
-          }));
-          
-          // Draw base letter if space allows
-          if (baseSize >= 8) {
-            const textEl = el("text", {
-              x: baseX,
-              y: baseY + baseSize / 2,
-              class: "svg-small",
-              "text-anchor": "middle",
-              fill: "white",
-              "font-weight": "bold",
-              "dominant-baseline": "middle",
-              transform: "rotate(-90 " + baseX + " " + (baseY + baseSize / 2) + ")"
-            }, base);
-            tracksSvg.appendChild(textEl);
-          }
-        }
       } else {
-        const gapStartX = pos;
-        const gapEndX = gapStartX + gapSize;
-        
-        // Draw gap background
+        const gapEndX = nextPosAtVariant;
+        const variantPosAtVariant = genomePosCanonical(Number(v.pos));
+        const rawSegmentSizeAtVariant = Math.abs(gapEndX - variantPosAtVariant);
+        const renderedRefBaseSizeAtVariant = Math.max(1, rawSegmentSizeAtVariant - gapSize);
+        const gapStartXFromReference = variantPosAtVariant + renderedRefBaseSizeAtVariant;
+        const canonicalGapStartX = gapEndX - gapSize;
+        const gapStartX = Math.max(canonicalGapStartX, gapStartXFromReference);
+        const displayedGapSizeX = Math.max(0, gapEndX - gapStartX);
+        if (!(displayedGapSizeX > 0)) continue;
+        const insertionBandHeight = 24;
+        const insertionBandY = baseY - insertionBandHeight / 2;
+
         tracksSvg.appendChild(el("rect", {
           x: gapStartX,
-          y: baseY - 18,
-          width: gapSize,
-          height: 36,
+          y: insertionBandY,
+          width: displayedGapSizeX,
+          height: insertionBandHeight,
           fill: "rgba(255,255,255,0.1)",
           stroke: "rgba(127,127,127,0.3)",
           "stroke-width": 1,
           "stroke-dasharray": "2,2"
         }));
-        
-        for (let i = 0; i < insertedSeq.length; i++) {
-          const base = insertedSeq[i].toUpperCase();
-          const baseX = gapStartX + i * baseSize;
-          const color = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
-          
-          tracksSvg.appendChild(el("rect", {
-            x: baseX,
-            y: baseY - 16,
-            width: baseSize - 1,
-            height: 32,
-            fill: color
-          }));
-          
-          // Draw base letter if space allows
-          if (baseSize >= 8) {
-            tracksSvg.appendChild(el("text", {
-              x: baseX + baseSize / 2,
-              y: baseY,
-              class: "svg-small",
-              "text-anchor": "middle",
-              fill: "white",
-              "font-weight": "bold",
-              "dominant-baseline": "middle"
-            }, base));
-          }
-        }
       }
     }
   }
@@ -1549,33 +1505,59 @@ function renderTracks() {
     const refSeqStartBp = refSeqData.startBp;
 
     const nucleotideColors = {
-      'A': 'rgba(0, 200, 0, 0.8)',      // green
-      'C': 'rgba(0, 0, 255, 0.8)',      // blue
-      'G': 'rgba(255, 165, 0, 0.8)',    // orange
-      'T': 'rgba(255, 0, 0, 0.8)'       // red
+      'A': [0, 200, 0],      // green
+      'C': [0, 0, 255],      // blue
+      'G': [255, 165, 0],    // orange
+      'T': [255, 0, 0]       // red
     };
+    const BASE_TILE_MAX_ALPHA = 0.8;
+    const BASE_MIN_DRAW_PX = 0.03;
+    const BASE_FADE_START_PX = 0.08;
+    const BASE_FADE_FULL_PX = 1.6;
+    const BASE_VISUAL_TRIM_PX = 0.15;
+    const BASE_TEXT_FADE_START_PX = 6.0;
+    const BASE_TEXT_FADE_FULL_PX = 9.0;
+    const WEBGPU_GEOM_QUANT_PX = 0.5; // device-pixel quantization step to reduce shimmer
 
-    // Helper function to convert nucleotide color to RGBA array for WebGPU
-    function nucleotideColorToRgba(base) {
-      const rgbaStr = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
-      const match = rgbaStr.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/);
-      if (match) {
-        return [
-          parseInt(match[1]) / 255,
-          parseInt(match[2]) / 255,
-          parseInt(match[3]) / 255,
-          parseFloat(match[4])
-        ];
-      }
-      return [0.5, 0.5, 0.5, 0.8]; // fallback
+    function clamp01(v) {
+      return Math.max(0, Math.min(1, v));
     }
 
-    // Calculate base size based on zoom level
-    const minBaseSize = 2; // Minimum size per base in pixels
-    const baseSize = Math.max(minBaseSize, state.pxPerBp);
+    function smoothstep01(t) {
+      const x = clamp01(t);
+      return x * x * (3 - 2 * x);
+    }
 
-    // Only show individual bases if zoomed in enough (at least 2 actual pixels per base)
-    const showIndividualBases = state.pxPerBp >= 2;
+    function getBaseFadeAlpha(actualSize) {
+      if (!(actualSize > BASE_MIN_DRAW_PX)) return 0;
+      const t = (actualSize - BASE_FADE_START_PX) / (BASE_FADE_FULL_PX - BASE_FADE_START_PX);
+      return BASE_TILE_MAX_ALPHA * smoothstep01(t);
+    }
+
+    function getBaseTextFadeAlpha(actualSize) {
+      const t = (actualSize - BASE_TEXT_FADE_START_PX) / (BASE_TEXT_FADE_FULL_PX - BASE_TEXT_FADE_START_PX);
+      return smoothstep01(t);
+    }
+
+    function quantizeDevicePx(v) {
+      return Math.round(v / WEBGPU_GEOM_QUANT_PX) * WEBGPU_GEOM_QUANT_PX;
+    }
+
+    // Helper function to convert nucleotide color to RGBA array for WebGPU
+    function nucleotideColorToRgba(base, alpha) {
+      const rgb = nucleotideColors[base] || [127, 127, 127];
+      return [
+        rgb[0] / 255,
+        rgb[1] / 255,
+        rgb[2] / 255,
+        clamp01(alpha)
+      ];
+    }
+
+    // Render reference bases continuously across zoom levels so tiles naturally
+    // shrink/fade instead of hard-switching to a separate zoomed-out style.
+    const minVisibleBaseSize = BASE_MIN_DRAW_PX;
+    const showIndividualBases = refSeq.length > 0;
 
     // Performance limit: maximum number of bases to render
     const maxBasesToRender = 10000;
@@ -1596,10 +1578,12 @@ function renderTracks() {
         const pos = genomePosCanonical(bp);
         const nextBp = bp + 1;
         const nextPos = nextBp <= state.endBp ? genomePosCanonical(nextBp) : genomePosCanonical(state.endBp);
-        const actualSize = Math.max(minBaseSize, Math.abs(nextPos - pos));
+        const gapAfterPx = getGapAfterBpPx(bp, state.expandedInsertions);
+        const rawSegmentSize = Math.abs(nextPos - pos);
+        const actualSize = Math.max(0, rawSegmentSize - gapAfterPx);
         
-        // Skip bases that are too small to render
-        if (actualSize < minBaseSize) continue;
+        // Skip effectively non-visible tiles.
+        if (actualSize < minVisibleBaseSize) continue;
         
         const base = refSeq[i].toUpperCase();
         visibleBases.push({
@@ -1607,7 +1591,9 @@ function renderTracks() {
           base: base,
           pos: pos,
           nextPos: nextPos,
-          actualSize: actualSize
+          actualSize: actualSize,
+          baseAlpha: getBaseFadeAlpha(actualSize),
+          textAlpha: getBaseTextFadeAlpha(actualSize)
         });
       }
 
@@ -1628,23 +1614,31 @@ function renderTracks() {
           const pos = b.pos;
           const actualSize = b.actualSize;
           const base = b.base;
-          const rgba = nucleotideColorToRgba(base);
+          const alpha = b.baseAlpha;
+          if (!(alpha > 0)) continue;
+          const rgba = nucleotideColorToRgba(base, alpha);
           
           let x, y, w, h;
           if (isVertical) {
             x = referenceX;
             y = pos;
             w = referenceW;
-            h = actualSize - 0.5;
+            h = Math.max(0, actualSize - BASE_TILE_INSET_PX - BASE_VISUAL_TRIM_PX);
           } else {
             x = pos;
             y = referenceY;
-            w = actualSize - 0.5;
+            w = Math.max(0, actualSize - BASE_TILE_INSET_PX - BASE_VISUAL_TRIM_PX);
             h = referenceH;
           }
+          if (!(w > 0) || !(h > 0)) continue;
+          const qx = quantizeDevicePx(x * dpr);
+          const qy = quantizeDevicePx(y * dpr);
+          const qw = Math.max(0, quantizeDevicePx(w * dpr));
+          const qh = Math.max(0, quantizeDevicePx(h * dpr));
+          if (!(qw > 0) || !(qh > 0)) continue;
           
           // Scale coordinates by DPR to match physical pixel canvas
-          instancedRenderer.addRect(x * dpr, y * dpr, w * dpr, h * dpr, rgba);
+          instancedRenderer.addRect(qx, qy, qw, qh, rgba);
         }
         
         // Draw base letters using SVG (text rendering can stay SVG-based)
@@ -1657,11 +1651,12 @@ function renderTracks() {
         };
         const fragment = document.createDocumentFragment();
         for (const b of basesToRender) {
-          if (b.actualSize >= 8) {
+          if (b.textAlpha > 0) {
             const base = b.base;
             const pos = b.pos;
             const actualSize = b.actualSize;
             const textColor = nucleotideTextColors[base] || '#666';
+            const textOpacity = Math.max(0.1, b.textAlpha);
             
             if (isVertical) {
               const textEl = el("text", {
@@ -1669,7 +1664,7 @@ function renderTracks() {
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`,
+                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`,
                 transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
               }, base);
               fragment.appendChild(textEl);
@@ -1679,7 +1674,7 @@ function renderTracks() {
                 y: referenceY + referenceH / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`
+                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }
@@ -1701,7 +1696,10 @@ function renderTracks() {
           const pos = b.pos;
           const actualSize = b.actualSize;
           const base = b.base;
-          const rectColor = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+          const alpha = b.baseAlpha;
+          if (!(alpha > 0)) continue;
+          const rgb = nucleotideColors[base] || [127, 127, 127];
+          const rectColor = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
           const textColor = svgTextColors[base] || '#666';
           
           if (isVertical) {
@@ -1709,18 +1707,19 @@ function renderTracks() {
               x: referenceX,
               y: pos,
               width: referenceW,
-              height: actualSize - 0.5,
+              height: Math.max(0, actualSize - BASE_TILE_INSET_PX - BASE_VISUAL_TRIM_PX),
               fill: rectColor
             }));
 
             // Draw base letter if space allows
-            if (actualSize >= 8) {
+            if (b.textAlpha > 0) {
+              const textOpacity = Math.max(0.1, b.textAlpha);
               const textEl = el("text", {
                 x: referenceX + referenceW / 2,
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`,
+                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`,
                 transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
               }, base);
               fragment.appendChild(textEl);
@@ -1729,19 +1728,20 @@ function renderTracks() {
             fragment.appendChild(el("rect", {
               x: pos,
               y: referenceY,
-              width: actualSize - 0.5,
+              width: Math.max(0, actualSize - BASE_TILE_INSET_PX - BASE_VISUAL_TRIM_PX),
               height: referenceH,
               fill: rectColor
             }));
 
             // Draw base letter if space allows
-            if (actualSize >= 8) {
+            if (b.textAlpha > 0) {
+              const textOpacity = Math.max(0.1, b.textAlpha);
               const textEl = el("text", {
                 x: pos + actualSize / 2,
                 y: referenceY + referenceH / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`
+                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }
@@ -1752,7 +1752,7 @@ function renderTracks() {
         tracksSvg.appendChild(fragment);
       }
     } else {
-      // Zoomed out: show a continuous reference line with subtle pattern
+      // Fallback only when no reference sequence is available.
       if (isVertical) {
         const topPad = 16, bottomPad = 16;
         const innerH = H - topPad - bottomPad;
