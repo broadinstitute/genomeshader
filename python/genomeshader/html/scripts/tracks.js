@@ -1391,20 +1391,16 @@ function renderTracks() {
       state.locusVariantElements.set(idx, { lineEl: null, circleEl: null });
     }
     state.locusVariantElements.get(idx).circleEl = circleEl;
-    
-    // Draw expanded insertion sequence if expanded
+
+    // Draw expanded insertion sequence gap only while this variant marker is in view.
     if (state.expandedInsertions.has(variantId) && isInsertion(v)) {
-      // Use the exact same gap width as canonical coordinate mapping/reference rendering.
       const gapSize = getGapAfterBpPx(v.pos, state.expandedInsertions);
       if (!(gapSize > 0)) continue;
       const nextBpAtVariant = Math.min(state.endBp, Number(v.pos) + 1);
       const nextPosAtVariant = genomePosCanonical(nextBpAtVariant);
-      
+
       if (isVertical) {
         const gapEndY = nextPosAtVariant;
-        const gapStartY = gapEndY + gapSize;
-        
-        // Draw gap background
         tracksSvg.appendChild(el("rect", {
           x: baseX - 18,
           y: gapEndY,
@@ -1420,7 +1416,6 @@ function renderTracks() {
         const variantPosAtVariant = genomePosCanonical(Number(v.pos));
         const rawSegmentSizeAtVariant = Math.abs(gapEndX - variantPosAtVariant);
         const renderedRefBaseSizeAtVariant = Math.max(1, rawSegmentSizeAtVariant - gapSize);
-        // Match the visible reference-gap start exactly (reference base end after clamping).
         const gapStartXFromReference = variantPosAtVariant + renderedRefBaseSizeAtVariant;
         const canonicalGapStartX = gapEndX - gapSize;
         const gapStartX = Math.max(canonicalGapStartX, gapStartXFromReference);
@@ -1428,8 +1423,7 @@ function renderTracks() {
         if (!(displayedGapSizeX > 0)) continue;
         const insertionBandHeight = 24;
         const insertionBandY = baseY - insertionBandHeight / 2;
-        
-        // Draw gap background
+
         tracksSvg.appendChild(el("rect", {
           x: gapStartX,
           y: insertionBandY,
@@ -1511,33 +1505,59 @@ function renderTracks() {
     const refSeqStartBp = refSeqData.startBp;
 
     const nucleotideColors = {
-      'A': 'rgba(0, 200, 0, 0.8)',      // green
-      'C': 'rgba(0, 0, 255, 0.8)',      // blue
-      'G': 'rgba(255, 165, 0, 0.8)',    // orange
-      'T': 'rgba(255, 0, 0, 0.8)'       // red
+      'A': [0, 200, 0],      // green
+      'C': [0, 0, 255],      // blue
+      'G': [255, 165, 0],    // orange
+      'T': [255, 0, 0]       // red
     };
+    const BASE_TILE_MAX_ALPHA = 0.8;
+    const BASE_MIN_DRAW_PX = 0.03;
+    const BASE_FADE_START_PX = 0.08;
+    const BASE_FADE_FULL_PX = 1.6;
+    const BASE_VISUAL_TRIM_PX = 0.15;
+    const BASE_TEXT_FADE_START_PX = 6.0;
+    const BASE_TEXT_FADE_FULL_PX = 9.0;
+    const WEBGPU_GEOM_QUANT_PX = 0.5; // device-pixel quantization step to reduce shimmer
 
-    // Helper function to convert nucleotide color to RGBA array for WebGPU
-    function nucleotideColorToRgba(base) {
-      const rgbaStr = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
-      const match = rgbaStr.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/);
-      if (match) {
-        return [
-          parseInt(match[1]) / 255,
-          parseInt(match[2]) / 255,
-          parseInt(match[3]) / 255,
-          parseFloat(match[4])
-        ];
-      }
-      return [0.5, 0.5, 0.5, 0.8]; // fallback
+    function clamp01(v) {
+      return Math.max(0, Math.min(1, v));
     }
 
-    // Calculate base size based on zoom level
-    const minBaseSize = 1; // Keep visual continuity without forcing systematic overflow
-    const baseSize = Math.max(minBaseSize, getDisplayPxPerBp());
+    function smoothstep01(t) {
+      const x = clamp01(t);
+      return x * x * (3 - 2 * x);
+    }
 
-    // Only show individual bases if zoomed in enough (at least 2 actual pixels per base)
-    const showIndividualBases = getDisplayPxPerBp() >= 1;
+    function getBaseFadeAlpha(actualSize) {
+      if (!(actualSize > BASE_MIN_DRAW_PX)) return 0;
+      const t = (actualSize - BASE_FADE_START_PX) / (BASE_FADE_FULL_PX - BASE_FADE_START_PX);
+      return BASE_TILE_MAX_ALPHA * smoothstep01(t);
+    }
+
+    function getBaseTextFadeAlpha(actualSize) {
+      const t = (actualSize - BASE_TEXT_FADE_START_PX) / (BASE_TEXT_FADE_FULL_PX - BASE_TEXT_FADE_START_PX);
+      return smoothstep01(t);
+    }
+
+    function quantizeDevicePx(v) {
+      return Math.round(v / WEBGPU_GEOM_QUANT_PX) * WEBGPU_GEOM_QUANT_PX;
+    }
+
+    // Helper function to convert nucleotide color to RGBA array for WebGPU
+    function nucleotideColorToRgba(base, alpha) {
+      const rgb = nucleotideColors[base] || [127, 127, 127];
+      return [
+        rgb[0] / 255,
+        rgb[1] / 255,
+        rgb[2] / 255,
+        clamp01(alpha)
+      ];
+    }
+
+    // Render reference bases continuously across zoom levels so tiles naturally
+    // shrink/fade instead of hard-switching to a separate zoomed-out style.
+    const minVisibleBaseSize = BASE_MIN_DRAW_PX;
+    const showIndividualBases = refSeq.length > 0;
 
     // Performance limit: maximum number of bases to render
     const maxBasesToRender = 10000;
@@ -1560,10 +1580,10 @@ function renderTracks() {
         const nextPos = nextBp <= state.endBp ? genomePosCanonical(nextBp) : genomePosCanonical(state.endBp);
         const gapAfterPx = getGapAfterBpPx(bp, state.expandedInsertions);
         const rawSegmentSize = Math.abs(nextPos - pos);
-        const actualSize = Math.max(minBaseSize, rawSegmentSize - gapAfterPx);
+        const actualSize = Math.max(0, rawSegmentSize - gapAfterPx);
         
-        // Skip bases that are too small to render
-        if (actualSize < minBaseSize) continue;
+        // Skip effectively non-visible tiles.
+        if (actualSize < minVisibleBaseSize) continue;
         
         const base = refSeq[i].toUpperCase();
         visibleBases.push({
@@ -1571,7 +1591,9 @@ function renderTracks() {
           base: base,
           pos: pos,
           nextPos: nextPos,
-          actualSize: actualSize
+          actualSize: actualSize,
+          baseAlpha: getBaseFadeAlpha(actualSize),
+          textAlpha: getBaseTextFadeAlpha(actualSize)
         });
       }
 
@@ -1592,23 +1614,31 @@ function renderTracks() {
           const pos = b.pos;
           const actualSize = b.actualSize;
           const base = b.base;
-          const rgba = nucleotideColorToRgba(base);
+          const alpha = b.baseAlpha;
+          if (!(alpha > 0)) continue;
+          const rgba = nucleotideColorToRgba(base, alpha);
           
           let x, y, w, h;
           if (isVertical) {
             x = referenceX;
             y = pos;
             w = referenceW;
-            h = Math.max(0, actualSize - BASE_TILE_INSET_PX);
+            h = Math.max(0, actualSize - BASE_TILE_INSET_PX - BASE_VISUAL_TRIM_PX);
           } else {
             x = pos;
             y = referenceY;
-            w = Math.max(0, actualSize - BASE_TILE_INSET_PX);
+            w = Math.max(0, actualSize - BASE_TILE_INSET_PX - BASE_VISUAL_TRIM_PX);
             h = referenceH;
           }
+          if (!(w > 0) || !(h > 0)) continue;
+          const qx = quantizeDevicePx(x * dpr);
+          const qy = quantizeDevicePx(y * dpr);
+          const qw = Math.max(0, quantizeDevicePx(w * dpr));
+          const qh = Math.max(0, quantizeDevicePx(h * dpr));
+          if (!(qw > 0) || !(qh > 0)) continue;
           
           // Scale coordinates by DPR to match physical pixel canvas
-          instancedRenderer.addRect(x * dpr, y * dpr, w * dpr, h * dpr, rgba);
+          instancedRenderer.addRect(qx, qy, qw, qh, rgba);
         }
         
         // Draw base letters using SVG (text rendering can stay SVG-based)
@@ -1621,11 +1651,12 @@ function renderTracks() {
         };
         const fragment = document.createDocumentFragment();
         for (const b of basesToRender) {
-          if (b.actualSize >= 8) {
+          if (b.textAlpha > 0) {
             const base = b.base;
             const pos = b.pos;
             const actualSize = b.actualSize;
             const textColor = nucleotideTextColors[base] || '#666';
+            const textOpacity = Math.max(0.1, b.textAlpha);
             
             if (isVertical) {
               const textEl = el("text", {
@@ -1633,7 +1664,7 @@ function renderTracks() {
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`,
+                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`,
                 transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
               }, base);
               fragment.appendChild(textEl);
@@ -1643,7 +1674,7 @@ function renderTracks() {
                 y: referenceY + referenceH / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`
+                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }
@@ -1665,7 +1696,10 @@ function renderTracks() {
           const pos = b.pos;
           const actualSize = b.actualSize;
           const base = b.base;
-          const rectColor = nucleotideColors[base] || 'rgba(127,127,127,0.8)';
+          const alpha = b.baseAlpha;
+          if (!(alpha > 0)) continue;
+          const rgb = nucleotideColors[base] || [127, 127, 127];
+          const rectColor = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
           const textColor = svgTextColors[base] || '#666';
           
           if (isVertical) {
@@ -1673,18 +1707,19 @@ function renderTracks() {
               x: referenceX,
               y: pos,
               width: referenceW,
-              height: Math.max(0, actualSize - BASE_TILE_INSET_PX),
+              height: Math.max(0, actualSize - BASE_TILE_INSET_PX - BASE_VISUAL_TRIM_PX),
               fill: rectColor
             }));
 
             // Draw base letter if space allows
-            if (actualSize >= 8) {
+            if (b.textAlpha > 0) {
+              const textOpacity = Math.max(0.1, b.textAlpha);
               const textEl = el("text", {
                 x: referenceX + referenceW / 2,
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`,
+                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`,
                 transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
               }, base);
               fragment.appendChild(textEl);
@@ -1693,19 +1728,20 @@ function renderTracks() {
             fragment.appendChild(el("rect", {
               x: pos,
               y: referenceY,
-              width: Math.max(0, actualSize - BASE_TILE_INSET_PX),
+              width: Math.max(0, actualSize - BASE_TILE_INSET_PX - BASE_VISUAL_TRIM_PX),
               height: referenceH,
               fill: rectColor
             }));
 
             // Draw base letter if space allows
-            if (actualSize >= 8) {
+            if (b.textAlpha > 0) {
+              const textOpacity = Math.max(0.1, b.textAlpha);
               const textEl = el("text", {
                 x: pos + actualSize / 2,
                 y: referenceY + referenceH / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; font-size: 10px; font-weight: bold;`
+                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }
@@ -1716,7 +1752,7 @@ function renderTracks() {
         tracksSvg.appendChild(fragment);
       }
     } else {
-      // Zoomed out: show a continuous reference line with subtle pattern
+      // Fallback only when no reference sequence is available.
       if (isVertical) {
         const topPad = 16, bottomPad = 16;
         const innerH = H - topPad - bottomPad;

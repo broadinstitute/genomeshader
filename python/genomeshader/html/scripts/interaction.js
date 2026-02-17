@@ -79,6 +79,97 @@ function renderFlowCanvas() {
   const junctionX = 40;
   const W = flowWidthPx();
   const totalFlowH = flowHeightPx();
+  const expandedInsertionsForFlow = state.expandedInsertions || new Set();
+  const insertionLookupForFlow = (typeof insertionVariantsLookup !== "undefined" && Array.isArray(insertionVariantsLookup))
+    ? insertionVariantsLookup
+    : (((window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.insertion_variants_lookup) || []));
+  const getTotalExpandedInsertionGapBpForFlowAll = () => {
+    let totalBp = 0;
+    const countedIds = new Set();
+    if (insertionLookupForFlow && insertionLookupForFlow.length > 0 && typeof getInsertionGapBpForLookupEntry === "function") {
+      for (const entry of insertionLookupForFlow) {
+        const id = String(entry && entry.id);
+        if (!id || countedIds.has(id)) continue;
+        if (!expandedInsertionsForFlow.has(id)) continue;
+        countedIds.add(id);
+        totalBp += getInsertionGapBpForLookupEntry(entry);
+      }
+      return totalBp;
+    }
+    for (const v of variants) {
+      const id = String(v && v.id);
+      if (!id || countedIds.has(id)) continue;
+      if (!expandedInsertionsForFlow.has(id) || !isInsertion(v)) continue;
+      countedIds.add(id);
+      totalBp += (typeof getInsertionGapBpForVariant === "function")
+        ? getInsertionGapBpForVariant(v)
+        : 0;
+    }
+    return totalBp;
+  };
+  const getAccumulatedGapBpForFlowAll = (bp) => {
+    const bpNum = Number(bp);
+    if (!Number.isFinite(bpNum)) return 0;
+    let accumulated = 0;
+    const countedIds = new Set();
+    if (insertionLookupForFlow && insertionLookupForFlow.length > 0 && typeof getInsertionGapBpForLookupEntry === "function") {
+      for (const entry of insertionLookupForFlow) {
+        const pos = Number(entry && entry.pos);
+        if (!Number.isFinite(pos) || !(pos < bpNum)) continue;
+        const id = String(entry && entry.id);
+        if (!id || countedIds.has(id)) continue;
+        if (!expandedInsertionsForFlow.has(id)) continue;
+        countedIds.add(id);
+        accumulated += getInsertionGapBpForLookupEntry(entry);
+      }
+      return accumulated;
+    }
+    for (const v of variants) {
+      const pos = Number(v && v.pos);
+      if (!Number.isFinite(pos) || !(pos < bpNum)) continue;
+      const id = String(v && v.id);
+      if (!id || countedIds.has(id)) continue;
+      if (!expandedInsertionsForFlow.has(id) || !isInsertion(v)) continue;
+      countedIds.add(id);
+      accumulated += (typeof getInsertionGapBpForVariant === "function")
+        ? getInsertionGapBpForVariant(v)
+        : 0;
+    }
+    return accumulated;
+  };
+  const totalExpandedGapBpForFlow = getTotalExpandedInsertionGapBpForFlowAll();
+  const flowSpanBp = state.endBp - state.startBp;
+  const flowEffectiveSpanBp = flowSpanBp + totalExpandedGapBpForFlow;
+  const basePxPerBpForFlow = (state && Number.isFinite(state.pxPerBp) && state.pxPerBp > 0) ? state.pxPerBp : 1;
+  const flowDisplayPxPerBp = (flowSpanBp > 0 && flowEffectiveSpanBp > 0)
+    ? (basePxPerBpForFlow * (flowSpanBp / flowEffectiveSpanBp))
+    : basePxPerBpForFlow;
+  // Use an unclamped all-expanded mapping in flow so offscreen expanded insertion
+  // strips continue translating off-canvas smoothly.
+  const xGenomeCanonical = (bp, widthPx) => {
+    const WW = (Number.isFinite(widthPx) && widthPx > 0) ? widthPx : W;
+    const leftPad = 16, rightPad = 16;
+    const innerW = Math.max(0, WW - leftPad - rightPad);
+    const span = state.endBp - state.startBp;
+    if (!(innerW > 0) || !(span > 0)) return leftPad;
+    const effectiveSpan = span + totalExpandedGapBpForFlow;
+    if (!(effectiveSpan > 0)) return leftPad;
+    const accumulatedGapBp = getAccumulatedGapBpForFlowAll(bp);
+    const normalizedPos = ((bp - state.startBp) + accumulatedGapBp) / effectiveSpan;
+    return leftPad + normalizedPos * innerW;
+  };
+  const yGenomeCanonical = (bp, heightPx) => {
+    const HH = (Number.isFinite(heightPx) && heightPx > 0) ? heightPx : totalFlowH;
+    const topPad = 16, bottomPad = 16;
+    const innerH = Math.max(0, HH - topPad - bottomPad);
+    const span = state.endBp - state.startBp;
+    if (!(innerH > 0) || !(span > 0)) return topPad;
+    const effectiveSpan = span + totalExpandedGapBpForFlow;
+    if (!(effectiveSpan > 0)) return topPad;
+    const accumulatedGapBp = getAccumulatedGapBpForFlowAll(bp);
+    const normalizedPos = ((bp - state.startBp) + accumulatedGapBp) / effectiveSpan;
+    return HH - bottomPad - normalizedPos * innerH;
+  };
 
   // Build list of bands: one per variant track (or single band when using legacy single "flow")
   const flowBands = [];
@@ -125,7 +216,14 @@ function renderFlowCanvas() {
     const band = flowBands[bandIdx];
     const { track, flowLayout, bandOffset, bandHeight } = band;
     const variants = track.variants_data || [];
-    const win = visibleVariantWindowFor(variants);
+    const expandedInsertions = state.expandedInsertions || new Set();
+    const win = variants.filter(v => {
+      const pos = Number(v && v.pos);
+      const inViewport = Number.isFinite(pos) && pos >= state.startBp && pos <= state.endBp;
+      if (inViewport) return true;
+      const id = String(v && v.id);
+      return !!id && expandedInsertions.has(id) && isInsertion(v);
+    });
     const variantsPhased = track.variants_phased !== false;
     const H = bandHeight;
 
@@ -1028,10 +1126,13 @@ function renderFlowCanvas() {
 
   function getDisplayedInsertionGapBounds(variant, isVertical, W, H) {
     if (!variant || !isInsertion(variant)) return null;
-    const gapSize = getGapAfterBpPx(variant.pos, state.expandedInsertions);
+    const gapSizeBp = (typeof getInsertionGapBpForVariant === "function")
+      ? getInsertionGapBpForVariant(variant)
+      : 0;
+    const gapSize = gapSizeBp * flowDisplayPxPerBp;
     if (!(gapSize > 0)) return null;
     const posNum = Number(variant.pos);
-    const nextBpAtVariant = Math.min(state.endBp, posNum + 1);
+    const nextBpAtVariant = posNum + 1;
     if (!Number.isFinite(posNum) || !Number.isFinite(nextBpAtVariant)) return null;
 
     if (isVertical) {

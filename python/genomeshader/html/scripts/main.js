@@ -254,8 +254,56 @@ function renderSmartTrack(trackId) {
   const bgHeight = (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) ? totalContentHeight : H;
   ctx.fillStyle = cssVar("--smart-track-bg");
   ctx.fillRect(0,0,W,bgHeight);
+  const smartTrackBg = cssVar("--smart-track-bg");
+  const GAP_VISUAL_PAD_PX = 1.5;
   // Keep Reads-track variant guides aligned with ruler/multi-track ordering.
   const rulerVariants = getRulerVariants();
+  const expandedInsertionGapSegments = [];
+  if (!isVertical && state.expandedInsertions && state.expandedInsertions.size > 0) {
+    const seenExpandedIds = new Set();
+    const pushExpandedGapSegment = (entryId, entryPos) => {
+      const id = String(entryId);
+      if (seenExpandedIds.has(id) || !state.expandedInsertions.has(id)) return;
+      seenExpandedIds.add(id);
+      const pos = Number(entryPos);
+      if (!Number.isFinite(pos)) return;
+      if (pos < state.startBp || pos > state.endBp) return;
+      const gapPx = getGapAfterBpPx(pos, state.expandedInsertions);
+      if (!(gapPx > 0)) return;
+      const afterBaseX = xGenomeCanonical(pos + 1, W);
+      expandedInsertionGapSegments.push({
+        pos,
+        gapStart: afterBaseX - gapPx,
+        gapEnd: afterBaseX
+      });
+    };
+    if (typeof insertionVariantsLookup !== "undefined" && Array.isArray(insertionVariantsLookup) && insertionVariantsLookup.length > 0) {
+      for (const entry of insertionVariantsLookup) {
+        pushExpandedGapSegment(entry.id, entry.pos);
+      }
+    } else if (Array.isArray(variants) && variants.length > 0) {
+      for (const variant of variants) {
+        if (isInsertion(variant)) {
+          pushExpandedGapSegment(variant.id, variant.pos);
+        }
+      }
+    }
+  }
+  
+  function cutReadBodyAtExpandedInsertionGaps(readStart, readEnd, x, y, w, h) {
+    if (!expandedInsertionGapSegments.length) return;
+    if (!(w > 0) || !(h > 0)) return;
+    for (const gap of expandedInsertionGapSegments) {
+      // Gap appears between bp=pos and bp=pos+1, so read must include bp after pos.
+      if (!(readStart <= gap.pos && readEnd > gap.pos)) continue;
+      const clipStart = Math.max(x, gap.gapStart - GAP_VISUAL_PAD_PX);
+      const clipEnd = Math.min(x + w, gap.gapEnd + GAP_VISUAL_PAD_PX);
+      const clipWidth = clipEnd - clipStart;
+      if (!(clipWidth > 0)) continue;
+      ctx.fillStyle = smartTrackBg;
+      ctx.fillRect(clipStart, y, clipWidth, h);
+    }
+  }
   
   if (isVertical) {
     const coordHeight = H;
@@ -315,7 +363,6 @@ function renderSmartTrack(trackId) {
           roundRect(ctx, x, y, w, h, 3);
           ctx.fill();
         }
-        
         // Draw insertion/deletion/diff markers (vertical mode)
         if (read.elements && read.elements.length > 0) {
           for (const elem of read.elements) {
@@ -501,6 +548,7 @@ function renderSmartTrack(trackId) {
               roundRect(ctx, x, y, w, h, 3);
               ctx.fill();
             }
+            cutReadBodyAtExpandedInsertionGaps(minStart, maxEnd, x, y, w, h);
           }
         }
       } else {
@@ -548,6 +596,7 @@ function renderSmartTrack(trackId) {
             roundRect(ctx, x, y, w, h, 3);
             ctx.fill();
           }
+          cutReadBodyAtExpandedInsertionGaps(read.start, read.end, x, y, w, h);
           
           // Draw direction arrow
           ctx.fillStyle = `rgba(255,255,255,0.6)`;
@@ -661,6 +710,28 @@ function renderSmartTrack(trackId) {
             }
           }
         }
+      }
+
+      // Draw expanded insertion gap overlays on top of reads/CIGAR so the gap is explicit.
+      if (expandedInsertionGapSegments.length > 0) {
+        const gapOverlayY = top;
+        const gapOverlayHeight = Math.max(2, totalContentHeight - top - bottom);
+        const trackMinX = 16;
+        const trackMaxX = Math.max(trackMinX, W - 16);
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        for (const gap of expandedInsertionGapSegments) {
+          const x = Math.max(trackMinX, gap.gapStart - GAP_VISUAL_PAD_PX);
+          const xEnd = Math.min(trackMaxX, gap.gapEnd + GAP_VISUAL_PAD_PX);
+          const width = xEnd - x;
+          if (!(width > 0)) continue;
+          ctx.fillStyle = "rgba(255,255,255,0.92)";
+          ctx.fillRect(x, gapOverlayY, width, gapOverlayHeight);
+          ctx.strokeStyle = "rgba(127,127,127,0.55)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x, gapOverlayY, width, gapOverlayHeight);
+        }
+        ctx.restore();
       }
     } else if (track.loading) {
       ctx.fillStyle = cssVar("--muted");

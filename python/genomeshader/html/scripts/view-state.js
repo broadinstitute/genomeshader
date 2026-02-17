@@ -191,6 +191,12 @@ function getInsertionGapBpForLookupEntry(entry) {
   return getInsertionPaintBpForLookupEntry(entry) * INSERTION_GAP_EXPANSION_FACTOR;
 }
 
+function isInsertionPosWithinCurrentView(pos) {
+  const posNum = Number(pos);
+  if (!Number.isFinite(posNum) || !state) return false;
+  return posNum >= state.startBp && posNum <= state.endBp;
+}
+
 function getTotalExpandedInsertionGapBp(expandedInsertions) {
   const expanded = expandedInsertions || (state && state.expandedInsertions);
   if (!expanded) return 0;
@@ -202,6 +208,7 @@ function getTotalExpandedInsertionGapBp(expandedInsertions) {
       const id = String(entry.id);
       if (countedIds.has(id)) continue;
       if (!expanded.has(id)) continue;
+      if (!isInsertionPosWithinCurrentView(entry.pos)) continue;
       countedIds.add(id);
       totalBp += getInsertionGapBpForLookupEntry(entry);
     }
@@ -213,7 +220,7 @@ function getTotalExpandedInsertionGapBp(expandedInsertions) {
   for (const variant of variants) {
     const id = String(variant.id);
     if (countedIds.has(id)) continue;
-    if (expanded.has(id) && isInsertion(variant)) {
+    if (expanded.has(id) && isInsertion(variant) && isInsertionPosWithinCurrentView(variant.pos)) {
       countedIds.add(id);
       totalBp += getInsertionGapBpForVariant(variant);
     }
@@ -251,6 +258,7 @@ function getGapAfterBpPx(bp, expandedInsertions) {
   if (!expandedInsertions) return 0;
   const bpNum = Number(bp);
   if (!Number.isFinite(bpNum)) return 0;
+  if (!isInsertionPosWithinCurrentView(bpNum)) return 0;
 
   if (insertionVariantsLookup && insertionVariantsLookup.length > 0) {
     let left = 0;
@@ -300,6 +308,11 @@ function getAccumulatedGapPx(bp, expandedInsertions) {
 }
 
 function getAccumulatedGapBp(bp, expandedInsertions) {
+  if (!expandedInsertions) return 0;
+  const viewStart = (state && Number.isFinite(state.startBp)) ? state.startBp : -Infinity;
+  const bpNum = Number(bp);
+  if (!Number.isFinite(bpNum)) return 0;
+
   if (!insertionVariantsLookup || insertionVariantsLookup.length === 0) {
     // Fallback to linear search if lookup table not available
     let accumulatedGapBp = 0;
@@ -307,7 +320,10 @@ function getAccumulatedGapBp(bp, expandedInsertions) {
     for (const variant of variants) {
       const id = String(variant.id);
       if (countedIds.has(id)) continue;
-      if (variant.pos < bp && expandedInsertions.has(id) && isInsertion(variant)) {
+      const posNum = Number(variant.pos);
+      if (!Number.isFinite(posNum)) continue;
+      if (posNum < viewStart) continue;
+      if (posNum < bpNum && expandedInsertions.has(id) && isInsertion(variant)) {
         countedIds.add(id);
         accumulatedGapBp += getInsertionGapBpForVariant(variant);
       }
@@ -323,7 +339,7 @@ function getAccumulatedGapBp(bp, expandedInsertions) {
   // Find the rightmost insertion variant with pos < bp
   while (left <= right) {
     const mid = Math.floor((left + right) / 2);
-    if (insertionVariantsLookup[mid].pos < bp) {
+    if (insertionVariantsLookup[mid].pos < bpNum) {
       lastIndex = mid;
       left = mid + 1;
     } else {
@@ -336,6 +352,9 @@ function getAccumulatedGapBp(bp, expandedInsertions) {
   const countedIds = new Set();
   for (let i = 0; i <= lastIndex; i++) {
     const lookupVariant = insertionVariantsLookup[i];
+    const posNum = Number(lookupVariant.pos);
+    if (!Number.isFinite(posNum)) continue;
+    if (posNum < viewStart) continue;
     const lookupId = String(lookupVariant.id);
     if (countedIds.has(lookupId)) continue;
     if (expandedInsertions.has(lookupId)) {
