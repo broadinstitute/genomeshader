@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.3.0](https://github.com/broadinstitute/genomeshader/compare/v0.2.0...v0.3.0) (2026-02-26)
+
+
+### Features
+
+* add a right sidebar that allows control over Smart Track properties ([78d1173](https://github.com/broadinstitute/genomeshader/commit/78d11732617ea0f47ca027f9ad0851c9b0f2bbcf))
+* added a right sidebar for smart track control ([3d6287d](https://github.com/broadinstitute/genomeshader/commit/3d6287d2b7748a1d1048ec81ad711bbae2e099a8))
+* adding support for multiple variant tracks ([2e124de](https://github.com/broadinstitute/genomeshader/commit/2e124de7d2d766791131ab7c3c66a8516a7d63b0))
+* cache contents for faster loading ([14c2f25](https://github.com/broadinstitute/genomeshader/commit/14c2f2529bc0b40756066d42379a027103f9025e))
+* cache variant representations to GCS ([c6eeea0](https://github.com/broadinstitute/genomeshader/commit/c6eeea0c7c55f164e2f5fb41f704c48d72e72dd4))
+* collapsing smart tracks paints a one-line read summary ([2577802](https://github.com/broadinstitute/genomeshader/commit/2577802399d1a5f312ff94a49538f2c5b781228d))
+* draw allele sequences next to allele nodes on request ([23d611f](https://github.com/broadinstitute/genomeshader/commit/23d611fcb0cab6943896ecc43506dc602e8ae77b))
+* expand insertion alleles ([789fb75](https://github.com/broadinstitute/genomeshader/commit/789fb75316ba8b8bfcfc9ed9022c010650186d8f))
+* implemented best evidence and case + control sample selections ([c882ca4](https://github.com/broadinstitute/genomeshader/commit/c882ca4f6535bfc2f334c9b6fb845d66d755b7e1))
+* load samples by entering their ID into the 'Load sample by ID' box ([ac4074f](https://github.com/broadinstitute/genomeshader/commit/ac4074f28f464fad098d7d3a6604ba80cb73c1e3))
+
+
+### Bug Fixes
+
+* adjusted closed sidebar sizes ([5640540](https://github.com/broadinstitute/genomeshader/commit/56405406cd7923aa565c727d528c1b1f7b033bb9))
+* aggregate low frequency alleles ([625c37f](https://github.com/broadinstitute/genomeshader/commit/625c37f1c815f843356aef8674f91daf84105385))
+* allow user to rename track from the sidebar ([a897e36](https://github.com/broadinstitute/genomeshader/commit/a897e36f7e2bef8c76778f62c8567120214bc0e9))
+* fix allele coloring and variant panel display ([8b4505b](https://github.com/broadinstitute/genomeshader/commit/8b4505be1495364ed7fe54fbccd208dd9d1dad17))
+* fix misc issues with multiple variant tracks ([3b6cad6](https://github.com/broadinstitute/genomeshader/commit/3b6cad6d80868a28c438a86a77a19f8ba8c6135d))
+* fix misplaced track resize control ([7a48870](https://github.com/broadinstitute/genomeshader/commit/7a48870796c67c3b6a06280d58e56df3f93d312b))
+* fixed an issue with dataset loading that would sometimes kill th… ([32f0852](https://github.com/broadinstitute/genomeshader/commit/32f0852cbc4d46d6e614e9348fce865d6fa20826))
+* fixed an issue with dataset loading that would sometimes kill the Jupyter kernel ([faecdeb](https://github.com/broadinstitute/genomeshader/commit/faecdeb4f435e90e2bb833a58bcc5f80b60f4136))
+* fixed flickering of WebGPU tracks in overlay mode ([908b7d0](https://github.com/broadinstitute/genomeshader/commit/908b7d0dc6fb0a98f921d94b34586804322a7347))
+* fixed issue restoring click-to-select behavior for alleles ([94d7777](https://github.com/broadinstitute/genomeshader/commit/94d7777926b735ebf1d72885d329e95b8615c5ba))
+* fixed issue with centromere painting ([6390c77](https://github.com/broadinstitute/genomeshader/commit/6390c773bb4a653edcba7af1005b8651aeb970b2))
+* fixed issue with read painting inconsistencies in overlay mode ([7f5a048](https://github.com/broadinstitute/genomeshader/commit/7f5a048da5afdde6578fa7c468aa40bd78fef71f))
+* fixed WebGPU track flickering ([874bda7](https://github.com/broadinstitute/genomeshader/commit/874bda7295f8157ef6d694ec40ffd0bf9aeb3f62))
+* fixing allele selection ([acb1204](https://github.com/broadinstitute/genomeshader/commit/acb120498a1b5b39902fe6f3393ac009ae7c9457))
+* implemented compare branches sample selection ([a36aad7](https://github.com/broadinstitute/genomeshader/commit/a36aad7ec8f61021edfef236844489f2b9d8348b))
+* implemented the most diverse sample selection strategy ([c7c518d](https://github.com/broadinstitute/genomeshader/commit/c7c518d8c478135cc21f39eae16686653c4a8177))
+* improved sample menu display ([f6e9f20](https://github.com/broadinstitute/genomeshader/commit/f6e9f20f3e3a5d6b1dd495b9b2e7a8a23ebcc68e))
+* improvements to allele painting ([40520f9](https://github.com/broadinstitute/genomeshader/commit/40520f97bcd043016fed930294c0f40d70f9dcba))
+* minor improvements to sidebar display ([c0b4aab](https://github.com/broadinstitute/genomeshader/commit/c0b4aab4673cc8f888199c1dab7d8d6a2b5b2e80))
+* right sidebar now remains opened until closed by the user ([f6829cf](https://github.com/broadinstitute/genomeshader/commit/f6829cffc4f2dc89310e1bc9e86801ef46c2f481))
+* sidebars now open on top of content rather than displacing content ([8c3b8f2](https://github.com/broadinstitute/genomeshader/commit/8c3b8f2daf9efec29d3d964ccdf014684ebdf67b))
+
 ## [0.2.0](https://github.com/broadinstitute/genomeshader/compare/v0.1.91...v0.2.0) (2026-01-22)
 
 
