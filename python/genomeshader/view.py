@@ -4,6 +4,9 @@ import hashlib
 import threading
 import socket
 import copy
+import base64
+import gzip
+import math
 import subprocess
 import tempfile
 import time
@@ -11,10 +14,9 @@ from typing import Union, List, Optional, Tuple
 from pathlib import Path
 import importlib.resources
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 import requests
-import requests_cache
 import polars as pl
 
 from IPython.display import display, HTML
@@ -38,6 +40,11 @@ class GenomeShader:
         genome_build: str = 'hg38',
         gcs_session_dir: str = None,
     ):
+        # Network/render safety defaults must be available before validation calls.
+        self._http_timeout = (10, 30)  # connect timeout, read timeout (seconds)
+        self._track_load_timeout_s = 45
+        self._allow_ucsc_api = os.environ.get("GENOMESHADER_ALLOW_UCSC_API", "").strip().lower() in {"1", "true", "yes"}
+
         if gcs_session_dir is None:
             if "GOOGLE_BUCKET" in os.environ:
                 bucket = os.environ["GOOGLE_BUCKET"]
@@ -54,8 +61,6 @@ class GenomeShader:
 
         self._validate_genome_build(genome_build)
         self.genome_build = genome_build
-
-        requests_cache.install_cache('gs_rest_cache')
 
         self._session = gs._init(self.gcs_session_dir)
         
@@ -109,6 +114,24 @@ class GenomeShader:
         self._variant_payload_index: dict = {}
         self._variant_payload_index_loaded: dict = {}
         self._variant_payload_by_view: dict = {}
+        self._variant_payload_comm_buffers: dict = {}
+        self._attached_loci: set = set()
+        self._last_ucsc_warm_stats: dict = {}
+
+        # Payload transport controls for Jupyter comms stability.
+        self._variant_payload_cache_max_entries = 5
+        self._variant_payload_view_max_entries = 5
+        self._variant_payload_comm_buffer_max_entries = 8
+        self._variant_payload_comm_chunk_chars_default = 240_000
+        self._variant_payload_comm_hard_limit_bytes = 64 * 1024 * 1024
+        self._variant_payload_comm_compress_min_bytes = 512 * 1024
+        self._local_cache_dir = Path(
+            os.environ.get(
+                "GENOMESHADER_LOCAL_CACHE_DIR",
+                os.path.join(tempfile.gettempdir(), "genomeshader_cache"),
+            )
+        )
+        self._local_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Optional native GCS client; falls back to CLI cp/ls if unavailable.
         self._gcs_client = None
@@ -125,13 +148,25 @@ class GenomeShader:
             raise ValueError("Invalid GCS path")
 
     def _validate_genome_build(self, genome_build: str):
-        response = requests.get("https://api.genome.ucsc.edu/list/ucscGenomes")
+        if not self._allow_ucsc_api:
+            # Offline/local-first mode: avoid UCSC network validation.
+            if not genome_build or not isinstance(genome_build, str):
+                raise ValueError("Genome build must be a non-empty string.")
+            return
+        response = requests.get("https://api.genome.ucsc.edu/list/ucscGenomes", timeout=self._http_timeout)
         if response.status_code == 200:
             ucsc_genomes = response.json().get('ucscGenomes', {})
             if genome_build not in ucsc_genomes:
                 raise ValueError(f"The genome build '{genome_build}' is not available from UCSC.")
         else:
             raise ConnectionError("Failed to retrieve genome builds from UCSC REST API.")
+
+    def _http_get_json(self, url: str, context: str):
+        try:
+            response = requests.get(url, timeout=self._http_timeout)
+        except requests.RequestException as e:
+            raise ConnectionError(f"{context}: request failed ({e})")
+        return response
 
     def __str__(self):
         return (
@@ -298,6 +333,7 @@ class GenomeShader:
         self._variant_payload_index.clear()
         self._variant_payload_index_loaded.clear()
         self._variant_payload_by_view.clear()
+        self._variant_payload_comm_buffers.clear()
 
     def _cache_id(self, s: str) -> str:
         return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
@@ -313,6 +349,49 @@ class GenomeShader:
         if not bucket:
             raise ValueError(f"Invalid GCS URI bucket: {uri}")
         return bucket, key
+
+    def _local_cache_path_for_uri(self, uri: str) -> Path:
+        if isinstance(uri, str) and uri.startswith("gs://"):
+            bucket, key = self._parse_gcs_uri(uri)
+            parts = [p for p in key.split("/") if p]
+            if not parts:
+                parts = [self._cache_id(uri) + ".json"]
+            return self._local_cache_dir / "gcs" / bucket / Path(*parts)
+        safe_name = self._cache_id(str(uri)) + ".json"
+        return self._local_cache_dir / "misc" / safe_name
+
+    def _local_read_json(self, uri: str):
+        local_path = self._local_cache_path_for_uri(uri)
+        if not local_path.exists():
+            return None
+        try:
+            with open(local_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _local_write_json(self, uri: str, payload) -> bool:
+        local_path = self._local_cache_path_for_uri(uri)
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(local_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            return True
+        except Exception:
+            return False
+
+    def _read_cached_json(self, uri: str):
+        payload = self._local_read_json(uri)
+        if payload is not None:
+            return payload
+        payload = self._gcs_read_json(uri)
+        if payload is not None:
+            self._local_write_json(uri, payload)
+        return payload
+
+    def _write_cached_json(self, uri: str, payload) -> bool:
+        self._local_write_json(uri, payload)
+        return self._gcs_write_json(uri, payload)
 
     def _get_gcs_client(self):
         if self._gcs_client_init_attempted:
@@ -455,7 +534,7 @@ class GenomeShader:
     def _load_ucsc_index(self, kind: str):
         if self._ucsc_index_loaded.get(kind, False):
             return
-        payload = self._gcs_read_json(self._ucsc_index_uri(kind))
+        payload = self._read_cached_json(self._ucsc_index_uri(kind))
         if isinstance(payload, list):
             self._ucsc_interval_index[kind] = payload
         else:
@@ -463,12 +542,12 @@ class GenomeShader:
         self._ucsc_index_loaded[kind] = True
 
     def _persist_ucsc_index(self, kind: str):
-        self._gcs_write_json(self._ucsc_index_uri(kind), self._ucsc_interval_index.get(kind, []))
+        self._write_cached_json(self._ucsc_index_uri(kind), self._ucsc_interval_index.get(kind, []))
 
     def _load_variant_payload_index(self, dataset_sig: str):
         if self._variant_payload_index_loaded.get(dataset_sig, False):
             return
-        payload = self._gcs_read_json(self._variant_payload_index_uri(dataset_sig))
+        payload = self._read_cached_json(self._variant_payload_index_uri(dataset_sig))
         if isinstance(payload, list):
             self._variant_payload_index[dataset_sig] = payload
         else:
@@ -476,7 +555,7 @@ class GenomeShader:
         self._variant_payload_index_loaded[dataset_sig] = True
 
     def _persist_variant_payload_index(self, dataset_sig: str):
-        self._gcs_write_json(
+        self._write_cached_json(
             self._variant_payload_index_uri(dataset_sig),
             self._variant_payload_index.get(dataset_sig, []),
         )
@@ -584,6 +663,71 @@ class GenomeShader:
             "insertion_variants_lookup": subset_insertion,
         }
 
+    def _prune_oldest_entries(self, mapping: dict, max_entries: int):
+        while len(mapping) > max_entries:
+            oldest_key = next(iter(mapping))
+            mapping.pop(oldest_key, None)
+
+    def _prune_variant_payload_state(self):
+        self._prune_oldest_entries(self._variant_payload_cache, self._variant_payload_cache_max_entries)
+        self._prune_oldest_entries(self._variant_payload_by_view, self._variant_payload_view_max_entries)
+        self._prune_oldest_entries(
+            self._variant_payload_comm_buffers,
+            self._variant_payload_comm_buffer_max_entries,
+        )
+
+    def _build_comm_payload_buffer(
+        self,
+        view_id: str,
+        payload: dict,
+        accept_compression: bool,
+        chunk_chars: int,
+    ) -> dict:
+        chunk_chars = max(64_000, min(int(chunk_chars), 1_000_000))
+        payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        payload_bytes = payload_json.encode("utf-8")
+        payload_bytes_len = len(payload_bytes)
+        if payload_bytes_len > self._variant_payload_comm_hard_limit_bytes:
+            raise ValueError(
+                f"Variant payload too large for comm transport ({payload_bytes_len / (1024 * 1024):.1f} MB). "
+                "Reduce locus size or number of variants."
+            )
+
+        compression = "none"
+        data_bytes = payload_bytes
+        if accept_compression and payload_bytes_len >= self._variant_payload_comm_compress_min_bytes:
+            compressed = gzip.compress(payload_bytes, compresslevel=6)
+            if len(compressed) < len(payload_bytes):
+                data_bytes = compressed
+                compression = "gzip"
+
+        encoded = base64.b64encode(data_bytes).decode("ascii")
+        total_chunks = max(1, math.ceil(len(encoded) / chunk_chars))
+        payload_token = self._cache_id(
+            f"{view_id}:{payload_bytes_len}:{len(encoded)}:{compression}:{time.time_ns()}"
+        )
+        self._variant_payload_comm_buffers[payload_token] = {
+            "view_id": view_id,
+            "created_at": time.time(),
+            "encoding": "base64",
+            "compression": compression,
+            "payload_json_bytes": payload_bytes_len,
+            "payload_transfer_bytes": len(data_bytes),
+            "encoded": encoded,
+            "chunk_chars": chunk_chars,
+            "total_chunks": total_chunks,
+        }
+        self._prune_variant_payload_state()
+        return {
+            "payload_token": payload_token,
+            "encoding": "base64",
+            "compression": compression,
+            "chunk_chars": chunk_chars,
+            "total_chunks": total_chunks,
+            "payload_json_bytes": payload_bytes_len,
+            "payload_transfer_bytes": len(data_bytes),
+        }
+
     def session_name(self):
         """
         This function returns the name of the current session.
@@ -642,8 +786,13 @@ class GenomeShader:
         """
         if isinstance(loci, str):
             self._session.attach_loci([loci])
+            parsed = self._parse_locus(loci)
+            self._attached_loci.add((parsed[0], int(parsed[1]), int(parsed[2])))
         else:
             self._session.attach_loci(loci)
+            for locus in loci:
+                parsed = self._parse_locus(str(locus))
+                self._attached_loci.add((parsed[0], int(parsed[1]), int(parsed[2])))
 
     def attach_variants(
         self,
@@ -753,7 +902,59 @@ class GenomeShader:
         """
         return self._session.get_bam_sample_names()
 
-    def stage(self, use_cache: bool = True):
+    def warm_ucsc_cache(self, loci: Optional[List[str]] = None) -> dict:
+        """
+        Warms local/GCS-backed UCSC caches for the provided loci.
+        If loci is omitted, uses loci previously attached via attach_loci().
+        """
+        loci_to_warm = []
+        if loci:
+            for locus in loci:
+                contig, start, end = self._parse_locus(str(locus))
+                loci_to_warm.append((contig, int(start), int(end)))
+        else:
+            loci_to_warm = sorted(self._attached_loci)
+
+        stats = {
+            "loci_count": len(loci_to_warm),
+            "tracks": {
+                "ideogram": {"ok": 0, "error": 0},
+                "genes": {"ok": 0, "error": 0},
+                "repeats": {"ok": 0, "error": 0},
+                "reference": {"ok": 0, "error": 0},
+            },
+        }
+        if not loci_to_warm:
+            return stats
+
+        for contig, start, end in loci_to_warm:
+            try:
+                self.ideogram(contig)
+                stats["tracks"]["ideogram"]["ok"] += 1
+            except Exception as e:
+                stats["tracks"]["ideogram"]["error"] += 1
+                print(f"Warning: ideogram cache warm failed for {contig}: {e}")
+            try:
+                self.genes(contig, start, end)
+                stats["tracks"]["genes"]["ok"] += 1
+            except Exception as e:
+                stats["tracks"]["genes"]["error"] += 1
+                print(f"Warning: gene cache warm failed for {contig}:{start}-{end}: {e}")
+            try:
+                self.repeats(contig, start, end)
+                stats["tracks"]["repeats"]["ok"] += 1
+            except Exception as e:
+                stats["tracks"]["repeats"]["error"] += 1
+                print(f"Warning: repeats cache warm failed for {contig}:{start}-{end}: {e}")
+            try:
+                self.reference(contig, start, end)
+                stats["tracks"]["reference"]["ok"] += 1
+            except Exception as e:
+                stats["tracks"]["reference"]["error"] += 1
+                print(f"Warning: reference cache warm failed for {contig}:{start}-{end}: {e}")
+        return stats
+
+    def stage(self, use_cache: bool = True, warm_ucsc: bool = True):
         """
         This function stages the current session. Staging fetches the specified
         loci from the BAM files and formats the results for fast visualization.
@@ -761,8 +962,15 @@ class GenomeShader:
         Args:
             use_cache (bool, optional): If True, the function will attempt to
             use cached data if available. Defaults to True.
+            warm_ucsc (bool, optional): If True, preloads UCSC small-object
+            caches for attached loci into VM-local cache (and GCS-backed cache).
+            Defaults to True.
         """
         self._session.stage(use_cache)
+        if warm_ucsc:
+            self._last_ucsc_warm_stats = self.warm_ucsc_cache()
+        else:
+            self._last_ucsc_warm_stats = {}
 
     def get_locus(self, locus: str) -> pl.DataFrame:
         """
@@ -1182,17 +1390,20 @@ class GenomeShader:
 
         cached_entry = self._find_covering_ucsc_interval("ideogram", contig, 0, 1, track="cytoBandIdeo")
         if cached_entry is not None:
-            cached_payload = self._gcs_read_json(cached_entry["uri"])
+            cached_payload = self._read_cached_json(cached_entry["uri"])
             if isinstance(cached_payload, list):
                 self._cache_debug_bump("ideogram", "gcs")
                 self._ideogram_cache[cache_key] = cached_payload
                 return copy.deepcopy(cached_payload)
 
+        if not self._allow_ucsc_api:
+            return []
+
         # Define the API endpoint with the contig parameter
         api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track=cytoBandIdeo"
 
         # Make a GET request to the API endpoint
-        response = requests.get(api_endpoint)
+        response = self._http_get_json(api_endpoint, f"Failed to retrieve ideogram for contig '{contig}'")
         if response.status_code == 200:
             self._cache_debug_bump("ideogram", "api")
             data = response.json()
@@ -1224,7 +1435,7 @@ class GenomeShader:
         result = ideo_df.to_dicts()
         self._ideogram_cache[cache_key] = result
         uri = f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/ideogram/{self.genome_build}/{contig}.json"
-        if self._gcs_write_json(uri, result):
+        if self._write_cached_json(uri, result):
             self._cache_debug_bump("ideogram", "gcs_write")
             self._record_ucsc_interval(
                 "ideogram",
@@ -1247,7 +1458,7 @@ class GenomeShader:
 
         cached_entry = self._find_covering_ucsc_interval("genes", contig, int(start), int(end), track=track)
         if cached_entry is not None:
-            cached_payload = self._gcs_read_json(cached_entry["uri"])
+            cached_payload = self._read_cached_json(cached_entry["uri"])
             if isinstance(cached_payload, list):
                 self._cache_debug_bump("genes", "gcs")
                 subset = [
@@ -1257,11 +1468,17 @@ class GenomeShader:
                 self._genes_cache[cache_key] = subset
                 return copy.deepcopy(subset)
 
+        if not self._allow_ucsc_api:
+            return []
+
         # Define the API endpoint with the track, contig, start, end parameters
         api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
 
         # Make a GET request to the API endpoint
-        response = requests.get(api_endpoint)
+        response = self._http_get_json(
+            api_endpoint,
+            f"Failed to retrieve gene track '{track}' for locus '{contig}:{start}-{end}'",
+        )
         if response.status_code == 200:
             self._cache_debug_bump("genes", "api")
             data = response.json()
@@ -1509,7 +1726,7 @@ class GenomeShader:
             f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/genes/{self.genome_build}/"
             f"{track}/{contig}_{int(start)}_{int(end)}_{self._cache_id(f'{track}:{contig}:{start}:{end}')}.json"
         )
-        if self._gcs_write_json(uri, gene_models):
+        if self._write_cached_json(uri, gene_models):
             self._cache_debug_bump("genes", "gcs_write")
             self._record_ucsc_interval(
                 "genes",
@@ -1544,7 +1761,7 @@ class GenomeShader:
 
         cached_entry = self._find_covering_ucsc_interval("repeats", contig, int(start), int(end), track=track)
         if cached_entry is not None:
-            cached_payload = self._gcs_read_json(cached_entry["uri"])
+            cached_payload = self._read_cached_json(cached_entry["uri"])
             if isinstance(cached_payload, list):
                 self._cache_debug_bump("repeats", "gcs")
                 subset = [
@@ -1554,11 +1771,17 @@ class GenomeShader:
                 self._repeats_cache[cache_key] = subset
                 return copy.deepcopy(subset)
 
+        if not self._allow_ucsc_api:
+            return []
+
         # Define the API endpoint with the track, contig, start, end parameters
         api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
 
         # Make a GET request to the API endpoint
-        response = requests.get(api_endpoint)
+        response = self._http_get_json(
+            api_endpoint,
+            f"Failed to retrieve repeat track '{track}' for locus '{contig}:{start}-{end}'",
+        )
         if response.status_code == 200:
             self._cache_debug_bump("repeats", "api")
             data = response.json()
@@ -1638,7 +1861,10 @@ class GenomeShader:
             if track == "rmsk":
                 print(f"Warning: Track 'rmsk' returned status {response.status_code}, trying 'repeatMasker'...")
                 alt_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track=repeatMasker;chrom={contig};start={start};end={end}"
-                alt_response = requests.get(alt_endpoint)
+                alt_response = self._http_get_json(
+                    alt_endpoint,
+                    f"Failed to retrieve fallback RepeatMasker track for locus '{contig}:{start}-{end}'",
+                )
                 if alt_response.status_code == 200:
                     data = alt_response.json()
                     if isinstance(data, dict) and 'error' in data:
@@ -1704,7 +1930,7 @@ class GenomeShader:
             f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/repeats/{self.genome_build}/"
             f"{track}/{contig}_{int(start)}_{int(end)}_{self._cache_id(f'{track}:{contig}:{start}:{end}')}.json"
         )
-        if self._gcs_write_json(uri, repeats):
+        if self._write_cached_json(uri, repeats):
             self._cache_debug_bump("repeats", "gcs_write")
             self._record_ucsc_interval(
                 "repeats",
@@ -1739,7 +1965,7 @@ class GenomeShader:
 
         cached_entry = self._find_covering_ucsc_interval("reference", contig, int(start), int(end), track=track)
         if cached_entry is not None:
-            cached_payload = self._gcs_read_json(cached_entry["uri"])
+            cached_payload = self._read_cached_json(cached_entry["uri"])
             if isinstance(cached_payload, dict) and "sequence" in cached_payload:
                 seq = cached_payload.get("sequence", "")
                 src_start = int(cached_payload.get("start", start))
@@ -1752,11 +1978,17 @@ class GenomeShader:
                     self._reference_cache[cache_key] = subset
                     return subset
 
+        if not self._allow_ucsc_api:
+            return ""
+
         # Define the API endpoint with the track, contig, start, end parameters
         api_endpoint = f"https://api.genome.ucsc.edu/getData/sequence?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
 
         # Make a GET request to the API endpoint
-        response = requests.get(api_endpoint)
+        response = self._http_get_json(
+            api_endpoint,
+            f"Failed to retrieve reference sequence for locus '{contig}:{start}-{end}'",
+        )
         if response.status_code == 200:
             self._cache_debug_bump("reference", "api")
             data = response.json()
@@ -1788,7 +2020,7 @@ class GenomeShader:
                 "end": int(end),
                 "sequence": sequence,
             }
-            if self._gcs_write_json(uri, payload):
+            if self._write_cached_json(uri, payload):
                 self._cache_debug_bump("reference", "gcs_write")
                 self._record_ucsc_interval(
                     "reference",
@@ -2054,14 +2286,59 @@ class GenomeShader:
             return name, None, None, round((time.perf_counter() - t0) * 1000.0, 1)
 
         # Load UCSC-derived tracks concurrently (these are independent network/cache lookups).
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [
-                executor.submit(_timed_track_load, "ideogram"),
-                executor.submit(_timed_track_load, "genes"),
-                executor.submit(_timed_track_load, "repeats"),
-                executor.submit(_timed_track_load, "reference"),
-            ]
-            results = [f.result() for f in futures]
+        executor = ThreadPoolExecutor(max_workers=4)
+        future_to_name = {
+            executor.submit(_timed_track_load, "ideogram"): "ideogram",
+            executor.submit(_timed_track_load, "genes"): "genes",
+            executor.submit(_timed_track_load, "repeats"): "repeats",
+            executor.submit(_timed_track_load, "reference"): "reference",
+        }
+        results_by_name = {}
+        pending = set(future_to_name.keys())
+        t0_wait = time.perf_counter()
+        try:
+            while pending:
+                elapsed = time.perf_counter() - t0_wait
+                remaining = max(0.0, self._track_load_timeout_s - elapsed)
+                if remaining <= 0:
+                    break
+
+                done, pending = wait(
+                    pending,
+                    timeout=remaining,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    break
+
+                for fut in done:
+                    track_name = future_to_name[fut]
+                    try:
+                        results_by_name[track_name] = fut.result()
+                    except Exception as e:
+                        default_data = None if track_name == "ideogram" else ([] if track_name in {"genes", "repeats"} else "")
+                        results_by_name[track_name] = (track_name, default_data, e, 0.0)
+
+            for fut in pending:
+                track_name = future_to_name[fut]
+                fut.cancel()
+                default_data = None if track_name == "ideogram" else ([] if track_name in {"genes", "repeats"} else "")
+                results_by_name[track_name] = (
+                    track_name,
+                    default_data,
+                    TimeoutError(f"{track_name} load timed out"),
+                    self._track_load_timeout_s * 1000.0,
+                )
+        finally:
+            # Do not wait for stuck worker threads; proceed with partial track data.
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        results = [
+            results_by_name.get("ideogram", ("ideogram", None, TimeoutError("ideogram load missing"), 0.0)),
+            results_by_name.get("genes", ("genes", [], TimeoutError("genes load missing"), 0.0)),
+            results_by_name.get("repeats", ("repeats", [], TimeoutError("repeats load missing"), 0.0)),
+            results_by_name.get("reference", ("reference", "", TimeoutError("reference load missing"), 0.0)),
+        ]
 
         ideogram_data = []
         transcripts_data = []
@@ -2149,6 +2426,7 @@ class GenomeShader:
             'comm_available': comm_available,  # Indicates if Jupyter comms are available
             'sample_mapping': self._sample_mapping,  # Sample mapping: VCF sample names -> BAM sample names
             'cache_debug': self._cache_debug_delta(cache_debug_start),
+            'ucsc_warm_debug': self._last_ucsc_warm_stats,
         }
         if show_timing:
             timing_debug.update(show_timing)
@@ -2229,6 +2507,9 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             "}\n"
             "if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.timing_debug) {\n"
             "  console.info('Genomeshader timing debug', window.GENOMESHADER_CONFIG.timing_debug);\n"
+            "}\n"
+            "if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.ucsc_warm_debug && window.GENOMESHADER_CONFIG.ucsc_warm_debug.loci_count) {\n"
+            "  console.info('Genomeshader UCSC warm debug', window.GENOMESHADER_CONFIG.ucsc_warm_debug);\n"
             "}\n"
             "</script>"
         )
@@ -2368,14 +2649,14 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         t_variant_payload = time.perf_counter()
         if payload_cache_key in self._variant_payload_cache:
             self._cache_debug_bump("variant_payload", "mem")
-            precomputed_payload = copy.deepcopy(self._variant_payload_cache[payload_cache_key])
+            precomputed_payload = self._variant_payload_cache[payload_cache_key]
         else:
             precomputed_payload = None
             cached_entry = self._find_covering_variant_payload_interval(
                 dataset_sig, locus_contig, int(locus_start), int(locus_end)
             )
             if cached_entry is not None:
-                cached_payload = self._gcs_read_json(cached_entry["uri"])
+                cached_payload = self._read_cached_json(cached_entry["uri"])
                 if isinstance(cached_payload, dict):
                     precomputed_payload = self._subset_variant_payload(
                         cached_payload, int(locus_start), int(locus_end)
@@ -2401,7 +2682,7 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
                     "variant_tracks": pre_tracks,
                     "insertion_variants_lookup": pre_insertion,
                 }
-                if self._gcs_write_json(uri, payload_to_store):
+                if self._write_cached_json(uri, payload_to_store):
                     self._cache_debug_bump("variant_payload", "gcs_write")
                     self._record_variant_payload_interval(
                         dataset_sig,
@@ -2414,7 +2695,8 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
                         },
                     )
 
-            self._variant_payload_cache[payload_cache_key] = copy.deepcopy(precomputed_payload)
+            self._variant_payload_cache[payload_cache_key] = precomputed_payload
+            self._prune_variant_payload_state()
         variant_payload_cache_ms = round((time.perf_counter() - t_variant_payload) * 1000.0, 1)
 
         t_render = time.perf_counter()
@@ -2429,7 +2711,8 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         render_ms = round((time.perf_counter() - t_render) * 1000.0, 1)
         # view_id available via self._last_view_id if needed
         if hasattr(self, "_last_view_id") and self._last_view_id:
-            self._variant_payload_by_view[self._last_view_id] = copy.deepcopy(precomputed_payload)
+            self._variant_payload_by_view[self._last_view_id] = precomputed_payload
+            self._prune_variant_payload_state()
 
         # Register comm target for JavaScript to connect to
         if COMM_AVAILABLE:
@@ -2456,6 +2739,86 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
                                     'message': f'Hello from Python! Got: {data.get("message", "")}',
                                 })
 
+                            elif msg_type == 'fetch_variant_payload_init':
+                                try:
+                                    requested_view_id = data.get('view_id')
+                                    payload = None
+                                    if requested_view_id:
+                                        payload = gs_instance._variant_payload_by_view.get(requested_view_id)
+                                    if payload is None and hasattr(gs_instance, "_last_view_id"):
+                                        payload = gs_instance._variant_payload_by_view.get(gs_instance._last_view_id)
+                                    if payload is None:
+                                        comm.send({
+                                            'type': 'fetch_variant_payload_error',
+                                            'request_id': request_id,
+                                            'error': 'Variant payload not available for this view',
+                                        })
+                                    else:
+                                        chunk_chars = data.get(
+                                            'chunk_chars',
+                                            gs_instance._variant_payload_comm_chunk_chars_default,
+                                        )
+                                        accept_compression = bool(data.get('accept_compression', False))
+                                        init_meta = gs_instance._build_comm_payload_buffer(
+                                            requested_view_id or getattr(gs_instance, "_last_view_id", ""),
+                                            payload,
+                                            accept_compression=accept_compression,
+                                            chunk_chars=chunk_chars,
+                                        )
+                                        print(
+                                            "Genomeshader: variant payload init "
+                                            f"(json={init_meta['payload_json_bytes']/1024/1024:.2f} MB, "
+                                            f"transfer={init_meta['payload_transfer_bytes']/1024/1024:.2f} MB, "
+                                            f"chunks={init_meta['total_chunks']}, "
+                                            f"compression={init_meta['compression']})"
+                                        )
+                                        comm.send({
+                                            'type': 'fetch_variant_payload_init_response',
+                                            'request_id': request_id,
+                                            'view_id': requested_view_id or getattr(gs_instance, "_last_view_id", None),
+                                            **init_meta,
+                                        })
+                                except Exception as e:
+                                    comm.send({
+                                        'type': 'fetch_variant_payload_error',
+                                        'request_id': request_id,
+                                        'error': str(e),
+                                    })
+
+                            elif msg_type == 'fetch_variant_payload_chunk':
+                                try:
+                                    payload_token = data.get('payload_token')
+                                    chunk_index = int(data.get('chunk_index', -1))
+                                    if not payload_token:
+                                        raise ValueError("Missing payload_token")
+                                    buffer_state = gs_instance._variant_payload_comm_buffers.get(payload_token)
+                                    if buffer_state is None:
+                                        raise ValueError("Unknown or expired payload_token")
+                                    total_chunks = int(buffer_state['total_chunks'])
+                                    if chunk_index < 0 or chunk_index >= total_chunks:
+                                        raise ValueError(
+                                            f"Invalid chunk_index {chunk_index}; expected 0..{total_chunks - 1}"
+                                        )
+
+                                    chunk_chars = int(buffer_state['chunk_chars'])
+                                    start = chunk_index * chunk_chars
+                                    end = min(start + chunk_chars, len(buffer_state['encoded']))
+                                    chunk_payload = buffer_state['encoded'][start:end]
+                                    comm.send({
+                                        'type': 'fetch_variant_payload_chunk_response',
+                                        'request_id': request_id,
+                                        'payload_token': payload_token,
+                                        'chunk_index': chunk_index,
+                                        'total_chunks': total_chunks,
+                                        'chunk': chunk_payload,
+                                    })
+                                except Exception as e:
+                                    comm.send({
+                                        'type': 'fetch_variant_payload_error',
+                                        'request_id': request_id,
+                                        'error': str(e),
+                                    })
+
                             elif msg_type == 'fetch_variant_payload':
                                 try:
                                     requested_view_id = data.get('view_id')
@@ -2471,6 +2834,22 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
                                             'error': 'Variant payload not available for this view',
                                         })
                                     else:
+                                        try:
+                                            payload_json_bytes = len(
+                                                json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                                            )
+                                        except Exception:
+                                            payload_json_bytes = -1
+                                        if payload_json_bytes > gs_instance._variant_payload_comm_hard_limit_bytes:
+                                            comm.send({
+                                                'type': 'fetch_variant_payload_error',
+                                                'request_id': request_id,
+                                                'error': (
+                                                    "Variant payload too large for legacy single-message comm transfer. "
+                                                    "Use chunked payload protocol."
+                                                ),
+                                            })
+                                            return
                                         comm.send({
                                             'type': 'fetch_variant_payload_response',
                                             'request_id': request_id,
@@ -2642,6 +3021,7 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
 
     def reset(self):
         self._session.reset()
+        self._attached_loci.clear()
 
     def print(self):
         self._session.print()

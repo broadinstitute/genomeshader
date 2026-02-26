@@ -902,7 +902,12 @@ function getBasename(path) {
   return parts[parts.length - 1] || path;
 }
 
-const trackControls = document.getElementById("trackControls");
+let trackControls = null;
+function getTrackControlsEl() {
+  if (trackControls && trackControls.isConnected) return trackControls;
+  trackControls = byId(root, "trackControls") || document.getElementById("trackControls");
+  return trackControls;
+}
 // Standard tracks that have hover-only controls
 const STANDARD_TRACKS = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
 function isFlowTrack(trackId) {
@@ -910,7 +915,9 @@ function isFlowTrack(trackId) {
 }
 
 function renderTrackControls() {
-  trackControls.innerHTML = "";
+  const controlsHost = getTrackControlsEl();
+  if (!controlsHost) return;
+  controlsHost.innerHTML = "";
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
 
@@ -1390,7 +1397,7 @@ function renderTrackControls() {
       container.classList.add("standard-track");
     }
 
-    trackControls.appendChild(container);
+    controlsHost.appendChild(container);
   }
 }
 
@@ -5267,6 +5274,7 @@ interactionBinding = bindInteractions(root, state, main);
 // -----------------------------
 // Track interactions (drag, resize)
 // -----------------------------
+trackControls = getTrackControlsEl();
 if (trackControls) {
 trackControls.addEventListener("pointerdown", (e) => {
   // Don't start drag if clicking on buttons or interactive elements
