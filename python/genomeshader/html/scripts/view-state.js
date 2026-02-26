@@ -3,16 +3,102 @@
 let variants = [];
 let loadedVariantTracks = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
 
+function decodeBase64ToUint8Array(base64Text) {
+  const binary = atob(base64Text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function maybeDecompressPayload(bytes, compression) {
+  if (compression === "none" || !compression) {
+    return bytes;
+  }
+  if (compression !== "gzip") {
+    throw new Error(`Unsupported payload compression '${compression}'`);
+  }
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("Browser does not support DecompressionStream for gzip payloads");
+  }
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  const decompressed = await new Response(stream).arrayBuffer();
+  return new Uint8Array(decompressed);
+}
+
+async function fetchVariantPayloadViaChunkedComms() {
+  const supportsCompression = typeof DecompressionStream !== "undefined";
+  const initResp = await sendCommMessage(
+    "fetch_variant_payload_init",
+    {
+      view_id: window.GENOMESHADER_VIEW_ID,
+      chunk_chars: 240000,
+      accept_compression: supportsCompression,
+    },
+    120000
+  );
+
+  // Backward-compatible fallback: old backend may still return full payload directly.
+  if (initResp && initResp.type === "fetch_variant_payload_response" && initResp.payload) {
+    return initResp.payload;
+  }
+  if (!initResp || initResp.type !== "fetch_variant_payload_init_response") {
+    if (initResp && initResp.type === "fetch_variant_payload_error") {
+      throw new Error(initResp.error || "fetch_variant_payload_init failed");
+    }
+    throw new Error("Unexpected response to fetch_variant_payload_init");
+  }
+
+  const payloadToken = initResp.payload_token;
+  const totalChunks = Number(initResp.total_chunks || 0);
+  const compression = initResp.compression || "none";
+  const payloadJsonBytes = Number(initResp.payload_json_bytes || 0);
+  const payloadTransferBytes = Number(initResp.payload_transfer_bytes || 0);
+  if (!payloadToken || !Number.isFinite(totalChunks) || totalChunks <= 0) {
+    throw new Error("Invalid chunked payload metadata");
+  }
+  console.info("Genomeshader: variant payload transfer", {
+    total_chunks: totalChunks,
+    compression,
+    payload_json_mb: payloadJsonBytes > 0 ? (payloadJsonBytes / (1024 * 1024)).toFixed(2) : "unknown",
+    payload_transfer_mb: payloadTransferBytes > 0 ? (payloadTransferBytes / (1024 * 1024)).toFixed(2) : "unknown",
+  });
+
+  const parts = new Array(totalChunks);
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkResp = await sendCommMessage(
+      "fetch_variant_payload_chunk",
+      {
+        payload_token: payloadToken,
+        chunk_index: i,
+      },
+      120000
+    );
+    if (!chunkResp || chunkResp.type !== "fetch_variant_payload_chunk_response") {
+      if (chunkResp && chunkResp.type === "fetch_variant_payload_error") {
+        throw new Error(chunkResp.error || `Chunk request failed at index ${i}`);
+      }
+      throw new Error(`Unexpected chunk response at index ${i}`);
+    }
+    parts[i] = chunkResp.chunk || "";
+    if ((i + 1) % 20 === 0 || i + 1 === totalChunks) {
+      console.info(`Genomeshader: received variant payload chunk ${i + 1}/${totalChunks}`);
+    }
+  }
+
+  const b64 = parts.join("");
+  const encodedBytes = decodeBase64ToUint8Array(b64);
+  const payloadBytes = await maybeDecompressPayload(encodedBytes, compression);
+  const payloadText = new TextDecoder("utf-8").decode(payloadBytes);
+  return JSON.parse(payloadText);
+}
+
 // Prefer loading heavy variant payload via Jupyter comms (works in Terra).
 if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_payload_via_comm) {
   try {
-    const response = await sendCommMessage(
-      "fetch_variant_payload",
-      { view_id: window.GENOMESHADER_VIEW_ID },
-      120000
-    );
-    if (response && response.type === "fetch_variant_payload_response" && response.payload) {
-      const payload = response.payload;
+    const payload = await fetchVariantPayloadViaChunkedComms();
+    if (payload) {
       if (payload && Array.isArray(payload.variant_tracks)) {
         loadedVariantTracks = payload.variant_tracks;
         window.GENOMESHADER_CONFIG.variant_tracks = payload.variant_tracks;
@@ -21,11 +107,31 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_payload_via
         window.GENOMESHADER_CONFIG.insertion_variants_lookup = payload.insertion_variants_lookup;
       }
       console.log("Loaded variant payload via Jupyter comms");
-    } else if (response && response.type === "fetch_variant_payload_error") {
-      console.warn("Failed to fetch variant payload via comms:", response.error);
     }
   } catch (err) {
-    console.warn("Failed to fetch variant payload via comms:", err);
+    console.warn("Failed to fetch variant payload via chunked comms, retrying legacy path:", err);
+    try {
+      const legacyResp = await sendCommMessage(
+        "fetch_variant_payload",
+        { view_id: window.GENOMESHADER_VIEW_ID },
+        120000
+      );
+      if (legacyResp && legacyResp.type === "fetch_variant_payload_response" && legacyResp.payload) {
+        const payload = legacyResp.payload;
+        if (Array.isArray(payload.variant_tracks)) {
+          loadedVariantTracks = payload.variant_tracks;
+          window.GENOMESHADER_CONFIG.variant_tracks = payload.variant_tracks;
+        }
+        if (Array.isArray(payload.insertion_variants_lookup)) {
+          window.GENOMESHADER_CONFIG.insertion_variants_lookup = payload.insertion_variants_lookup;
+        }
+        console.log("Loaded variant payload via legacy Jupyter comms");
+      } else if (legacyResp && legacyResp.type === "fetch_variant_payload_error") {
+        console.warn("Legacy variant payload fetch failed:", legacyResp.error);
+      }
+    } catch (legacyErr) {
+      console.warn("Failed to fetch variant payload via legacy comms:", legacyErr);
+    }
   }
 }
 
