@@ -128,6 +128,9 @@ function getTrackLayout() {
   function isStandardTrack(trackId) {
     return standardTracks.includes(trackId) || (typeof trackId === "string" && trackId.startsWith("flow-"));
   }
+  function isFlowTrack(trackId) {
+    return trackId === "flow" || (typeof trackId === "string" && trackId.startsWith("flow-"));
+  }
 
   if (isVertical) {
     // Vertical mode: tracks side-by-side (left/width based)
@@ -137,6 +140,7 @@ function getTrackLayout() {
     const safeMainHeight = (isNaN(mainHeight) || mainHeight <= 0) ? 0 : mainHeight;
     // Minimum width for collapsed tracks (to show clickable indicator)
     const collapsedTrackMinWidth = 8;
+    const collapsedFlowTrackWidth = 24;
     
     for (const track of state.tracks) {
       // Skip hidden tracks (they take no space)
@@ -161,6 +165,11 @@ function getTrackLayout() {
           effectiveWidth = track.closedHeight;
           safeContentWidth = track.closedHeight;
           safeContentLeft = currentX; // Content starts at left, no gap for header
+        } else if (isFlowTrack(track.id)) {
+          // Flow track collapsed state: keep a slim visible band for position-only rendering.
+          effectiveWidth = collapsedFlowTrackWidth;
+          safeContentWidth = collapsedFlowTrackWidth;
+          safeContentLeft = currentX;
         } else {
           // Standard track collapsed: minimal width
           effectiveWidth = usesHeaderSpace ? headerH : collapsedTrackMinWidth;
@@ -202,6 +211,7 @@ function getTrackLayout() {
     const safeMainWidth = (isNaN(mainWidth) || mainWidth <= 0) ? 0 : mainWidth;
     // Minimum height for collapsed tracks (to show clickable indicator)
     const collapsedTrackMinHeight = 8;
+    const collapsedFlowTrackHeight = 24;
     
     for (const track of state.tracks) {
       // Skip hidden tracks (they take no space)
@@ -226,6 +236,11 @@ function getTrackLayout() {
           effectiveHeight = track.closedHeight;
           safeContentHeight = track.closedHeight;
           safeContentTop = currentY; // Content starts at top, no gap for header
+        } else if (isFlowTrack(track.id)) {
+          // Flow track collapsed state: keep a slim visible band for position-only rendering.
+          effectiveHeight = collapsedFlowTrackHeight;
+          safeContentHeight = collapsedFlowTrackHeight;
+          safeContentTop = currentY;
         } else {
           // Standard track collapsed: minimal height
           effectiveHeight = usesHeaderSpace ? headerH : collapsedTrackMinHeight;

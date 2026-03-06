@@ -958,7 +958,7 @@ function renderTrackControls() {
     // Hide controls when track is hidden or collapsed (for standard tracks only)
     // Smart tracks show controls even when collapsed (closed state)
     // Default hidden to false for backwards compatibility
-    if ((track.hidden === true) || (!isSmartTrack && track.collapsed)) {
+    if ((track.hidden === true) || (!isSmartTrack && track.collapsed && !isFlowTrack(track.id))) {
       controls.style.display = "none";
       controls.style.pointerEvents = "none";
     }
@@ -1289,10 +1289,14 @@ function renderTrackControls() {
       resizeHandle.dataset.trackId = track.id;
       container.appendChild(resizeHandle);
     } else if (!isSmartTrack) {
-      // For standard tracks (including flow-N): add collapsed indicator and make clickable
+      // For standard tracks: add collapsed indicator and make clickable
+      // Variant tracks (flow / flow-N) keep collapsed content visible, so skip the extra indicator.
       // Smart Tracks handle collapsed state differently (closed = single read, still visible)
-      // Mark container as collapsed for CSS styling
-      container.classList.add("track-collapsed");
+      const isCollapsedFlowTrack = isFlowTrack(track.id);
+      // Mark non-flow collapsed tracks for click-to-expand styling/behavior.
+      if (!isCollapsedFlowTrack) {
+        container.classList.add("track-collapsed");
+      }
       
       // Store track reference on container for easy access
       container._trackRef = track;
@@ -1310,42 +1314,51 @@ function renderTrackControls() {
         }
       };
       
-      // Make the entire container clickable when collapsed
-      container.style.cursor = "pointer";
-      container.style.pointerEvents = "auto";
-      container.title = `Click to expand ${track.label}`;
-      // Use capture phase to ensure we catch the click before anything else
-      container.addEventListener("click", expandTrack, true);
-      // Also add mousedown as backup
-      container.addEventListener("mousedown", (e) => {
-        if (e.button === 0) { // Left click only
-          expandTrack(e);
-        }
-      }, true);
+      if (!isCollapsedFlowTrack) {
+        // Make non-flow collapsed tracks clickable to expand.
+        container.style.cursor = "pointer";
+        container.style.pointerEvents = "auto";
+        container.title = `Click to expand ${track.label}`;
+        // Use capture phase to ensure we catch the click before anything else
+        container.addEventListener("click", expandTrack, true);
+        // Also add mousedown as backup
+        container.addEventListener("mousedown", (e) => {
+          if (e.button === 0) { // Left click only
+            expandTrack(e);
+          }
+        }, true);
+      } else {
+        // Collapsed variant tracks should keep clicks available for track interactions.
+        container.style.cursor = "";
+        container.style.pointerEvents = "";
+        container.title = "";
+      }
       
-      // Add collapsed track indicator - always visible clickable line/bar
-      const collapsedIndicator = document.createElement("div");
-      collapsedIndicator.className = "track-collapsed-indicator";
-      collapsedIndicator.dataset.trackId = track.id;
-      collapsedIndicator.title = `Click to expand ${track.label}`;
-      collapsedIndicator.style.cursor = "pointer";
-      collapsedIndicator.style.pointerEvents = "auto";
-      collapsedIndicator._trackRef = track; // Store reference on indicator too
-      // Also add click handler directly to indicator as backup
-      collapsedIndicator.addEventListener("click", expandTrack, true);
-      collapsedIndicator.addEventListener("mousedown", (e) => {
-        if (e.button === 0) { // Left click only
-          expandTrack(e);
-        }
-      }, true);
-      container.appendChild(collapsedIndicator);
+      if (!isFlowTrack(track.id)) {
+        // Add collapsed track indicator - always visible clickable line/bar
+        const collapsedIndicator = document.createElement("div");
+        collapsedIndicator.className = "track-collapsed-indicator";
+        collapsedIndicator.dataset.trackId = track.id;
+        collapsedIndicator.title = `Click to expand ${track.label}`;
+        collapsedIndicator.style.cursor = "pointer";
+        collapsedIndicator.style.pointerEvents = "auto";
+        collapsedIndicator._trackRef = track; // Store reference on indicator too
+        // Also add click handler directly to indicator as backup
+        collapsedIndicator.addEventListener("click", expandTrack, true);
+        collapsedIndicator.addEventListener("mousedown", (e) => {
+          if (e.button === 0) { // Left click only
+            expandTrack(e);
+          }
+        }, true);
+        container.appendChild(collapsedIndicator);
+      }
     }
     // For Smart Tracks when collapsed (closed state), we don't add collapsed indicator
     // They still render their content with reduced height (handled in renderSmartTrack)
 
     // Add hover listeners for standard tracks to show/hide controls
     // Skip hover detection for collapsed tracks - they expand on click
-    if ((STANDARD_TRACKS.includes(track.id) || isFlowTrack(track.id)) && !track.collapsed) {
+    if ((STANDARD_TRACKS.includes(track.id) || isFlowTrack(track.id)) && (!track.collapsed || isFlowTrack(track.id))) {
       // Mark container for standard track styling
       container.classList.add("standard-track");
       
@@ -4759,7 +4772,7 @@ function updateFlowAndReadsPosition() {
   const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
   if (flowLayouts.length > 0 && flow) {
     ensureFlowContainers(flowLayouts);
-    const visible = flowLayouts.filter(l => !l.track.collapsed);
+    const visible = flowLayouts.filter(l => l.track.hidden !== true);
     if (visible.length === 0) {
       flow.style.display = "none";
     } else {

@@ -60,7 +60,7 @@ function renderFlowCanvas() {
   const layout = getTrackLayout();
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
   const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
-  const visibleFlowLayouts = flowLayouts.filter(l => !l.track.collapsed);
+  const visibleFlowLayouts = flowLayouts.filter(l => l.track.hidden !== true);
   if (visibleFlowLayouts.length === 0) {
     window._alleleNodePositions = [];
     const fc = document.getElementById("flowCanvas") || document.getElementById("flowCanvas-0");
@@ -178,7 +178,7 @@ function renderFlowCanvas() {
     for (let i = 0; i < variantTracksConfig.length; i++) {
       const trackConfig = variantTracksConfig[i];
       const trackLayout = layout.find(l => l.track.id === trackConfig.id);
-      if (!trackLayout || trackLayout.track.collapsed) continue;
+      if (!trackLayout || trackLayout.track.hidden === true) continue;
       const bandHeight = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
       flowBands.push({
         track: trackConfig,
@@ -190,7 +190,7 @@ function renderFlowCanvas() {
     }
   } else {
     const flowLayout = layout.find(l => l.track.id === "flow");
-    if (flowLayout && !flowLayout.track.collapsed) {
+    if (flowLayout && flowLayout.track.hidden !== true) {
       const bandHeight = isVertical ? flowLayout.contentWidth : flowLayout.contentHeight;
       flowBands.push({
         track: { variants_data: variants, variants_phased: (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variants_phased) !== false },
@@ -506,6 +506,65 @@ function renderFlowCanvas() {
   const devicePixelRatio = window.devicePixelRatio || 1;
   const blueHex = rgbaToHex(colBlue);
   const grayHex = rgbaToHex(colGray);
+  const isCollapsedVariantTrack = !!(flowLayout && flowLayout.track && flowLayout.track.collapsed);
+
+  if (isCollapsedVariantTrack) {
+    const compactVariants = win
+      .filter(v => Number.isFinite(Number(v && v.pos)) && Number(v.pos) >= state.startBp && Number(v.pos) <= state.endBp)
+      .sort((a, b) => Number(a.pos) - Number(b.pos));
+    const tickHalfLen = Math.max(2, Math.min(10, (isVertical ? W : H) * 0.4));
+    const centerX = W / 2;
+    const centerY = H / 2;
+
+    if (useWebGPU) {
+      for (let i = 0; i < compactVariants.length; i++) {
+        const v = compactVariants[i];
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
+        const color = isHovered ? blueHex : grayHex;
+        const alpha = isHovered ? 0.85 : 0.72;
+        const pos = variantMode === "genomic"
+          ? (isVertical ? yGenomeCanonical(v.pos, H) : xGenomeCanonical(v.pos, W))
+          : (isVertical ? yColumn(i, compactVariants.length) : xColumn(i, compactVariants.length));
+        if (isVertical) {
+          flowInstancedRenderer.addLine(
+            xBandToFlow(centerX - tickHalfLen) * devicePixelRatio, yBandToFlow(pos) * devicePixelRatio,
+            xBandToFlow(centerX + tickHalfLen) * devicePixelRatio, yBandToFlow(pos) * devicePixelRatio,
+            color, alpha
+          );
+        } else {
+          flowInstancedRenderer.addLine(
+            pos * devicePixelRatio, yBandToFlow(centerY - tickHalfLen) * devicePixelRatio,
+            pos * devicePixelRatio, yBandToFlow(centerY + tickHalfLen) * devicePixelRatio,
+            color, alpha
+          );
+        }
+      }
+    } else {
+      for (let i = 0; i < compactVariants.length; i++) {
+        const v = compactVariants[i];
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
+        ctx.strokeStyle = isHovered ? colBlue : colGray;
+        ctx.globalAlpha = isHovered ? 0.85 : 0.72;
+        ctx.lineWidth = isHovered ? 2.0 : 1.25;
+        const pos = variantMode === "genomic"
+          ? (isVertical ? yGenomeCanonical(v.pos, H) : xGenomeCanonical(v.pos, W))
+          : (isVertical ? yColumn(i, compactVariants.length) : xColumn(i, compactVariants.length));
+        ctx.beginPath();
+        if (isVertical) {
+          ctx.moveTo(centerX - tickHalfLen, pos);
+          ctx.lineTo(centerX + tickHalfLen, pos);
+        } else {
+          ctx.moveTo(pos, centerY - tickHalfLen);
+          ctx.lineTo(pos, centerY + tickHalfLen);
+        }
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    }
+
+    window._variantLabelPositions = [];
+    return;
+  }
   
   if (isVertical) {
     // In vertical mode, sort variants by position for consistent ordering
