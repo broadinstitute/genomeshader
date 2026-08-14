@@ -532,9 +532,13 @@ class GenomeShader:
         genomes). Empty dict when absent — the frontend then falls back to its
         built-in human map.
         """
+        cached = getattr(self, "_chrom_sizes_memo", None)
+        if cached is not None:
+            return cached
         uri = f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/chrom_sizes/{self.genome_build}.json"
         payload = self._read_cached_json(uri)
-        return payload if isinstance(payload, dict) else {}
+        self._chrom_sizes_memo = payload if isinstance(payload, dict) else {}
+        return self._chrom_sizes_memo
 
     def _variant_payload_index_uri(self, dataset_sig: str) -> str:
         return (
