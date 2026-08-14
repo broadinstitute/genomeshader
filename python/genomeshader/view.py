@@ -525,6 +525,17 @@ class GenomeShader:
     def _ucsc_index_uri(self, kind: str) -> str:
         return f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/index/{kind}.json"
 
+    def _chrom_sizes(self) -> dict:
+        """Per-contig lengths for this genome build, if staged into the cache.
+
+        Written by non-UCSC ingest (e.g. genomeshader.plasmodb for PlasmoDB
+        genomes). Empty dict when absent — the frontend then falls back to its
+        built-in human map.
+        """
+        uri = f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/chrom_sizes/{self.genome_build}.json"
+        payload = self._read_cached_json(uri)
+        return payload if isinstance(payload, dict) else {}
+
     def _variant_payload_index_uri(self, dataset_sig: str) -> str:
         return (
             f"{self.gcs_session_dir.rstrip('/')}/cache/variants/payload/index/"
@@ -2410,6 +2421,7 @@ class GenomeShader:
             'region': f"{ref_chr}:{ref_start}-{ref_end}",
             'region_formatted': region_str_formatted,  # Formatted with commas for display
             'genome_build': self.genome_build,
+            'chrom_lengths': self._chrom_sizes(),  # non-empty for staged non-UCSC genomes (e.g. PlasmoDB)
             'ideogram_data': ideogram_data,
             'transcripts_data': transcripts_data,
             'repeats_data': repeats_data,

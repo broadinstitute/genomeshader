@@ -125,9 +125,17 @@ const chrLengths = {
   "chrY": 57_227_415
 };
 
+// Overlay genome-specific contig lengths from the render config (e.g. PlasmoDB
+// Pf3D7). Absent for UCSC genomes, which keep the human defaults above.
+if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.chrom_lengths) {
+  Object.assign(chrLengths, window.GENOMESHADER_CONFIG.chrom_lengths);
+}
+
 // Helper function to get chromosome length for current contig
 function getChromosomeLength() {
-  return chrLengths[state.contig] || 248_956_422;
+  return chrLengths[state.contig]
+    || chrLengths[window.GENOMESHADER_CONFIG?.region?.split(":")[0]]
+    || 248_956_422;
 }
 
 // Helper function to clamp startBp and endBp to chromosome boundaries
