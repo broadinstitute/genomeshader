@@ -89,11 +89,17 @@ def parse_gff_genes(gff_path: str, rename=lambda c: c) -> Dict[str, List[dict]]:
     # resolved up to its top-level gene, regardless of the intermediate
     # (mRNA / rRNA / pseudogenic_transcript / ...) feature types PlasmoDB uses.
     parent_of: Dict[str, str] = {}
-    feat: Dict[str, dict] = {}          # id -> {contig, strand, name}
+    feat: Dict[str, dict] = {}          # id -> {contig, strand, name, start, end}
     exons_by_parent: Dict[str, List[List[int]]] = {}
+    cds_by_parent: Dict[str, List[List[int]]] = {}
+    gene_ids: List[str] = []            # top-level *_gene features, for span fallback
 
     with _open_text(gff_path) as fh:
         for line in fh:
+            # PlasmoDB ships a combined GFF with the genome FASTA appended after
+            # a `##FASTA` directive — stop before we start parsing sequence.
+            if line.startswith("##FASTA"):
+                break
             if not line.strip() or line.startswith("#"):
                 continue
             cols = line.rstrip("\n").split("\t")
@@ -108,13 +114,19 @@ def parse_gff_genes(gff_path: str, rename=lambda c: c) -> Dict[str, List[dict]]:
                     "contig": rename(seqid),
                     "strand": strand if strand in ("+", "-") else "+",
                     "name": a.get("Name") or a.get("gene") or fid,
+                    "start": int(start),
+                    "end": int(end),
                 }
                 if parent:
                     parent_of[fid] = parent
+                if ftype.endswith("gene"):   # gene, protein_coding_gene, ncRNA_gene, pseudogene...
+                    gene_ids.append(fid)
+            if not parent:
+                continue
             if ftype == "exon":
-                if not parent:
-                    continue
                 exons_by_parent.setdefault(parent, []).append([int(start), int(end)])
+            elif ftype == "CDS":
+                cds_by_parent.setdefault(parent, []).append([int(start), int(end)])
 
     def root(fid: str) -> str:
         seen = set()
@@ -123,11 +135,19 @@ def parse_gff_genes(gff_path: str, rename=lambda c: c) -> Dict[str, List[dict]]:
             fid = parent_of[fid]
         return fid
 
-    # Group exons by root gene.
+    # Group exons (preferred) then CDS by root gene.
     exons_by_gene: Dict[str, List[List[int]]] = {}
     for parent_id, exons in exons_by_parent.items():
+        exons_by_gene.setdefault(root(parent_id), []).extend(exons)
+    for parent_id, cds in cds_by_parent.items():
         gene_id = root(parent_id)
-        exons_by_gene.setdefault(gene_id, []).extend(exons)
+        if gene_id not in exons_by_gene:     # only when no explicit exons exist
+            exons_by_gene.setdefault(gene_id, []).extend(cds)
+    # Genes with neither exon nor CDS children (e.g. some ncRNA): use gene span,
+    # mirroring genes()'s single-exon fallback.
+    for gid in gene_ids:
+        if gid not in exons_by_gene:
+            exons_by_gene[gid] = [[feat[gid]["start"], feat[gid]["end"]]]
 
     # Build gene models, grouped by contig.
     by_contig: Dict[str, List[dict]] = {}
@@ -265,6 +285,14 @@ def demo():
         "Pf3D7_01_v3\tPlasmoDB\tncRNA_gene\t3\t7\t.\t-\t.\tID=g2;Name=GENE2",
         "Pf3D7_01_v3\tPlasmoDB\tncRNA\t3\t7\t.\t-\t.\tID=g2.1;Parent=g2",
         "Pf3D7_01_v3\tPlasmoDB\texon\t3\t7\t.\t-\t.\tID=e4;Parent=g2.1",
+        # g3: CDS-only (no exon feature) -> falls back to CDS union.
+        "Pf3D7_02_v3\tPlasmoDB\tprotein_coding_gene\t2\t9\t.\t+\t.\tID=g3;Name=GENE3",
+        "Pf3D7_02_v3\tPlasmoDB\tmRNA\t2\t9\t.\t+\t.\tID=g3.1;Parent=g3",
+        "Pf3D7_02_v3\tPlasmoDB\tCDS\t2\t9\t.\t+\t.\tID=c1;Parent=g3.1",
+        # g4: bare gene span (no exon, no CDS) -> falls back to gene span.
+        "Pf3D7_02_v3\tPlasmoDB\tncRNA_gene\t11\t12\t.\t+\t.\tID=g4;Name=GENE4",
+        "##FASTA",
+        ">ignored", "ACGT",   # must be skipped, not parsed as features
     ])
 
     # Monkeypatch _open_text to read from strings.
@@ -291,6 +319,10 @@ def demo():
     assert ch1["GENE2"]["exons"] == [[3, 7, True]]
     assert ch1["GENE2"]["strand"] == "-"
     assert ch1["GENE1"]["lane"] != ch1["GENE2"]["lane"]
+
+    ch2 = {g["name"]: g for g in genes["Pf3D7_02_v3"]}
+    assert ch2["GENE3"]["exons"] == [[2, 9, True]], ch2["GENE3"]["exons"]      # CDS fallback
+    assert ch2["GENE4"]["exons"] == [[11, 12, True]], ch2["GENE4"]["exons"]    # gene-span fallback
     print("plasmodb.demo: OK")
 
 
