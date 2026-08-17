@@ -29,6 +29,9 @@
 # the same names, or pass `contig_rename` to map PlasmoDB names -> your names.
 
 import gzip
+import os
+import subprocess
+import tempfile
 from typing import Callable, Dict, List, Optional, Union
 
 # A neutral chromosome-body shade; PlasmoDB chromosomes have no Giemsa banding,
@@ -41,6 +44,58 @@ def _open_text(path: str):
     if path.endswith(".gz"):
         return gzip.open(path, "rt")
     return open(path, "r")
+
+
+def _s3_cp(src: str, dst: str) -> bool:
+    """Copy s3://... -> local via the aws CLI, mirroring view._gcs_cp."""
+    try:
+        rc = subprocess.run(
+            ["aws", "s3", "cp", src, dst],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        return rc == 0
+    except FileNotFoundError:
+        raise RuntimeError(
+            "aws CLI not found; install awscli to fetch s3:// references"
+        )
+
+
+def _fetch_to_local(session, uri: Optional[str], tmpdir: str) -> Optional[str]:
+    """Resolve a reference field to a local path, downloading if remote.
+
+    Scheme-aware: local/file:// pass through; gs:// reuses session._gcs_cp;
+    s3:// shells out to aws; http(s):// streams via requests. Returns None for
+    None (optional fields). Raises on unknown scheme or failed transfer.
+    """
+    if uri is None:
+        return None
+    if "://" not in uri:
+        return uri
+    if uri.startswith("file://"):
+        return uri[len("file://"):]
+
+    scheme = uri.split("://", 1)[0]
+    dst = os.path.join(tmpdir, os.path.basename(uri.split("?", 1)[0]))
+
+    if scheme == "gs":
+        if not session._gcs_cp(uri, dst):
+            raise RuntimeError(f"failed to fetch {uri} (gcloud/gsutil)")
+    elif scheme == "s3":
+        if not _s3_cp(uri, dst):
+            raise RuntimeError(f"failed to fetch {uri} (aws s3 cp)")
+    elif scheme in ("http", "https"):
+        import requests
+        with requests.get(uri, stream=True) as r:
+            if r.status_code != 200:
+                raise RuntimeError(f"failed to fetch {uri} (HTTP {r.status_code})")
+            with open(dst, "wb") as fh:
+                for chunk in r.iter_content(chunk_size=1 << 16):
+                    fh.write(chunk)
+    else:
+        raise ValueError(f"unsupported scheme in reference path: {uri}")
+    return dst
 
 
 def _make_renamer(contig_rename: Optional[Union[Dict[str, str], Callable[[str], str]]]):
@@ -202,26 +257,33 @@ def _assign_lanes(models: List[dict], n_lanes: int = 3) -> None:
             lanes[0].append(g)
 
 
-def stage_plasmodb(
+def stage_reference(
     session,
-    fasta_path: str,
-    gff_path: str,
+    fasta: str,
+    gff: Optional[str] = None,
     contig_rename: Optional[Union[Dict[str, str], Callable[[str], str]]] = None,
     verbose: bool = True,
 ) -> Dict[str, int]:
-    """Stage FASTA + GFF3 annotations into `session`'s genomeshader cache.
+    """Stage any reference's FASTA (+ optional GFF3) into `session`'s cache.
 
-    Writes reference / genes / ideogram blobs + a chrom_sizes file, and
-    registers them in the cache interval index, so `session.reference/genes/
-    ideogram` serve them without UCSC. Returns {contig: length}.
+    `fasta` is required; `gff` is optional (contigs without genes still get
+    reference + ideogram + chrom_sizes). Each field may be a local path or a
+    gs://, s3://, http(s):// URI — remote files are downloaded first. Writes
+    reference / genes / ideogram blobs + a chrom_sizes file and registers them
+    in the cache interval index, so `session.reference/genes/ideogram` serve
+    them without UCSC. Returns {contig: length}.
     """
     rename = _make_renamer(contig_rename)
     build = session.genome_build
     base = session.gcs_session_dir.rstrip("/")
 
+    tmpdir = tempfile.mkdtemp(prefix="genomeshader-ref-")
+    fasta_path = _fetch_to_local(session, fasta, tmpdir)
+    gff_path = _fetch_to_local(session, gff, tmpdir)
+
     seqs = read_fasta(fasta_path, rename)
     lengths = {c: len(s) for c, s in seqs.items()}
-    genes_by_contig = parse_gff_genes(gff_path, rename)
+    genes_by_contig = parse_gff_genes(gff_path, rename) if gff_path else {}
 
     # chrom sizes (consumed by _chrom_sizes() -> render config -> frontend clamp)
     session._write_cached_json(f"{base}/cache/ucsc/chrom_sizes/{build}.json", lengths)
@@ -265,6 +327,18 @@ def stage_plasmodb(
     if verbose:
         print(f"Staged {len(seqs)} contigs for genome build '{build}'.")
     return lengths
+
+
+def stage_plasmodb(
+    session,
+    fasta_path: str,
+    gff_path: str,
+    contig_rename: Optional[Union[Dict[str, str], Callable[[str], str]]] = None,
+    verbose: bool = True,
+) -> Dict[str, int]:
+    """Back-compat alias for :func:`stage_reference` (FASTA + required GFF)."""
+    return stage_reference(session, fasta_path, gff=gff_path,
+                           contig_rename=contig_rename, verbose=verbose)
 
 
 def demo():

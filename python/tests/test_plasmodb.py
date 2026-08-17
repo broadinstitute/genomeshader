@@ -23,8 +23,10 @@ pytest.importorskip("genomeshader.genomeshader")
 
 from genomeshader.plasmodb import (
     stage_plasmodb,
+    stage_reference,
     read_fasta,
     parse_gff_genes,
+    _fetch_to_local,
     _merge_intervals,
     _assign_lanes,
 )
@@ -197,3 +199,102 @@ def test_ideogram_single_band(staged_session):
 def test_chrom_sizes_for_render_config(staged_session):
     # This is exactly what render() injects as window.GENOMESHADER_CONFIG.chrom_lengths
     assert staged_session._chrom_sizes() == {"Pf3D7_01_v3": 100, "Pf3D7_02_v3": 12}
+
+
+# --------------------------------------------------------------------------- #
+# scheme-aware fetch layer                                                     #
+# --------------------------------------------------------------------------- #
+
+def test_fetch_local_passthrough(tmp_path):
+    p = tmp_path / "ref.fa"
+    p.write_text(">c\nACGT\n")
+    assert _fetch_to_local(None, str(p), str(tmp_path)) == str(p)
+    assert _fetch_to_local(None, None, str(tmp_path)) is None
+
+
+def test_fetch_file_uri_strips_scheme(tmp_path):
+    assert _fetch_to_local(None, "file:///abs/ref.fa", str(tmp_path)) == "/abs/ref.fa"
+
+
+def test_fetch_unknown_scheme_raises(tmp_path):
+    with pytest.raises(ValueError):
+        _fetch_to_local(None, "ftp://host/ref.fa", str(tmp_path))
+
+
+def test_fetch_gs_uses_session_cp(tmp_path):
+    srcdir = tmp_path / "remote"; srcdir.mkdir()
+    src = srcdir / "src.fa"
+    src.write_text("DATA")
+    sess = Mock()
+    def fake_cp(uri, dst):
+        with open(dst, "w") as fh:
+            fh.write(src.read_text())
+        return True
+    sess._gcs_cp.side_effect = fake_cp
+    out = _fetch_to_local(sess, "gs://bucket/src.fa", str(tmp_path))
+    assert os.path.basename(out) == "src.fa" and open(out).read() == "DATA"
+
+
+def test_fetch_http_streams(tmp_path, monkeypatch):
+    class FakeResp:
+        status_code = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def iter_content(self, chunk_size=0): yield b"HELLO"
+    monkeypatch.setattr("requests.get", lambda uri, stream=False: FakeResp())
+    out = _fetch_to_local(None, "http://host/ref.fa?token=x", str(tmp_path))
+    assert os.path.basename(out) == "ref.fa" and open(out, "rb").read() == b"HELLO"
+
+
+def test_fetch_s3_shells_out(tmp_path, monkeypatch):
+    srcdir = tmp_path / "remote"; srcdir.mkdir()
+    src = srcdir / "s.fa"
+    src.write_text("S3DATA")
+    def fake_run(cmd, **kw):
+        # cmd == ["aws","s3","cp", uri, dst]
+        with open(cmd[4], "w") as fh:
+            fh.write(src.read_text())
+        return Mock(returncode=0)
+    monkeypatch.setattr("genomeshader.plasmodb.subprocess.run", fake_run)
+    out = _fetch_to_local(None, "s3://bucket/s.fa", str(tmp_path))
+    assert open(out).read() == "S3DATA"
+
+
+# --------------------------------------------------------------------------- #
+# stage_reference (fasta-only) + back-compat                                   #
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def staged_fasta_only(tmp_path, monkeypatch, genome_files):
+    monkeypatch.setenv("GENOMESHADER_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("GENOMESHADER_ALLOW_UCSC_API", raising=False)
+    fa, _ = genome_files
+    with patch("genomeshader.view.gs._init", return_value=Mock()):
+        s = GenomeShader(genome_build="PlasmoDB-61_Pfalciparum3D7",
+                         gcs_session_dir="gs://test-bucket/genomeshader")
+        stage_reference(s, fa, verbose=False)          # no gff
+        s2 = GenomeShader(genome_build="PlasmoDB-61_Pfalciparum3D7",
+                          gcs_session_dir="gs://test-bucket/genomeshader")
+    return s2
+
+
+def test_stage_reference_fasta_only(staged_fasta_only):
+    s = staged_fasta_only
+    assert s.reference("Pf3D7_01_v3", 0, 8) == "ACGTACGT"     # reference served
+    assert s._chrom_sizes() == {"Pf3D7_01_v3": 100, "Pf3D7_02_v3": 12}
+    ideo = s.ideogram("Pf3D7_01_v3")
+    rows = ideo.to_dicts() if hasattr(ideo, "to_dicts") else ideo
+    assert len(rows) == 1                                     # ideogram served
+    assert s.genes("Pf3D7_01_v3", 0, 100) == []              # no genes without gff
+
+
+def test_stage_plasmodb_delegates(tmp_path, monkeypatch, genome_files):
+    monkeypatch.setenv("GENOMESHADER_LOCAL_CACHE_DIR", str(tmp_path / "c"))
+    monkeypatch.delenv("GENOMESHADER_ALLOW_UCSC_API", raising=False)
+    fa, gff = genome_files
+    with patch("genomeshader.view.gs._init", return_value=Mock()):
+        s = GenomeShader(genome_build="PlasmoDB-61_Pfalciparum3D7",
+                         gcs_session_dir="gs://test-bucket/genomeshader")
+        via_wrapper = stage_plasmodb(s, fa, gff, verbose=False)
+        via_direct = stage_reference(s, fa, gff=gff, verbose=False)
+    assert via_wrapper == via_direct                          # same {contig: length}
