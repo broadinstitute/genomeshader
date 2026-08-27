@@ -13,30 +13,63 @@ use rust_htslib::bcf::{
 
 use crate::env::{ gcs_authorize_data_access, local_guess_curl_ca_bundle };
 
-/// Open a VCF/BCF for indexed (region-seekable) access. Remote gs:// URLs go
-/// through from_url with the same GCS-auth / CA-bundle fallbacks as the reads
-/// path (see stage::open_bam); local paths use from_path. Requires an index
-/// (.tbi/.csi) next to the file.
-fn open_indexed_bcf(bcf_path: &str) -> Result<IndexedReader> {
-    if bcf_path.contains("://") {
-        let url = Url::parse(bcf_path)?;
-        let reader = match IndexedReader::from_url(&url) {
-            Ok(r) => r,
-            Err(_) => {
-                gcs_authorize_data_access();
-                match IndexedReader::from_url(&url) {
-                    Ok(r) => r,
-                    Err(_) => {
-                        local_guess_curl_ca_bundle();
-                        IndexedReader::from_url(&url)?
-                    }
+/// Open a URL with the same GCS-auth / CA-bundle retry ladder as the reads
+/// path (see stage::open_bam).
+fn open_url_with_fallbacks(url: &Url) -> Result<IndexedReader> {
+    match IndexedReader::from_url(url) {
+        Ok(r) => Ok(r),
+        Err(_) => {
+            gcs_authorize_data_access();
+            match IndexedReader::from_url(url) {
+                Ok(r) => Ok(r),
+                Err(_) => {
+                    local_guess_curl_ca_bundle();
+                    Ok(IndexedReader::from_url(url)?)
                 }
             }
-        };
-        Ok(reader)
-    } else {
-        Ok(IndexedReader::from_path(bcf_path)?)
+        }
     }
+}
+
+/// Open a VCF/BCF for indexed (region-seekable) access. Remote gs:// URLs go
+/// through from_url; local paths use from_path. Requires an index (.tbi/.csi).
+///
+/// When `index_path` is given, the file's index is not assumed adjacent — the
+/// pair is handed to htslib via its `data##idx##index` convention. That path
+/// must be opened through from_url (from_path rejects the composite via its
+/// existence check), so local data is expressed as a file:// URL. Both data
+/// and index may independently be local or gs://.
+fn open_indexed_bcf(bcf_path: &str, index_path: Option<&str>) -> Result<IndexedReader> {
+    let is_remote = bcf_path.contains("://");
+
+    let index_path = match index_path {
+        // No explicit index: preserve the plain adjacent-index open.
+        None => {
+            return if is_remote {
+                open_url_with_fallbacks(&Url::parse(bcf_path)?)
+            } else {
+                Ok(IndexedReader::from_path(bcf_path)?)
+            };
+        }
+        Some(idx) => idx,
+    };
+
+    // Explicit index -> build htslib's data##idx##index composite as a URL.
+    let data_ref = if is_remote {
+        bcf_path.to_string()
+    } else {
+        format!("file://{}", std::fs::canonicalize(bcf_path)?.to_string_lossy())
+    };
+    let index_ref = if index_path.contains("://") || is_remote {
+        // remote index, or a local index paired with remote data: pass as-is
+        // (htslib accepts a bare local path for the index side).
+        index_path.to_string()
+    } else {
+        std::fs::canonicalize(index_path)?.to_string_lossy().to_string()
+    };
+
+    let composite = format!("{}##idx##{}", data_ref, index_ref);
+    open_url_with_fallbacks(&Url::parse(&composite)?)
 }
 
 fn is_vector_end_i32(v: i32) -> bool {
@@ -138,13 +171,14 @@ fn extract_info_value(
 
 pub fn extract_variants(
     bcf_path: &str,
+    index_path: Option<&str>,
     chr: &String,
     start: &u64,
     stop: &u64
 ) -> Result<DataFrame> {
     // Open for indexed access so only the requested region is read off disk /
     // streamed from GCS — the callset may be a terabyte split per contig.
-    let mut reader = open_indexed_bcf(bcf_path)?;
+    let mut reader = open_indexed_bcf(bcf_path, index_path)?;
 
     // Get header to extract sample names
     let header = reader.header().clone();
@@ -313,7 +347,7 @@ mod tests {
     fn region_seek_returns_only_in_window_variants() {
         // Window 150..=350 covers positions 200 and 300 only. Two variants x
         // two samples = 4 rows; 100 and 400 must be excluded by the index seek.
-        let df = extract_variants(&fixture(), &"chr1".to_string(), &150, &350).unwrap();
+        let df = extract_variants(&fixture(), None, &"chr1".to_string(), &150, &350).unwrap();
         assert_eq!(df.height(), 4, "expected 2 variants x 2 samples");
         let mut uniq: Vec<u64> = positions(&df);
         uniq.sort_unstable();
@@ -326,7 +360,7 @@ mod tests {
     fn full_span_returns_all_variants() {
         // Sanity: a window covering everything yields all 4 variants (8 rows),
         // proving the region seek doesn't silently drop in-range records.
-        let df = extract_variants(&fixture(), &"chr1".to_string(), &1, &1000).unwrap();
+        let df = extract_variants(&fixture(), None, &"chr1".to_string(), &1, &1000).unwrap();
         assert_eq!(df.height(), 8);
     }
 
@@ -334,8 +368,24 @@ mod tests {
     fn absent_contig_is_empty_not_error() {
         // name2rid fails for a contig not in this (per-contig split) file; the
         // reader must return an empty, correctly-typed frame rather than panic.
-        let df = extract_variants(&fixture(), &"chrZ".to_string(), &1, &1000).unwrap();
+        let df = extract_variants(&fixture(), None, &"chrZ".to_string(), &1, &1000).unwrap();
         assert_eq!(df.height(), 0);
         assert_eq!(df.get_column_names().len(), 11);
+    }
+
+    #[test]
+    fn explicit_index_with_nondefault_name() {
+        // Index not adjacent-named: copy it to a custom filename and pass it
+        // explicitly. Must region-seek identically to the adjacent-index case.
+        let custom = format!("{}/tests/fixtures/renamed_index.tbi", env!("CARGO_MANIFEST_DIR"));
+        std::fs::copy(format!("{}/tests/fixtures/tiny.vcf.gz.tbi", env!("CARGO_MANIFEST_DIR")),
+                      &custom).unwrap();
+        let df = extract_variants(&fixture(), Some(&custom), &"chr1".to_string(), &150, &350).unwrap();
+        let _ = std::fs::remove_file(&custom);
+        assert_eq!(df.height(), 4);
+        let mut uniq = positions(&df);
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq, vec![200, 300]);
     }
 }

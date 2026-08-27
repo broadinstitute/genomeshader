@@ -813,6 +813,7 @@ class GenomeShader:
         self,
         track_name: str,
         variant_files: Union[str, List[str]],
+        index: Optional[Union[str, List[Optional[str]]]] = None,
     ):
         """
         Attaches variant files (BCF/VCF) to the current session as a single
@@ -826,28 +827,51 @@ class GenomeShader:
                 to variant files (str or pathlib.Path / PosixPath). Can be local paths
                 or GCS paths (gs://...). Supported formats: .bcf, .vcf, .vcf.gz.
                 A directory path lists all variant files in that directory.
+            index (Optional[Union[str, List[Optional[str]]]]): Explicit index path(s)
+                for non-adjacent / non-default-named indexes (.tbi/.csi). A single
+                path (for a single variant file), or a list parallel to
+                ``variant_files`` (use None for files whose index is adjacent). Local
+                or gs:// paths are both accepted. Omit to use the adjacent index next
+                to each file. Not supported for directory arguments.
         """
         import genomeshader.genomeshader as gs
 
         if isinstance(variant_files, (str, Path)):
             variant_files = [variant_files]
 
+        # Normalize `index` to a list parallel to variant_files.
+        if index is None:
+            index_list: List[Optional[str]] = [None] * len(variant_files)
+        elif isinstance(index, (str, Path)):
+            if len(variant_files) != 1:
+                raise ValueError("a single index requires a single variant file; "
+                                 "pass a list of indexes parallel to variant_files")
+            index_list = [index]
+        else:
+            index_list = list(index)
+            if len(index_list) != len(variant_files):
+                raise ValueError("index list must be parallel to variant_files")
+
         paths_to_attach: List[str] = []
-        for variant_path in variant_files:
+        indexes_to_attach: List[Optional[str]] = []
+        for variant_path, idx in zip(variant_files, index_list):
             p = os.fspath(variant_path)
             if p.endswith(".bcf") or p.endswith(".vcf") or p.endswith(".vcf.gz"):
                 paths_to_attach.append(p)
+                indexes_to_attach.append(os.fspath(idx) if idx is not None else None)
             else:
+                if idx is not None:
+                    raise ValueError(f"cannot specify an index for directory '{p}'")
                 bcfs = gs._gcs_list_files_of_type(p, ".bcf")
                 vcfs = gs._gcs_list_files_of_type(p, ".vcf")
                 vcf_gzs = gs._gcs_list_files_of_type(p, ".vcf.gz")
-                paths_to_attach.extend(bcfs)
-                paths_to_attach.extend(vcfs)
-                paths_to_attach.extend(vcf_gzs)
+                for found in (*bcfs, *vcfs, *vcf_gzs):
+                    paths_to_attach.append(found)
+                    indexes_to_attach.append(None)
 
         if paths_to_attach:
             self._variant_datasets.append((str(track_name), paths_to_attach))
-            self._session.attach_variants(paths_to_attach)
+            self._session.attach_variants(paths_to_attach, indexes_to_attach)
 
     def set_sample_mapping(self, mapping: dict):
         """
