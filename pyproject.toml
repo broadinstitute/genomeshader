@@ -7,11 +7,15 @@ name = "genomeshader"
 version = "0.2.0"
 dependencies = [
     "polars",
+    "pyarrow",
     "requests",
     "requests-cache",
     "ipywidgets>=8.0.0",
     "google-cloud-storage",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [tool.maturin]
 python-source = "python"
