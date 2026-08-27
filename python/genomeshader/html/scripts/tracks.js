@@ -1510,7 +1510,7 @@ function renderTracks() {
       'G': [255, 165, 0],    // orange
       'T': [255, 0, 0]       // red
     };
-    const BASE_TILE_MAX_ALPHA = 0.8;
+    const BASE_TILE_MAX_ALPHA = 1.0; // solid color blocks (IGV-style)
     const BASE_MIN_DRAW_PX = 0.03;
     const BASE_FADE_START_PX = 0.08;
     const BASE_FADE_FULL_PX = 1.6;
@@ -1641,13 +1641,13 @@ function renderTracks() {
           instancedRenderer.addRect(qx, qy, qw, qh, rgba);
         }
         
-        // Draw base letters using SVG (text rendering can stay SVG-based)
-        // Use solid colors for text (more vibrant than the semi-transparent rect colors)
+        // Draw base letters using SVG. IGV-style: black letters on solid color
+        // blocks (the block carries the nucleotide color, the letter is black).
         const nucleotideTextColors = {
-          'A': '#00a000',  // green
-          'C': '#0000cc',  // blue
-          'G': '#cc8400',  // orange
-          'T': '#cc0000'   // red
+          'A': '#000000',
+          'C': '#000000',
+          'G': '#000000',
+          'T': '#000000'
         };
         const fragment = document.createDocumentFragment();
         for (const b of basesToRender) {
