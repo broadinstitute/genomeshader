@@ -1,6 +1,7 @@
 import os
 import re
 import hashlib
+import warnings
 import threading
 import socket
 import copy
@@ -79,6 +80,10 @@ class GenomeShader:
         # Format: {"VCF_sample1": ["BAM_sample1"], "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
         # If empty, assumes 1:1 identity mapping (VCF sample name == BAM sample name)
         self._sample_mapping: dict = {}
+        # Union of VCF sample names renderable across attached variant tracks
+        # (after any per-track `samples=` subset). Reads for samples outside this
+        # set won't render, so they're reported by _reconcile_read_samples.
+        self._vcf_sample_universe: set = set()
 
         # One entry per variant track: (track_name, list of paths). Order matches session's variant_file_groups.
         self._variant_datasets: List[Tuple[str, List[str]]] = []
@@ -791,6 +796,29 @@ class GenomeShader:
                 self._session.attach_reads(bams, cohort)
                 self._session.attach_reads(crams, cohort)
 
+        self._reconcile_read_samples()
+
+    def _reconcile_read_samples(self):
+        """Warn about attached read samples that aren't in the VCF sample
+        universe. Reads only render for samples that exist in the variant
+        layer, so a BAM whose sample isn't in any attached VCF header (or was
+        excluded by a `samples=` subset) is silently never drawn — surface that
+        here. No-op until both variants and reads are attached."""
+        if not self._vcf_sample_universe:
+            return
+        try:
+            bam_samples = set(self.get_bam_sample_names())
+        except Exception:
+            return  # can't read BAM headers (offline / auth) — skip quietly
+        if not bam_samples:
+            return
+        excluded = sorted(bam_samples - self._vcf_sample_universe)
+        if excluded:
+            warnings.warn(
+                f"{len(excluded)} read sample(s) are not in the VCF sample "
+                f"universe and will not be rendered: {', '.join(excluded)}"
+            )
+
     def attach_loci(self, loci: Union[str, List[str]]):
         """
         Attaches loci to the current session from the provided list.
@@ -814,6 +842,7 @@ class GenomeShader:
         track_name: str,
         variant_files: Union[str, List[str]],
         index: Optional[Union[str, List[Optional[str]]]] = None,
+        samples: Optional[List[str]] = None,
     ):
         """
         Attaches variant files (BCF/VCF) to the current session as a single
@@ -833,6 +862,10 @@ class GenomeShader:
                 ``variant_files`` (use None for files whose index is adjacent). Local
                 or gs:// paths are both accepted. Omit to use the adjacent index next
                 to each file. Not supported for directory arguments.
+            samples (Optional[List[str]]): Restrict this track to these VCF samples.
+                Essential for large joint callsets: rendering every sample x variant
+                blows past the browser transport limit. Samples not present in the
+                VCF header are dropped with a warning. Omit to include all samples.
         """
         import genomeshader.genomeshader as gs
 
@@ -869,9 +902,36 @@ class GenomeShader:
                     paths_to_attach.append(found)
                     indexes_to_attach.append(None)
 
-        if paths_to_attach:
-            self._variant_datasets.append((str(track_name), paths_to_attach))
-            self._session.attach_variants(paths_to_attach, indexes_to_attach)
+        if not paths_to_attach:
+            return
+
+        # Reconcile the requested sample subset against the VCF headers, and
+        # grow the session-wide set of renderable (in-header) sample names.
+        header_samples: set = set()
+        for p, idx in zip(paths_to_attach, indexes_to_attach):
+            try:
+                header_samples.update(gs._vcf_sample_names(p, idx))
+            except Exception as e:
+                warnings.warn(f"could not read samples from '{p}': {e}")
+
+        subset: Optional[List[str]] = None
+        if samples is not None:
+            present = [s for s in samples if s in header_samples]
+            absent = [s for s in samples if s not in header_samples]
+            if absent:
+                warnings.warn(
+                    f"attach_variants: {len(absent)} requested sample(s) not in the "
+                    f"VCF header of track '{track_name}' and will not be rendered: "
+                    f"{', '.join(sorted(absent))}"
+                )
+            subset = present
+            self._vcf_sample_universe.update(present)
+        else:
+            self._vcf_sample_universe.update(header_samples)
+
+        self._variant_datasets.append((str(track_name), paths_to_attach))
+        self._session.attach_variants(paths_to_attach, indexes_to_attach, subset)
+        self._reconcile_read_samples()
 
     def set_sample_mapping(self, mapping: dict):
         """

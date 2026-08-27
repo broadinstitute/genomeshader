@@ -341,6 +341,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_stage_data() {
         let reads_url = Url::parse(
             "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam"
@@ -359,6 +360,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_stage_multiple_data() {
         let reads_url_1 = Url::parse(
             "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam"
@@ -383,6 +385,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_convert_to_pydataframe() {
         let reads_urls = [
             Url::parse(

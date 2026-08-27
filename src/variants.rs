@@ -169,9 +169,21 @@ fn extract_info_value(
     }
 }
 
+/// Read the sample names from a VCF/BCF header (indexed open, region-agnostic).
+pub fn vcf_sample_names(bcf_path: &str, index_path: Option<&str>) -> Result<Vec<String>> {
+    let reader = open_indexed_bcf(bcf_path, index_path)?;
+    Ok(reader
+        .header()
+        .samples()
+        .iter()
+        .map(|s| String::from_utf8_lossy(s).to_string())
+        .collect())
+}
+
 pub fn extract_variants(
     bcf_path: &str,
     index_path: Option<&str>,
+    samples: Option<&[String]>,
     chr: &String,
     start: &u64,
     stop: &u64
@@ -187,6 +199,16 @@ pub fn extract_variants(
         .iter()
         .map(|s| String::from_utf8_lossy(s).to_string())
         .collect();
+
+    // Optional post-read sample subset. The region read is small, so the wall
+    // is the per-(variant,sample) payload sent to the browser, not the decode;
+    // filtering emitted rows here collapses a 20k-sample joint callset to the
+    // requested handful without htslib set_samples (which the synced IndexedReader
+    // doesn't expose).
+    // ponytail: post-read filter; if wide-region decode CPU ever dominates,
+    // switch to bcf_sr_set_samples (needs a patched rust-htslib).
+    let sample_filter: Option<std::collections::HashSet<&str>> =
+        samples.map(|s| s.iter().map(|x| x.as_str()).collect());
     let info_tags: Vec<String> = header
         .header_records()
         .iter()
@@ -264,6 +286,13 @@ pub fn extract_variants(
             let genotypes_array = record.genotypes()?;
             
             for (sample_idx, sample_name) in sample_names.iter().enumerate() {
+                // Skip samples outside the requested subset, if any.
+                if let Some(filter) = &sample_filter {
+                    if !filter.contains(sample_name.as_str()) {
+                        continue;
+                    }
+                }
+
                 // Get genotype (GT field) for this sample
                 let gt = genotypes_array.get(sample_idx);
                 
@@ -347,7 +376,7 @@ mod tests {
     fn region_seek_returns_only_in_window_variants() {
         // Window 150..=350 covers positions 200 and 300 only. Two variants x
         // two samples = 4 rows; 100 and 400 must be excluded by the index seek.
-        let df = extract_variants(&fixture(), None, &"chr1".to_string(), &150, &350).unwrap();
+        let df = extract_variants(&fixture(), None, None, &"chr1".to_string(), &150, &350).unwrap();
         assert_eq!(df.height(), 4, "expected 2 variants x 2 samples");
         let mut uniq: Vec<u64> = positions(&df);
         uniq.sort_unstable();
@@ -360,7 +389,7 @@ mod tests {
     fn full_span_returns_all_variants() {
         // Sanity: a window covering everything yields all 4 variants (8 rows),
         // proving the region seek doesn't silently drop in-range records.
-        let df = extract_variants(&fixture(), None, &"chr1".to_string(), &1, &1000).unwrap();
+        let df = extract_variants(&fixture(), None, None, &"chr1".to_string(), &1, &1000).unwrap();
         assert_eq!(df.height(), 8);
     }
 
@@ -368,7 +397,7 @@ mod tests {
     fn absent_contig_is_empty_not_error() {
         // name2rid fails for a contig not in this (per-contig split) file; the
         // reader must return an empty, correctly-typed frame rather than panic.
-        let df = extract_variants(&fixture(), None, &"chrZ".to_string(), &1, &1000).unwrap();
+        let df = extract_variants(&fixture(), None, None, &"chrZ".to_string(), &1, &1000).unwrap();
         assert_eq!(df.height(), 0);
         assert_eq!(df.get_column_names().len(), 11);
     }
@@ -380,12 +409,31 @@ mod tests {
         let custom = format!("{}/tests/fixtures/renamed_index.tbi", env!("CARGO_MANIFEST_DIR"));
         std::fs::copy(format!("{}/tests/fixtures/tiny.vcf.gz.tbi", env!("CARGO_MANIFEST_DIR")),
                       &custom).unwrap();
-        let df = extract_variants(&fixture(), Some(&custom), &"chr1".to_string(), &150, &350).unwrap();
+        let df = extract_variants(&fixture(), Some(&custom), None, &"chr1".to_string(), &150, &350).unwrap();
         let _ = std::fs::remove_file(&custom);
         assert_eq!(df.height(), 4);
         let mut uniq = positions(&df);
         uniq.sort_unstable();
         uniq.dedup();
         assert_eq!(uniq, vec![200, 300]);
+    }
+
+    #[test]
+    fn sample_subset_emits_only_requested() {
+        // Full span has 4 variants x 2 samples = 8 rows. Restrict to S1 -> 4
+        // rows, all sample_name == "S1".
+        let only_s1 = vec!["S1".to_string()];
+        let df = extract_variants(&fixture(), None, Some(&only_s1),
+                                  &"chr1".to_string(), &1, &1000).unwrap();
+        assert_eq!(df.height(), 4);
+        let names: Vec<String> = df.column("sample_name").unwrap().str().unwrap()
+            .into_no_null_iter().map(String::from).collect();
+        assert!(names.iter().all(|n| n == "S1"), "got {:?}", names);
+    }
+
+    #[test]
+    fn vcf_sample_names_reads_header() {
+        assert_eq!(vcf_sample_names(&fixture(), None).unwrap(),
+                   vec!["S1".to_string(), "S2".to_string()]);
     }
 }
