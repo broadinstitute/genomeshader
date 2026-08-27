@@ -1044,9 +1044,10 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .track-control-container.standard-track .track-controls {
   transition: none; /* Instant show/hide, no fade */
 }
-/* Standard tracks: hide controls by default, show on hover */
+/* Standard tracks: keep the label pillbox visible (track names must always be
+   readable); it just doesn't intercept canvas events until hovered. */
 .track-control-container.standard-track .track-controls {
-  opacity: 0;
+  opacity: 1;
   pointer-events: none;
 }
 .track-control-container.standard-track.track-hovered .track-controls {
