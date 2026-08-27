@@ -1,7 +1,7 @@
 use anyhow::{ anyhow, Result };
 use pyo3::prelude::*;
 
-use cloud_storage::{ sync::*, ListRequest, object::ObjectList };
+use cloud_storage::sync::*;
 use chrono::{ DateTime, Utc };
 use std::path::PathBuf;
 use std::process::Command;
@@ -20,15 +20,35 @@ pub fn gcs_split_path(path: &String) -> (String, String) {
     (bucket_name, prefix)
 }
 
-pub fn gcs_list_files(path: &String) -> Result<Vec<ObjectList>> {
-    let (bucket_name, prefix) = gcs_split_path(path);
+/// Recursively list objects under a gs:// prefix by shelling out to the gcloud
+/// CLI (falling back to gsutil), matching the auth path used for reads — plain
+/// Application Default Credentials (`gcloud auth application-default login`),
+/// no service-account key required. The cloud-storage crate, by contrast, only
+/// accepts a service-account JSON, which panics under user ADC.
+fn gcs_list_uris(path: &str) -> Result<Vec<String>> {
+    let glob = format!("{}/**", path.trim_end_matches('/'));
 
-    let client = Client::new()?;
-    let file_list = client
-        .object()
-        .list(&bucket_name, ListRequest { prefix: Some(prefix), ..Default::default() })?;
+    let run = |cmd: &str, args: &[&str]| -> Result<String> {
+        let output = Command::new(cmd)
+            .args(args)
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|e| anyhow!("failed to run {}: {}", cmd, e))?;
+        if !output.status.success() {
+            return Err(anyhow!("{} exited with {}", cmd, output.status));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    };
 
-    Ok(file_list)
+    let stdout = run("gcloud", &["storage", "ls", &glob])
+        .or_else(|_| run("gsutil", &["ls", &glob]))?;
+
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("gs://"))
+        .map(String::from)
+        .collect())
 }
 
 pub fn gcs_get_file_update_time(path: &String) -> Result<DateTime<Utc>> {
@@ -190,19 +210,14 @@ fn _cloud_storage_client_upload_fallback(local_path: &PathBuf, path: &str) -> Re
 
 #[pyfunction]
 pub fn _gcs_list_files_of_type(path: String, suffix: &str) -> PyResult<Vec<String>> {
-    let file_list = gcs_list_files(&path).unwrap();
+    let uris = gcs_list_uris(&path).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Could not list '{}': {}. Ensure gcloud (or gsutil) is installed and \
+             authenticated (`gcloud auth application-default login`), or pass explicit \
+             file paths instead of a directory.",
+            path, e
+        ))
+    })?;
 
-    let bam_files: Vec<_> = file_list
-        .iter()
-        .flat_map(|fs| {
-            fs.items
-                .iter()
-                .filter_map(|f| {
-                    if f.name.ends_with(suffix) { Some(f.name.clone()) } else { None }
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
-    Ok(bam_files)
+    Ok(uris.into_iter().filter(|u| u.ends_with(suffix)).collect())
 }
