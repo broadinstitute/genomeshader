@@ -598,22 +598,35 @@ function renderSmartTrack(trackId) {
           }
           cutReadBodyAtExpandedInsertionGaps(read.start, read.end, x, y, w, h);
           
-          // Draw direction arrow
-          ctx.fillStyle = `rgba(255,255,255,0.6)`;
-          const arrowSize = Math.min(6, w * 0.2);
+          // Draw direction arrow. It MUST go on the same layer as the read body:
+          // when WebGPU is active the body is drawn via instancedRenderer, so a
+          // ctx (Canvas2D) arrow lands on a hidden layer and never shows — draw
+          // it as a WebGPU triangle instead. Keep the ctx path for the fallback.
+          const arrowSize = Math.max(3, Math.min(7, w * 0.5));
+          const cy = y + h / 2;
+          let ax0, ay0, ax1, ay1, ax2, ay2;
           if (read.isForward) {
-            // Arrow pointing right
-            ctx.beginPath();
-            ctx.moveTo(x + w - arrowSize - 2, y + h/2 - arrowSize/2);
-            ctx.lineTo(x + w - 2, y + h/2);
-            ctx.lineTo(x + w - arrowSize - 2, y + h/2 + arrowSize/2);
-            ctx.fill();
+            // triangle pointing right, at the read's 3' (right) end
+            ax0 = x + w - arrowSize - 1; ay0 = cy - arrowSize / 2;
+            ax1 = x + w - 1;             ay1 = cy;
+            ax2 = x + w - arrowSize - 1; ay2 = cy + arrowSize / 2;
           } else {
-            // Arrow pointing left
+            // triangle pointing left, at the read's 3' (left) end
+            ax0 = x + arrowSize + 1; ay0 = cy - arrowSize / 2;
+            ax1 = x + 1;             ay1 = cy;
+            ax2 = x + arrowSize + 1; ay2 = cy + arrowSize / 2;
+          }
+          if (instancedRenderer && webgpuSupported) {
+            instancedRenderer.addTriangle(
+              ax0 * dpr, ay0 * dpr, ax1 * dpr, ay1 * dpr, ax2 * dpr, ay2 * dpr,
+              [1, 1, 1], 0.95
+            );
+          } else {
+            ctx.fillStyle = `rgba(255,255,255,0.9)`;
             ctx.beginPath();
-            ctx.moveTo(x + arrowSize + 2, y + h/2 - arrowSize/2);
-            ctx.lineTo(x + 2, y + h/2);
-            ctx.lineTo(x + arrowSize + 2, y + h/2 + arrowSize/2);
+            ctx.moveTo(ax0, ay0);
+            ctx.lineTo(ax1, ay1);
+            ctx.lineTo(ax2, ay2);
             ctx.fill();
           }
         }
