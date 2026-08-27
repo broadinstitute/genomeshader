@@ -60,14 +60,18 @@ def _container_override_css(cid: str) -> str:
         f"{c} .sidebar-left {{ position:absolute !important; left:0 !important; top:0 !important;"
         f" bottom:0 !important; width:var(--sidebar-w,240px) !important; z-index:100 !important;"
         f" overflow-y:auto !important; overflow-x:visible !important; pointer-events:auto !important; }}",
-        f"{c} .app.sidebar-collapsed .sidebar-left {{ width:8px !important; padding:0 !important; }}",
-        f"{c} .main {{ position:absolute !important; left:0 !important; top:0 !important;"
-        f" right:0 !important; bottom:0 !important; z-index:1 !important; overflow:hidden; }}",
+        f"{c} .app.sidebar-collapsed .sidebar-left {{ width:20px !important; padding:0 !important; }}",
+        # .main contracts to meet whichever sidebar is expanded, so a panel never
+        # occludes the view. Left starts expanded (240), right starts collapsed (20).
+        f"{c} .main {{ position:absolute !important; top:0 !important; bottom:0 !important;"
+        f" left:240px !important; right:240px !important; z-index:1 !important; overflow:hidden; }}",
+        f"{c} .app.sidebar-collapsed .main {{ left:20px !important; }}",
+        f"{c} .app.sidebar-right-collapsed .main {{ right:20px !important; }}",
         f"{c} .sidebar-right {{ position:absolute !important; right:0 !important; top:0 !important;"
         f" bottom:0 !important; z-index:100 !important; pointer-events:auto !important;"
         f" display:flex !important; flex-direction:column !important; }}",
         f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ width:240px !important; }}",
-        f"{c} .app.sidebar-right-collapsed .sidebar-right {{ width:8px !important; padding:0 !important; }}",
+        f"{c} .app.sidebar-right-collapsed .sidebar-right {{ width:20px !important; padding:0 !important; }}",
         f"{c} .sidebar-right .sidebarContent {{ flex:1 !important; overflow-y:auto !important;"
         f" overflow-x:visible !important; padding:12px !important; pointer-events:auto !important; }}",
         f"{c} .sidebar-left > * {{ pointer-events:auto !important; opacity:1 !important; }}",
