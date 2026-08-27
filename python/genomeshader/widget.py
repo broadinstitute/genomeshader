@@ -44,6 +44,54 @@ _SCRIPT_ORDER = [
 ]
 
 
+def _container_override_css(cid: str) -> str:
+    """Container-scoped layout/stacking overrides, mirroring the classic inline
+    path (view.py). These establish positioning, z-index and pointer-events so
+    the flow/tracks canvases actually receive clicks — without them hover works
+    (document-level) but selection clicks get swallowed by mis-stacked overlays.
+    `cid` is the container element id.
+    """
+    c = "#" + cid
+    return "\n".join([
+        f"{c} {{ height:600px; display:block; position:relative; overflow:visible;"
+        f" --sidebar-w:240px; --tracks-h:280px; --flow-h:500px; --reads-h:220px; }}",
+        f"{c} .app {{ height:100% !important; width:100% !important; display:block !important;"
+        f" position:relative !important; overflow:hidden; }}",
+        f"{c} .sidebar-left {{ position:absolute !important; left:0 !important; top:0 !important;"
+        f" bottom:0 !important; width:var(--sidebar-w,240px) !important; z-index:100 !important;"
+        f" overflow-y:auto !important; overflow-x:visible !important; pointer-events:auto !important; }}",
+        f"{c} .app.sidebar-collapsed .sidebar-left {{ width:8px !important; padding:0 !important; }}",
+        f"{c} .main {{ position:absolute !important; left:0 !important; top:0 !important;"
+        f" right:0 !important; bottom:0 !important; z-index:1 !important; overflow:hidden; }}",
+        f"{c} .sidebar-right {{ position:absolute !important; right:0 !important; top:0 !important;"
+        f" bottom:0 !important; z-index:100 !important; pointer-events:auto !important;"
+        f" display:flex !important; flex-direction:column !important; }}",
+        f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ width:240px !important; }}",
+        f"{c} .app.sidebar-right-collapsed .sidebar-right {{ width:8px !important; padding:0 !important; }}",
+        f"{c} .sidebar-right .sidebarContent {{ flex:1 !important; overflow-y:auto !important;"
+        f" overflow-x:visible !important; padding:12px !important; pointer-events:auto !important; }}",
+        f"{c} .sidebar-left > * {{ pointer-events:auto !important; opacity:1 !important; }}",
+        f"{c} .sidebar-left select, {c} .sidebar-left input, {c} .sidebar-left button,"
+        f" {c} .sidebar-left label {{ pointer-events:auto !important; position:relative !important;"
+        f" z-index:200 !important; }}",
+        f"{c} #sampleStrategySection, {c} #sampleStrategySection *, {c} #sampleSearchSection,"
+        f" {c} #sampleSearchSection *, {c} #sampleContext, {c} #sampleContext * {{ pointer-events:auto !important; }}",
+        f"{c} .tracks {{ position:absolute !important; left:0 !important; right:0 !important;"
+        f" top:0 !important; height:var(--tracks-h,280px) !important; width:100% !important; }}",
+        f"{c} #tracksContainer {{ position:relative !important; width:100% !important; height:100% !important; }}",
+        f"{c} #tracksSvg {{ width:100% !important; height:100% !important; display:block !important; }}",
+        f"{c} #tracksWebGPU {{ position:absolute !important; inset:0 !important; width:100% !important;"
+        f" height:100% !important; display:block !important; pointer-events:auto !important; z-index:1 !important; }}",
+        f"{c} #flowWebGPU {{ pointer-events:auto !important; }}",
+        f"{c} .flow-track-overlay, {c} #flowOverlay {{ pointer-events:auto !important; }}",
+        f"{c} .menu {{ z-index:2147483647 !important; }}",
+    ])
+
+
+# Placeholder container id, substituted with the real one at render() time.
+_CID_PLACEHOLDER = "__GSROOT__"
+
+
 def _build_esm() -> str:
     base = _html_dir()
     scripts_dir = base / "scripts"
@@ -52,6 +100,8 @@ def _build_esm() -> str:
     # Drop the global `html, body { ... }` rule so it can't restyle the notebook
     # page; the widget container sets its own height.
     css = re.sub(r"(?m)^\s*html\s*,\s*body\s*\{[^}]*\}\s*$", "", css)
+    # Container-scoped overrides (placeholder id swapped for the real one in JS).
+    override_css = _container_override_css(_CID_PLACEHOLDER)
     body = (base / "body.html").read_text(encoding="utf-8")
 
     scripts = "\n".join(
@@ -85,12 +135,17 @@ def _build_esm() -> str:
         "      });\n"
         "    };\n"
         "    const viewId = window.GENOMESHADER_VIEW_ID;\n"
+        "    const cid = 'genomeshader-root-' + viewId;\n"
         "    const style = document.createElement('style');\n"
         "    style.textContent = " + json.dumps(css) + ";\n"
         "    el.appendChild(style);\n"
+        "    const ostyle = document.createElement('style');\n"
+        "    ostyle.textContent = " + json.dumps(override_css) +
+        ".split(" + json.dumps(_CID_PLACEHOLDER) + ").join(cid);\n"
+        "    el.appendChild(ostyle);\n"
         "    const container = document.createElement('div');\n"
-        "    container.id = 'genomeshader-root-' + viewId;\n"
-        "    container.setAttribute('style', 'width:100%;height:600px;position:relative;overflow:visible;');\n"
+        "    container.id = cid;\n"
+        "    container.setAttribute('style', 'width:100%;height:600px;position:relative;overflow:visible;background:var(--bg,#0b0d10);isolation:isolate;');\n"
         "    container.innerHTML = " + json.dumps(body) + ";\n"
         "    el.appendChild(container);\n"
         "    __runViewer__().catch(function (e) { console.error('Genomeshader viewer error:', e); });\n"
