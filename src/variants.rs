@@ -2,13 +2,42 @@ use anyhow::Result;
 use std::collections::HashMap;
 
 use polars::prelude::*;
+use url::Url;
 
 use rust_htslib::bcf::{
     header::{HeaderRecord, TagType},
     record::{GenotypeAllele, Numeric},
+    IndexedReader,
     Read,
-    Reader,
 };
+
+use crate::env::{ gcs_authorize_data_access, local_guess_curl_ca_bundle };
+
+/// Open a VCF/BCF for indexed (region-seekable) access. Remote gs:// URLs go
+/// through from_url with the same GCS-auth / CA-bundle fallbacks as the reads
+/// path (see stage::open_bam); local paths use from_path. Requires an index
+/// (.tbi/.csi) next to the file.
+fn open_indexed_bcf(bcf_path: &str) -> Result<IndexedReader> {
+    if bcf_path.contains("://") {
+        let url = Url::parse(bcf_path)?;
+        let reader = match IndexedReader::from_url(&url) {
+            Ok(r) => r,
+            Err(_) => {
+                gcs_authorize_data_access();
+                match IndexedReader::from_url(&url) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        local_guess_curl_ca_bundle();
+                        IndexedReader::from_url(&url)?
+                    }
+                }
+            }
+        };
+        Ok(reader)
+    } else {
+        Ok(IndexedReader::from_path(bcf_path)?)
+    }
+}
 
 fn is_vector_end_i32(v: i32) -> bool {
     v == i32::MIN + 1
@@ -113,11 +142,10 @@ pub fn extract_variants(
     start: &u64,
     stop: &u64
 ) -> Result<DataFrame> {
-    // Open BCF file as regular reader
-    // We'll iterate through all records and filter by position
-    // For indexed access optimization, we could use IndexedReader separately if needed
-    let mut reader = Reader::from_path(bcf_path)?;
-    
+    // Open for indexed access so only the requested region is read off disk /
+    // streamed from GCS — the callset may be a terabyte split per contig.
+    let mut reader = open_indexed_bcf(bcf_path)?;
+
     // Get header to extract sample names
     let header = reader.header().clone();
     let sample_names: Vec<String> = header
@@ -149,17 +177,24 @@ pub fn extract_variants(
     // Track unique variants (position + allele combination)
     let mut variant_map: HashMap<(u64, String, String), u32> = HashMap::new();
     let mut next_variant_id: u32 = 0;
-    
-    for record_result in reader.records() {
-        let record: rust_htslib::bcf::record::Record = record_result?;
-        
-        let pos = record.pos() as u64 + 1; // Convert to 1-based
-        
-        // Skip if outside our region
-        if pos < *start || pos > *stop {
-            continue;
-        }
-        
+
+    // Seek to the region via the index. name2rid errors when the contig isn't
+    // in this file (e.g. a per-contig split) — treat that as "no variants here"
+    // and fall through to an empty (correctly-typed) DataFrame. fetch is
+    // 0-based half-open; our start/stop are 1-based inclusive.
+    if let Ok(rid) = header.name2rid(chr.as_bytes()) {
+        reader.fetch(rid, start.saturating_sub(1), Some(*stop))?;
+
+        for record_result in reader.records() {
+            let record: rust_htslib::bcf::record::Record = record_result?;
+
+            let pos = record.pos() as u64 + 1; // Convert to 1-based
+
+            // fetch overlaps can nudge past the window edges; keep the guard.
+            if pos < *start || pos > *stop {
+                continue;
+            }
+
         // Get VCF ID from record (ID field)
         let vcf_id_bytes = record.id();
         let vcf_id_str = if vcf_id_bytes.is_empty() || (vcf_id_bytes.len() == 1 && vcf_id_bytes[0] == b'.') {
@@ -237,8 +272,9 @@ pub fn extract_variants(
                 info_values.push(info_value.clone());
             }
         }
+        }
     }
-    
+
     let df = DataFrame::new(
         vec![
             Series::new("chromosome", chromosomes),
@@ -256,4 +292,50 @@ pub fn extract_variants(
     )?;
     
     Ok(df)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Committed fixture: chr1 variants at 100/200/300/400, samples S1+S2,
+    // bgzipped + tabix-indexed (tests/fixtures/tiny.vcf.gz{,.tbi}).
+    fn fixture() -> String {
+        format!("{}/tests/fixtures/tiny.vcf.gz", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    fn positions(df: &DataFrame) -> Vec<u64> {
+        df.column("position").unwrap().u64().unwrap()
+            .into_no_null_iter().collect()
+    }
+
+    #[test]
+    fn region_seek_returns_only_in_window_variants() {
+        // Window 150..=350 covers positions 200 and 300 only. Two variants x
+        // two samples = 4 rows; 100 and 400 must be excluded by the index seek.
+        let df = extract_variants(&fixture(), &"chr1".to_string(), &150, &350).unwrap();
+        assert_eq!(df.height(), 4, "expected 2 variants x 2 samples");
+        let mut uniq: Vec<u64> = positions(&df);
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq, vec![200, 300]);
+        assert!(positions(&df).iter().all(|p| (150..=350).contains(p)));
+    }
+
+    #[test]
+    fn full_span_returns_all_variants() {
+        // Sanity: a window covering everything yields all 4 variants (8 rows),
+        // proving the region seek doesn't silently drop in-range records.
+        let df = extract_variants(&fixture(), &"chr1".to_string(), &1, &1000).unwrap();
+        assert_eq!(df.height(), 8);
+    }
+
+    #[test]
+    fn absent_contig_is_empty_not_error() {
+        // name2rid fails for a contig not in this (per-contig split) file; the
+        // reader must return an empty, correctly-typed frame rather than panic.
+        let df = extract_variants(&fixture(), &"chrZ".to_string(), &1, &1000).unwrap();
+        assert_eq!(df.height(), 0);
+        assert_eq!(df.get_column_names().len(), 11);
+    }
 }

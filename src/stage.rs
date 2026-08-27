@@ -311,6 +311,7 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_open_bam() {
         let reads_url = Url::parse(
             "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam"
@@ -323,6 +324,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_stage_data_from_one_file() {
         let reads_url = Url::parse(
             "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam"
@@ -330,9 +332,8 @@ mod tests {
         let cohort = String::from("test_cohort");
         let loci = HashSet::from([("chr15".to_string(), 23960193, 23963918)]);
         let cache_path = std::env::temp_dir();
-        let use_cache = false;
 
-        let result = stage_data_from_one_file(&reads_url, &cohort, &loci, &cache_path, use_cache);
+        let result = stage_data_from_one_file(&reads_url, &cohort, &loci, &cache_path);
 
         assert!(result.is_ok(), "Failed to stage data from one file");
 
