@@ -77,6 +77,8 @@ class GenomeShader:
         self._last_locus = None
         # Last assembled render config (consumed by the anywidget host)
         self._last_config = None
+        # When True, render() prints staged progress (set during show()/show_widget)
+        self._progress_enabled = False
         
         # Sample mapping: VCF sample names -> BAM sample names
         # Format: {"VCF_sample1": ["BAM_sample1"], "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
@@ -2222,6 +2224,14 @@ class GenomeShader:
         
         return port
     
+    def _progress(self, msg: str, step: Optional[int] = None, total: Optional[int] = None):
+        """Print a staged progress line during render (enabled by show/show_widget),
+        so users see what's happening instead of a silent pause."""
+        if not getattr(self, "_progress_enabled", False):
+            return
+        prefix = f"[{step}/{total}] " if step and total else ""
+        print(f"🧬 {prefix}{msg}", flush=True)
+
     def _get_manifest_url(self, manifest_path: Path) -> str:
         """
         Gets the URL for accessing the manifest file.
@@ -2280,6 +2290,7 @@ class GenomeShader:
         variants_df = None
         input_resolve_start = time.perf_counter()
         if isinstance(locus_or_dataframe, str):
+            self._progress(f"Fetching variants for {locus_or_dataframe} …", 1, 4)
             try:
                 # Try to get variant data first
                 variants_df = self.get_locus_variants(locus_or_dataframe)
@@ -2470,6 +2481,7 @@ class GenomeShader:
             results_by_name.get("reference", ("reference", "", TimeoutError("reference load missing"), 0.0)),
         ]
 
+        self._progress("Loading annotation tracks (reference, genes, ideogram) …", 2, 4)
         ideogram_data = []
         transcripts_data = []
         repeats_data = []
@@ -2492,6 +2504,7 @@ class GenomeShader:
                     print(f"Warning: Failed to load reference sequence data: {err}")
 
         # Build variant_tracks: one entry per attached variant dataset (each with its own track)
+        self._progress("Assembling variant data …", 3, 4)
         t_variant_payload = time.perf_counter()
         if precomputed_variant_payload is not None:
             variant_tracks = precomputed_variant_payload.get("variant_tracks", [])
@@ -2501,6 +2514,7 @@ class GenomeShader:
         timing_debug["variant_payload_ms"] = round((time.perf_counter() - t_variant_payload) * 1000.0, 1)
 
         # Load template HTML
+        self._progress("Building the viewer …", 4, 4)
         t_template = time.perf_counter()
         template_html = self._load_template_html()
         timing_debug["template_ms"] = round((time.perf_counter() - t_template) * 1000.0, 1)
@@ -2774,7 +2788,13 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
 
         # Build the config with variants inlined (no comm/URL needed); this also
         # sets self._last_locus / _last_view_id used by the reads message handler.
-        self.render(locus, inline_payload=True)
+        # Staged progress keeps the user informed during the ~1s variant fetch.
+        self._progress_enabled = True
+        try:
+            self.render(locus, inline_payload=True)
+        finally:
+            self._progress_enabled = False
+        print("🧬 Ready — displaying viewer (select a variant to load reads).", flush=True)
         return GenomeShaderWidget(
             self,
             config=self._last_config,

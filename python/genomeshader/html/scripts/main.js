@@ -2287,9 +2287,13 @@ function setupCanvasHover() {
       document.removeEventListener("mouseup", alleleMouseUpHandler);
     }
     
-    // With multiple variant tracks, flowWebGPU has pointer-events: none; attach to flow so overlays' events bubble here
-    const variantTracks = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
-    const targetElement = variantTracks.length > 1 ? flow : (flowWebGPU || flow);
+    // Always attach to the flow container: flowOverlay (pointer-events:auto,
+    // z-index:3) sits above flowWebGPU, so a real mousedown lands on the overlay
+    // and bubbles up to flow. Binding to flowWebGPU (the old single-track path)
+    // never fired because the overlay swallowed the event. The handler is
+    // coordinate-based (window._alleleNodePositions), so the bubbling target
+    // doesn't matter.
+    const targetElement = flow || flowWebGPU;
     const getTrackIdAtClientPoint = (clientX, clientY) => {
       const el = document.elementFromPoint(clientX, clientY);
       const trackEl = el && el.closest ? el.closest(".flow-track") : null;
