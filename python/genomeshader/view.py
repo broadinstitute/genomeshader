@@ -75,6 +75,8 @@ class GenomeShader:
         
         # Store last rendered locus for on-demand loading
         self._last_locus = None
+        # Last assembled render config (consumed by the anywidget host)
+        self._last_config = None
         
         # Sample mapping: VCF sample names -> BAM sample names
         # Format: {"VCF_sample1": ["BAM_sample1"], "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
@@ -1000,6 +1002,34 @@ class GenomeShader:
             List[str]: Sorted list of unique sample names from BAM headers.
         """
         return self._session.get_bam_sample_names()
+
+    def _fetch_reads_payload(self, sample_id=None, samples=None, locus=None) -> dict:
+        """Resolve reads for a sample selection into a JSON-serializable payload.
+
+        Used by the anywidget host's reads message handler. Mirrors the comm
+        handler's logic: last-rendered locus + sample(s) -> BAM URLs (via the
+        sample mapping) -> fetched reads. Raises ValueError on bad input.
+        """
+        locus = locus or self._last_locus
+        if not locus:
+            raise ValueError("No locus available; render a locus first")
+
+        vcf_samples = list(samples) if samples else ([sample_id] if sample_id else None)
+        if not vcf_samples:
+            raise ValueError("No sample_id or samples provided")
+
+        bam_urls = self.get_bam_samples_for_vcf_samples(vcf_samples)
+        if not bam_urls:
+            raise ValueError(f"No BAM files found for sample(s): {vcf_samples}")
+
+        reads_df = self._session.fetch_reads_for_locus(locus, bam_urls)
+        return {
+            "reads": reads_df.to_dict(as_series=False),
+            "count": len(reads_df),
+            "bam_urls": bam_urls,
+            "vcf_samples": vcf_samples,
+            "sample_id": sample_id,
+        }
 
     def warm_ucsc_cache(self, loci: Optional[List[str]] = None) -> dict:
         """
@@ -2226,6 +2256,7 @@ class GenomeShader:
         locus_or_dataframe: Union[str, pl.DataFrame],
         precomputed_variant_payload: Optional[dict] = None,
         show_timing: Optional[dict] = None,
+        inline_payload: bool = False,
     ) -> str:
         """
         Visualizes genomic data by rendering a graphical representation of a genomic locus.
@@ -2481,10 +2512,13 @@ class GenomeShader:
         comm_available = COMM_AVAILABLE
 
         # Prefer Jupyter comms for variant payload transport (works in Terra).
-        use_payload_comm = bool(comm_available and precomputed_variant_payload is not None)
+        # inline_payload forces the full variant data straight into the config
+        # (no comm, no URL) — used by the anywidget host, which carries the
+        # config over the ipywidgets model and can't reach a localhost URL.
+        use_payload_comm = bool(comm_available and precomputed_variant_payload is not None) and not inline_payload
         variant_payload_url = None
         use_payload_url = False
-        if not use_payload_comm:
+        if not use_payload_comm and not inline_payload:
             # Fallback: write payload to a local URL when comms are unavailable.
             try:
                 payload = {
@@ -2532,6 +2566,10 @@ class GenomeShader:
             timing_debug.update(show_timing)
         timing_debug["render_total_ms"] = round((time.perf_counter() - render_start) * 1000.0, 1)
         config['timing_debug'] = timing_debug
+
+        # Stash the assembled config so the anywidget host can pick it up after a
+        # render(..., inline_payload=True) call without re-deriving it.
+        self._last_config = config
 
         # Get Jupyter origin for constructing absolute URLs
         # Try to get it from environment or use a default
@@ -2720,6 +2758,29 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         return inline_html
 
 
+    def show_widget(self, locus: str):
+        """Display the interactive view as an ipywidget.
+
+        This is the cross-environment render path: the config (with variant data
+        inlined) and on-demand reads ride the ipywidgets comm, so it works in
+        classic Notebook, JupyterLab, Notebook 7, VS Code, Colab, and through the
+        Terra / AoU proxy — one code path, no localhost assumptions.
+
+        Returns the widget; Jupyter renders it when it's the cell's last
+        expression (ipywidgets convention). Assign it to keep a handle without
+        re-displaying.
+        """
+        from .widget import GenomeShaderWidget
+
+        # Build the config with variants inlined (no comm/URL needed); this also
+        # sets self._last_locus / _last_view_id used by the reads message handler.
+        self.render(locus, inline_payload=True)
+        return GenomeShaderWidget(
+            self,
+            config=self._last_config,
+            view_id=self._last_view_id or "gswidget",
+        )
+
     def show(
         self,
         locus: str,
@@ -2736,6 +2797,9 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         Returns:
             None: Displays the visualization in the notebook.
         """
+        # The ipywidget path is the portable transport (Notebook + Lab + Terra).
+        return self.show_widget(locus)
+
         show_start = time.perf_counter()
 
         # Fetch variant data for the locus
