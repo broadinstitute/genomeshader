@@ -1910,6 +1910,7 @@ function renderHoverOnly() {
 }
 
 function renderAll() {
+  window.__renderCount = (window.__renderCount || 0) + 1;  // perf instrumentation
   updateDerived();
   updateTracksHeight();
   renderTracks();
@@ -1929,6 +1930,20 @@ function renderAll() {
   setupCanvasHover();
   setupVariantHoverAreas(); // Set up ID-based hover areas
   updateDocumentTitle();
+}
+
+// Coalesce renders during rapid interaction (pan/zoom/pinch): many events in a
+// single frame collapse to one renderAll() on the next animation frame, instead
+// of a full synchronous rebuild per event. This keeps the main thread from
+// blocking and inputs from queuing up (the freeze-then-catch-up).
+let _renderScheduled = false;
+function scheduleRender() {
+  if (_renderScheduled) return;
+  _renderScheduled = true;
+  requestAnimationFrame(() => {
+    _renderScheduled = false;
+    renderAll();
+  });
 }
 
 // Hit testing for WebGPU-rendered repeats (only add listeners once)
@@ -4853,7 +4868,7 @@ function zoomByFactor(factor, anchorBp) {
   // Clamp to chromosome boundaries
   clampToChromosomeBounds();
 
-  renderAll();
+  scheduleRender();
 }
 
 function panByPixels(dxPx, dyPx) {
@@ -4886,7 +4901,7 @@ function panByPixels(dxPx, dyPx) {
     state.firstVariantIndex = Math.max(0, Math.min(state.firstVariantIndex, Math.max(0, variants.length - state.K)));
   }
 
-  renderAll();
+  scheduleRender();
 }
 
 function anchorBpFromClientX(clientX) {
@@ -5193,7 +5208,7 @@ function bindInteractions(root, state, main) {
         // Clamp to chromosome boundaries
         clampToChromosomeBounds();
 
-        renderAll();
+        scheduleRender();
       }
       return;
     }
