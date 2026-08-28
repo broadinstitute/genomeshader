@@ -155,6 +155,27 @@ def test_widget_comments_comm_roundtrip(tmp_path, monkeypatch):
     assert sent[-1]["action"] == "delete" and sent[-1]["ok"] is True
 
 
+def test_reads_payload_disk_cache(tmp_path, monkeypatch):
+    # Second fetch of the same (locus, bam set) is served from local disk — the
+    # Rust fetch runs exactly once.
+    import polars as pl
+    s = _shader(tmp_path, monkeypatch)
+    s._last_locus = "Pf3D7_01_v3:1-100"
+    s.set_sample_mapping({"S1": ["gs://b/S1.bam"]})
+    s._session.fetch_reads_for_locus = Mock(
+        return_value=pl.DataFrame({"sample_name": ["S1"], "reference_start": [7]}))
+
+    p1 = s._fetch_reads_payload(sample_id="S1")
+    p2 = s._fetch_reads_payload(sample_id="S1")
+    assert p1["reads"] == p2["reads"] and p1["count"] == p2["count"] == 1
+    s._session.fetch_reads_for_locus.assert_called_once()  # 2nd call hit the cache
+
+    # Bypass flag forces a re-fetch.
+    monkeypatch.setenv("GENOMESHADER_NO_READS_CACHE", "1")
+    s._fetch_reads_payload(sample_id="S1")
+    assert s._session.fetch_reads_for_locus.call_count == 2
+
+
 def test_widget_reads_through_real_payload(tmp_path, monkeypatch):
     # widget message -> real GenomeShader._fetch_reads_payload -> mocked BAM fetch
     import polars as pl

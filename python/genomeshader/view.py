@@ -1025,14 +1025,58 @@ class GenomeShader:
         if not bam_urls:
             raise ValueError(f"No BAM files found for sample(s): {vcf_samples}")
 
-        reads_df = self._session.fetch_reads_for_locus(locus, bam_urls)
+        # Reads for a (locus, bam set) are deterministic (BAM content is
+        # immutable in practice), but fetching them re-parses remote BAMs every
+        # time. Cache the serialized payload on local disk so repeat runs on the
+        # same machine skip the Rust fetch entirely. Local-only: read payloads
+        # are large, so we don't pay a GCS upload on the first (miss) run.
+        # ponytail: keyed on locus+URLs, not BAM etag — if a BAM is replaced in
+        # place, set GENOMESHADER_NO_READS_CACHE=1 to bypass.
+        cache_path = self._reads_cache_path(locus, bam_urls)
+        use_cache = os.environ.get("GENOMESHADER_NO_READS_CACHE") != "1"
+        t0 = time.perf_counter()
+        reads_dict = None
+        count = None
+        if use_cache and cache_path.exists():
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                if isinstance(cached, dict) and "reads" in cached:
+                    reads_dict = cached["reads"]
+                    count = int(cached.get("count", 0))
+            except Exception:
+                reads_dict = None
+        source = "disk" if reads_dict is not None else "fetch"
+        if reads_dict is None:
+            reads_df = self._session.fetch_reads_for_locus(locus, bam_urls)
+            reads_dict = reads_df.to_dict(as_series=False)
+            count = len(reads_df)
+            if use_cache:
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(cache_path, "w", encoding="utf-8") as f:
+                        json.dump({"reads": reads_dict, "count": count}, f)
+                except Exception:
+                    pass
+        if self._timing_enabled():
+            print(f"[timing] reads {locus} x{len(bam_urls)} bam "
+                  f"({source}): {(time.perf_counter() - t0) * 1000:.0f} ms, {count} reads")
         return {
-            "reads": reads_df.to_dict(as_series=False),
-            "count": len(reads_df),
+            "reads": reads_dict,
+            "count": count,
             "bam_urls": bam_urls,
             "vcf_samples": vcf_samples,
             "sample_id": sample_id,
         }
+
+    def _reads_cache_path(self, locus: str, bam_urls: List[str]) -> Path:
+        sig = str(locus) + "|" + ",".join(sorted(bam_urls))
+        gb = str(self.genome_build or "genome").replace("/", "_")
+        return self._local_cache_dir / "reads" / gb / (self._cache_id(sig) + ".json")
+
+    @staticmethod
+    def _timing_enabled() -> bool:
+        return os.environ.get("GENOMESHADER_TIMING") == "1"
 
     def warm_ucsc_cache(self, loci: Optional[List[str]] = None) -> dict:
         """
@@ -3130,12 +3174,28 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             self._progress_bar = None
             self._progress_label = None
 
+        timing = self._timing_enabled()
+        t_render = time.perf_counter()
+        cache_before = self._cache_debug_snapshot() if timing else None
         try:
             self.render(locus, inline_payload=True)
         finally:
             self._progress_enabled = False
             self._progress_bar = None
             self._progress_label = None
+        if timing:
+            dt = (time.perf_counter() - t_render) * 1000
+            delta = self._cache_debug_delta(cache_before)
+            # Per artifact kind, show where each read came from: mem / disk-or-gcs
+            # / api. A healthy repeat run should be all mem/disk, no api.
+            parts = []
+            for kind, sources in sorted(delta.items()):
+                nz = {s: n for s, n in sources.items() if n}
+                if nz:
+                    parts.append(f"{kind}=" + ",".join(f"{s}:{n}" for s, n in sorted(nz.items())))
+            print(f"[timing] render {locus}: {dt:.0f} ms | " + ("; ".join(parts) or "no cache activity"))
+            print("[timing] 'api' = live UCSC fetch (slow); 'gcs' = network cache; "
+                  "'mem'/'gcs_write' local. Reads timing prints on sample load.")
 
         widget = GenomeShaderWidget(
             self,
