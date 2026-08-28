@@ -2477,8 +2477,12 @@ function setupCanvasHover() {
               offsetY: 0,
               isClick: true // Track if this might be a click (not a drag)
             };
-            flowCanvas.style.cursor = "grabbing";
-            if (flowWebGPU) flowWebGPU.style.cursor = "grabbing";
+            // Locked: alleles are fixed. Still track the press for click-to-select,
+            // but don't show a grab cursor and don't let a drag reorder (below).
+            if (!state.lockAlleles) {
+              flowCanvas.style.cursor = "grabbing";
+              if (flowWebGPU) flowWebGPU.style.cursor = "grabbing";
+            }
             return true;
           }
         }
@@ -2512,7 +2516,11 @@ function setupCanvasHover() {
         if (dragDistance > 5) {
           state.alleleDragState.isClick = false;
         }
-      
+
+      // Locked: alleles don't reorder. Skip drop-index computation entirely so
+      // the node stays put; the drag falls through to the normal track pan.
+      if (state.lockAlleles) return;
+
       // Calculate drop position to show indicator
       const dragState = state.alleleDragState;
       const variantOrderKey = makeVariantOrderKeyCompat(dragState.trackId, dragState.variantId);
@@ -2790,7 +2798,15 @@ function setupCanvasHover() {
         if (window.updateSelectionDisplay) window.updateSelectionDisplay();
         return;
       }
-      
+
+      // Locked: never commit a reorder — the movement was a track pan.
+      if (state.lockAlleles) {
+        state.alleleDragState = null;
+        flowCanvas.style.cursor = "";
+        if (flowWebGPU) flowWebGPU.style.cursor = "";
+        return;
+      }
+
       // Otherwise, handle as a drag/drop
       const variantOrderKey = makeVariantOrderKeyCompat(dragState.trackId, dragState.variantId);
       const order = state.variantAlleleOrder.get(variantOrderKey);
@@ -2945,6 +2961,55 @@ function setupCanvasHover() {
     }
     return selectedInfo;
   }
+
+  // --- Comments bridge: build an anchor from the current selection (allele /
+  // variant) or, absent a selection, the current view region. Consumed by
+  // comments.js when creating a comment.
+  window.__GS_getCommentAnchor = function () {
+    const contig = state.contig;
+    let sel = [];
+    try { sel = getSelectedAlleleInfo() || []; } catch (e) {}
+    if (sel.length) {
+      const s = sel[0];
+      const v = s.variant || {};
+      const posText = `${contig}:${Number(v.pos || 0).toLocaleString()}`;
+      return {
+        type: (s.alleleIndex != null && s.label && s.label !== "ref") ? "allele" : "variant",
+        ref: s.label ? `${posText} (${s.label})` : posText,
+        locus: { contig: contig, pos: Number(v.pos) },
+        variantId: String(s.variantId),
+        alleleIndex: (s.alleleIndex != null ? Number(s.alleleIndex) : null),
+        alleleLabel: s.label || null,
+        trackId: s.trackId || null,
+        sample: null,
+      };
+    }
+    const start = Math.floor(state.startBp), end = Math.ceil(state.endBp);
+    return {
+      type: "region",
+      ref: `${contig}:${start.toLocaleString()}-${end.toLocaleString()}`,
+      locus: { contig: contig, start: start, end: end, pos: Math.round((start + end) / 2) },
+      sample: null,
+    };
+  };
+
+  // Navigate the view to a comment's anchor. Same-contig framing; if the anchor
+  // is on another contig we switch state.contig and reframe (read data may lag
+  // until the next fetch — acceptable, cross-contig comments are rare).
+  window.__GS_gotoComment = function (anchor) {
+    if (!anchor || !anchor.locus) return;
+    const loc = anchor.locus;
+    if (loc.contig && loc.contig !== state.contig) state.contig = loc.contig;
+    if (loc.start != null && loc.end != null) {
+      const pad = Math.max(20, Math.round((loc.end - loc.start) * 0.15));
+      state.startBp = loc.start - pad;
+      state.endBp = loc.end + pad;
+      if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+      if (typeof scheduleRender === "function") scheduleRender();
+    } else if (loc.pos != null && typeof centerOnBp === "function") {
+      centerOnBp(Number(loc.pos));
+    }
+  };
 
   function getSelectedNodeInfo(trackId, variantId, alleleIndex) {
     const trackKey = String(trackId || "");

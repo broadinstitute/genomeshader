@@ -1,0 +1,399 @@
+// Comments tab: shared, persistent annotations anchored to a genomic region,
+// variant, or allele (optionally for a specific sample). Storage lives in
+// Python (one JSON per comment under {gcs_session_dir}/comments/); this file is
+// the UI + on-track pins. Data rides the widget comm (comments_list /
+// comments_create / comments_update / comments_delete).
+(function setupComments() {
+  if (typeof state === "undefined") return;
+  state.comments = state.comments || [];
+  let currentAuthor = "";
+  let loading = false;
+  let loaded = false;
+  let composing = false;       // create form open?
+  let editingId = null;        // comment being edited
+  let draftAnchor = null;      // anchor captured when the create form opened
+  let flashId = null;          // comment to briefly highlight (after pin click)
+
+  function host() {
+    return (typeof byIdDynamic === "function" ? byIdDynamic("commentsContent") : null)
+      || document.getElementById("commentsContent");
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  // Minimal, safe markdown → HTML. Escapes first, then applies a small subset
+  // (headings, bold, italic, inline code, links, bullet lists, line breaks).
+  // No external lib (CSP blocks CDNs) and no raw HTML passthrough.
+  function md(src) {
+    const lines = String(src || "").split(/\r?\n/);
+    let html = "", inList = false;
+    const inline = (t) => esc(t)
+      .replace(/`([^`]+)`/g, (m, c) => "<code>" + c + "</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    for (let raw of lines) {
+      const line = raw.replace(/\s+$/, "");
+      const h = line.match(/^(#{1,3})\s+(.*)$/);
+      const li = line.match(/^\s*[-*]\s+(.*)$/);
+      if (li) {
+        if (!inList) { html += "<ul>"; inList = true; }
+        html += "<li>" + inline(li[1]) + "</li>";
+        continue;
+      }
+      if (inList) { html += "</ul>"; inList = false; }
+      if (h) { const n = h[1].length; html += "<h" + n + ">" + inline(h[2]) + "</h" + n + ">"; }
+      else if (line === "") html += "<br>";
+      else html += "<div>" + inline(line) + "</div>";
+    }
+    if (inList) html += "</ul>";
+    return html;
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return "";
+    // "2026-08-28T18:41:48+00:00" -> "2026-08-28 18:41" (keep it simple/stable)
+    const m = String(iso).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+    return m ? m[1] + " " + m[2] : String(iso);
+  }
+
+  const ANCHOR_ICON = { region: "▦", variant: "◆", allele: "◇", gene: "⌬", sample: "◉" };
+  function anchorIcon(a) { return (a && ANCHOR_ICON[a.type]) || "◆"; }
+
+  function pinPos(a) {
+    // Genomic bp a comment pins to (for on-track markers + navigation).
+    if (!a || !a.locus) return null;
+    const L = a.locus;
+    if (L.pos != null) return Number(L.pos);
+    if (L.start != null && L.end != null) return Math.round((Number(L.start) + Number(L.end)) / 2);
+    return null;
+  }
+  function inView(a) {
+    if (!a || !a.locus || a.locus.contig !== state.contig) return false;
+    const p = pinPos(a);
+    return p != null && p >= state.startBp && p <= state.endBp;
+  }
+
+  // ---- rendering -----------------------------------------------------------
+  function render() {
+    const h = host(); if (!h) return;
+    h.innerHTML = "";
+
+    // "New comment" button / compose form.
+    const bar = document.createElement("div");
+    bar.style.cssText = "padding:2px 2px 8px;";
+    if (!composing) {
+      const btn = document.createElement("button");
+      btn.textContent = "+ New comment";
+      btn.style.cssText = "width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;"
+        + "background:var(--panel);color:var(--text);font-size:12px;cursor:pointer;";
+      btn.addEventListener("click", () => { openCompose(); });
+      bar.appendChild(btn);
+    } else {
+      bar.appendChild(composeForm());
+    }
+    h.appendChild(bar);
+
+    if (loading && !loaded) {
+      const m = document.createElement("div");
+      m.style.cssText = "font-size:11px;color:var(--muted);padding:6px 2px;";
+      m.textContent = "Loading comments…";
+      h.appendChild(m); return;
+    }
+
+    if (!state.comments.length) {
+      const m = document.createElement("div");
+      m.style.cssText = "font-size:11px;color:var(--muted);padding:6px 2px;line-height:1.5;";
+      m.textContent = "No comments yet. Select a variant/allele (or just a region) and add one.";
+      h.appendChild(m); return;
+    }
+
+    // Newest first for reading.
+    const sorted = state.comments.slice().sort((a, b) =>
+      String(b.created || "").localeCompare(String(a.created || "")));
+    sorted.forEach(c => h.appendChild(commentCard(c)));
+  }
+
+  function anchorChip(a, sample) {
+    const chip = document.createElement("div");
+    chip.style.cssText = "display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--muted);"
+      + "margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+    const t = (a && a.type) || "region";
+    chip.innerHTML = '<span style="font-size:12px;">' + anchorIcon(a) + "</span>"
+      + '<span style="text-transform:uppercase;letter-spacing:.03em;">' + esc(t) + "</span>"
+      + '<span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + esc((a && a.ref) || "") + "</span>"
+      + ((sample) ? '<span style="color:var(--blue);">· ' + esc(sample) + "</span>" : "");
+    return chip;
+  }
+
+  function commentCard(c) {
+    const card = document.createElement("div");
+    card.setAttribute("data-cid", c.id);
+    const flash = (c.id === flashId);
+    card.style.cssText = "border:1px solid var(--border2);border-radius:8px;padding:9px 10px;margin:0 2px 8px;"
+      + "background:var(--panel);" + (flash ? "outline:2px solid var(--blue);" : "");
+    if (flash) setTimeout(() => { flashId = null; }, 1600);
+
+    const a = c.anchor || {};
+    const goable = pinPos(a) != null;
+    const chipRow = document.createElement("div");
+    chipRow.style.cssText = "display:flex;align-items:center;gap:6px;";
+    const chip = anchorChip(a, a.sample);
+    chip.style.flex = "1";
+    chipRow.appendChild(chip);
+    if (goable) {
+      const go = iconBtn("⤖", "Go to locus");
+      go.addEventListener("click", () => {
+        if (window.__GS_gotoComment) window.__GS_gotoComment(a);
+      });
+      chipRow.appendChild(go);
+    }
+    card.appendChild(chipRow);
+
+    if (editingId === c.id) {
+      card.appendChild(editForm(c));
+      return card;
+    }
+
+    const body = document.createElement("div");
+    body.className = "comment-body";
+    body.style.cssText = "font-size:12px;color:var(--text);line-height:1.5;word-break:break-word;";
+    body.innerHTML = md(c.body);
+    card.appendChild(body);
+
+    const meta = document.createElement("div");
+    meta.style.cssText = "font-size:10px;color:var(--muted);margin-top:6px;display:flex;justify-content:space-between;gap:8px;";
+    const who = document.createElement("span");
+    const edited = c.updated && c.updated !== c.created;
+    who.textContent = (c.author || "unknown") + " · " + fmtTime(c.created)
+      + (edited ? "  (edited " + fmtTime(c.updated) + (c.updatedBy && c.updatedBy !== c.author ? " by " + c.updatedBy : "") + ")" : "");
+    who.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    const actions = document.createElement("span");
+    actions.style.cssText = "display:flex;gap:8px;flex:0 0 auto;";
+    const edit = linkBtn("Edit");
+    edit.addEventListener("click", () => { editingId = c.id; composing = false; render(); });
+    const del = linkBtn("Delete");
+    del.style.color = "var(--danger, #e5534b)";
+    del.addEventListener("click", () => deleteComment(c.id));
+    actions.appendChild(edit); actions.appendChild(del);
+    meta.appendChild(who); meta.appendChild(actions);
+    card.appendChild(meta);
+    return card;
+  }
+
+  function iconBtn(txt, title) {
+    const b = document.createElement("button");
+    b.textContent = txt; b.title = title || "";
+    b.style.cssText = "flex:0 0 auto;border:1px solid var(--border2);border-radius:5px;background:transparent;"
+      + "color:var(--text);font-size:12px;cursor:pointer;padding:1px 6px;line-height:1.4;";
+    return b;
+  }
+  function linkBtn(txt) {
+    const b = document.createElement("button");
+    b.textContent = txt;
+    b.style.cssText = "border:none;background:transparent;color:var(--muted);font-size:10.5px;cursor:pointer;padding:0;";
+    return b;
+  }
+
+  function textarea(val) {
+    const ta = document.createElement("textarea");
+    ta.value = val || "";
+    ta.placeholder = "Write a comment… (markdown: **bold**, *italic*, `code`, - lists)";
+    ta.setAttribute("data-1p-ignore", "");
+    ta.rows = 4;
+    ta.style.cssText = "width:100%;box-sizing:border-box;padding:7px 8px;border:1px solid var(--border2);"
+      + "border-radius:6px;background:var(--bg,var(--panel));color:var(--text);font-size:12px;resize:vertical;"
+      + "font-family:inherit;margin:2px 0 6px;";
+    return ta;
+  }
+  function sampleInput(val) {
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.value = val || ""; inp.placeholder = "sample (optional)";
+    inp.setAttribute("data-1p-ignore", "");
+    inp.style.cssText = "width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--border2);"
+      + "border-radius:6px;background:var(--bg,var(--panel));color:var(--text);font-size:12px;margin:0 0 6px;";
+    return inp;
+  }
+  function rowBtns(saveLabel, onSave, onCancel) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:6px;justify-content:flex-end;";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.style.cssText = "padding:5px 10px;border:1px solid var(--border2);border-radius:6px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer;";
+    cancel.addEventListener("click", onCancel);
+    const save = document.createElement("button");
+    save.textContent = saveLabel;
+    save.style.cssText = "padding:5px 12px;border:1px solid var(--blue);border-radius:6px;background:var(--blue);color:#fff;font-size:11px;cursor:pointer;";
+    save.addEventListener("click", onSave);
+    row.appendChild(cancel); row.appendChild(save);
+    return row;
+  }
+
+  function openCompose() {
+    composing = true; editingId = null;
+    draftAnchor = (window.__GS_getCommentAnchor ? window.__GS_getCommentAnchor() : { type: "region", ref: "", locus: {} });
+    render();
+  }
+
+  function composeForm() {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "border:1px solid var(--border2);border-radius:8px;padding:9px 10px;background:var(--panel);";
+    const title = document.createElement("div");
+    title.style.cssText = "font-size:11px;color:var(--muted);margin-bottom:6px;";
+    title.textContent = "New comment on:";
+    wrap.appendChild(title);
+    wrap.appendChild(anchorChip(draftAnchor, null));
+    const ta = textarea("");
+    const samp = sampleInput(draftAnchor && draftAnchor.sample ? draftAnchor.sample : "");
+    wrap.appendChild(samp);
+    wrap.appendChild(ta);
+    wrap.appendChild(rowBtns("Save", () => {
+      const body = ta.value.trim();
+      if (!body) { ta.focus(); return; }
+      const anchor = Object.assign({}, draftAnchor, { sample: (samp.value.trim() || null) });
+      createComment(anchor, body);
+    }, () => { composing = false; render(); }));
+    setTimeout(() => ta.focus(), 0);
+    return wrap;
+  }
+
+  function editForm(c) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "margin-top:6px;";
+    const ta = textarea(c.body);
+    wrap.appendChild(ta);
+    wrap.appendChild(rowBtns("Save", () => {
+      const body = ta.value.trim();
+      if (!body) { ta.focus(); return; }
+      updateComment(c.id, body);
+    }, () => { editingId = null; render(); }));
+    setTimeout(() => ta.focus(), 0);
+    return wrap;
+  }
+
+  // ---- comm ---------------------------------------------------------------
+  function load(force) {
+    if (loading) return;
+    if (loaded && !force) { render(); return; }
+    if (typeof sendCommMessage !== "function") {
+      const h = host(); if (h) h.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:6px 2px;">Comments channel unavailable.</div>';
+      return;
+    }
+    loading = true; render();
+    sendCommMessage("comments_list", {}).then(resp => {
+      loading = false; loaded = true;
+      currentAuthor = resp.author || currentAuthor;
+      state.comments = Array.isArray(resp.comments) ? resp.comments : [];
+      render();
+      if (typeof renderAll === "function") renderAll(); // refresh on-track pins
+    }).catch(() => {
+      loading = false; loaded = true;
+      render();
+    });
+  }
+
+  function createComment(anchor, body) {
+    if (typeof sendCommMessage !== "function") return;
+    sendCommMessage("comments_create", { anchor: anchor, body: body }).then(resp => {
+      if (resp && resp.comment) state.comments.push(resp.comment);
+      composing = false; draftAnchor = null;
+      render();
+      if (typeof renderAll === "function") renderAll();
+    }).catch(() => { composing = false; render(); });
+  }
+
+  function updateComment(id, body) {
+    if (typeof sendCommMessage !== "function") return;
+    sendCommMessage("comments_update", { id: id, body: body }).then(resp => {
+      if (resp && resp.comment) {
+        const i = state.comments.findIndex(c => c.id === id);
+        if (i >= 0) state.comments[i] = resp.comment;
+      }
+      editingId = null; render();
+      if (typeof renderAll === "function") renderAll();
+    }).catch(() => { editingId = null; render(); });
+  }
+
+  function deleteComment(id) {
+    if (typeof sendCommMessage !== "function") return;
+    sendCommMessage("comments_delete", { id: id }).then(() => {
+      state.comments = state.comments.filter(c => c.id !== id);
+      render();
+      if (typeof renderAll === "function") renderAll();
+    }).catch(() => {});
+  }
+
+  // ---- on-track pins (locus/ruler track) ----------------------------------
+  // Called from tracks.js while rendering the locus ruler. Draws one small
+  // marker per in-view comment; clicking it opens the Comments tab scrolled to
+  // that comment.
+  window.__GS_renderCommentPins = function (ctx) {
+    if (!ctx || !ctx.svg || !ctx.el || typeof ctx.genomePos !== "function") return;
+    if (!state.comments || !state.comments.length) return;
+    const el = ctx.el, svg = ctx.svg, isVertical = ctx.isVertical;
+    // Group in-view comments by bp so stacked comments share one pin.
+    const byPos = new Map();
+    for (const c of state.comments) {
+      const a = c.anchor || {};
+      if (!inView(a)) continue;
+      const p = pinPos(a);
+      const key = String(p);
+      if (!byPos.has(key)) byPos.set(key, { bp: p, items: [] });
+      byPos.get(key).items.push(c);
+    }
+    byPos.forEach(group => {
+      const pos = ctx.genomePos(group.bp);
+      const n = group.items.length;
+      let g;
+      if (isVertical) {
+        const cx = ctx.baseX + 24;
+        g = el("g", { style: "cursor:pointer;" });
+        g.appendChild(el("line", { x1: ctx.baseX, x2: cx, y1: pos, y2: pos, stroke: "var(--blue)", "stroke-width": 1 }));
+        g.appendChild(el("circle", { cx: cx, cy: pos, r: 5.5, fill: "var(--blue)", stroke: "var(--panel)", "stroke-width": 1 }));
+      } else {
+        const cy = ctx.baseY - 24;
+        g = el("g", { style: "cursor:pointer;" });
+        g.appendChild(el("line", { x1: pos, x2: pos, y1: ctx.baseY, y2: cy, stroke: "var(--blue)", "stroke-width": 1 }));
+        // speech-bubble-ish marker: a small rounded square
+        g.appendChild(el("rect", { x: pos - 5.5, y: cy - 5.5, width: 11, height: 11, rx: 2.5, fill: "var(--blue)", stroke: "var(--panel)", "stroke-width": 1 }));
+      }
+      if (n > 1) {
+        const tx = isVertical ? ctx.baseX + 24 : pos;
+        const ty = isVertical ? pos + 3 : ctx.baseY - 24 + 3;
+        g.appendChild(el("text", { x: tx, y: ty, "text-anchor": "middle", "font-size": "8px", fill: "#fff", style: "pointer-events:none;" }, String(n)));
+      }
+      const title = el("title", {}, n === 1 ? (group.items[0].author + ": " + (group.items[0].body || "").slice(0, 80)) : (n + " comments"));
+      g.appendChild(title);
+      g.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openToComment(group.items[0].id);
+      });
+      svg.appendChild(g);
+    });
+  };
+
+  function openToComment(id) {
+    // Switch to the Comments tab (right panel) and flash the target.
+    if (typeof setActiveTab === "function") setActiveTab("comments");
+    else {
+      const icon = document.querySelector('.command-strip-icon[data-tab="comments"]');
+      if (icon) icon.click();
+    }
+    flashId = id;
+    load();
+    setTimeout(() => {
+      const h = host();
+      if (h) { const card = h.querySelector('[data-cid="' + id + '"]'); if (card) card.scrollIntoView({ block: "center" }); }
+    }, 60);
+  }
+
+  // ---- wiring -------------------------------------------------------------
+  const icon = document.querySelector('.command-strip-icon[data-tab="comments"]');
+  if (icon) icon.addEventListener("click", () => load());
+  if (typeof getActiveTab === "function" && getActiveTab() === "comments") load();
+  // Prime once so on-track pins appear even before the tab is first opened.
+  else setTimeout(() => { if (!loaded) load(); }, 800);
+})();

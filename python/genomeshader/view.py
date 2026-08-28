@@ -2340,6 +2340,128 @@ class GenomeShader:
             })
         return out
 
+    # -----------------------------
+    # Comments: shared, persistent annotations stored as one JSON file per
+    # comment under {gcs_session_dir}/comments/. Tiny metadata, so this stays in
+    # Python and reuses the GCS JSON helpers (a local dir also works, for tests).
+    # -----------------------------
+    def _comments_dir(self) -> str:
+        base = str(self.gcs_session_dir or "").rstrip("/")
+        return base + "/comments"
+
+    def _comment_author(self) -> str:
+        for env in ("GENOMESHADER_USER", "JUPYTERHUB_USER", "USER_EMAIL"):
+            v = os.environ.get(env)
+            if v:
+                return v
+        try:
+            import getpass
+            return getpass.getuser()
+        except Exception:
+            return "unknown"
+
+    @staticmethod
+    def _now_iso() -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def _uri_read_json(self, uri: str):
+        if uri.startswith("gs://"):
+            return self._gcs_read_json(uri)
+        try:
+            with open(uri, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _uri_write_json(self, uri: str, payload) -> bool:
+        if uri.startswith("gs://"):
+            return self._gcs_write_json(uri, payload)
+        try:
+            os.makedirs(os.path.dirname(uri), exist_ok=True)
+            with open(uri, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def _list_comment_uris(self) -> List[str]:
+        d = self._comments_dir()
+        if d.startswith("gs://"):
+            for cmd in (["gcloud", "storage", "ls", d + "/"], ["gsutil", "ls", d + "/"]):
+                try:
+                    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                    if out.returncode == 0:
+                        return [ln.strip() for ln in out.stdout.splitlines()
+                                if ln.strip().endswith(".json")]
+                except FileNotFoundError:
+                    continue
+            return []
+        try:
+            return [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".json")]
+        except Exception:
+            return []
+
+    def list_comments(self) -> List[dict]:
+        """All comments in the session dir, oldest first."""
+        out: List[dict] = []
+        for uri in self._list_comment_uris():
+            c = self._uri_read_json(uri)
+            if isinstance(c, dict) and c.get("id"):
+                out.append(c)
+        out.sort(key=lambda c: str(c.get("created", "")))
+        return out
+
+    def create_comment(self, anchor: dict, body: str, author: Optional[str] = None) -> dict:
+        import uuid
+        now = self._now_iso()
+        author = author or self._comment_author()
+        cid = uuid.uuid4().hex
+        comment = {
+            "id": cid, "author": author, "created": now,
+            "updated": now, "updatedBy": author,
+            "anchor": anchor or {}, "body": str(body or ""),
+            "history": [{"action": "created", "by": author, "at": now}],
+        }
+        self._uri_write_json(f"{self._comments_dir()}/{cid}.json", comment)
+        return comment
+
+    def update_comment(self, comment_id: str, body: Optional[str] = None,
+                       anchor: Optional[dict] = None, author: Optional[str] = None) -> Optional[dict]:
+        uri = f"{self._comments_dir()}/{comment_id}.json"
+        c = self._uri_read_json(uri)
+        if not isinstance(c, dict):
+            return None
+        now = self._now_iso()
+        author = author or self._comment_author()
+        if body is not None:
+            c["body"] = str(body)
+        if anchor is not None:
+            c["anchor"] = anchor
+        c["updated"] = now
+        c["updatedBy"] = author
+        c.setdefault("history", []).append({"action": "edited", "by": author, "at": now})
+        self._uri_write_json(uri, c)
+        return c
+
+    def delete_comment(self, comment_id: str, author: Optional[str] = None) -> bool:
+        uri = f"{self._comments_dir()}/{comment_id}.json"
+        if uri.startswith("gs://"):
+            for cmd in (["gcloud", "storage", "rm", uri], ["gsutil", "rm", uri]):
+                try:
+                    rc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, check=False).returncode
+                    if rc == 0:
+                        return True
+                except FileNotFoundError:
+                    continue
+            return False
+        try:
+            os.remove(uri)
+            return True
+        except OSError:
+            return False
+
     def _start_localhost_server(self, serve_dir: Path) -> int:
         """
         Starts a localhost HTTP server to serve files from the given directory.

@@ -83,6 +83,12 @@ const state = {
 // Initialize variant layout mode
 const storedVariantMode = getStoredVariantLayoutMode();
 state.variantLayoutMode = storedVariantMode ?? "genomic";
+if (typeof getStoredLockAlleles === "function") {
+  state.lockAlleles = getStoredLockAlleles();
+  if (typeof lockAllelesToggle !== "undefined" && lockAllelesToggle) {
+    lockAllelesToggle.checked = state.lockAlleles === true;
+  }
+}
 if (typeof getStoredAggregateRareAlleles === "function") {
   state.aggregateRareAlleles = getStoredAggregateRareAlleles();
 }

@@ -63,6 +63,8 @@ const themeItem = getElementById("themeItem");
 const themeLabel = getElementById("themeLabel");
 const orientationItem = getElementById("orientationItem");
 const orientationLabel = getElementById("orientationLabel");
+const lockAllelesItem = getElementById("lockAllelesItem");
+const lockAllelesToggle = getElementById("lockAllelesToggle");
 const aggregateRareAllelesItem = getElementById("aggregateRareAllelesItem");
 const aggregateRareAllelesToggle = getElementById("aggregateRareAllelesToggle");
 const aggregateRareAllelesCutoffItem = getElementById("aggregateRareAllelesCutoffItem");
@@ -193,6 +195,15 @@ function updateVariantLayoutModeLabel() {
 }
 function getVariantLayoutMode() {
   return state.variantLayoutMode || "genomic";
+}
+function getStoredLockAlleles() {
+  return localStorage.getItem("genomeshader.lockAlleles") === "true";
+}
+function setLockAlleles(enabled) {
+  const v = enabled === true;
+  localStorage.setItem("genomeshader.lockAlleles", v ? "true" : "false");
+  state.lockAlleles = v;
+  if (lockAllelesToggle) lockAllelesToggle.checked = v;
 }
 function getStoredAggregateRareAlleles() {
   return localStorage.getItem("genomeshader.aggregateRareAlleles") === "true";
@@ -375,6 +386,15 @@ if (variantLayoutModeItem) {
   });
 }
 
+if (lockAllelesItem && lockAllelesToggle) {
+  lockAllelesItem.addEventListener("click", (e) => {
+    if (e.target === lockAllelesToggle) return;
+    setLockAlleles(!(state.lockAlleles === true));
+  });
+  lockAllelesToggle.addEventListener("change", () => {
+    setLockAlleles(lockAllelesToggle.checked);
+  });
+}
 if (aggregateRareAllelesItem && aggregateRareAllelesToggle) {
   aggregateRareAllelesItem.addEventListener("click", (e) => {
     if (e.target === aggregateRareAllelesToggle) return;

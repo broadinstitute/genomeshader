@@ -105,6 +105,56 @@ def test_show_delegates_to_widget(tmp_path, monkeypatch):
     s.show_widget.assert_called_once_with("Pf3D7_01_v3:1-100")
 
 
+def test_esm_includes_comments_ui():
+    esm = _build_esm()
+    assert "__GS_renderCommentPins" in esm      # locus-track pins hook
+    assert "comments_create" in esm             # comm bridge from the UI
+
+
+def test_comment_store_crud(tmp_path, monkeypatch):
+    # Point the session dir at a local folder so the store uses its os fallback.
+    s = _shader(tmp_path, monkeypatch)
+    s.gcs_session_dir = str(tmp_path / "session")
+    monkeypatch.setenv("GENOMESHADER_USER", "alice@lab")
+
+    c = s.create_comment(
+        {"type": "variant", "ref": "chr1:100", "locus": {"contig": "chr1", "pos": 100},
+         "sample": "HG002"}, "Looks like a **real** het.")
+    assert c["author"] == "alice@lab"
+    assert c["anchor"]["sample"] == "HG002"
+    assert c["created"] == c["updated"] and len(c["history"]) == 1
+
+    c2 = s.update_comment(c["id"], body="Confirmed het.")
+    assert c2["body"] == "Confirmed het." and c2["updated"] >= c2["created"]
+    assert len(c2["history"]) == 2
+
+    assert [x["id"] for x in s.list_comments()] == [c["id"]]
+    assert s.delete_comment(c["id"]) is True
+    assert s.list_comments() == []
+
+
+def test_widget_comments_comm_roundtrip(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    s.gcs_session_dir = str(tmp_path / "session")
+    w = GenomeShaderWidget(s, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+
+    w._on_custom_msg(w, {"type": "comments_create", "request_id": "c1",
+                         "anchor": {"type": "region", "ref": "chr1:1-9",
+                                    "locus": {"contig": "chr1", "pos": 5}},
+                         "body": "note"}, [])
+    assert sent[-1]["type"] == "comments_changed" and sent[-1]["action"] == "create"
+    cid = sent[-1]["comment"]["id"]
+
+    w._on_custom_msg(w, {"type": "comments_list", "request_id": "c2"}, [])
+    assert sent[-1]["type"] == "comments_response"
+    assert [c["id"] for c in sent[-1]["comments"]] == [cid]
+
+    w._on_custom_msg(w, {"type": "comments_delete", "request_id": "c3", "id": cid}, [])
+    assert sent[-1]["action"] == "delete" and sent[-1]["ok"] is True
+
+
 def test_widget_reads_through_real_payload(tmp_path, monkeypatch):
     # widget message -> real GenomeShader._fetch_reads_payload -> mocked BAM fetch
     import polars as pl

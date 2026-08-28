@@ -1446,6 +1446,16 @@ function renderTracks() {
     }
   }
 
+    // Comment pins (defined in comments.js): one marker per in-view comment on the locus track.
+    if (typeof window.__GS_renderCommentPins === "function") {
+      try {
+        window.__GS_renderCommentPins({
+          svg: tracksSvg, el: el, genomePos: genomePos,
+          baseX: baseX, baseY: baseY, isVertical: isVertical,
+        });
+      } catch (e) {}
+    }
+
     // separator
     if (isVertical) {
       tracksSvg.appendChild(el("line", {

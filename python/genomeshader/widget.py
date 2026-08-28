@@ -41,7 +41,7 @@ _SCRIPT_ORDER = [
     "cleanup.js", "webgpu-core.js", "webgpu-renderer.js", "webgpu-bezier.js",
     "widget-comms.js", "dom-utils.js", "ui-state.js", "view-state.js",
     "smart-tracks.js", "rendering.js", "tracks.js", "interaction.js", "main.js",
-    "ucsc-tracks.js",
+    "ucsc-tracks.js", "comments.js",
 ]
 
 
@@ -264,3 +264,38 @@ class GenomeShaderWidget(anywidget.AnyWidget):
             except Exception as e:
                 self.send({"type": "ucsc_track_error", "request_id": request_id,
                            "track": content.get("track"), "error": str(e)})
+        elif msg_type == "comments_list":
+            try:
+                self.send({"type": "comments_response", "request_id": request_id,
+                           "author": self._shader._comment_author(),
+                           "comments": self._shader.list_comments()})
+            except Exception as e:
+                self.send({"type": "comments_response", "request_id": request_id,
+                           "comments": [], "error": str(e)})
+        elif msg_type == "comments_create":
+            try:
+                c = self._shader.create_comment(content.get("anchor") or {},
+                                                content.get("body") or "")
+                self.send({"type": "comments_changed", "request_id": request_id,
+                           "action": "create", "comment": c})
+            except Exception as e:
+                self.send({"type": "comments_changed", "request_id": request_id,
+                           "action": "create", "error": str(e)})
+        elif msg_type == "comments_update":
+            try:
+                c = self._shader.update_comment(content.get("id"),
+                                                body=content.get("body"),
+                                                anchor=content.get("anchor"))
+                self.send({"type": "comments_changed", "request_id": request_id,
+                           "action": "update", "comment": c})
+            except Exception as e:
+                self.send({"type": "comments_changed", "request_id": request_id,
+                           "action": "update", "error": str(e)})
+        elif msg_type == "comments_delete":
+            try:
+                ok = self._shader.delete_comment(content.get("id"))
+                self.send({"type": "comments_changed", "request_id": request_id,
+                           "action": "delete", "id": content.get("id"), "ok": ok})
+            except Exception as e:
+                self.send({"type": "comments_changed", "request_id": request_id,
+                           "action": "delete", "id": content.get("id"), "error": str(e)})
