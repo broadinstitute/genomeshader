@@ -934,15 +934,21 @@ mq?.addEventListener?.("change", () => {
     timer = setTimeout(() => {
       const t = ensureTip();
       t.textContent = text;
-      // Next to the cursor (like the native/data tooltips), clamped on-screen.
+      t.classList.add("visible"); // must be displayed to measure size + origin
+      // The tip is position:fixed, but a transformed/contained ancestor (the
+      // widget container) can become its containing block — so clientX/Y (which
+      // are viewport-relative) don't map straight to left/top. Measure the
+      // containing-block origin in viewport space and subtract it.
+      t.style.left = "0px"; t.style.top = "0px";
+      const originRect = t.getBoundingClientRect();
+      const cbX = originRect.left, cbY = originRect.top;
       const w = t.offsetWidth || 160, h = t.offsetHeight || 24;
-      let left = px + 12;
-      let top = py + 16;
-      if (left + w > window.innerWidth - 6) left = Math.max(6, px - w - 12);
-      if (top + h > window.innerHeight - 6) top = Math.max(6, py - h - 12);
-      t.style.left = left + "px";
-      t.style.top = top + "px";
-      t.classList.add("visible");
+      // Next to the cursor (viewport coords), clamped on-screen.
+      let vx = px + 12, vy = py + 16;
+      if (vx + w > window.innerWidth - 6) vx = Math.max(6, px - w - 12);
+      if (vy + h > window.innerHeight - 6) vy = Math.max(6, py - h - 12);
+      t.style.left = (vx - cbX) + "px";
+      t.style.top = (vy - cbY) + "px";
       timer = null; // shown — stop tracking the pointer
     }, DWELL_MS);
   }, true);
