@@ -1530,20 +1530,13 @@ function renderHUD() {
 }
 
 function updateTooltip() {
+  // Variant/allele hover is shown by the on-canvas label drawn at the node
+  // (which also stays while selected/pinned), so we do NOT also show the
+  // near-cursor #tooltip for those — only the RepeatMasker hover uses it.
   if (state.hoveredRepeatTooltip) {
     tooltip.textContent = state.hoveredRepeatTooltip.text;
     tooltip.style.left = state.hoveredRepeatTooltip.x + 'px';
     tooltip.style.top = state.hoveredRepeatTooltip.y + 'px';
-    tooltip.classList.add('visible');
-  } else if (state.hoveredVariantLabelTooltip) {
-    tooltip.textContent = state.hoveredVariantLabelTooltip.text;
-    tooltip.style.left = state.hoveredVariantLabelTooltip.x + 'px';
-    tooltip.style.top = state.hoveredVariantLabelTooltip.y + 'px';
-    tooltip.classList.add('visible');
-  } else if (state.hoveredAlleleNodeTooltip) {
-    tooltip.textContent = state.hoveredAlleleNodeTooltip.text;
-    tooltip.style.left = state.hoveredAlleleNodeTooltip.x + 'px';
-    tooltip.style.top = state.hoveredAlleleNodeTooltip.y + 'px';
     tooltip.classList.add('visible');
   } else {
     tooltip.classList.remove('visible');
@@ -2150,6 +2143,13 @@ if (tracksHoverTarget && !tracksHoverTarget._tooltipListenersAdded) {
 let flowHoverHandler = null;
 let flowLeaveHandler = null;
 
+// A few px of slop so clicking a node's rendered border/outline still selects it
+// (the drawn stroke straddles the fill bounds).
+function nodeHitTest(n, x, y, pad) {
+  pad = (pad == null) ? 3 : pad;
+  return x >= n.x - pad && x <= n.x + n.w + pad && y >= n.y - pad && y <= n.y + n.h + pad;
+}
+
 function setupCanvasHover() {
   // Remove existing listeners to avoid duplicates
   if (flowHoverHandler) {
@@ -2463,8 +2463,7 @@ function setupCanvasHover() {
       const nodesToTest = filterNodesByTrack(allNodes, activeTrackId);
       const tryStartDragForNodes = (nodes) => {
         for (const node of nodes) {
-          if (x >= node.x && x <= node.x + node.w &&
-              y >= node.y && y <= node.y + node.h) {
+          if (nodeHitTest(node, x, y)) {
             e.preventDefault();
             e.stopPropagation();
             state.alleleDragState = {
@@ -2704,8 +2703,7 @@ function setupCanvasHover() {
         let hoveredNodeLabel = null;
         const findHoveredInNodes = (nodes) => {
           for (const node of nodes) {
-            if (x >= node.x && x <= node.x + node.w &&
-                y >= node.y && y <= node.y + node.h) {
+            if (nodeHitTest(node, x, y)) {
               return {
                 node: {
                   trackId: node.trackId || "",
@@ -2908,7 +2906,7 @@ function setupCanvasHover() {
       const y = e.clientY - rect.top;
       const activeTrackId = getTrackIdAtClientPoint(e.clientX, e.clientY);
       const nodes = filterNodesByTrack(window._alleleNodePositions, activeTrackId);
-      const inNode = (n) => x >= n.x && x <= n.x + n.w && y >= n.y && y <= n.y + n.h;
+      const inNode = (n) => nodeHitTest(n, x, y);
       const hit = nodes.find(inNode) || window._alleleNodePositions.find(inNode);
       if (!hit) return;
       e.preventDefault();

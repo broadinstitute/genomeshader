@@ -1179,21 +1179,26 @@ html[data-theme="light"] .ucsc-warn strong { color: #b45309; }
   html[data-theme="auto"] .ucsc-warn strong { color: #b45309; }
 }
 
-/* Settings as a 2-column table so labels and values/controls line up. */
+/* Settings as a 2-column table so labels and values/controls line up. Fixed
+   layout + wrapping so nothing overruns the narrow panel and gets hidden. */
 .settings-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 .settings-table td {
-  padding: 6px 8px;
+  padding: 6px 6px;
   font-size: 12px;
   color: var(--text);
   vertical-align: middle;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
+.settings-table td:first-child { width: 54%; }
 .settings-table td.menuRight {
   text-align: right;
   color: var(--muted);
-  white-space: nowrap;
+  white-space: normal;
 }
 .settings-table tr.settings-row { cursor: pointer; }
 .settings-table tr.settings-row:hover td { background: var(--panel2); }
