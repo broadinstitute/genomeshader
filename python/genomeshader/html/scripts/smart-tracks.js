@@ -948,7 +948,7 @@ function initializeRightSidebar() {
     const handleRightSidebarToggle = (e) => {
       // Don't intercept clicks on form elements, command strip icons, or their containers
       const target = e.target;
-      if (target.closest('input, button.command-strip-icon, .smart-track-item, .sidebar-right-command-strip')) {
+      if (target.closest('input, button.command-strip-icon, .smart-track-item, .sidebar-right-command-strip, .sidebar-close-btn')) {
         return;
       }
       
@@ -972,9 +972,19 @@ function initializeRightSidebar() {
     sidebarRight.addEventListener("pointerdown", handleRightSidebarToggle, true);
     sidebarRight.addEventListener("pointerup", handleRightSidebarToggle, true);
     sidebarRight.addEventListener("mousedown", handleRightSidebarToggle, true);
-    
+
     sidebarRight.style.pointerEvents = "auto";
-    
+
+    // Large, obvious Close button pinned to the bottom of the open right panel.
+    if (!sidebarRight.querySelector(".sidebar-close-btn")) {
+      const closeBtn = document.createElement("button");
+      closeBtn.className = "sidebar-close-btn";
+      closeBtn.type = "button";
+      closeBtn.textContent = "Close panel »";
+      closeBtn.addEventListener("click", (e) => { e.stopPropagation(); setRightSidebarCollapsed(true); });
+      sidebarRight.appendChild(closeBtn);
+    }
+
     // Initialize tab switching
     const commandStripIcons = document.querySelectorAll('.command-strip-icon');
     commandStripIcons.forEach(icon => {

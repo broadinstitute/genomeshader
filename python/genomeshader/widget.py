@@ -55,23 +55,27 @@ def _container_override_css(cid: str) -> str:
     return "\n".join([
         f"{c} {{ height:600px; display:block; position:relative; overflow:visible;"
         f" --sidebar-w:240px; --tracks-h:280px; --flow-h:500px; --reads-h:220px; }}",
-        f"{c} .app {{ height:100% !important; width:100% !important; display:block !important;"
-        f" position:relative !important; overflow:hidden; }}",
-        f"{c} .sidebar-left {{ position:absolute !important; left:0 !important; top:0 !important;"
-        f" bottom:0 !important; width:var(--sidebar-w,240px) !important; z-index:100 !important;"
+        # Flex row: sidebar-left | main | sidebar-right. As siblings they cannot
+        # overlap — main flexes to fill whatever the panels leave, so expanding a
+        # panel narrows the tracks instead of occluding them. Overrides the inline
+        # position:absolute on each element.
+        f"{c} .app {{ height:100% !important; width:100% !important; display:flex !important;"
+        f" flex-direction:row !important; align-items:stretch !important;"
+        f" position:relative !important; overflow:hidden !important; }}",
+        f"{c} .sidebar-left {{ position:relative !important; left:auto !important; top:auto !important;"
+        f" bottom:auto !important; height:auto !important; align-self:stretch !important;"
+        f" flex:0 0 240px !important; z-index:100 !important;"
         f" overflow-y:auto !important; overflow-x:visible !important; pointer-events:auto !important; }}",
-        f"{c} .app.sidebar-collapsed .sidebar-left {{ width:20px !important; padding:0 !important; }}",
-        # .main contracts to meet whichever sidebar is expanded, so a panel never
-        # occludes the view. Left starts expanded (240), right starts collapsed (20).
-        f"{c} .main {{ position:absolute !important; top:0 !important; bottom:0 !important;"
-        f" left:240px !important; right:240px !important; z-index:1 !important; overflow:hidden; }}",
-        f"{c} .app.sidebar-collapsed .main {{ left:20px !important; }}",
-        f"{c} .app.sidebar-right-collapsed .main {{ right:20px !important; }}",
-        f"{c} .sidebar-right {{ position:absolute !important; right:0 !important; top:0 !important;"
-        f" bottom:0 !important; z-index:100 !important; pointer-events:auto !important;"
-        f" display:flex !important; flex-direction:column !important; }}",
-        f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ width:240px !important; }}",
-        f"{c} .app.sidebar-right-collapsed .sidebar-right {{ width:20px !important; padding:0 !important; }}",
+        f"{c} .app.sidebar-collapsed .sidebar-left {{ flex-basis:20px !important; padding:0 !important; }}",
+        f"{c} .main {{ position:relative !important; left:auto !important; right:auto !important;"
+        f" top:auto !important; bottom:auto !important; height:auto !important; align-self:stretch !important;"
+        f" flex:1 1 auto !important; min-width:0 !important; z-index:1 !important; overflow:hidden !important; }}",
+        f"{c} .sidebar-right {{ position:relative !important; right:auto !important; top:auto !important;"
+        f" bottom:auto !important; height:auto !important; align-self:stretch !important;"
+        f" flex:0 0 240px !important; z-index:100 !important; pointer-events:auto !important;"
+        f" overflow-x:visible !important; display:flex !important; flex-direction:column !important; }}",
+        f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ flex-basis:240px !important; }}",
+        f"{c} .app.sidebar-right-collapsed .sidebar-right {{ flex-basis:20px !important; padding:0 !important; }}",
         f"{c} .sidebar-right .sidebarContent {{ flex:1 !important; overflow-y:auto !important;"
         f" overflow-x:visible !important; padding:12px !important; pointer-events:auto !important; }}",
         f"{c} .sidebar-left > * {{ pointer-events:auto !important; opacity:1 !important; }}",

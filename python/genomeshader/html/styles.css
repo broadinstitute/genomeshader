@@ -175,28 +175,30 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   top: 75%;
   transform: translateY(-50%);
   left: 100%;                    /* protrude past the panel's inner edge */
-  width: 50px;
+  width: 40px;
   height: 50px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 800;
   line-height: 1;
-  color: #fff;
-  background: var(--blue, #4a90d9);
+  color: var(--text);
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-left: none;
   border-radius: 0 10px 10px 0;
-  box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.35);
+  box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.30);
   cursor: pointer;
   pointer-events: auto;
   opacity: 1 !important;
   z-index: 250;
-  transition: filter 0.15s ease, width 0.15s ease;
+  transition: background 0.15s ease, width 0.15s ease;
 }
 .sidebar-left:hover::after {
-  width: 58px;
-  filter: brightness(1.12);
-  box-shadow: 3px 3px 14px rgba(0, 0, 0, 0.45);
+  width: 46px;
+  background: var(--panel);
+  color: var(--blue);
 }
 .app.sidebar-collapsed .sidebar-left {
   padding: 0;
@@ -214,6 +216,29 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .app.sidebar-collapsed .sidebar-left::after {
   content: "\00BB";             /* » : expand */
 }
+
+/* Large, obvious Close button pinned to the bottom of an open panel. */
+.sidebar-close-btn {
+  position: sticky;
+  bottom: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  margin-top: 8px;
+  border: none;
+  border-top: 1px solid var(--border2);
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  z-index: 5;
+}
+.sidebar-close-btn:hover { background: var(--panel); color: var(--blue); }
+/* No close button while the panel is collapsed. */
+.app.sidebar-collapsed .sidebar-left .sidebar-close-btn,
+.app.sidebar-right-collapsed .sidebar-right .sidebar-close-btn { display: none; }
 
 /* Right sidebar styles - always overlays on top of main panel */
 .sidebar-right {
@@ -261,28 +286,30 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   top: 75%;
   transform: translateY(-50%);
   right: 100%;                   /* protrude left into the view */
-  width: 50px;
+  width: 40px;
   height: 50px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 800;
   line-height: 1;
-  color: #fff;
-  background: var(--blue, #4a90d9);
+  color: var(--text);
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-right: none;
   border-radius: 10px 0 0 10px;
-  box-shadow: -2px 2px 10px rgba(0, 0, 0, 0.35);
+  box-shadow: -2px 2px 10px rgba(0, 0, 0, 0.30);
   cursor: pointer;
   pointer-events: auto;
   opacity: 1 !important;
   z-index: 250;
-  transition: filter 0.15s ease, width 0.15s ease;
+  transition: background 0.15s ease, width 0.15s ease;
 }
 .sidebar-right:hover::before {
-  width: 58px;
-  filter: brightness(1.12);
-  box-shadow: -3px 3px 14px rgba(0, 0, 0, 0.45);
+  width: 46px;
+  background: var(--panel);
+  color: var(--blue);
 }
 /* Ensure command strip doesn't interfere with toggle */
 .sidebar-right-command-strip {

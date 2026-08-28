@@ -141,6 +141,16 @@ if (sidebar) {
   
   // Ensure sidebar is clickable
   sidebar.style.pointerEvents = "auto";
+
+  // Large, obvious Close button pinned to the bottom of the open panel.
+  if (!sidebar.querySelector(".sidebar-close-btn")) {
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "sidebar-close-btn";
+    closeBtn.type = "button";
+    closeBtn.textContent = "« Close panel";
+    closeBtn.addEventListener("click", (e) => { e.stopPropagation(); setSidebarCollapsed(true); });
+    sidebar.appendChild(closeBtn);
+  }
 }
 
 updateSidebarState();
