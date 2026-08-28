@@ -968,10 +968,11 @@ function renderTrackControls() {
     // Check if this is a Smart track (declare once for this track)
     const isSmartTrack = track.id.startsWith("smart-track-");
     
-    // Hide controls when track is hidden or collapsed (for standard tracks only)
-    // Smart tracks show controls even when collapsed (closed state)
-    // Default hidden to false for backwards compatibility
-    if ((track.hidden === true) || (!isSmartTrack && track.collapsed)) {
+    // Only a fully hidden track (which takes no layout space) drops controls.
+    // Collapsed tracks keep their control bar (label + expand ▶) visible — see
+    // the .track-collapsed .track-controls rule in styles.css — so a minimized
+    // track stays an obvious, clickable header instead of a near-invisible line.
+    if (track.hidden === true) {
       controls.style.display = "none";
       controls.style.pointerEvents = "none";
     }

@@ -169,10 +169,12 @@ function getTrackLayout() {
           safeContentWidth = track.closedHeight;
           safeContentLeft = currentX; // Content starts at left, no gap for header
         } else {
-          // Standard track collapsed: minimal width
-          effectiveWidth = usesHeaderSpace ? headerH : collapsedTrackMinWidth;
+          // Standard track collapsed: reserve the full header so the label +
+          // expand button stay visible and clickable (never a sub-header
+          // sliver). collapsedTrackMinWidth kept as the floor if headerH is 0.
+          effectiveWidth = Math.max(headerH, collapsedTrackMinWidth);
           safeContentWidth = 0;
-          safeContentLeft = usesHeaderSpace ? currentX + headerH : currentX;
+          safeContentLeft = currentX + effectiveWidth;
         }
       } else {
         // Open state: full width with header space
@@ -234,10 +236,12 @@ function getTrackLayout() {
           safeContentHeight = track.closedHeight;
           safeContentTop = currentY; // Content starts at top, no gap for header
         } else {
-          // Standard track collapsed: minimal height
-          effectiveHeight = usesHeaderSpace ? headerH : collapsedTrackMinHeight;
+          // Standard track collapsed: reserve the full header so the label +
+          // expand button stay visible and clickable (never a sub-header
+          // sliver). collapsedTrackMinHeight kept as the floor if headerH is 0.
+          effectiveHeight = Math.max(headerH, collapsedTrackMinHeight);
           safeContentHeight = 0;
-          safeContentTop = usesHeaderSpace ? currentY + headerH : currentY;
+          safeContentTop = currentY + effectiveHeight;
         }
       } else {
         // Open state: full height with header space

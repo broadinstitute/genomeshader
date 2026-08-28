@@ -1126,16 +1126,19 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   pointer-events: auto;
   background: var(--panel); /* Ensure opaque background when visible */
 }
-/* Collapsed tracks: always hide controls, don't show on hover */
-.track-control-container.track-collapsed .track-controls {
-  opacity: 0 !important;
-  pointer-events: none !important;
-  display: none !important;
-}
-/* Prevent hover effects from showing controls on collapsed tracks */
+/* Collapsed tracks: SHOW the control bar (label + expand ▶) so a minimized
+   track stays an obvious, clickable header instead of a near-invisible line.
+   The whole container is click-to-expand (bound in renderTrackControls), and
+   the ▶ button toggles it back. Opaque bg so it reads as a solid bar. */
+.track-control-container.track-collapsed .track-controls,
 .track-control-container.track-collapsed.track-hovered .track-controls {
-  opacity: 0 !important;
-  pointer-events: none !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  display: flex !important;
+  background: var(--panel) !important;
+}
+/* The faint 8px indicator line is redundant now the labeled bar shows. */
+.track-collapsed-indicator {
   display: none !important;
 }
 /* Smart track controls should allow button clicks */
