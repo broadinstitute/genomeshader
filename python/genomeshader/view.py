@@ -2173,39 +2173,86 @@ class GenomeShader:
         else:
             raise ConnectionError(f"Failed to retrieve reference sequence from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
 
-    def list_ucsc_tracks(self) -> Optional[List[dict]]:
-        """List UCSC interval-type tracks available for this genome build.
+    def list_ucsc_genomes(self) -> dict:
+        """List all UCSC assemblies (for the assembly picker) plus the best
+        match for this genome build. UCSC tracks are an explicit, user-driven
+        feature, so this ignores the auto-render API gate.
 
-        Returns a list of {track, label, type} for BED/bigBed/genePred-style
-        (interval) tracks that genomeshader can render, sorted by label. Returns
-        None when the genome build is not hosted at UCSC (or the API is
-        unavailable) — the caller shows a "not available" message in that case.
-        Cached per instance.
+        Returns {genomes: [{genome, label, organism}], default: <key or "">}.
         """
-        cached = getattr(self, "_ucsc_track_list_cache", "unset")
-        if cached != "unset":
-            return cached
-        if not getattr(self, "_allow_ucsc_api", False):
-            self._ucsc_track_list_cache = None
+        cached = getattr(self, "_ucsc_genomes_cache", None)
+        if cached is None:
+            genomes: List[dict] = []
+            try:
+                response = self._http_get_json(
+                    "https://api.genome.ucsc.edu/list/ucscGenomes", "Failed to list UCSC genomes")
+                if response.status_code == 200:
+                    data = response.json().get("ucscGenomes", {})
+                    for key, meta in (data.items() if isinstance(data, dict) else []):
+                        if not isinstance(meta, dict):
+                            continue
+                        org = str(meta.get("organism", ""))
+                        desc = str(meta.get("description", ""))
+                        label = key + (f" — {org}" if org else "") + (f" ({desc})" if desc else "")
+                        genomes.append({"genome": key, "label": label, "organism": org})
+                    genomes.sort(key=lambda g: g["genome"])
+            except Exception:
+                genomes = []
+            cached = genomes
+            self._ucsc_genomes_cache = cached
+        return {"genomes": cached, "default": self._best_ucsc_genome(cached) or ""}
+
+    def _best_ucsc_genome(self, genomes: List[dict]) -> Optional[str]:
+        """Best UCSC assembly match for self.genome_build, or None."""
+        if not genomes:
             return None
-        url = f"https://api.genome.ucsc.edu/list/tracks?genome={self.genome_build}"
+        gb = str(self.genome_build or "").strip()
+        if not gb:
+            return None
+        keys = [g["genome"] for g in genomes]
+        if gb in keys:
+            return gb
+        low = gb.lower()
+        for k in keys:
+            if k.lower() == low:
+                return k
+        # token/substring (e.g. a build string that embeds "hg38")
+        for k in keys:
+            kl = k.lower()
+            if kl in low or low in kl:
+                return k
+        return None
+
+    def list_ucsc_tracks(self, genome: Optional[str] = None) -> Optional[List[dict]]:
+        """List UCSC interval-type tracks for a UCSC assembly (defaults to the
+        best match for this genome build). Returns {track,label,type} list, or
+        None when no assembly is available/selected. Cached per assembly."""
+        if not genome:
+            genome = self._best_ucsc_genome(self.list_ucsc_genomes()["genomes"])
+        if not genome:
+            return None
+        cache = getattr(self, "_ucsc_track_list_cache", None)
+        if cache is None:
+            cache = self._ucsc_track_list_cache = {}
+        if genome in cache:
+            return cache[genome]
+        url = f"https://api.genome.ucsc.edu/list/tracks?genome={genome}"
         try:
-            response = self._http_get_json(url, f"Failed to list UCSC tracks for '{self.genome_build}'")
+            response = self._http_get_json(url, f"Failed to list UCSC tracks for '{genome}'")
         except Exception:
-            self._ucsc_track_list_cache = None
+            cache[genome] = None
             return None
         if response.status_code != 200:
-            # 400 == unknown genome (not on UCSC); anything else == transient.
-            self._ucsc_track_list_cache = None
+            cache[genome] = None
             return None
         try:
             data = response.json()
         except Exception:
-            self._ucsc_track_list_cache = None
+            cache[genome] = None
             return None
-        genome_tracks = data.get(self.genome_build) if isinstance(data, dict) else None
+        genome_tracks = data.get(genome) if isinstance(data, dict) else None
         if not isinstance(genome_tracks, dict):
-            self._ucsc_track_list_cache = None
+            cache[genome] = None
             return None
         interval_types = ("bed", "bigbed", "genepred", "psl", "narrowpeak", "broadpeak")
         out: List[dict] = []
@@ -2214,21 +2261,20 @@ class GenomeShader:
                 continue
             ttype = str(meta.get("type", "")).lower()
             if any(ttype.startswith(t) for t in interval_types):
-                out.append({
-                    "track": name,
-                    "label": str(meta.get("shortLabel") or name),
-                    "type": ttype,
-                })
+                out.append({"track": name, "label": str(meta.get("shortLabel") or name), "type": ttype})
         out.sort(key=lambda t: t["label"].lower())
-        self._ucsc_track_list_cache = out
+        cache[genome] = out
         return out
 
-    def ucsc_interval_track(self, track: str, contig: str, start: int, end: int) -> List[dict]:
+    def ucsc_interval_track(self, track: str, contig: str, start: int, end: int,
+                            genome: Optional[str] = None) -> List[dict]:
         """Fetch a UCSC interval track for a region, normalized to
         {name, start, end, strand} (1-based inclusive start). Empty on failure."""
-        if not getattr(self, "_allow_ucsc_api", False):
+        if not genome:
+            genome = self._best_ucsc_genome(self.list_ucsc_genomes()["genomes"])
+        if not genome:
             return []
-        url = (f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build}"
+        url = (f"https://api.genome.ucsc.edu/getData/track?genome={genome}"
                f";track={track};chrom={contig};start={int(start)};end={int(end)}")
         try:
             response = self._http_get_json(url, f"Failed to fetch UCSC track '{track}'")

@@ -224,13 +224,24 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                 self.send({"type": "fetch_reads_response", "request_id": request_id, **payload})
             except Exception as e:  # surfaced to the frontend as a reads error
                 self.send({"type": "fetch_reads_error", "request_id": request_id, "error": str(e)})
-        elif msg_type == "ucsc_list":
-            # List UCSC tracks for this genome; available=False => not on UCSC.
+        elif msg_type == "ucsc_genomes":
+            # Assembly picker: all UCSC assemblies + the best match for this build.
             try:
-                tracks = self._shader.list_ucsc_tracks()
+                info = self._shader.list_ucsc_genomes()
+                self.send({"type": "ucsc_genomes_response", "request_id": request_id,
+                           "genome_build": getattr(self._shader, "genome_build", ""),
+                           "genomes": info.get("genomes", []),
+                           "default": info.get("default", "")})
+            except Exception as e:
+                self.send({"type": "ucsc_genomes_response", "request_id": request_id,
+                           "genomes": [], "default": "", "error": str(e)})
+        elif msg_type == "ucsc_list":
+            # Tracks for a chosen UCSC assembly; available=False => none.
+            try:
+                tracks = self._shader.list_ucsc_tracks(content.get("genome"))
                 self.send({"type": "ucsc_list_response", "request_id": request_id,
                            "available": tracks is not None,
-                           "genome_build": getattr(self._shader, "genome_build", ""),
+                           "genome": content.get("genome"),
                            "tracks": tracks or []})
             except Exception as e:
                 self.send({"type": "ucsc_list_response", "request_id": request_id,
@@ -240,6 +251,7 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                 features = self._shader.ucsc_interval_track(
                     content.get("track"), content.get("contig"),
                     int(content.get("start")), int(content.get("end")),
+                    genome=content.get("genome"),
                 )
                 self.send({"type": "ucsc_track_response", "request_id": request_id,
                            "track": content.get("track"),
