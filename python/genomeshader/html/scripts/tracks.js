@@ -1828,9 +1828,14 @@ function renderTracks() {
     }
   }
 
-  // UCSC interval tracks (added on demand via the UCSC Tracks tab). Simple
-  // interval boxes + labels on the SVG layer, like the gene track.
+  // UCSC interval tracks (added on demand via the UCSC Tracks tab). Boxes go on
+  // the WebGPU instanced renderer when available (fast for many features), with
+  // an SVG-rect fallback; labels stay on SVG (bounded count, text-only).
   if (Array.isArray(state.ucscTracks) && state.ucscTracks.length) {
+    const useWebGPU = webgpuSupported && instancedRenderer;
+    const dpr = window.devicePixelRatio || 1;
+    const boxColor = [0.169, 0.435, 1.0];   // ~#2b6fff
+    const boxAlpha = 0.55;
     for (const item of layout) {
       const t = item.track;
       if (!t.id || t.id.indexOf("ucsc-") !== 0 || t.collapsed) continue;
@@ -1844,12 +1849,14 @@ function renderTracks() {
         const b = genomePos(Math.min(f.end, state.endBp));
         if (isVertical) {
           const y0 = Math.min(a, b), y1 = Math.max(a, b);
-          tracksSvg.appendChild(el("rect", { x: item.contentLeft + 4, y: y0,
-            width: Math.max(6, (item.contentWidth || 20) - 8), height: Math.max(1, y1 - y0),
+          const x = item.contentLeft + 4, w = Math.max(6, (item.contentWidth || 20) - 8), hh = Math.max(1, y1 - y0);
+          if (useWebGPU) instancedRenderer.addRect(x * dpr, y0 * dpr, w * dpr, hh * dpr, boxColor, boxAlpha);
+          else tracksSvg.appendChild(el("rect", { x: x, y: y0, width: w, height: hh,
             rx: 2, fill: "var(--blue,#2b6fff)", "fill-opacity": 0.5, stroke: "var(--blue,#2b6fff)" }));
         } else {
           const x0 = Math.min(a, b), w = Math.max(1, Math.abs(b - a));
-          tracksSvg.appendChild(el("rect", { x: x0, y: yTop, width: w, height: h,
+          if (useWebGPU) instancedRenderer.addRect(x0 * dpr, yTop * dpr, w * dpr, h * dpr, boxColor, boxAlpha);
+          else tracksSvg.appendChild(el("rect", { x: x0, y: yTop, width: w, height: h,
             rx: 2, fill: "var(--blue,#2b6fff)", "fill-opacity": 0.5, stroke: "var(--blue,#2b6fff)" }));
           if (f.name && w > 30) {
             tracksSvg.appendChild(el("text", { x: x0 + 4, y: yTop + h / 2 + 3,
