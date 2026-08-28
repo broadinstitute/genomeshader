@@ -3329,6 +3329,9 @@ function setupCanvasHover() {
         state.selectedAlleles.clear();
         state.selectedAlleles.add(makeAlleleSelectionKeyCompat(trackId, v.id, refIdx));
         refresh();
+        // If the newly selected variant isn't visible, slide the view over to
+        // show it (do NOT center — that's the "Center on variant" button).
+        if (typeof v.pos === 'number' && typeof slideToShowBp === 'function') slideToShowBp(v.pos);
       };
       const selectSingleAllele = (vid, idx) => {
         state.selectedAlleles.clear();
@@ -3382,6 +3385,18 @@ function setupCanvasHover() {
         sub.textContent = String(curVariant.vcfId);
         header.appendChild(sub);
       }
+
+      // Center-on-variant button: recenters the view on this variant.
+      const centerBtn = document.createElement('button');
+      centerBtn.type = 'button';
+      centerBtn.textContent = '⊕ Center on variant';
+      centerBtn.style.cssText = 'display:block;margin:6px auto 2px;padding:4px 10px;font-size:11px;'
+        + 'border:1px solid var(--border2);border-radius:6px;background:var(--panel);color:var(--text);cursor:pointer;';
+      centerBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (typeof centerOnBp === 'function' && typeof curVariant.pos === 'number') centerOnBp(curVariant.pos);
+      });
+      header.appendChild(centerBtn);
 
       // Divider between the variant position info and the allele section.
       const rule = document.createElement('div');
@@ -5152,6 +5167,32 @@ function zoomByFactor(factor, anchorBp) {
   // Clamp to chromosome boundaries
   clampToChromosomeBounds();
 
+  scheduleRender();
+}
+
+// Center the view on a genomic position (keeps the current span).
+function centerOnBp(pos) {
+  if (!isFinite(pos)) return;
+  const span = state.endBp - state.startBp;
+  state.startBp = pos - span / 2;
+  state.endBp = state.startBp + span;
+  clampToChromosomeBounds();
+  scheduleRender();
+}
+
+// Slide the view the minimum amount to bring a position into view (does NOT
+// center it). No-op if the position is already comfortably visible.
+function slideToShowBp(pos, marginFrac) {
+  if (!isFinite(pos)) return;
+  const span = state.endBp - state.startBp;
+  const margin = span * (typeof marginFrac === "number" ? marginFrac : 0.1);
+  if (pos >= state.startBp + margin && pos <= state.endBp - margin) return;
+  let newStart = state.startBp;
+  if (pos < state.startBp + margin) newStart = pos - margin;           // slide left
+  else if (pos > state.endBp - margin) newStart = pos - span + margin; // slide right
+  state.startBp = newStart;
+  state.endBp = newStart + span;
+  clampToChromosomeBounds();
   scheduleRender();
 }
 
