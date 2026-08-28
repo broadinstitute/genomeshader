@@ -873,9 +873,12 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   position: relative !important;
   z-index: 200 !important;
 }
+/* Must stay above the Strategy/Selection section (z-index:200) so the
+   sample-search dropdown floats over it. Also holds in fullscreen, where the
+   container-scoped override is gone and only these unscoped rules apply. */
 #sampleSearchSection {
   position: relative !important;
-  z-index: 200 !important;
+  z-index: 5000 !important;
 }
 /* Ensure sidebar content is above any potential overlays */
 .sidebar-left .sidebarHeader,
@@ -1010,6 +1013,14 @@ svg.overlay {
 #tracksWebGPU {
   pointer-events: none;
 }
+
+/* SVG letter/vector layer must paint ABOVE the WebGPU base-color blocks.
+   Both are position:absolute; without explicit z-index the later-in-DOM
+   canvas (tracksWebGPU) would win and hide the reference letters. These
+   unscoped rules also govern fullscreen, where the container override
+   (widget.py) no longer applies because .app is moved out of its container. */
+#tracksSvg { z-index: 3; }
+#tracksWebGPU { z-index: 1; }
 
 /* Single-track legacy flow canvas also sits above WebGPU */
 .flow > canvas.canvas {
