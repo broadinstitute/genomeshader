@@ -85,7 +85,10 @@ def _container_override_css(cid: str) -> str:
         f" overflow-x:visible !important; display:flex !important; flex-direction:column !important; }}",
         f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ flex-basis:var(--sidebar-right-w,240px) !important; }}",
         f"{c} .app.sidebar-right-collapsed .sidebar-right {{ flex-basis:20px !important; padding:0 !important; }}",
-        f"{c} .sidebar-right .sidebarContent {{ flex:1 !important; overflow-y:auto !important;"
+        # Bound the content area (was height:100%) so the sticky-less .sidebar-close-btn
+        # footer gets its own row below it instead of overlapping the scroll.
+        f"{c} .sidebar-right-content {{ flex:1 1 auto !important; min-height:0 !important; height:auto !important; }}",
+        f"{c} .sidebar-right .sidebarContent {{ flex:1 !important; min-height:0 !important; overflow-y:auto !important;"
         f" overflow-x:visible !important; padding:12px !important; pointer-events:auto !important; }}",
         f"{c} .sidebar-left > * {{ pointer-events:auto !important; opacity:1 !important; }}",
         f"{c} .sidebar-left select, {c} .sidebar-left input, {c} .sidebar-left button,"

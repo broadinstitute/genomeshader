@@ -233,15 +233,18 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 
 /* Large, obvious Close button pinned to the bottom of an open panel. */
 .sidebar-close-btn {
-  position: sticky;
-  bottom: 0;
+  /* A real footer OUTSIDE the scroll region (flex item that never shrinks), so
+     panel content scrolls above it and it stays put. Opaque background so
+     nothing can ever show through it. */
+  flex: 0 0 auto;
+  position: relative;
   width: 100%;
   box-sizing: border-box;
   padding: 12px;
-  margin-top: 8px;
+  margin-top: 0;
   border: none;
   border-top: 1px solid var(--border2);
-  background: var(--panel2);
+  background: var(--panel);
   color: var(--text);
   font-size: 13px;
   font-weight: 700;
