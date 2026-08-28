@@ -62,10 +62,18 @@ def _container_override_css(cid: str) -> str:
         f"{c} .app {{ height:100% !important; width:100% !important; display:flex !important;"
         f" flex-direction:row !important; align-items:stretch !important;"
         f" position:relative !important; overflow:hidden !important; }}",
+        # overflow MUST stay visible on both axes so the protruding expand tab
+        # (.sidebar-left::after, at left:100%) isn't clipped. overflow-y:auto
+        # here would force overflow-x to compute to auto (CSS spec) and eat the
+        # tab — making it invisible AND unclickable. So scroll on the inner
+        # .sidebarContent instead (flex column), mirroring the right sidebar.
         f"{c} .sidebar-left {{ position:relative !important; left:auto !important; top:auto !important;"
         f" bottom:auto !important; height:auto !important; align-self:stretch !important;"
         f" flex:0 0 240px !important; z-index:100 !important; background:var(--panel) !important;"
-        f" overflow-y:auto !important; overflow-x:visible !important; pointer-events:auto !important; }}",
+        f" display:flex !important; flex-direction:column !important;"
+        f" overflow:visible !important; pointer-events:auto !important; }}",
+        f"{c} .sidebar-left .sidebarContent {{ flex:1 1 auto !important; min-height:0 !important;"
+        f" overflow-y:auto !important; overflow-x:visible !important; }}",
         f"{c} .app.sidebar-collapsed .sidebar-left {{ flex-basis:20px !important; padding:0 !important; }}",
         f"{c} .main {{ position:relative !important; left:auto !important; right:auto !important;"
         f" top:auto !important; bottom:auto !important; height:auto !important; align-self:stretch !important;"
