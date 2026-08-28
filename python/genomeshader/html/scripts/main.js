@@ -5227,6 +5227,41 @@ function panByPixels(dxPx, dyPx) {
   scheduleRender();
 }
 
+// --- Live pan: translate the rendered layers during a drag instead of
+// rebuilding every frame (rebuild is the dominant pan cost). state.startBp/endBp
+// stay the source of truth; the full re-render happens once on drag end. ---
+function _panLayers() {
+  const out = [];
+  ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay"].forEach(id => {
+    const e = (typeof byId === "function" && typeof root !== "undefined" ? byId(root, id) : null)
+      || document.getElementById(id);
+    if (e) out.push(e);
+  });
+  const scope = (typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document;
+  scope.querySelectorAll(".flow-track canvas, .flow-track svg").forEach(e => out.push(e));
+  if (state.smartTrackRenderers && state.smartTrackRenderers.forEach) {
+    state.smartTrackRenderers.forEach(r => { if (r && r.container) out.push(r.container); });
+  }
+  return out;
+}
+// Horizontal only (callers gate on !isVerticalMode).
+function livePanBy(dxPx) {
+  if (!state.pxPerBp) { panByPixels(dxPx, 0); return; }  // no scale yet: fall back
+  const deltaBp = dxPx / state.pxPerBp;
+  state.startBp -= deltaBp;
+  state.endBp -= deltaBp;
+  state.livePanOffset = (state.livePanOffset || 0) + dxPx;
+  const t = "translateX(" + state.livePanOffset + "px)";
+  _panLayers().forEach(e => { e.style.transform = t; });
+}
+function endLivePan() {
+  if (!state.livePanOffset) { return; }
+  clampToChromosomeBounds();
+  _panLayers().forEach(e => { e.style.transform = ""; });
+  state.livePanOffset = 0;
+  renderAll();  // re-rasterize at the final position
+}
+
 function anchorBpFromClientX(clientX) {
   const rectSource = (typeof tracksContainer !== 'undefined' && tracksContainer)
     ? tracksContainer
@@ -5571,9 +5606,9 @@ function bindInteractions(root, state, main) {
       // Accumulate travel so a select handler can tell a click from a pan drag.
       state.gestureMovedPx = (state.gestureMovedPx || 0) + Math.abs(dx) + Math.abs(dy);
       if (isVertical) {
-        panByPixels(0, -dy);
+        panByPixels(0, -dy);   // vertical still full-renders (less common)
       } else {
-        panByPixels(dx, 0);
+        livePanBy(dx);         // horizontal: translate now, rebuild on drag end
       }
     }
   };
@@ -5582,6 +5617,7 @@ function bindInteractions(root, state, main) {
     if (state.pendingFlowDrag && state.pendingFlowDrag.pointerId === e.pointerId) {
       state.pendingFlowDrag = null;   // was a click, not a drag
     }
+    if (state.livePanOffset) endLivePan();   // commit a live pan with one rebuild
     state.pointers.delete(e.pointerId);
     if (state.pointers.size < 2) {
       state.pinchStartDist = null;
