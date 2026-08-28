@@ -74,7 +74,7 @@ def _container_override_css(cid: str) -> str:
         f" overflow:visible !important; pointer-events:auto !important; }}",
         f"{c} .sidebar-left .sidebarContent {{ flex:1 1 auto !important; min-height:0 !important;"
         f" overflow-y:auto !important; overflow-x:hidden !important; }}",
-        f"{c} .app.sidebar-collapsed .sidebar-left {{ flex-basis:20px !important; padding:0 !important; }}",
+        f"{c} .app.sidebar-collapsed .sidebar-left {{ flex-basis:10px !important; padding:0 !important; }}",
         f"{c} .main {{ position:relative !important; left:auto !important; right:auto !important;"
         f" top:auto !important; bottom:auto !important; height:auto !important; align-self:stretch !important;"
         f" flex:1 1 auto !important; min-width:0 !important; z-index:1 !important; overflow:hidden !important; }}",
@@ -84,7 +84,7 @@ def _container_override_css(cid: str) -> str:
         f" background:var(--panel) !important;"
         f" overflow-x:visible !important; display:flex !important; flex-direction:column !important; }}",
         f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ flex-basis:var(--sidebar-right-w,240px) !important; }}",
-        f"{c} .app.sidebar-right-collapsed .sidebar-right {{ flex-basis:20px !important; padding:0 !important; }}",
+        f"{c} .app.sidebar-right-collapsed .sidebar-right {{ flex-basis:10px !important; padding:0 !important; }}",
         # Bound the content area (was height:100%) so the sticky-less .sidebar-close-btn
         # footer gets its own row below it instead of overlapping the scroll.
         f"{c} .sidebar-right-content {{ flex:1 1 auto !important; min-height:0 !important; height:auto !important; }}",
