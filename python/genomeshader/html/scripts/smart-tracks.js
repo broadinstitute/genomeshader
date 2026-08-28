@@ -1055,18 +1055,23 @@ function initializeRightSidebar() {
     setupRightSidebarResize(sidebarRight, app);
 
     // Initialize tab switching
-    const commandStripIcons = document.querySelectorAll('.command-strip-icon');
+    // Scope to the right strip so left-panel icons (data-left-tab) aren't caught.
+    const commandStripIcons = document.querySelectorAll('.sidebar-right-command-strip .command-strip-icon');
     commandStripIcons.forEach(icon => {
       icon.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
         const tabName = icon.dataset.tab;
-        if (tabName) {
+        if (!tabName) return;
+        // Activity-bar behavior (mirrors the left rail): collapsed -> open to the
+        // tab; open + already-active tab -> collapse; open + other tab -> switch.
+        if (getRightSidebarCollapsed()) {
           setActiveTab(tabName);
-          // Expand sidebar if collapsed
-          if (getRightSidebarCollapsed()) {
-            setRightSidebarCollapsed(false);
-          }
+          setRightSidebarCollapsed(false);
+        } else if (getActiveTab() === tabName) {
+          setRightSidebarCollapsed(true);
+        } else {
+          setActiveTab(tabName);
         }
       });
     });

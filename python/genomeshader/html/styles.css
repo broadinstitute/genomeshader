@@ -336,18 +336,14 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .app.sidebar-right-collapsed .sidebar-right {
   padding: 0;
   overflow: visible;
-  width: 20px !important;
-  min-width: 20px;
+  width: 48px !important;
+  min-width: 48px;
   border-radius: 0;
 }
-.app.sidebar-right-collapsed .sidebar-right > * {
-  opacity: 0;
-  pointer-events: none;
-}
-.app.sidebar-right-collapsed .sidebar-right .sidebarContent,
-.app.sidebar-right-collapsed .sidebar-right .sidebar-right-content {
-  opacity: 0;
-  pointer-events: none;
+/* Collapsed: show only the command-strip rail; hide the tab content so the rail
+   icons stay visible and clickable (mirrors the left panel). */
+.app.sidebar-right-collapsed .sidebar-right .sidebar-right-tab-content {
+  display: none;
 }
 /* Collapsed: arrows point toward the middle («) to pull the panel out. */
 .app.sidebar-right-collapsed .sidebar-right::before {

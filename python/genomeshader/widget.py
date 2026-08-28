@@ -91,7 +91,9 @@ def _container_override_css(cid: str) -> str:
         # .sidebarContent instead.
         f" overflow:visible !important; display:flex !important; flex-direction:column !important; }}",
         f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ flex-basis:var(--sidebar-right-w,240px) !important; }}",
-        f"{c} .app.sidebar-right-collapsed .sidebar-right {{ flex-basis:10px !important; padding:0 !important; }}",
+        # Collapsed right = the 48px icon rail (command strip stays visible,
+        # tab content hidden), mirroring the left panel.
+        f"{c} .app.sidebar-right-collapsed .sidebar-right {{ flex-basis:48px !important; padding:0 !important; }}",
         # Bound the content area (was height:100%) so the sticky-less .sidebar-close-btn
         # footer gets its own row below it instead of overlapping the scroll.
         f"{c} .sidebar-right-content {{ flex:1 1 auto !important; min-height:0 !important; height:auto !important; }}",
