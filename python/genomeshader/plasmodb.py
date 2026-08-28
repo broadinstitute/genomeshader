@@ -210,6 +210,30 @@ def parse_gff_genes(gff_path: str, rename=lambda c: c) -> Dict[str, List[dict]]:
         if gid not in exons_by_gene:
             exons_by_gene[gid] = [[feat[gid]["start"], feat[gid]["end"]]]
 
+    # Per-transcript detail (id + its exons) for the Genes panel enumeration.
+    # The immediate exon/CDS parent IS the transcript; root() maps it to the
+    # gene. CDS-only transcripts (no explicit exon feature) fall back to CDS.
+    transcripts_by_gene: Dict[str, List[dict]] = {}
+
+    def _add_transcript(parent_id: str, intervals: List[List[int]]) -> None:
+        ex = sorted(([int(s), int(e)] for s, e in intervals), key=lambda p: p[0])
+        if not ex:
+            return
+        transcripts_by_gene.setdefault(root(parent_id), []).append({
+            "id": parent_id,
+            "start": ex[0][0],
+            "end": max(e for _, e in ex),
+            "exons": ex,
+        })
+
+    for parent_id, exons in exons_by_parent.items():
+        _add_transcript(parent_id, exons)
+    for parent_id, cds in cds_by_parent.items():
+        if parent_id not in exons_by_parent:   # CDS-only transcript
+            _add_transcript(parent_id, cds)
+    for gene_id, txs in transcripts_by_gene.items():
+        txs.sort(key=lambda t: (t["start"], t["id"]))
+
     # Build gene models, grouped by contig.
     by_contig: Dict[str, List[dict]] = {}
     for gene_id, exons in exons_by_gene.items():
@@ -220,11 +244,13 @@ def parse_gff_genes(gff_path: str, rename=lambda c: c) -> Dict[str, List[dict]]:
         merged = _merge_intervals(exons)
         model = {
             "name": info.get("name", gene_id),
+            "id": gene_id,
             "strand": info.get("strand", "+"),
             "start": merged[0][0],
             "end": merged[-1][1],
             "exons": [[s, e, True] for s, e in merged],
             "description": info.get("description", ""),
+            "transcripts": transcripts_by_gene.get(gene_id, []),
         }
         by_contig.setdefault(contig, []).append(model)
 

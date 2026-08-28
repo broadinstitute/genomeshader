@@ -1452,17 +1452,45 @@ function renderGenesPanel() {
     return;
   }
   const esc = s => String(s == null ? "" : s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const num = n => Math.round(n).toLocaleString();
   const rows = visible.map(g => {
     // Description straight from the GFF if the gene model carries one.
     const desc = g.description || g.product || g.note || g.Note || "";
     const strand = g.strand === "-" ? "−" : (g.strand === "+" ? "+" : "");
-    const loc = `${Math.round(g.start).toLocaleString()}–${Math.round(g.end).toLocaleString()}`;
-    return `<div style="padding:8px 4px;border-bottom:1px solid var(--border2);">`
-      + `<div style="font-weight:700;font-size:12px;">${esc(g.name)}`
-      + (strand ? ` <span style="color:var(--muted);font-weight:400;">${strand}</span>` : ``)
+    const loc = `${num(g.start)}–${num(g.end)}`;
+    const exons = Array.isArray(g.exons) ? g.exons : [];
+    const txs = Array.isArray(g.transcripts) ? g.transcripts : [];
+
+    // Enumerate each transcript with its id, span and exon boundaries.
+    const txHtml = txs.map(t => {
+      const tex = Array.isArray(t.exons) ? t.exons : [];
+      const exList = tex.map((ex, i) =>
+        `<div style="color:var(--muted);font-size:10px;margin-left:12px;">`
+        + `exon ${i + 1}: ${num(ex[0])}–${num(ex[1])}</div>`
+      ).join("");
+      return `<div style="margin-top:5px;">`
+        + `<div style="font-size:11px;font-weight:600;">${esc(t.id)} `
+        + `<span style="color:var(--muted);font-weight:400;">(${num(t.start)}–${num(t.end)}, ${tex.length} exon${tex.length === 1 ? "" : "s"})</span></div>`
+        + exList
+        + `</div>`;
+    }).join("");
+
+    return `<div style="padding:10px 4px;border-bottom:1px solid var(--border2);">`
+      // Gene name = heading
+      + `<div style="font-weight:700;font-size:13px;">${esc(g.name)}`
+      + (strand ? ` <span style="color:var(--muted);font-weight:400;font-size:12px;">${strand}</span>` : ``)
       + `</div>`
-      + `<div style="color:var(--muted);font-size:11px;">${esc(state.contig)}:${loc}</div>`
-      + (desc ? `<div style="font-size:11px;margin-top:3px;color:var(--text);">${esc(desc)}</div>` : ``)
+      // Description
+      + (desc ? `<div style="font-size:11px;margin-top:2px;color:var(--text);">${esc(desc)}</div>` : ``)
+      // ID
+      + (g.id ? `<div style="font-size:11px;color:var(--muted);margin-top:3px;">ID: ${esc(g.id)}</div>` : ``)
+      // Coordinates
+      + `<div style="font-size:11px;color:var(--muted);">${esc(state.contig)}:${loc}</div>`
+      // Counts
+      + `<div style="font-size:11px;color:var(--muted);">`
+      + `${txs.length} transcript${txs.length === 1 ? "" : "s"} · ${exons.length} exon${exons.length === 1 ? "" : "s"}</div>`
+      // Transcript + exon enumeration
+      + txHtml
       + `</div>`;
   }).join("");
   host.innerHTML = `<div style="font-size:11px;color:var(--muted);margin:4px 0 6px;">`
