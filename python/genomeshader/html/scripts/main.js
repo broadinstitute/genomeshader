@@ -1749,21 +1749,41 @@ function setupVariantHoverAreas() {
         variantAlleleKeys.forEach(key => state.selectedAlleles.add(key));
       }
     } else {
-      // Single-select: replace selection with all alleles for this variant
-      // If clicking on already-selected variant (all alleles selected), deselect it
-      const allSelected = variantAlleleKeys.every(key => state.selectedAlleles.has(key));
-      if (allSelected && state.selectedAlleles.size === variantAlleleKeys.length) {
-        state.selectedAlleles.clear();
-      } else {
-        state.selectedAlleles.clear();
-        variantAlleleKeys.forEach(key => state.selectedAlleles.add(key));
-      }
+      // Single-select: replace selection with all alleles for this variant.
+      // Clicking an already-selected variant keeps it selected (no toggle) —
+      // deselect only happens via the multi-select modifier above, or by
+      // clicking empty space on the variants track (handled separately).
+      state.selectedAlleles.clear();
+      variantAlleleKeys.forEach(key => state.selectedAlleles.add(key));
     }
     
     renderFlowCanvas();
     if (window.updateSelectionDisplay) window.updateSelectionDisplay();
   };
-  
+
+  // Clicking empty space on the variants track (not on a variant) clears the
+  // selection. Rendered as a transparent rect UNDER the variant rects, so a
+  // real variant click (which stops propagation) never reaches it.
+  const clearSelectionFromEmptyClick = (e) => {
+    e.stopPropagation();
+    if (state.selectedAlleles.size === 0) return;
+    state.selectedAlleles.clear();
+    renderFlowCanvas();
+    if (window.updateSelectionDisplay) window.updateSelectionDisplay();
+  };
+  const addVariantDeselectBg = (parent, x, y, w, h) => {
+    if (w <= 0 || h <= 0) return;
+    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bg.setAttribute("x", x);
+    bg.setAttribute("y", y);
+    bg.setAttribute("width", w);
+    bg.setAttribute("height", h);
+    bg.setAttribute("fill", "transparent");
+    bg.style.pointerEvents = "auto";
+    bg.addEventListener("click", clearSelectionFromEmptyClick);
+    parent.appendChild(bg);
+  };
+
   // Clear existing hover areas
   clearSvg(flowOverlay);
   
@@ -1848,6 +1868,7 @@ function setupVariantHoverAreas() {
       if (isVertical) {
         const labelX = 0;
         const labelW = Math.min(30, Math.max(0, bandSize));
+        addVariantDeselectBg(bandOverlay, 0, 0, labelW, bandSize);
         for (let i = 0; i < win.length; i++) {
           const v = win[i];
           const cy = variantMode === "genomic"
@@ -1866,6 +1887,7 @@ function setupVariantHoverAreas() {
           bandOverlay.appendChild(hoverRect);
         }
       } else {
+        addVariantDeselectBg(bandOverlay, 0, 0, flowW, junctionY);
         for (let i = 0; i < win.length; i++) {
           const v = win[i];
           const cx = variantMode === "genomic"
@@ -1919,6 +1941,7 @@ function setupVariantHoverAreas() {
     if (isVertical) {
       const labelX = 0;
       const labelW = Math.min(30, Math.max(0, flowW));
+      addVariantDeselectBg(flowOverlay, 0, 0, labelW, flowH);
       for (let i = 0; i < win.length; i++) {
         const v = win[i];
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
@@ -1939,6 +1962,7 @@ function setupVariantHoverAreas() {
         flowOverlay.appendChild(hoverRect);
       }
     } else {
+      addVariantDeselectBg(flowOverlay, 0, 0, flowW, junctionYSingle);
       for (let i = 0; i < win.length; i++) {
         const v = win[i];
         const variantIdx = state.firstVariantIndex + i;
