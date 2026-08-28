@@ -1641,13 +1641,15 @@ function renderTracks() {
           instancedRenderer.addRect(qx, qy, qw, qh, rgba);
         }
         
-        // Draw base letters using SVG. IGV-style: black letters on solid color
-        // blocks (the block carries the nucleotide color, the letter is black).
+        // Draw base letters using SVG. IGV-style: solid color block with a
+        // letter whose color is picked for contrast against the block. The dark
+        // blocks (C blue, T red) get white letters; the lighter blocks (A green,
+        // G orange) get black.
         const nucleotideTextColors = {
-          'A': '#000000',
-          'C': '#000000',
-          'G': '#000000',
-          'T': '#000000'
+          'A': '#000000',  // on green
+          'C': '#ffffff',  // on blue
+          'G': '#000000',  // on orange
+          'T': '#ffffff'   // on red
         };
         const fragment = document.createDocumentFragment();
         for (const b of basesToRender) {
