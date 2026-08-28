@@ -217,6 +217,20 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   content: "\00BB";             /* » : expand */
 }
 
+/* Right panel drag-to-resize handle (inner/left edge). Behavior in
+   smart-tracks.js; this is just the visual accent. Hidden while collapsed. */
+.sidebar-right-resize-handle {
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.sidebar-right-resize-handle:hover {
+  background: var(--blue);
+  opacity: 0.5;
+}
+.app.sidebar-right-collapsed .sidebar-right-resize-handle {
+  display: none;
+}
+
 /* Large, obvious Close button pinned to the bottom of an open panel. */
 .sidebar-close-btn {
   position: sticky;

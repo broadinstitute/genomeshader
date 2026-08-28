@@ -888,6 +888,68 @@ function updateRightSidebarState() {
   requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (e) {} });
 }
 
+// Right sidebar width (drag-to-resize). Stored in px; applied via the
+// --sidebar-right-w CSS var on the container so the flex-basis rules honor it.
+const RIGHT_SIDEBAR_MIN_W = 200;
+function getRightSidebarWidth() {
+  const v = parseInt(localStorage.getItem("genomeshader.rightSidebarWidth"), 10);
+  return (isFinite(v) && v >= RIGHT_SIDEBAR_MIN_W) ? v : 240;
+}
+function applyRightSidebarWidth(px) {
+  const rootEl = document.querySelector('[id^="genomeshader-root-"]') || document.documentElement;
+  rootEl.style.setProperty("--sidebar-right-w", px + "px");
+}
+function setupRightSidebarResize(sidebarRight, app) {
+  if (sidebarRight.querySelector(".sidebar-right-resize-handle")) return;
+  applyRightSidebarWidth(getRightSidebarWidth());
+
+  const handle = document.createElement("div");
+  handle.className = "sidebar-right-resize-handle";
+  handle.title = "Drag to resize panel";
+  // Inline the essentials so it works without a styles.css dependency; visual
+  // accent (hover color) lives in styles.css.
+  handle.style.cssText =
+    "position:absolute;left:0;top:0;bottom:0;width:6px;cursor:col-resize;" +
+    "z-index:150;pointer-events:auto;touch-action:none;";
+  sidebarRight.appendChild(handle);
+
+  let startX = 0, startW = 0, dragging = false;
+  const onMove = (e) => {
+    if (!dragging) return;
+    const appW = app.getBoundingClientRect().width || 1200;
+    const maxW = Math.max(RIGHT_SIDEBAR_MIN_W, Math.min(720, appW * 0.6));
+    // Dragging the left edge leftward widens the panel.
+    let w = startW + (startX - e.clientX);
+    w = Math.max(RIGHT_SIDEBAR_MIN_W, Math.min(maxW, w));
+    applyRightSidebarWidth(w);
+    requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (err) {} });
+  };
+  const onUp = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    document.removeEventListener("pointermove", onMove, true);
+    document.removeEventListener("pointerup", onUp, true);
+    try { handle.releasePointerCapture(e.pointerId); } catch (err) {}
+    const cur = getComputedStyle(sidebarRight).width;
+    const px = Math.round(parseFloat(cur));
+    if (isFinite(px)) localStorage.setItem("genomeshader.rightSidebarWidth", String(px));
+    requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (err) {} });
+  };
+  handle.addEventListener("pointerdown", (e) => {
+    if (getRightSidebarCollapsed()) return;   // nothing to resize while collapsed
+    e.preventDefault(); e.stopPropagation();
+    dragging = true;
+    startX = e.clientX;
+    startW = sidebarRight.getBoundingClientRect().width;
+    try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+    document.addEventListener("pointermove", onMove, true);
+    document.addEventListener("pointerup", onUp, true);
+  }, true);
+  // Swallow the edge-click collapse handler so a resize drag never also toggles.
+  handle.addEventListener("click", (e) => { e.stopPropagation(); }, true);
+  handle.addEventListener("mousedown", (e) => { e.stopPropagation(); }, true);
+}
+
 // Initialize right sidebar (closed by default)
 // Wait for DOM to be ready
 if (typeof document !== 'undefined') {
@@ -948,7 +1010,7 @@ function initializeRightSidebar() {
     const handleRightSidebarToggle = (e) => {
       // Don't intercept clicks on form elements, command strip icons, or their containers
       const target = e.target;
-      if (target.closest('input, button.command-strip-icon, .smart-track-item, .sidebar-right-command-strip, .sidebar-close-btn')) {
+      if (target.closest('input, button.command-strip-icon, .smart-track-item, .sidebar-right-command-strip, .sidebar-close-btn, .sidebar-right-resize-handle')) {
         return;
       }
       
@@ -984,6 +1046,11 @@ function initializeRightSidebar() {
       closeBtn.addEventListener("click", (e) => { e.stopPropagation(); setRightSidebarCollapsed(true); });
       sidebarRight.appendChild(closeBtn);
     }
+
+    // Drag-to-resize handle on the panel's inner (left) edge. Width is driven by
+    // the --sidebar-right-w CSS var on the container (the flex-basis rules read
+    // it), so setting the var live resizes the panel and reflows the tracks.
+    setupRightSidebarResize(sidebarRight, app);
 
     // Initialize tab switching
     const commandStripIcons = document.querySelectorAll('.command-strip-icon');

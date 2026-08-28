@@ -54,7 +54,7 @@ def _container_override_css(cid: str) -> str:
     c = "#" + cid
     return "\n".join([
         f"{c} {{ height:600px; display:block; position:relative; overflow:visible;"
-        f" --sidebar-w:240px; --tracks-h:280px; --flow-h:500px; --reads-h:220px; }}",
+        f" --sidebar-w:240px; --sidebar-right-w:240px; --tracks-h:280px; --flow-h:500px; --reads-h:220px; }}",
         # Flex row: sidebar-left | main | sidebar-right. As siblings they cannot
         # overlap — main flexes to fill whatever the panels leave, so expanding a
         # panel narrows the tracks instead of occluding them. Overrides the inline
@@ -80,10 +80,10 @@ def _container_override_css(cid: str) -> str:
         f" flex:1 1 auto !important; min-width:0 !important; z-index:1 !important; overflow:hidden !important; }}",
         f"{c} .sidebar-right {{ position:relative !important; right:auto !important; top:auto !important;"
         f" bottom:auto !important; height:auto !important; align-self:stretch !important;"
-        f" flex:0 0 240px !important; z-index:100 !important; pointer-events:auto !important;"
+        f" flex:0 0 var(--sidebar-right-w,240px) !important; z-index:100 !important; pointer-events:auto !important;"
         f" background:var(--panel) !important;"
         f" overflow-x:visible !important; display:flex !important; flex-direction:column !important; }}",
-        f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ flex-basis:240px !important; }}",
+        f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ flex-basis:var(--sidebar-right-w,240px) !important; }}",
         f"{c} .app.sidebar-right-collapsed .sidebar-right {{ flex-basis:20px !important; padding:0 !important; }}",
         f"{c} .sidebar-right .sidebarContent {{ flex:1 !important; overflow-y:auto !important;"
         f" overflow-x:visible !important; padding:12px !important; pointer-events:auto !important; }}",
