@@ -2821,8 +2821,33 @@ function setupCanvasHover() {
       renderFlowCanvas();
     };
     
+    // Double-click an allele node: open both side panels so the user can pick
+    // samples (left) while the variant's info is directly visible (right, on the
+    // Variants tab). Coordinate hit-test mirrors the mousedown handler.
+    const alleleDblClickHandler = (e) => {
+      if (!window._alleleNodePositions || window._alleleNodePositions.length === 0) return;
+      const rect = flow.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const activeTrackId = getTrackIdAtClientPoint(e.clientX, e.clientY);
+      const nodes = filterNodesByTrack(window._alleleNodePositions, activeTrackId);
+      const inNode = (n) => x >= n.x && x <= n.x + n.w && y >= n.y && y <= n.y + n.h;
+      const hit = nodes.find(inNode) || window._alleleNodePositions.find(inNode);
+      if (!hit) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Left panel for sample selection.
+      try { if (typeof setSidebarCollapsed === "function") setSidebarCollapsed(false); } catch (err) {}
+      // Right panel opened to the Variants tab so the variant info shows.
+      try {
+        if (typeof setActiveTab === "function") setActiveTab("variants");
+        if (typeof setRightSidebarCollapsed === "function") setRightSidebarCollapsed(false);
+      } catch (err) {}
+    };
+
     // Attach to flow (when multi-track so overlays bubble) or flowWebGPU (single-track)
     targetElement.addEventListener("mousedown", alleleMouseDownHandler, { passive: false });
+    targetElement.addEventListener("dblclick", alleleDblClickHandler);
     document.addEventListener("mousemove", alleleMouseMoveHandler);
     document.addEventListener("mouseup", alleleMouseUpHandler);
   }
