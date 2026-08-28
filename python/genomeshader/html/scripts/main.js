@@ -2927,8 +2927,11 @@ function setupCanvasHover() {
       if (!hit) return;
       e.preventDefault();
       e.stopPropagation();
-      // Left panel for sample selection.
-      try { if (typeof setSidebarCollapsed === "function") setSidebarCollapsed(false); } catch (err) {}
+      // Left panel opened to the Samples tab for sample selection.
+      try {
+        if (typeof setLeftTab === "function") setLeftTab("samples", true);
+        else if (typeof setSidebarCollapsed === "function") setSidebarCollapsed(false);
+      } catch (err) {}
       // Right panel opened to the Variants tab so the variant info shows.
       try {
         if (typeof setActiveTab === "function") setActiveTab("variants");
