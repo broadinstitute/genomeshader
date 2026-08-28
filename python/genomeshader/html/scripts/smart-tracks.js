@@ -883,7 +883,9 @@ function updateRightSidebarState() {
   } else {
     app.classList.remove("sidebar-right-collapsed");
   }
-  // Let ResizeObserver-driven rendering handle transition layout changes.
+  // Reflow immediately so the tracks resize to the new width instead of waiting
+  // on the debounced ResizeObserver (which still handles the transition tail).
+  requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (e) {} });
 }
 
 // Initialize right sidebar (closed by default)

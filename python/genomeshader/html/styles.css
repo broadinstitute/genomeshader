@@ -166,21 +166,37 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   padding: 12px;
   padding-bottom: 12px;
 }
+/* Left panel handle: a large protruding tab at 75% height. It sticks 50px out
+   from the panel's inner edge into the view and shows arrows toward the middle
+   to pull the panel out. Clicking it toggles the panel. */
 .sidebar-left::after {
-  content: "";
+  content: "\00AB";              /* « : collapse (panel currently expanded) */
   position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
+  top: 75%;
+  transform: translateY(-50%);
+  left: 100%;                    /* protrude past the panel's inner edge */
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  background: var(--blue, #4a90d9);
+  border-radius: 0 10px 10px 0;
+  box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.35);
   cursor: pointer;
-  transition: background-color 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
-  z-index: 10;
+  pointer-events: auto;
+  opacity: 1 !important;
+  z-index: 250;
+  transition: filter 0.15s ease, width 0.15s ease;
 }
 .sidebar-left:hover::after {
-  background: var(--blue);
-  width: 6px;
-  box-shadow: 0 0 8px rgba(120, 180, 255, 0.4);
+  width: 58px;
+  filter: brightness(1.12);
+  box-shadow: 3px 3px 14px rgba(0, 0, 0, 0.45);
 }
 .app.sidebar-collapsed .sidebar-left {
   padding: 0;
@@ -194,27 +210,9 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   opacity: 0;
   pointer-events: none;
 }
+/* Collapsed: arrows point toward the middle (»») to pull the panel out. */
 .app.sidebar-collapsed .sidebar-left::after {
-  pointer-events: auto;
-  opacity: 1 !important;
-  right: 0;
-  width: 20px;
-  content: "\203A"; /* › : click to expand */
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text);
-  background: var(--panel2);
-  border-right: 1px solid var(--border2);
-}
-.app.sidebar-collapsed .sidebar-left:hover::after {
-  width: 24px;
-  background: var(--blue);
-  color: #fff;
-  border-right: none;
-  box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
+  content: "\00BB";             /* » : expand */
 }
 
 /* Right sidebar styles - always overlays on top of main panel */
@@ -255,22 +253,36 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   padding: 12px;
   padding-bottom: 12px;
 }
+/* Right panel handle: mirror of the left — a large protruding tab at 75%
+   height that sticks 50px out into the view, arrows pointing toward the middle. */
 .sidebar-right::before {
-  content: "";
+  content: "\00BB";              /* » : collapse (panel currently expanded) */
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
+  top: 75%;
+  transform: translateY(-50%);
+  right: 100%;                   /* protrude left into the view */
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  background: var(--blue, #4a90d9);
+  border-radius: 10px 0 0 10px;
+  box-shadow: -2px 2px 10px rgba(0, 0, 0, 0.35);
   cursor: pointer;
-  transition: background-color 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
-  z-index: 10;
   pointer-events: auto;
+  opacity: 1 !important;
+  z-index: 250;
+  transition: filter 0.15s ease, width 0.15s ease;
 }
 .sidebar-right:hover::before {
-  background: var(--blue);
-  width: 4px;
-  box-shadow: 0 0 8px rgba(120, 180, 255, 0.4);
+  width: 58px;
+  filter: brightness(1.12);
+  box-shadow: -3px 3px 14px rgba(0, 0, 0, 0.45);
 }
 /* Ensure command strip doesn't interfere with toggle */
 .sidebar-right-command-strip {
@@ -280,8 +292,8 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .app.sidebar-right-collapsed .sidebar-right {
   padding: 0;
   overflow: visible;
-  width: 8px !important;
-  min-width: 8px;
+  width: 20px !important;
+  min-width: 20px;
   border-radius: 0;
 }
 .app.sidebar-right-collapsed .sidebar-right > * {
@@ -293,27 +305,9 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   opacity: 0;
   pointer-events: none;
 }
+/* Collapsed: arrows point toward the middle («) to pull the panel out. */
 .app.sidebar-right-collapsed .sidebar-right::before {
-  pointer-events: auto;
-  opacity: 1 !important;
-  left: 0;
-  width: 20px;
-  content: "\2039"; /* ‹ : click to expand */
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text);
-  background: var(--panel2);
-  border-left: 1px solid var(--border2);
-}
-.app.sidebar-right-collapsed .sidebar-right:hover::before {
-  width: 24px;
-  background: var(--blue);
-  color: #fff;
-  border-left: none;
-  box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
+  content: "\00AB";             /* « : expand */
 }
 /* Right sidebar expanded state */
 .app:not(.sidebar-right-collapsed) .sidebar-right {
