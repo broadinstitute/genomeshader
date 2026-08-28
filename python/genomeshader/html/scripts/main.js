@@ -3290,6 +3290,106 @@ function setupCanvasHover() {
       return;
     }
 
+    // --- Variant / allele navigation header ---
+    (function buildNavHeader() {
+      const primary = selectedInfo[0];
+      if (!primary) return;
+      const trackId = primary.trackId;
+      const curVariantId = String(primary.variantId);
+      const curVariant = primary.variant || {};
+      const vlist = Array.isArray(variants) ? variants : [];
+      const vIdx = vlist.findIndex(v => String(v.id) === curVariantId);
+      const hasPrevV = vIdx > 0;
+      const hasNextV = vIdx >= 0 && vIdx < vlist.length - 1;
+
+      const getLabels = window.getFormattedLabelsForVariant;
+      const labels = (getLabels && curVariant && getLabels(curVariant).labels) || [];
+      const alleleCount = labels.length;
+      const selIdxForVariant = selectedInfo
+        .filter(e => String(e.variantId) === curVariantId)
+        .map(e => Number(e.alleleIndex));
+      const isSingle = selIdxForVariant.length === 1;
+      const curAllele = isSingle ? selIdxForVariant[0] : -1;   // -1 = whole variant
+      const hasPrevA = curAllele > 0;
+      const hasNextA = alleleCount > 0 && curAllele < alleleCount - 1;
+
+      const refresh = () => {
+        renderFlowCanvas();
+        if (window.updateSelectionDisplay) window.updateSelectionDisplay();
+      };
+      const selectVariantAll = (vid) => {
+        const v = findVariantByTrackAndId(trackId, vid);
+        if (!v) return;
+        const lbls = (getLabels && getLabels(v).labels) || [];
+        state.selectedAlleles.clear();
+        lbls.forEach((_, i) => state.selectedAlleles.add(makeAlleleSelectionKeyCompat(trackId, vid, i)));
+        refresh();
+      };
+      const selectSingleAllele = (vid, idx) => {
+        state.selectedAlleles.clear();
+        state.selectedAlleles.add(makeAlleleSelectionKeyCompat(trackId, vid, idx));
+        refresh();
+      };
+
+      const mkArrow = (glyph, enabled, onClick, ttl) => {
+        const btn = document.createElement('button');
+        btn.textContent = glyph; btn.title = ttl; btn.disabled = !enabled;
+        btn.style.cssText = 'width:34px;height:28px;border-radius:6px;border:1px solid var(--border2);'
+          + 'background:var(--panel);color:var(--text);font-size:15px;line-height:1;'
+          + 'display:flex;align-items:center;justify-content:center;'
+          + (enabled ? 'cursor:pointer;opacity:1;' : 'cursor:default;opacity:0.35;');
+        if (enabled) btn.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+        return btn;
+      };
+      const centerLabel = (text) => {
+        const d = document.createElement('div');
+        d.textContent = text;
+        d.style.cssText = 'flex:1;text-align:center;color:var(--muted);font-size:11px;font-weight:600;';
+        return d;
+      };
+      const navRow = (l, c, r) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin:2px 0;';
+        row.appendChild(l); row.appendChild(c); row.appendChild(r);
+        return row;
+      };
+
+      const header = document.createElement('div');
+      header.style.cssText = 'padding:8px 10px;margin:2px 0 8px;border-radius:10px;background:var(--panel2);';
+
+      // Prev/next VARIANT
+      header.appendChild(navRow(
+        mkArrow('◀', hasPrevV, () => selectVariantAll(vlist[vIdx - 1].id), 'Previous variant'),
+        centerLabel('Variant'),
+        mkArrow('▶', hasNextV, () => selectVariantAll(vlist[vIdx + 1].id), 'Next variant')
+      ));
+
+      // Bigger variant label + position
+      const big = document.createElement('div');
+      big.style.cssText = 'text-align:center;font-size:17px;font-weight:800;margin:6px 0 2px;color:var(--text);';
+      big.textContent = `${state.contig}:${Number(curVariant.pos || 0).toLocaleString()}`;
+      header.appendChild(big);
+      if (curVariant.id) {
+        const sub = document.createElement('div');
+        sub.style.cssText = 'text-align:center;font-size:11px;color:var(--muted);margin-bottom:2px;word-break:break-all;';
+        sub.textContent = String(curVariant.id);
+        header.appendChild(sub);
+      }
+
+      // Gap, then prev/next ALLELE
+      const gap = document.createElement('div'); gap.style.height = '10px'; header.appendChild(gap);
+      const alleleText = alleleCount
+        ? (curAllele >= 0 ? `Allele ${curAllele + 1} of ${alleleCount}` : `All ${alleleCount} alleles`)
+        : 'Alleles';
+      header.appendChild(navRow(
+        mkArrow('◀', hasPrevA, () => selectSingleAllele(curVariantId, curAllele - 1), 'Previous allele'),
+        centerLabel(alleleText),
+        mkArrow('▶', hasNextA, () => selectSingleAllele(curVariantId, curAllele < 0 ? 0 : curAllele + 1), 'Next allele')
+      ));
+
+      variantsContentEl.appendChild(header);
+    })();
+
     const allInfoKeysByTrack = {};
     selectedInfo.forEach((entry) => {
       const trackKey = normalizeInfoTrackKey(entry?.trackId);
