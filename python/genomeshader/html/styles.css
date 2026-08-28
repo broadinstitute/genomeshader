@@ -1154,6 +1154,31 @@ svg.overlay {
   pointer-events: auto !important;
   padding: 4px 0 !important;
 }
+/* Warning box (e.g. UCSC no-match). Amber reads as a warning in both themes. */
+.ucsc-warn {
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  background: rgba(240, 180, 41, 0.12);
+  border: 1px solid rgba(240, 180, 41, 0.40);
+}
+.ucsc-warn strong { color: #f0b429; }
+html[data-theme="light"] .ucsc-warn {
+  background: rgba(180, 83, 9, 0.10);
+  border-color: rgba(180, 83, 9, 0.35);
+}
+html[data-theme="light"] .ucsc-warn strong { color: #b45309; }
+@media (prefers-color-scheme: light) {
+  html[data-theme="auto"] .ucsc-warn {
+    background: rgba(180, 83, 9, 0.10);
+    border-color: rgba(180, 83, 9, 0.35);
+  }
+  html[data-theme="auto"] .ucsc-warn strong { color: #b45309; }
+}
+
 /* Settings as a 2-column table so labels and values/controls line up. */
 .settings-table {
   width: 100%;

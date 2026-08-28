@@ -31,6 +31,16 @@
     }
     h.innerHTML = "";
 
+    // No auto-matched assembly: warning box right below the title.
+    if (!selectedGenome) {
+      const warn = document.createElement("div");
+      warn.className = "ucsc-warn";
+      warn.innerHTML = "<strong>⚠ No UCSC assembly auto-matched</strong> for <b>"
+        + esc(genomesInfo.genome_build || "") + "</b>. Pick an appropriate reference below, "
+        + "or there may be no UCSC data for this genome.";
+      h.appendChild(warn);
+    }
+
     // Assembly picker.
     const lbl = document.createElement("div");
     lbl.style.cssText = "font-size:11px;color:var(--muted);margin:4px 0 3px;";
@@ -54,14 +64,7 @@
     sel.addEventListener("change", () => { selectedGenome = sel.value; loadTracks(selectedGenome); });
     h.appendChild(sel);
 
-    if (!selectedGenome) {
-      const note = document.createElement("div");
-      note.style.cssText = "font-size:11px;color:var(--muted);padding:4px 2px;line-height:1.5;";
-      note.innerHTML = "No UCSC assembly auto-matched <b>" + esc(genomesInfo.genome_build || "") + "</b>. "
-        + "If there's an appropriate reference, pick it above; otherwise there is no UCSC data for this genome.";
-      h.appendChild(note);
-      return;
-    }
+    if (!selectedGenome) return;  // warning shown above; wait for a manual pick
 
     const tracksBox = document.createElement("div");
     tracksBox.id = "ucscTracksList";
