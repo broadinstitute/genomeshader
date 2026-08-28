@@ -3367,15 +3367,19 @@ function setupCanvasHover() {
       big.style.cssText = 'text-align:center;font-size:17px;font-weight:800;margin:6px 0 2px;color:var(--text);';
       big.textContent = `${state.contig}:${Number(curVariant.pos || 0).toLocaleString()}`;
       header.appendChild(big);
-      if (curVariant.id) {
+      // Only a real VCF ID is meaningful; the internal load-order id is not, so
+      // show it only when the variant actually carries a vcfId.
+      if (curVariant.vcfId && String(curVariant.vcfId).length > 0) {
         const sub = document.createElement('div');
         sub.style.cssText = 'text-align:center;font-size:11px;color:var(--muted);margin-bottom:2px;word-break:break-all;';
-        sub.textContent = String(curVariant.id);
+        sub.textContent = String(curVariant.vcfId);
         header.appendChild(sub);
       }
 
-      // Gap, then prev/next ALLELE
-      const gap = document.createElement('div'); gap.style.height = '10px'; header.appendChild(gap);
+      // Divider between the variant position info and the allele section.
+      const rule = document.createElement('div');
+      rule.style.cssText = 'height:1px;background:var(--border2);margin:8px 0;';
+      header.appendChild(rule);
       const alleleText = alleleCount
         ? (curAllele >= 0 ? `Allele ${curAllele + 1} of ${alleleCount}` : `All ${alleleCount} alleles`)
         : 'Alleles';

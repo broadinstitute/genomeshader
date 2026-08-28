@@ -698,11 +698,6 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   opacity: 1 !important;
   pointer-events: auto !important;
 }
-/* When the left panel is open, lift the button above the close-panel footer so
-   the two don't overlap. */
-.app:not(.sidebar-collapsed) .gearBtn {
-  bottom: 64px !important;
-}
 .gearBtn:hover { filter: brightness(1.06); }
 .gearBtn:active { transform: translateY(1px); }
 

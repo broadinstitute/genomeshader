@@ -1046,15 +1046,8 @@ function initializeRightSidebar() {
 
     sidebarRight.style.pointerEvents = "auto";
 
-    // Large, obvious Close button pinned to the bottom of the open right panel.
-    if (!sidebarRight.querySelector(".sidebar-close-btn")) {
-      const closeBtn = document.createElement("button");
-      closeBtn.className = "sidebar-close-btn";
-      closeBtn.type = "button";
-      closeBtn.textContent = "Close panel »";
-      closeBtn.addEventListener("click", (e) => { e.stopPropagation(); setRightSidebarCollapsed(true); });
-      sidebarRight.appendChild(closeBtn);
-    }
+    // Collapse is handled by the protruding edge tab (.sidebar-right::before);
+    // no separate close button needed.
 
     // Drag-to-resize handle on the panel's inner (left) edge. Width is driven by
     // the --sidebar-right-w CSS var on the container (the flex-basis rules read
