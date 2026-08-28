@@ -1479,6 +1479,10 @@ class GenomeShader:
             formatted_alt_alleles = [format_allele_label(alt) for alt in alt_alleles] if alt_alleles else []
             variants_data.append({
                 "id": variant_display_id,
+                # The real VCF ID column, if any. The label above a variant only
+                # shows this — a load-order index (variant_id) is meaningless, so
+                # when the VCF has no ID here it stays blank.
+                "vcfId": str(vcf_id) if vcf_id else "",
                 "pos": variant_info["pos"],
                 "refAllele": variant_info["refAllele"],
                 "altAlleles": alt_alleles,

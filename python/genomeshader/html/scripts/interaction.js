@@ -824,19 +824,21 @@ function renderFlowCanvas() {
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
-      if (shouldShow) {
-        // Show first ID (or count if multiple)
-        const displayText = variantsAtPos.length > 1 
-          ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
-          : variantsAtPos[0].id;
+      // Only a real VCF ID is meaningful above a variant; a load-order index is
+      // not, so show nothing when the VCF has no ID at this position.
+      const idVariants = variantsAtPos.filter(v => v.vcfId && String(v.vcfId).length > 0);
+      const displayText = idVariants.length === 0
+        ? ""
+        : (idVariants.length > 1
+            ? `${idVariants[0].vcfId} (+${idVariants.length - 1})`
+            : String(idVariants[0].vcfId));
+
+      if (shouldShow && displayText) {
         ctx.fillText(displayText, x - 10, 14);
       }
-      
+
       // Store position for hit testing (for click-to-pin and tooltip) - one entry per position
       const firstVariantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
-      const displayText = variantsAtPos.length > 1 
-        ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
-        : variantsAtPos[0].id;
       const labelWidth = ctx.measureText(displayText).width;
       const labelIds = (firstVariant.displayIds && firstVariant.displayIds.length > 0)
         ? firstVariant.displayIds
