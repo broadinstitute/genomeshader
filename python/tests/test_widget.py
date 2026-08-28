@@ -88,12 +88,14 @@ def test_show_widget_wires_inlined_config(tmp_path, monkeypatch):
         s.show_widget("Pf3D7_01_v3:1-100")
 
     # Widget built from the inlined config, and displayed after clearing the
-    # progress text so it isn't buried below stdout.
+    # progress bar/output so it isn't buried below stdout.
     _, kwargs = WCls.call_args
     assert kwargs["config"] == {"genome_build": "X", "region": "Pf3D7_01_v3:1-100"}
     assert kwargs["view_id"] == "vid123"
     clr.assert_called_once()
-    disp.assert_called_once_with(fake_widget)
+    # display() is called for the progress bar (if ipywidgets is present) and
+    # then for the widget itself; the widget must be among the displayed objects.
+    assert any(c.args and c.args[0] is fake_widget for c in disp.call_args_list)
 
 
 def test_show_delegates_to_widget(tmp_path, monkeypatch):

@@ -2225,10 +2225,30 @@ class GenomeShader:
         return port
     
     def _progress(self, msg: str, step: Optional[int] = None, total: Optional[int] = None):
-        """Print a staged progress line during render (enabled by show/show_widget),
-        so users see what's happening instead of a silent pause."""
+        """Report staging progress during render (enabled by show/show_widget).
+
+        Drives a graphical ipywidgets progress bar when show_widget set one up;
+        otherwise falls back to a printed line (plain Python / no bar)."""
         if not getattr(self, "_progress_enabled", False):
             return
+        bar = getattr(self, "_progress_bar", None)
+        label = getattr(self, "_progress_label", None)
+        if bar is not None and label is not None:
+            try:
+                if total:
+                    bar.max = total
+                if step is not None:
+                    bar.value = step
+                pct = int(round(100 * (step or 0) / (total or 1)))
+                label.value = (
+                    "<div style='font:600 13px/1.5 -apple-system,system-ui,sans-serif;"
+                    "color:#111'>🧬 " + msg + "</div>"
+                    "<div style='font:400 11px/1.4 -apple-system,system-ui,sans-serif;"
+                    "color:#666'>" + (f"Step {step} of {total} · {pct}%" if step and total else "") + "</div>"
+                )
+                return
+            except Exception:
+                pass  # fall through to print if the widget update fails
         prefix = f"[{step}/{total}] " if step and total else ""
         print(f"🧬 {prefix}{msg}", flush=True)
 
@@ -2789,12 +2809,35 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
 
         # Build the config with variants inlined (no comm/URL needed); this also
         # sets self._last_locus / _last_view_id used by the reads message handler.
-        # Staged progress keeps the user informed during the ~1s variant fetch.
+        # A graphical progress bar keeps the user informed during the ~1s variant
+        # fetch + annotation load, then gets cleared with the rest of the output.
         self._progress_enabled = True
+        self._progress_bar = None
+        self._progress_label = None
+        try:
+            import ipywidgets as _W
+            self._progress_label = _W.HTML(
+                "<div style='font:600 13px/1.5 -apple-system,system-ui,sans-serif;"
+                "color:#111'>🧬 Preparing viewer…</div>"
+            )
+            self._progress_bar = _W.IntProgress(
+                value=0, min=0, max=4, bar_style="info",
+                layout=_W.Layout(width="340px", height="18px"),
+            )
+            display(_W.VBox(
+                [self._progress_label, self._progress_bar],
+                layout=_W.Layout(padding="10px 4px"),
+            ))
+        except Exception:
+            self._progress_bar = None
+            self._progress_label = None
+
         try:
             self.render(locus, inline_payload=True)
         finally:
             self._progress_enabled = False
+            self._progress_bar = None
+            self._progress_label = None
 
         widget = GenomeShaderWidget(
             self,
