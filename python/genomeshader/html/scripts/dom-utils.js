@@ -832,11 +832,12 @@ const handleSettingsHotkeys = (e) => {
     return;
   }
 
-  // Full screen toggle: 'f'
-  if (key === 'f' && fullscreenItem && focusModeController && !focusModeController.isActive()) {
+  // Full screen toggle: 'f' (enter when off, exit when on)
+  if (key === 'f' && fullscreenItem && focusModeController) {
     e.preventDefault();
     e.stopPropagation();
-    focusModeController.enter();
+    if (focusModeController.isActive()) focusModeController.exit();
+    else focusModeController.enter();
     return;
   }
 
