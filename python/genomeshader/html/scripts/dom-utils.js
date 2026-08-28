@@ -925,6 +925,7 @@ mq?.addEventListener?.("change", () => {
   host._hintTipInstalled = true;
   const DWELL_MS = 375; // 75% of the ~500ms native default
   let tip = null, timer = null, current = null;
+  let px = 0, py = 0; // last pointer position, so the hint shows next to the cursor
 
   function ensureTip() {
     if (tip && tip.isConnected) return tip;
@@ -950,21 +951,29 @@ mq?.addEventListener?.("change", () => {
     const text = el.getAttribute("title");
     if (!text) return;
     current = el;
+    px = e.clientX; py = e.clientY;
     // Suppress the native tooltip while we own this hint.
     el.dataset._hintTitle = text;
     el.removeAttribute("title");
     timer = setTimeout(() => {
       const t = ensureTip();
       t.textContent = text;
-      const r = current.getBoundingClientRect();
-      // Prefer below the element; keep it on-screen.
-      let left = Math.max(6, Math.min(r.left, window.innerWidth - 250));
-      let top = r.bottom + 6;
-      if (top > window.innerHeight - 40) top = Math.max(6, r.top - 28);
+      // Next to the cursor (like the native/data tooltips), clamped on-screen.
+      const w = t.offsetWidth || 160, h = t.offsetHeight || 24;
+      let left = px + 12;
+      let top = py + 16;
+      if (left + w > window.innerWidth - 6) left = Math.max(6, px - w - 12);
+      if (top + h > window.innerHeight - 6) top = Math.max(6, py - h - 12);
       t.style.left = left + "px";
       t.style.top = top + "px";
       t.classList.add("visible");
+      timer = null; // shown — stop tracking the pointer
     }, DWELL_MS);
+  }, true);
+  // Track the pointer only while a hint is pending, so the tip lands where the
+  // cursor actually is (no cost outside the 375ms dwell).
+  host.addEventListener("mousemove", (e) => {
+    if (timer) { px = e.clientX; py = e.clientY; }
   }, true);
   host.addEventListener("mouseout", (e) => {
     // Can't match on [title] here — we removed it to suppress the native popup.
