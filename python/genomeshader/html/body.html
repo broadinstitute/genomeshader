@@ -197,6 +197,89 @@
               <!-- Comments content will be rendered here -->
             </div>
           </div>
+
+          <!-- Help Tab -->
+          <div class="tab-pane" id="tab-help" data-tab="help">
+            <div class="sidebarHeader" style="margin-top: 20px;">
+              <h3>Help</h3>
+            </div>
+            <div id="helpContent" class="help-content" style="font-size: 12px; line-height: 1.5; color: var(--text);">
+
+              <p style="color: var(--muted); margin: 0 0 12px;">
+                Genomeshader is an interactive browser for <strong>population-scale</strong>
+                genetic variation. Instead of paging through one sample at a time, you
+                explore a whole cohort at once — the goal is to see <em>which</em> variants
+                matter and <em>who</em> carries them.
+              </p>
+
+              <div style="background: var(--panel2); border: 1px solid var(--border2); border-radius: 8px; padding: 10px 12px; margin: 0 0 14px;">
+                <div style="font-weight: 700; margin-bottom: 4px;">The core idea</div>
+                You navigate primarily <strong>between variants</strong>. Each variant is
+                shown with its alleles and how frequently they occur across the cohort.
+                When a variant looks interesting, you <strong>deep-dive into the sample
+                cohort</strong> from it — pulling up the reads of the samples that carry a
+                given allele to see the underlying evidence.
+              </div>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Typical workflow</div>
+              <ol style="margin: 0 0 12px; padding-left: 18px;">
+                <li style="margin-bottom: 5px;"><strong>Scan variants.</strong> Move along
+                  the genome; the variant track marks each site and the flow ("alleuvial")
+                  display shows each allele as a band sized by its frequency in the cohort.</li>
+                <li style="margin-bottom: 5px;"><strong>Pick an allele.</strong> Click an
+                  allele band to select it. Rare alleles can be folded together (Settings →
+                  Alleles) so common structure stands out.</li>
+                <li style="margin-bottom: 5px;"><strong>Deep-dive the cohort.</strong> Load
+                  samples carrying that allele as read tracks ("Smart Tracks"). A loading
+                  strategy decides which samples to pull first (e.g. a random draw, or the
+                  best-evidence carriers).</li>
+                <li><strong>Inspect the evidence.</strong> Reads render on the GPU with
+                  strand direction and per-base coloring against the reference so you can
+                  confirm the call.</li>
+              </ol>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Moving around</div>
+              <ul style="margin: 0 0 12px; padding-left: 18px;">
+                <li style="margin-bottom: 4px;"><strong>Pan:</strong> drag the main view left/right.</li>
+                <li style="margin-bottom: 4px;"><strong>Zoom:</strong> scroll or pinch.</li>
+                <li style="margin-bottom: 4px;"><strong>Jump:</strong> load a specific sample by
+                  ID from the <em>Sample Search</em> box in the left panel (press ↓ for the list).</li>
+                <li><strong>Select / reorder alleles:</strong> click an allele band to select;
+                  drag bands to reorder them.</li>
+              </ul>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Tracks</div>
+              <ul style="margin: 0 0 12px; padding-left: 18px;">
+                <li style="margin-bottom: 4px;"><strong>Chromosome &amp; ruler</strong> — where you are on the genome.</li>
+                <li style="margin-bottom: 4px;"><strong>Reference</strong> — the reference sequence as IGV-style colored bases.</li>
+                <li style="margin-bottom: 4px;"><strong>Genes</strong> — the union of overlapping transcripts.</li>
+                <li style="margin-bottom: 4px;"><strong>Variants + flow</strong> — variant sites and their allele frequencies across the cohort.</li>
+                <li><strong>Reads</strong> — reads for the samples you've pulled in.</li>
+              </ul>
+              <p style="color: var(--muted); margin: 0 0 12px;">
+                Collapse any track with its <strong>▼ / ▶</strong> button; a minimized track
+                stays as a labeled bar you can click to expand. Either side panel collapses
+                via the protruding tab on its inner edge.
+              </p>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Right panel tabs</div>
+              <ul style="margin: 0 0 12px; padding-left: 18px;">
+                <li style="margin-bottom: 4px;"><strong>Smart Tracks</strong> — the sample read tracks you've loaded from alleles.</li>
+                <li style="margin-bottom: 4px;"><strong>Genes</strong> — descriptions of the genes currently in view.</li>
+                <li style="margin-bottom: 4px;"><strong>Variants</strong> — the variants in the current region.</li>
+                <li><strong>Settings</strong> — display and allele options (also on the ⚙ menu).</li>
+              </ul>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Keyboard shortcuts</div>
+              <ul style="margin: 0 0 4px; padding-left: 18px; color: var(--muted);">
+                <li style="margin-bottom: 4px;"><strong>F</strong> — full screen</li>
+                <li style="margin-bottom: 4px;"><strong>T</strong> — cycle theme (auto / light / dark)</li>
+                <li style="margin-bottom: 4px;"><strong>O</strong> — orientation (horizontal / vertical)</li>
+                <li><strong>V</strong> — variant layout (equidistant / to-scale)</li>
+              </ul>
+
+            </div>
+          </div>
         </div>
       </div>
       
@@ -253,12 +336,6 @@
               <circle cx="12" cy="12" r="10"></circle>
               <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
               <line x1="12" y1="17" x2="12.01" y2="17"></line>
-            </svg>
-          </button>
-          <button class="command-strip-icon" data-tab="feedback" title="Feedback" aria-label="Feedback">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-              <line x1="9" y1="10" x2="15" y2="10"></line>
             </svg>
           </button>
         </div>
