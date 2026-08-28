@@ -85,6 +85,12 @@ def _container_override_css(cid: str) -> str:
         f" z-index:200 !important; }}",
         f"{c} #sampleStrategySection, {c} #sampleStrategySection *, {c} #sampleSearchSection,"
         f" {c} #sampleSearchSection *, {c} #sampleContext, {c} #sampleContext * {{ pointer-events:auto !important; }}",
+        # Stacking so the sample-search dropdown floats ABOVE the Selection /
+        # Strategy section (otherwise it's trapped at the section's z-index and
+        # the Selection UI paints over it). Mirrors view.py's inline path.
+        f"{c} #sampleSearchSection {{ position:relative !important; z-index:5000 !important; overflow:visible !important; }}",
+        f"{c} #sampleStrategySection {{ position:relative !important; z-index:200 !important; }}",
+        f"{c} #sampleSearchResults {{ z-index:5001 !important; background:var(--panel,#14181f) !important; }}",
         f"{c} .tracks {{ position:absolute !important; left:0 !important; right:0 !important;"
         f" top:0 !important; height:var(--tracks-h,280px) !important; width:100% !important; }}",
         f"{c} #tracksContainer {{ position:relative !important; width:100% !important; height:100% !important; }}",

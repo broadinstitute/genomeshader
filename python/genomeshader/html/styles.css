@@ -796,15 +796,19 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   border: 1px solid var(--border2);
   border-radius: 6px;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
-  background: var(--panel) !important;   /* opaque (#11151b / #fff) */
+  /* Opaque. Fallback color if --panel doesn't resolve in this host. */
+  background: var(--panel, #14181f) !important;
   opacity: 1 !important;
   mix-blend-mode: normal;
   isolation: isolate;
 }
+/* Each row carries its own opaque background so nothing behind the floating
+   dropdown can ever show through, independent of the container. */
 .sampleSearchResult {
   padding: 7px 9px;
   cursor: pointer;
   color: var(--text);
+  background: var(--panel, #14181f) !important;
   border-bottom: 1px solid var(--border2);
 }
 .sampleSearchResult:last-child {
@@ -812,7 +816,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .sampleSearchResult:hover,
 .sampleSearchResult.active {
-  background: var(--blue);
+  background: var(--blue, #2b6fff) !important;
   color: #fff;
 }
 
