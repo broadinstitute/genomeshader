@@ -1101,6 +1101,64 @@ svg.overlay {
   display: block;
 }
 
+/* Left panel: an icon rail (command strip) + tab content, mirroring the right
+   panel. The rail stays visible when the panel is collapsed so its icons can
+   open the panel to a tab (e.g. Settings). */
+.sidebar-left-content {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+.sidebar-left-command-strip {
+  width: 48px;
+  min-width: 48px;
+  background: var(--panel2);
+  border-right: 1px solid var(--border2);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 16px 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  pointer-events: auto;
+  z-index: 20;
+}
+.sidebar-left-tab-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.left-tab-pane { display: none; }
+.left-tab-pane.active { display: block; }
+/* Collapsed: show only the icon rail, hide the tab content. */
+.app.sidebar-collapsed .sidebar-left-tab-content { display: none; }
+
+/* The settings menu renders inline inside the Settings tab (not a floating
+   popup). Override the .menu popup styling for this instance. */
+#ctxMenu.settings-panel {
+  position: static !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+  border: none !important;
+  background: transparent !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  left: auto !important;
+  top: auto !important;
+  right: auto !important;
+  z-index: auto !important;
+  pointer-events: auto !important;
+  padding: 4px 0 !important;
+}
+
 /* Bottom status bar: background-processing text + progress. Hidden until a
    message is set via window.__GS_STATUS(). */
 .status-bar {

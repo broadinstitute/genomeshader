@@ -75,7 +75,9 @@ def _container_override_css(cid: str) -> str:
         f" overflow:visible !important; pointer-events:auto !important; }}",
         f"{c} .sidebar-left .sidebarContent {{ flex:1 1 auto !important; min-height:0 !important;"
         f" overflow-y:auto !important; overflow-x:hidden !important; }}",
-        f"{c} .app.sidebar-collapsed .sidebar-left {{ flex-basis:10px !important; padding:0 !important; }}",
+        # Collapsed left = the 48px icon rail (command strip stays visible so its
+        # icons can reopen the panel to a tab); the tab content is hidden.
+        f"{c} .app.sidebar-collapsed .sidebar-left {{ flex-basis:48px !important; padding:0 !important; }}",
         f"{c} .main {{ position:relative !important; left:auto !important; right:auto !important;"
         f" top:auto !important; bottom:auto !important; height:auto !important; align-self:stretch !important;"
         f" flex:1 1 auto !important; min-width:0 !important; z-index:1 !important; overflow:hidden !important; }}",

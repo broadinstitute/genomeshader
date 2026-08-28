@@ -228,92 +228,54 @@ const stored = getStoredTheme();
 document.documentElement.setAttribute("data-theme", stored ?? "auto");
 updateThemeLabel();
 
+// Left panel tabs (samples / settings). Settings now lives inline in its own
+// left tab instead of a floating popup, so openMenu just switches to it.
+function getActiveLeftTab() {
+  return localStorage.getItem("genomeshader.leftTab") || "samples";
+}
+function updateLeftTab() {
+  const active = getActiveLeftTab();
+  const scope = getCurrentRoot() || root || document;
+  scope.querySelectorAll(".left-tab-pane").forEach(p => {
+    p.classList.toggle("active", p.dataset.leftTab === active);
+  });
+  scope.querySelectorAll(".sidebar-left-command-strip .command-strip-icon").forEach(ic => {
+    ic.classList.toggle("active", ic.dataset.leftTab === active);
+  });
+}
+function setLeftTab(name, openIfCollapsed) {
+  if (!name) return;
+  localStorage.setItem("genomeshader.leftTab", name);
+  updateLeftTab();
+  if (openIfCollapsed && getSidebarCollapsed()) setSidebarCollapsed(false);
+}
 function openMenu() {
-  // In inline mode, move menu to body so fixed positioning works relative to viewport
-  if (hostMode === 'inline' && ctxMenu.parentElement !== document.body) {
-    document.body.appendChild(ctxMenu);
-  }
-  
-  // Temporarily show menu to measure its actual dimensions
-  ctxMenu.style.position = 'fixed';
-  ctxMenu.style.visibility = 'hidden';
-  ctxMenu.style.display = 'block';
-  ctxMenu.classList.add("open");
-  ctxMenu.setAttribute("aria-hidden", "false");
-  
-  // Get actual menu dimensions
-  const menuRect = ctxMenu.getBoundingClientRect();
-  const menuHeight = menuRect.height;
-  const menuWidth = menuRect.width;
-  
-  // Use fixed positioning so menu appears over everything (including Jupyter UI)
-  const r = menuBtn.getBoundingClientRect();
-  const padding = 8;
-  const viewportHeight = window.innerHeight;
-  const viewportWidth = window.innerWidth;
-  
-  // Calculate positions for above and below the button
-  const spaceAbove = r.top;
-  const spaceBelow = viewportHeight - r.bottom;
-  const topIfAbove = r.top - menuHeight - padding;
-  const topIfBelow = r.bottom + padding;
-  
-  // Determine best position: prefer above, but use below if not enough space above
-  // However, if below would extend off screen, position above even with limited space
-  let top, left = r.left;
-  
-  // Check if positioning below would extend off screen
-  const wouldExtendBelow = (topIfBelow + menuHeight) > (viewportHeight - padding);
-  
-  if (spaceAbove >= menuHeight + padding && !wouldExtendBelow) {
-    // Enough space above, position above
-    top = topIfAbove;
-  } else if (spaceBelow >= menuHeight + padding && !wouldExtendBelow) {
-    // Not enough space above, but enough below, position below
-    top = topIfBelow;
-  } else {
-    // Not enough space in either direction, position above and adjust to fit
-    // This ensures menu never extends below viewport
-    top = Math.max(padding, viewportHeight - menuHeight - padding);
-  }
-  
-  // Ensure menu doesn't go off right edge
-  if (left + menuWidth > viewportWidth - padding) {
-    left = Math.max(padding, viewportWidth - menuWidth - padding);
-  }
-  
-  // Final check: ensure menu never extends below viewport
-  if (top + menuHeight > viewportHeight - padding) {
-    top = Math.max(padding, viewportHeight - menuHeight - padding);
-  }
-  
-  // Apply final positioning
-  ctxMenu.style.left = `${left}px`;
-  ctxMenu.style.top = `${top}px`;
-  ctxMenu.style.zIndex = '2147483647';
-  ctxMenu.style.visibility = 'visible';
-  ctxMenu.style.pointerEvents = 'auto';
-  ctxMenu.style.opacity = '1';
-
-  // Update variant layout mode label when menu opens
+  setLeftTab("settings", true);
   updateVariantLayoutModeLabel();
   updateAggregateRareAllelesControls();
 }
-function closeMenu() {
-  ctxMenu.classList.remove("open");
-  ctxMenu.setAttribute("aria-hidden", "true");
-  ctxMenu.style.display = 'none';
-  ctxMenu.style.visibility = 'hidden';
-  ctxMenu.style.pointerEvents = 'none';
-  
-  // In inline mode, move menu back to root when closed
-  if (hostMode === 'inline' && root && ctxMenu.parentElement === document.body) {
-    root.appendChild(ctxMenu);
-  }
-}
-function toggleMenu() {
-  ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
-}
+function closeMenu() { /* settings is a persistent tab now; nothing to close */ }
+function toggleMenu() { openMenu(); }
+
+// Wire the left command-strip icons (VSCode-style activity bar):
+//  - collapsed: open the panel to the clicked tab.
+//  - open + clicked tab already active: collapse the panel.
+//  - open + a different tab: switch to it.
+(function wireLeftCommandStrip() {
+  const scope = getCurrentRoot() || root || document;
+  scope.querySelectorAll(".sidebar-left-command-strip .command-strip-icon").forEach(ic => {
+    ic.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const name = ic.dataset.leftTab;
+      if (!name) return;
+      if (getSidebarCollapsed()) { setLeftTab(name); setSidebarCollapsed(false); }
+      else if (getActiveLeftTab() === name) { setSidebarCollapsed(true); }
+      else { setLeftTab(name); }
+    });
+  });
+  updateLeftTab();
+})();
 
 if (menuBtn && ctxMenu) {
   // Track if we've already handled this interaction to prevent double-toggle

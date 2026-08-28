@@ -1,6 +1,28 @@
 <div class="app sidebar-right-collapsed" style="position: relative; display: block;">
   <div class="sidebar-left" id="sidebarLeft" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
-    <div class="sidebarContent">
+    <div class="sidebar-left-content">
+      <div class="sidebar-left-command-strip">
+        <div class="command-strip-main">
+          <button class="command-strip-icon active" data-left-tab="samples" title="Samples" aria-label="Samples">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="9" y1="3" x2="15" y2="3"></line>
+              <path d="M10 3v13a2 2 0 0 0 4 0V3"></path>
+              <line x1="10" y1="12" x2="14" y2="12"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="command-strip-settings">
+          <button class="command-strip-icon" data-left-tab="settings" title="Settings" aria-label="Settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="sidebar-left-tab-content">
+        <div class="sidebarContent">
+          <div class="left-tab-pane active" data-left-tab="samples">
     <div style="display: none;">
       <div class="sidebarHeader">
         <h3>Participant groups</h3>
@@ -75,8 +97,9 @@
         <div id="samplePreviewList" style="color: var(--text);"></div>
       </div>
     </div>
-
-    <div class="menu" id="ctxMenu" role="menu" aria-hidden="true">
+          </div>
+          <div class="left-tab-pane" data-left-tab="settings">
+            <div class="menu settings-panel open" id="ctxMenu" role="menu" aria-hidden="false">
       <div class="menuTitle">Display</div>
       <div class="menuItem" id="themeItem" role="menuitem">
         <span>Theme<span class="menuHotkey">T</span></span>
@@ -119,9 +142,10 @@
         <span class="menuRight">Super-pop</span>
       </div>
     </div>
+          </div>
+        </div>
+      </div>
     </div>
-
-    <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
   </div>
 
   <div class="main" id="main" style="position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 1;">
