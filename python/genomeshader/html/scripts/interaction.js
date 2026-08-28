@@ -2517,13 +2517,19 @@ function renderFlowCanvas() {
       // Horizontal mode: normal text
       const labelX = labelInfo.nodeX + 12;
       const labelY = labelInfo.nodeY + 13;
-      
+
       // Calculate dimensions for tooltip
       const tooltipW = textWidth + labelPadding * 2;
       const tooltipH = textHeight + labelPadding * 2;
-      const tooltipX = labelX - labelPadding;
-      const tooltipY = labelY - textHeight - labelPadding;
-      
+      // Keep the box fully inside the canvas so it isn't clipped at the bottom
+      // (or any edge) by the flow area's bounds.
+      const canvasW = ctx.canvas.clientWidth || ctx.canvas.width;
+      const canvasH = ctx.canvas.clientHeight || ctx.canvas.height;
+      let tooltipX = labelX - labelPadding;
+      let tooltipY = labelY - textHeight - labelPadding;
+      tooltipX = Math.max(2, Math.min(tooltipX, canvasW - tooltipW - 2));
+      tooltipY = Math.max(2, Math.min(tooltipY, canvasH - tooltipH - 2));
+
       // Draw tooltip background
       ctx.fillStyle = labelBgColor;
       ctx.strokeStyle = labelBorderColor;
@@ -2532,10 +2538,10 @@ function renderFlowCanvas() {
       roundRect(ctx, tooltipX, tooltipY, tooltipW, tooltipH, labelBorderRadius);
       ctx.fill();
       ctx.stroke();
-      
-      // Draw text
+
+      // Draw text at the (possibly clamped) box position.
       ctx.fillStyle = labelTextColor;
-      ctx.fillText(text, labelX, labelY);
+      ctx.fillText(text, tooltipX + labelPadding, tooltipY + textHeight + labelPadding);
     }
     }
 
