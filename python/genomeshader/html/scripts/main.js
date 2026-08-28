@@ -4428,74 +4428,95 @@ function setupCanvasHover() {
     if (!searchInput || !resultsEl) return;
     
     let searchTimeout = null;
-    
-    searchInput.addEventListener('input', (e) => {
-      clearTimeout(searchTimeout);
-      const query = e.target.value.trim().toLowerCase();
-      
-      if (query.length === 0) {
+    let activeIndex = -1;
+
+    const buildResult = (sampleId) => {
+      const el = document.createElement('div');
+      el.className = 'sampleSearchResult';
+      el.textContent = sampleId;
+      el.addEventListener('click', () => {
+        loadSmartTrackForSample(sampleId);
+        searchInput.value = '';
         resultsEl.style.display = 'none';
-        return;
+        activeIndex = -1;
+      });
+      return el;
+    };
+
+    const showResults = (list) => {
+      resultsEl.innerHTML = '';
+      if (!list || list.length === 0) { resultsEl.style.display = 'none'; return; }
+      list.forEach(id => resultsEl.appendChild(buildResult(id)));
+      resultsEl.style.display = 'block';
+      activeIndex = -1;
+    };
+
+    const setActive = (idx) => {
+      const items = resultsEl.querySelectorAll('.sampleSearchResult');
+      if (items.length === 0) return;
+      activeIndex = (idx + items.length) % items.length;
+      items.forEach((it, i) => it.classList.toggle('active', i === activeIndex));
+      items[activeIndex].scrollIntoView({ block: 'nearest' });
+    };
+
+    const query = () => searchInput.value.trim().toLowerCase();
+    // Sample list for the search: use the computed allSampleIds if populated
+    // (after a selection), else derive it from the sample_mapping so the field
+    // works immediately on focus. Sorted alphabetically.
+    const allIds = () => {
+      let ids = state.sampleSelection.allSampleIds;
+      if (!ids || ids.length === 0) {
+        // Keys are the VCF sample names (what you load); values are BAM paths.
+        const sm = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.sample_mapping) || {};
+        ids = Object.keys(sm).sort();
+        if (ids.length) state.sampleSelection.allSampleIds = ids;
       }
-      
+      return ids;
+    };
+
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchTimeout);
+      const q = query();
+      if (q.length === 0) { resultsEl.style.display = 'none'; return; }
       searchTimeout = setTimeout(() => {
-        // Filter sample IDs by prefix/substring match
-        const matches = state.sampleSelection.allSampleIds
-          .filter(id => id.toLowerCase().includes(query))
-          .slice(0, 8); // Top 8 matches
-        
-        if (matches.length === 0) {
-          resultsEl.style.display = 'none';
-          return;
-        }
-        
-        // Render results
-        resultsEl.innerHTML = '';
-        matches.forEach(sampleId => {
-          const resultEl = document.createElement('div');
-          resultEl.className = 'sampleSearchResult';
-          resultEl.textContent = sampleId;
-          resultEl.addEventListener('click', () => {
-            loadSmartTrackForSample(sampleId);
-            searchInput.value = '';
-            resultsEl.style.display = 'none';
-          });
-          resultsEl.appendChild(resultEl);
-        });
-        
-        resultsEl.style.display = 'block';
-      }, 150); // Debounce search
+        showResults(allIds().filter(id => id.toLowerCase().includes(q)).slice(0, 200));
+      }, 150);
     });
-    
+
+    // Click into the field and press Down to enumerate all sample IDs in
+    // alphabetical order (allSampleIds is already sorted). Arrow keys navigate,
+    // Enter loads the highlighted one.
+    searchInput.addEventListener('keydown', (e) => {
+      const shown = resultsEl.style.display === 'block' && resultsEl.querySelector('.sampleSearchResult');
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (!shown) {
+          const q = query();
+          const list = q ? allIds().filter(id => id.toLowerCase().includes(q)) : allIds();
+          showResults(list.slice(0, 1000));
+          setActive(0);
+        } else {
+          setActive(activeIndex + 1);
+        }
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (shown) setActive(activeIndex - 1);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const items = resultsEl.querySelectorAll('.sampleSearchResult');
+        if (activeIndex >= 0 && items[activeIndex]) { items[activeIndex].click(); return; }
+        if (items[0]) { items[0].click(); return; }
+        const exact = allIds().find(id => id.toLowerCase() === query());
+        if (exact) { loadSmartTrackForSample(exact); searchInput.value = ''; resultsEl.style.display = 'none'; }
+      } else if (e.key === 'Escape') {
+        resultsEl.style.display = 'none'; activeIndex = -1;
+      }
+    });
+
     // Hide results when clicking outside
     document.addEventListener('click', (e) => {
       if (!searchInput.contains(e.target) && !resultsEl.contains(e.target)) {
         resultsEl.style.display = 'none';
-      }
-    });
-    
-    // Handle Enter key
-    searchInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        const query = searchInput.value.trim();
-        if (query.length > 0) {
-          // Check if there's a matching result
-          const firstResult = resultsEl.querySelector('.sampleSearchResult');
-          if (firstResult) {
-            firstResult.click();
-          } else {
-            // If no results shown but query exists, try to load directly if it matches a sample
-            const exactMatch = state.sampleSelection.allSampleIds.find(
-              id => id.toLowerCase() === query.toLowerCase()
-            );
-            if (exactMatch) {
-              loadSmartTrackForSample(exactMatch);
-              searchInput.value = '';
-              resultsEl.style.display = 'none';
-            }
-          }
-        }
       }
     });
   }

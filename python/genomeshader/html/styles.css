@@ -739,27 +739,29 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 
 /* Selection controls in sidebar */
 .selectionBtn {
-  padding: 9px 10px;
-  border-radius: 10px;
-  background: var(--panel2);
-  border: 1px solid var(--border2);
-  color: var(--text);
-  font-size: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--blue);
+  border: 1px solid var(--blue);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
   cursor: pointer;
   user-select: none;
-  transition: all 0.2s ease;
-  text-align: left;
+  transition: filter 0.15s ease, transform 0.1s ease;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 .selectionBtn:hover {
-  background: var(--panel);
-  border-color: var(--border);
+  filter: brightness(1.12);
 }
 .selectionBtn:active {
   transform: scale(0.98);
 }
 .selectionBtn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
+  filter: none;
 }
 
 /* Combine toggle (AND/OR) */
@@ -774,29 +776,44 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   overflow: visible;
   z-index: 5000;
 }
+/* Solid field so the sample IDs don't bleed into the panel behind it. */
+#sampleSearchInput {
+  background: var(--panel) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border2) !important;
+  border-radius: 6px;
+}
+#sampleSearchInput::placeholder { color: var(--muted); }
 #sampleSearchResults {
-  font-size: 11px;
+  font-size: 12px;
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
   right: 0;
   z-index: 5001;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  background: var(--panel) !important;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  background: var(--panel) !important;   /* opaque (#11151b / #fff) */
   opacity: 1 !important;
   mix-blend-mode: normal;
   isolation: isolate;
 }
 .sampleSearchResult {
-  padding: 6px 8px;
+  padding: 7px 9px;
   cursor: pointer;
+  color: var(--text);
   border-bottom: 1px solid var(--border2);
 }
 .sampleSearchResult:last-child {
   border-bottom: none;
 }
-.sampleSearchResult:hover {
-  background: var(--panel2);
+.sampleSearchResult:hover,
+.sampleSearchResult.active {
+  background: var(--blue);
+  color: #fff;
 }
 
 /* Ensure all form elements in sidebar are clickable and interactive */
