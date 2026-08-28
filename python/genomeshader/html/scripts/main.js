@@ -5251,8 +5251,20 @@ function livePanBy(dxPx) {
   state.startBp -= deltaBp;
   state.endBp -= deltaBp;
   state.livePanOffset = (state.livePanOffset || 0) + dxPx;
-  const t = "translateX(" + state.livePanOffset + "px)";
-  _panLayers().forEach(e => { e.style.transform = t; });
+  _panLayers().forEach(e => { e.style.transform = "translateX(" + state.livePanOffset + "px)"; });
+
+  // The transform alone would leave newly-exposed edges empty. Re-render on a
+  // throttle DURING the drag (resetting the transform) so those regions fill in;
+  // the transform still gives 60fps smoothness between these rebuilds. This is
+  // ~12 rebuilds/sec vs a rebuild every frame before.
+  const now = Date.now();
+  if (!state._lastLivePanRender || (now - state._lastLivePanRender) > 80) {
+    state._lastLivePanRender = now;
+    clampToChromosomeBounds();
+    _panLayers().forEach(e => { e.style.transform = ""; });
+    state.livePanOffset = 0;
+    renderAll();
+  }
 }
 function endLivePan() {
   if (!state.livePanOffset) { return; }
