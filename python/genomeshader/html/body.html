@@ -19,7 +19,7 @@
     </div>
 
     <div id="sampleSearchSection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); margin-bottom: 20px;">
-      <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;">
+      <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;" data-1p-ignore>
       <div id="sampleSearchResults" style="display: none; max-height: 200px; overflow-y: auto; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); opacity: 1;"></div>
     </div>
 
@@ -36,7 +36,7 @@
       <!-- Strategy Dropdown -->
       <div style="margin-bottom: 8px;">
         <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;">Strategy</label>
-        <select id="sampleStrategy" disabled style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px;">
+        <select id="sampleStrategy" disabled style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px;" data-1p-ignore>
           <option value="random">Random</option>
           <option value="best_evidence">Best evidence</option>
           <option value="most_diverse">Most diverse</option>
@@ -58,8 +58,8 @@
       <div style="margin-bottom: 8px;">
         <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;"># samples</label>
         <div style="display: flex; gap: 8px; align-items: center;">
-          <input type="range" id="sampleCountSlider" min="1" max="20" value="1" disabled style="flex: 1;">
-          <input type="number" id="sampleCountInput" min="1" max="20" value="1" disabled style="width: 50px; padding: 4px 6px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font-size: 12px; text-align: center;">
+          <input type="range" id="sampleCountSlider" min="1" max="20" value="1" disabled style="flex: 1;" data-1p-ignore>
+          <input type="number" id="sampleCountInput" min="1" max="20" value="1" disabled style="width: 50px; padding: 4px 6px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font-size: 12px; text-align: center;" data-1p-ignore>
         </div>
       </div>
       
@@ -97,13 +97,13 @@
       <div class="menuItem" id="aggregateRareAllelesItem" role="menuitem">
         <span>Aggregate low-frequency</span>
         <span class="menuRight">
-          <input type="checkbox" id="aggregateRareAllelesToggle" />
+          <input type="checkbox" id="aggregateRareAllelesToggle" data-1p-ignore>
         </span>
       </div>
       <div class="menuItem" id="aggregateRareAllelesCutoffItem" role="menuitem">
         <span>Cutoff</span>
         <span class="menuRight">
-          <input type="number" id="aggregateRareAllelesCutoffInput" min="0" max="50" step="0.5" value="2.0" />
+          <input type="number" id="aggregateRareAllelesCutoffInput" min="0" max="50" step="0.5" value="2.0" data-1p-ignore>
           <span>%</span>
         </span>
       </div>
