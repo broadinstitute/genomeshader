@@ -1124,6 +1124,21 @@ function renderTrackControls() {
       } else {
         label.textContent = track.label;
       }
+      // Click the name to collapse the track. Only while expanded — when
+      // collapsed the whole bar already expands on click (see renderTrackControls
+      // collapsed branch), so adding a toggle here too would double-fire.
+      if (!track.collapsed) {
+        label.style.cursor = "pointer";
+        label.style.pointerEvents = "auto";
+        label.title = "Click to collapse";
+        label.addEventListener("click", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          track.collapsed = true;
+          updateTracksHeight();
+          renderAll();
+        });
+      }
     }
 
     // Add Smart track controls if needed
