@@ -1673,7 +1673,7 @@ function renderTracks() {
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`,
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`,
                 transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
               }, base);
               fragment.appendChild(textEl);
@@ -1683,7 +1683,7 @@ function renderTracks() {
                 y: referenceY + referenceH / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }
@@ -1721,7 +1721,7 @@ function renderTracks() {
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`,
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`,
                 transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
               }, base);
               fragment.appendChild(textEl);
@@ -1743,7 +1743,7 @@ function renderTracks() {
                 y: referenceY + referenceH / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }
