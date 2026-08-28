@@ -1020,7 +1020,9 @@ svg.overlay {
 /* Locus indicator lower-right */
 .hud {
   position: absolute;
-  right: 10px;
+  /* Clear the collapsed right panel and its protruding tab (~40px into the
+     view) so the position readout isn't covered. */
+  right: 54px;
   bottom: 10px;
   padding: 8px 10px;
   border-radius: 10px;
