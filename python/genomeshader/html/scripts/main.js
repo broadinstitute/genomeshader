@@ -1396,7 +1396,20 @@ function renderTrackControls() {
         hoverArea.style.height = "24px";
       }
       container.appendChild(hoverArea);
-      
+
+      // The hover-area overlays the top strip (where the track name is); click
+      // it to collapse. The trackControls pointerdown handler excludes it from
+      // the reorder-drag, so the click isn't swallowed by a pointer capture.
+      hoverArea.style.cursor = "pointer";
+      hoverArea.title = "Click to collapse";
+      hoverArea.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        track.collapsed = true;
+        updateTracksHeight();
+        renderAll();
+      });
+
       // Setup hover detection - only show controls when hovering over controls area
       const setupHoverDetection = () => {
         // Show controls when hovering over hover area (top 24px)
@@ -5473,6 +5486,10 @@ trackControls.addEventListener("pointerdown", (e) => {
       e.target.closest(".smart-track-shuffle-btn") ||
       e.target.closest(".smart-track-label-input") ||
       isSmartTrackLabel ||
+      // Standard-track name + its hover strip toggle collapse on click; don't
+      // start a reorder drag (which would capture the pointer and eat the click).
+      e.target.closest(".track-hover-area") ||
+      (trackLabel && !isSmartTrackLabel) ||
       e.target.closest("button") ||
       e.target.closest("select") ||
       e.target.closest("input")) {
