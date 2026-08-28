@@ -1397,18 +1397,9 @@ function renderTrackControls() {
       }
       container.appendChild(hoverArea);
 
-      // The hover-area overlays the top strip (where the track name is); click
-      // it to collapse. The trackControls pointerdown handler excludes it from
-      // the reorder-drag, so the click isn't swallowed by a pointer capture.
-      hoverArea.style.cursor = "pointer";
-      hoverArea.title = "Click to collapse";
-      hoverArea.addEventListener("click", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        track.collapsed = true;
-        updateTracksHeight();
-        renderAll();
-      });
+      // Collapse-on-click lives ONLY on the label text (added in the else branch
+      // above), not this full-width hover strip — clicking blank space to the
+      // right of the name must not collapse the track.
 
       // Setup hover detection - only show controls when hovering over controls area
       const setupHoverDetection = () => {
@@ -1732,7 +1723,9 @@ function setupVariantHoverAreas() {
   // Shared click handler for variant selection (variant may be from any track)
   const handleVariantRectClick = (e, trackId, variantId) => {
     e.stopPropagation();
-    
+    // Ignore the click that ends a pan drag over the variants strip.
+    if ((state.gestureMovedPx || 0) > 4) return;
+
     const variant = findVariantByTrackAndId(trackId, variantId);
     if (!variant) return;
     
@@ -1781,6 +1774,8 @@ function setupVariantHoverAreas() {
   // real variant click (which stops propagation) never reaches it.
   const clearSelectionFromEmptyClick = (e) => {
     e.stopPropagation();
+    // Ignore the click that ends a pan drag over the variants strip.
+    if ((state.gestureMovedPx || 0) > 4) return;
     if (state.selectedAlleles.size === 0) return;
     state.selectedAlleles.clear();
     renderFlowCanvas();
@@ -3317,12 +3312,15 @@ function setupCanvasHover() {
         renderFlowCanvas();
         if (window.updateSelectionDisplay) window.updateSelectionDisplay();
       };
-      const selectVariantAll = (vid) => {
-        const v = findVariantByTrackAndId(trackId, vid);
+      // Moving between variants selects that variant's ref allele (labels are
+      // [".", ref, alt1, ...], so ref is index 1; fall back to 0 if there's
+      // only a single label). Not all alleles — keeps the selection focused.
+      const selectVariantRef = (v) => {
         if (!v) return;
         const lbls = (getLabels && getLabels(v).labels) || [];
+        const refIdx = lbls.length > 1 ? 1 : 0;
         state.selectedAlleles.clear();
-        lbls.forEach((_, i) => state.selectedAlleles.add(makeAlleleSelectionKeyCompat(trackId, vid, i)));
+        state.selectedAlleles.add(makeAlleleSelectionKeyCompat(trackId, v.id, refIdx));
         refresh();
       };
       const selectSingleAllele = (vid, idx) => {
@@ -3359,9 +3357,9 @@ function setupCanvasHover() {
 
       // Prev/next VARIANT
       header.appendChild(navRow(
-        mkArrow('◀', hasPrevV, () => selectVariantAll(vlist[vIdx - 1].id), 'Previous variant'),
+        mkArrow('◀', hasPrevV, () => selectVariantRef(vlist[vIdx - 1]), 'Previous variant'),
         centerLabel('Variant'),
-        mkArrow('▶', hasNextV, () => selectVariantAll(vlist[vIdx + 1].id), 'Next variant')
+        mkArrow('▶', hasNextV, () => selectVariantRef(vlist[vIdx + 1]), 'Next variant')
       ));
 
       // Bigger variant label + position
@@ -3875,34 +3873,30 @@ function setupCanvasHover() {
       return;
     }
     
-    // Collect all sample IDs from variant data (for allSampleIds if not populated)
-    const allSamplesSet = new Set();
-    for (const pair of selectedAllelePairs) {
-      if (pair.variant.sampleAlleles) {
-        Object.keys(pair.variant.sampleAlleles).forEach(sampleId => allSamplesSet.add(sampleId));
-      } else {
-        const sampleGenotypes = pair.variant.sampleGenotypes || {};
-        Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
-      }
-    }
-    
-    // Also add sample names from sample_mapping (both keys and values)
-    if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.sample_mapping) {
-      const sampleMapping = window.GENOMESHADER_CONFIG.sample_mapping;
-      // Add all keys (VCF sample names)
-      Object.keys(sampleMapping).forEach(sampleId => allSamplesSet.add(sampleId));
-      // Add all values (BAM sample names)
-      Object.values(sampleMapping).forEach(bamSamples => {
-        if (Array.isArray(bamSamples)) {
-          bamSamples.forEach(sampleId => allSamplesSet.add(sampleId));
-        } else if (bamSamples) {
-          allSamplesSet.add(bamSamples);
-        }
-      });
-    }
-    
-    // Populate allSampleIds if empty
+    // Populate the master sample-id list ONCE. This scans the whole
+    // sample_mapping (tens of thousands of entries) so it must not run on every
+    // click — only when the list is still empty.
     if (state.sampleSelection.allSampleIds.length === 0) {
+      const allSamplesSet = new Set();
+      for (const pair of selectedAllelePairs) {
+        if (pair.variant.sampleAlleles) {
+          Object.keys(pair.variant.sampleAlleles).forEach(sampleId => allSamplesSet.add(sampleId));
+        } else {
+          const sampleGenotypes = pair.variant.sampleGenotypes || {};
+          Object.keys(sampleGenotypes).forEach(sampleId => allSamplesSet.add(sampleId));
+        }
+      }
+      if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.sample_mapping) {
+        const sampleMapping = window.GENOMESHADER_CONFIG.sample_mapping;
+        Object.keys(sampleMapping).forEach(sampleId => allSamplesSet.add(sampleId));
+        Object.values(sampleMapping).forEach(bamSamples => {
+          if (Array.isArray(bamSamples)) {
+            bamSamples.forEach(sampleId => allSamplesSet.add(sampleId));
+          } else if (bamSamples) {
+            allSamplesSet.add(bamSamples);
+          }
+        });
+      }
       state.sampleSelection.allSampleIds = Array.from(allSamplesSet).sort();
     }
     
@@ -4800,11 +4794,21 @@ function setupCanvasHover() {
   }
   
   // Main update function for selection display
+  // Recomputing candidate samples is O(samples) and can block the paint on a
+  // large cohort, making a click feel laggy. Debounce it to the next tick so
+  // the selection highlight + panes render first and the click feels instant;
+  // the sample count catches up a frame later.
+  let _recomputeTimer = null;
+  function scheduleCandidateRecompute() {
+    if (_recomputeTimer) clearTimeout(_recomputeTimer);
+    _recomputeTimer = setTimeout(() => { _recomputeTimer = null; recomputeCandidateSamples(); }, 0);
+  }
+
   function updateSelectionDisplay() {
     updateSampleContext();
     updateSampleStrategySection();
-    recomputeCandidateSamples();
     renderVariantsTabSelection();
+    scheduleCandidateRecompute();
   }
   
   // Setup sample selection strategy controls
@@ -5419,9 +5423,11 @@ function bindInteractions(root, state, main) {
     }
 
     const target = e.target;
-    // Don't start pan/drag if clicking on variant selection rects (flow overlay or per-track overlay)
-    if (target && target.getAttribute && target.getAttribute("data-variant-id")) return;
-    if (target && target.closest && (target.closest(".flow-track-overlay") || target.closest("#flowOverlay"))) return;
+    // The variants strip (variant rects / #flowOverlay) still pans like the
+    // other tracks: pan can start here. A click without movement selects or
+    // deselects; a drag pans, and the select handlers skip when the pointer
+    // moved (see state.gestureMovedPx checks). Reset the movement accumulator.
+    state.gestureMovedPx = 0;
     // Don't start drag if clicking on a variant (for insertion expansion) in Locus track
     if (target && target.tagName && (target.tagName === "line" || target.tagName === "circle" || target.tagName === "rect")) {
       const stroke = target.getAttribute ? target.getAttribute("stroke") : null;
@@ -5432,7 +5438,18 @@ function bindInteractions(root, state, main) {
         return;
       }
     }
-    
+
+    // Variants strip: DEFER the pan. Capturing the pointer now would steal the
+    // click that selects/deselects a variant. Instead remember the press and
+    // only promote it to a pan once the pointer actually moves (onPointerMove).
+    // A click without movement falls through to the rect/deselect click handler.
+    const isVariantStrip = target && ((target.getAttribute && target.getAttribute("data-variant-id"))
+      || (target.closest && target.closest("#flowOverlay")));
+    if (isVariantStrip) {
+      state.pendingFlowDrag = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+      return;
+    }
+
     state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     main.setPointerCapture(e.pointerId);
 
@@ -5446,6 +5463,19 @@ function bindInteractions(root, state, main) {
   };
 
   const onPointerMove = (e) => {
+    // Promote a deferred variants-strip press to a real pan once it moves past a
+    // small threshold (below that, it's a click and selection handles it).
+    if (state.pendingFlowDrag && state.pendingFlowDrag.pointerId === e.pointerId) {
+      const pd = state.pendingFlowDrag;
+      const moved = Math.abs(e.clientX - pd.x) + Math.abs(e.clientY - pd.y);
+      if (moved <= 4) return;
+      state.pendingFlowDrag = null;
+      state.pointers.set(e.pointerId, { x: pd.x, y: pd.y });
+      try { main.setPointerCapture(e.pointerId); } catch (_) {}
+      state.dragging = state.pointers.size === 1;
+      state.lastX = pd.x;
+      state.lastY = pd.y;
+    }
     if (!state.pointers.has(e.pointerId)) return;
     state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -5488,6 +5518,8 @@ function bindInteractions(root, state, main) {
       const dy = e.clientY - state.lastY;
       state.lastX = e.clientX;
       state.lastY = e.clientY;
+      // Accumulate travel so a select handler can tell a click from a pan drag.
+      state.gestureMovedPx = (state.gestureMovedPx || 0) + Math.abs(dx) + Math.abs(dy);
       if (isVertical) {
         panByPixels(0, -dy);
       } else {
@@ -5497,6 +5529,9 @@ function bindInteractions(root, state, main) {
   };
 
   function endPointer(e) {
+    if (state.pendingFlowDrag && state.pendingFlowDrag.pointerId === e.pointerId) {
+      state.pendingFlowDrag = null;   // was a click, not a drag
+    }
     state.pointers.delete(e.pointerId);
     if (state.pointers.size < 2) {
       state.pinchStartDist = null;
@@ -5588,9 +5623,10 @@ trackControls.addEventListener("pointerdown", (e) => {
       e.target.closest(".smart-track-shuffle-btn") ||
       e.target.closest(".smart-track-label-input") ||
       isSmartTrackLabel ||
-      // Standard-track name + its hover strip toggle collapse on click; don't
-      // start a reorder drag (which would capture the pointer and eat the click).
-      e.target.closest(".track-hover-area") ||
+      // The standard-track name toggles collapse on click; exclude it from the
+      // reorder-drag so the click isn't eaten by a pointer capture. (The
+      // hover-area is intentionally NOT excluded — it must let the pointerdown
+      // bubble to the main pane so dragging the track/flow strip pans the view.)
       (trackLabel && !isSmartTrackLabel) ||
       e.target.closest("button") ||
       e.target.closest("select") ||
