@@ -32,6 +32,7 @@ import gzip
 import os
 import subprocess
 import tempfile
+import urllib.parse
 from typing import Callable, Dict, List, Optional, Union
 
 # A neutral chromosome-body shade; PlasmoDB chromosomes have no Giemsa banding,
@@ -171,6 +172,11 @@ def parse_gff_genes(gff_path: str, rename=lambda c: c) -> Dict[str, List[dict]]:
                     "name": a.get("Name") or a.get("gene") or fid,
                     "start": int(start),
                     "end": int(end),
+                    # GFF description (PlasmoDB uses URL-encoded `description=`);
+                    # shown verbatim in the Genes panel. Empty if absent.
+                    "description": urllib.parse.unquote_plus(
+                        a.get("description") or a.get("Note") or a.get("product") or ""
+                    ),
                 }
                 if parent:
                     parent_of[fid] = parent
@@ -218,6 +224,7 @@ def parse_gff_genes(gff_path: str, rename=lambda c: c) -> Dict[str, List[dict]]:
             "start": merged[0][0],
             "end": merged[-1][1],
             "exons": [[s, e, True] for s, e in merged],
+            "description": info.get("description", ""),
         }
         by_contig.setdefault(contig, []).append(model)
 

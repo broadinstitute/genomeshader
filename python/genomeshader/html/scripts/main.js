@@ -1415,6 +1415,45 @@ function renderTrackControls() {
   }
 }
 
+// Right-panel Genes tab: describe every gene overlapping the current view.
+// Rebuilds only when the visible gene set changes (a cheap name signature), so
+// panning within the same genes doesn't churn the DOM or lose scroll position.
+function renderGenesPanel() {
+  const host = (typeof byId === "function" ? byId(root, "genesContent") : null)
+    || document.getElementById("genesContent");
+  if (!host) return;
+  const lo = state.startBp, hi = state.endBp;
+  const all = (typeof transcripts !== "undefined" && Array.isArray(transcripts)) ? transcripts : [];
+  const visible = all
+    .filter(g => g && typeof g.start === "number" && typeof g.end === "number" && g.end >= lo && g.start <= hi)
+    .sort((a, b) => a.start - b.start);
+
+  const sig = state.contig + "|" + visible.map(g => g.name).join(",");
+  if (host._genesSig === sig) return;   // visible set unchanged
+  host._genesSig = sig;
+
+  if (!visible.length) {
+    host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 2px;">No genes in the current view.</div>';
+    return;
+  }
+  const esc = s => String(s == null ? "" : s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const rows = visible.map(g => {
+    // Description straight from the GFF if the gene model carries one.
+    const desc = g.description || g.product || g.note || g.Note || "";
+    const strand = g.strand === "-" ? "−" : (g.strand === "+" ? "+" : "");
+    const loc = `${Math.round(g.start).toLocaleString()}–${Math.round(g.end).toLocaleString()}`;
+    return `<div style="padding:8px 4px;border-bottom:1px solid var(--border2);">`
+      + `<div style="font-weight:700;font-size:12px;">${esc(g.name)}`
+      + (strand ? ` <span style="color:var(--muted);font-weight:400;">${strand}</span>` : ``)
+      + `</div>`
+      + `<div style="color:var(--muted);font-size:11px;">${esc(state.contig)}:${loc}</div>`
+      + (desc ? `<div style="font-size:11px;margin-top:3px;color:var(--text);">${esc(desc)}</div>` : ``)
+      + `</div>`;
+  }).join("");
+  host.innerHTML = `<div style="font-size:11px;color:var(--muted);margin:4px 0 6px;">`
+    + `${visible.length} gene${visible.length > 1 ? "s" : ""} in view</div>` + rows;
+}
+
 // -----------------------------
 // HUD + renderAll
 // -----------------------------
@@ -1916,6 +1955,7 @@ function renderAll() {
   updateTracksHeight();
   renderTracks();
   renderTrackControls();
+  renderGenesPanel();
   updateFlowAndReadsPosition();
   renderFlowCanvas();
   // Render all Smart tracks in the order they appear in state.tracks
