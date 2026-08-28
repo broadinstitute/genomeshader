@@ -2173,6 +2173,34 @@ class GenomeShader:
         else:
             raise ConnectionError(f"Failed to retrieve reference sequence from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
 
+    def _prewarm_ucsc(self) -> None:
+        """Kick off the UCSC genome + default-track lookup in a background thread
+        so the results are cached before the user opens the UCSC tab. Non-blocking
+        — the initial render doesn't wait on the (network-bound) UCSC API.
+
+        (Kept in Python rather than Rust: the cost is the network round-trip, not
+        parsing, so a daemon thread here gets the same "ready by load" win without
+        a second HTTP stack in the crate.)
+        """
+        if getattr(self, "_ucsc_prewarm_started", False):
+            return
+        self._ucsc_prewarm_started = True
+
+        def _warm():
+            try:
+                info = self.list_ucsc_genomes()
+                default = info.get("default")
+                if default:
+                    self.list_ucsc_tracks(default)
+            except Exception:
+                pass
+
+        try:
+            import threading
+            threading.Thread(target=_warm, daemon=True).start()
+        except Exception:
+            pass
+
     def list_ucsc_genomes(self) -> dict:
         """List all UCSC assemblies (for the assembly picker) plus the best
         match for this genome build. UCSC tracks are an explicit, user-driven
@@ -2950,6 +2978,10 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         """
         from IPython.display import clear_output, display
         from .widget import GenomeShaderWidget
+
+        # Warm the UCSC assembly/track lookup in the background so it's ready by
+        # the time the user opens the UCSC tab (no round-trip then).
+        self._prewarm_ucsc()
 
         # Build the config with variants inlined (no comm/URL needed); this also
         # sets self._last_locus / _last_view_id used by the reads message handler.
