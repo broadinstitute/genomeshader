@@ -237,6 +237,12 @@ function renderTracks() {
       return;
     }
 
+    // Left gutter reserved for the contig name so the chromosome band starts
+    // after it (no overlap). Sized to the name length; the name is right-aligned
+    // against the band with a gap.
+    const contigName = String(state.contig || '');
+    const nameGutter = Math.max(70, 16 + Math.ceil(contigName.length * 8) + 14);
+
     // --- Chromosome label
     if (isVertical) {
       // Position chromosome label at the bottom
@@ -250,16 +256,18 @@ function renderTracks() {
         transform: "rotate(-90 " + (ideogramX + ideogramW/2) + " " + labelY + ")"
       }, state.contig));
     } else {
+      // Right-align the contig name in the gutter, ending 12px before the band.
       tracksSvg.appendChild(el("text", {
-        x: 16,
+        x: nameGutter - 12,
         y: ideogramY + ideogramH/2 + 1,
         class: "svg-chr",
+        "text-anchor": "end",
         "dominant-baseline": "middle"
       }, state.contig));
     }
 
     // --- Ideogram (p/q arm rounded rects + cytobands clipped inside)
-    const bandX = isVertical ? ideogramX : 70;
+    const bandX = isVertical ? ideogramX : nameGutter;
     const bandY = isVertical ? ideogramY : ideogramY;
     const bandW = isVertical ? ideogramW : Math.max(0, W - bandX - 16);
     // In vertical mode, bandH should use the full available height
@@ -1554,6 +1562,11 @@ function renderTracks() {
       ];
     }
 
+    // Letter color per base: black or white, whichever contrasts with the solid
+    // block color. Static lookup — no per-letter computation. A(green)/G(orange)
+    // are light -> black; C(blue)/T(red) are dark -> white.
+    const baseLetterColor = { 'A': '#000000', 'C': '#ffffff', 'G': '#000000', 'T': '#ffffff' };
+
     // Render reference bases continuously across zoom levels so tiles naturally
     // shrink/fade instead of hard-switching to a separate zoomed-out style.
     const minVisibleBaseSize = BASE_MIN_DRAW_PX;
@@ -1645,19 +1658,13 @@ function renderTracks() {
         // letter whose color is picked for contrast against the block. The dark
         // blocks (C blue, T red) get white letters; the lighter blocks (A green,
         // G orange) get black.
-        const nucleotideTextColors = {
-          'A': '#000000',  // on green
-          'C': '#ffffff',  // on blue
-          'G': '#000000',  // on orange
-          'T': '#ffffff'   // on red
-        };
         const fragment = document.createDocumentFragment();
         for (const b of basesToRender) {
           if (b.textAlpha > 0) {
             const base = b.base;
             const pos = b.pos;
             const actualSize = b.actualSize;
-            const textColor = nucleotideTextColors[base] || '#666';
+            const textColor = baseLetterColor[base] || '#ffffff';
             const textOpacity = Math.max(0.1, b.textAlpha);
             
             if (isVertical) {
@@ -1685,15 +1692,8 @@ function renderTracks() {
         tracksSvg.appendChild(fragment);
       } else {
         // Fallback to SVG rendering
-        // Use solid colors for text (more vibrant than the semi-transparent rect colors)
-        const svgTextColors = {
-          'A': '#00a000',  // green
-          'C': '#0000cc',  // blue
-          'G': '#cc8400',  // orange
-          'T': '#cc0000'   // red
-        };
         const fragment = document.createDocumentFragment();
-        
+
         for (const b of basesToRender) {
           const pos = b.pos;
           const actualSize = b.actualSize;
@@ -1702,7 +1702,7 @@ function renderTracks() {
           if (!(alpha > 0)) continue;
           const rgb = nucleotideColors[base] || [127, 127, 127];
           const rectColor = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
-          const textColor = svgTextColors[base] || '#666';
+          const textColor = baseLetterColor[base] || '#ffffff';
           
           if (isVertical) {
             fragment.appendChild(el("rect", {
