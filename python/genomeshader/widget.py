@@ -41,6 +41,7 @@ _SCRIPT_ORDER = [
     "cleanup.js", "webgpu-core.js", "webgpu-renderer.js", "webgpu-bezier.js",
     "widget-comms.js", "dom-utils.js", "ui-state.js", "view-state.js",
     "smart-tracks.js", "rendering.js", "tracks.js", "interaction.js", "main.js",
+    "ucsc-tracks.js",
 ]
 
 
@@ -82,7 +83,11 @@ def _container_override_css(cid: str) -> str:
         f" bottom:auto !important; height:auto !important; align-self:stretch !important;"
         f" flex:0 0 var(--sidebar-right-w,240px) !important; z-index:100 !important; pointer-events:auto !important;"
         f" background:var(--panel) !important;"
-        f" overflow-x:visible !important; display:flex !important; flex-direction:column !important; }}",
+        # overflow MUST be visible on both axes so the protruding collapse tab
+        # (.sidebar-right::before) isn't clipped — overflow-y:hidden here would
+        # force overflow-x to auto and eat the tab. Content scrolls on the inner
+        # .sidebarContent instead.
+        f" overflow:visible !important; display:flex !important; flex-direction:column !important; }}",
         f"{c} .app:not(.sidebar-right-collapsed) .sidebar-right {{ flex-basis:var(--sidebar-right-w,240px) !important; }}",
         f"{c} .app.sidebar-right-collapsed .sidebar-right {{ flex-basis:10px !important; padding:0 !important; }}",
         # Bound the content area (was height:100%) so the sticky-less .sidebar-close-btn
@@ -208,14 +213,38 @@ class GenomeShaderWidget(anywidget.AnyWidget):
     def _on_custom_msg(self, _widget, content, _buffers):
         if not isinstance(content, dict):
             return
-        if content.get("type") != "fetch_reads":
-            return
+        msg_type = content.get("type")
         request_id = content.get("request_id")
-        try:
-            payload = self._shader._fetch_reads_payload(
-                sample_id=content.get("sample_id"),
-                samples=content.get("samples"),
-            )
-            self.send({"type": "fetch_reads_response", "request_id": request_id, **payload})
-        except Exception as e:  # surfaced to the frontend as a reads error
-            self.send({"type": "fetch_reads_error", "request_id": request_id, "error": str(e)})
+        if msg_type == "fetch_reads":
+            try:
+                payload = self._shader._fetch_reads_payload(
+                    sample_id=content.get("sample_id"),
+                    samples=content.get("samples"),
+                )
+                self.send({"type": "fetch_reads_response", "request_id": request_id, **payload})
+            except Exception as e:  # surfaced to the frontend as a reads error
+                self.send({"type": "fetch_reads_error", "request_id": request_id, "error": str(e)})
+        elif msg_type == "ucsc_list":
+            # List UCSC tracks for this genome; available=False => not on UCSC.
+            try:
+                tracks = self._shader.list_ucsc_tracks()
+                self.send({"type": "ucsc_list_response", "request_id": request_id,
+                           "available": tracks is not None,
+                           "genome_build": getattr(self._shader, "genome_build", ""),
+                           "tracks": tracks or []})
+            except Exception as e:
+                self.send({"type": "ucsc_list_response", "request_id": request_id,
+                           "available": False, "tracks": [], "error": str(e)})
+        elif msg_type == "ucsc_track":
+            try:
+                features = self._shader.ucsc_interval_track(
+                    content.get("track"), content.get("contig"),
+                    int(content.get("start")), int(content.get("end")),
+                )
+                self.send({"type": "ucsc_track_response", "request_id": request_id,
+                           "track": content.get("track"),
+                           "label": content.get("label"),
+                           "features": features})
+            except Exception as e:
+                self.send({"type": "ucsc_track_error", "request_id": request_id,
+                           "track": content.get("track"), "error": str(e)})

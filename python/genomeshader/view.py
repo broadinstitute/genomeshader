@@ -237,7 +237,8 @@ class GenomeShader:
             "rendering.js",
             "tracks.js",
             "interaction.js",
-            "main.js"
+            "main.js",
+            "ucsc-tracks.js"
         ]
         source_files = [
             base_dir / "template.html",
@@ -2171,6 +2172,99 @@ class GenomeShader:
             return sequence
         else:
             raise ConnectionError(f"Failed to retrieve reference sequence from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
+
+    def list_ucsc_tracks(self) -> Optional[List[dict]]:
+        """List UCSC interval-type tracks available for this genome build.
+
+        Returns a list of {track, label, type} for BED/bigBed/genePred-style
+        (interval) tracks that genomeshader can render, sorted by label. Returns
+        None when the genome build is not hosted at UCSC (or the API is
+        unavailable) — the caller shows a "not available" message in that case.
+        Cached per instance.
+        """
+        cached = getattr(self, "_ucsc_track_list_cache", "unset")
+        if cached != "unset":
+            return cached
+        if not getattr(self, "_allow_ucsc_api", False):
+            self._ucsc_track_list_cache = None
+            return None
+        url = f"https://api.genome.ucsc.edu/list/tracks?genome={self.genome_build}"
+        try:
+            response = self._http_get_json(url, f"Failed to list UCSC tracks for '{self.genome_build}'")
+        except Exception:
+            self._ucsc_track_list_cache = None
+            return None
+        if response.status_code != 200:
+            # 400 == unknown genome (not on UCSC); anything else == transient.
+            self._ucsc_track_list_cache = None
+            return None
+        try:
+            data = response.json()
+        except Exception:
+            self._ucsc_track_list_cache = None
+            return None
+        genome_tracks = data.get(self.genome_build) if isinstance(data, dict) else None
+        if not isinstance(genome_tracks, dict):
+            self._ucsc_track_list_cache = None
+            return None
+        interval_types = ("bed", "bigbed", "genepred", "psl", "narrowpeak", "broadpeak")
+        out: List[dict] = []
+        for name, meta in genome_tracks.items():
+            if not isinstance(meta, dict):
+                continue
+            ttype = str(meta.get("type", "")).lower()
+            if any(ttype.startswith(t) for t in interval_types):
+                out.append({
+                    "track": name,
+                    "label": str(meta.get("shortLabel") or name),
+                    "type": ttype,
+                })
+        out.sort(key=lambda t: t["label"].lower())
+        self._ucsc_track_list_cache = out
+        return out
+
+    def ucsc_interval_track(self, track: str, contig: str, start: int, end: int) -> List[dict]:
+        """Fetch a UCSC interval track for a region, normalized to
+        {name, start, end, strand} (1-based inclusive start). Empty on failure."""
+        if not getattr(self, "_allow_ucsc_api", False):
+            return []
+        url = (f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build}"
+               f";track={track};chrom={contig};start={int(start)};end={int(end)}")
+        try:
+            response = self._http_get_json(url, f"Failed to fetch UCSC track '{track}'")
+        except Exception:
+            return []
+        if response.status_code != 200:
+            return []
+        try:
+            data = response.json()
+        except Exception:
+            return []
+        items = data.get(track) if isinstance(data, dict) else None
+        if isinstance(items, dict):
+            items = items.get(contig, [])
+        if not isinstance(items, list):
+            return []
+        out: List[dict] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            s = it.get("chromStart", it.get("txStart", it.get("start")))
+            e = it.get("chromEnd", it.get("txEnd", it.get("end")))
+            if s is None or e is None:
+                continue
+            try:
+                s = int(s); e = int(e)
+            except (TypeError, ValueError):
+                continue
+            strand = it.get("strand", "+")
+            out.append({
+                "name": str(it.get("name2") or it.get("name") or ""),
+                "start": s + 1,   # UCSC is 0-based half-open; match genomeshader 1-based
+                "end": e,
+                "strand": strand if strand in ("+", "-") else "+",
+            })
+        return out
 
     def _start_localhost_server(self, serve_dir: Path) -> int:
         """

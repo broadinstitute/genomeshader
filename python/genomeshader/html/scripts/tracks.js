@@ -1828,8 +1828,40 @@ function renderTracks() {
     }
   }
 
+  // UCSC interval tracks (added on demand via the UCSC Tracks tab). Simple
+  // interval boxes + labels on the SVG layer, like the gene track.
+  if (Array.isArray(state.ucscTracks) && state.ucscTracks.length) {
+    for (const item of layout) {
+      const t = item.track;
+      if (!t.id || t.id.indexOf("ucsc-") !== 0 || t.collapsed) continue;
+      const entry = state.ucscTracks.find(u => u.id === t.id);
+      if (!entry || !Array.isArray(entry.features)) continue;
+      const h = Math.max(6, (item.contentHeight || 20) - 6);
+      const yTop = item.contentTop + 3;
+      for (const f of entry.features) {
+        if (f.end <= state.startBp || f.start >= state.endBp) continue;
+        const a = genomePos(Math.max(f.start, state.startBp));
+        const b = genomePos(Math.min(f.end, state.endBp));
+        if (isVertical) {
+          const y0 = Math.min(a, b), y1 = Math.max(a, b);
+          tracksSvg.appendChild(el("rect", { x: item.contentLeft + 4, y: y0,
+            width: Math.max(6, (item.contentWidth || 20) - 8), height: Math.max(1, y1 - y0),
+            rx: 2, fill: "var(--blue,#2b6fff)", "fill-opacity": 0.5, stroke: "var(--blue,#2b6fff)" }));
+        } else {
+          const x0 = Math.min(a, b), w = Math.max(1, Math.abs(b - a));
+          tracksSvg.appendChild(el("rect", { x: x0, y: yTop, width: w, height: h,
+            rx: 2, fill: "var(--blue,#2b6fff)", "fill-opacity": 0.5, stroke: "var(--blue,#2b6fff)" }));
+          if (f.name && w > 30) {
+            tracksSvg.appendChild(el("text", { x: x0 + 4, y: yTop + h / 2 + 3,
+              fill: "var(--text)", "font-size": "9px" }, String(f.name).slice(0, 24)));
+          }
+        }
+      }
+    }
+  }
+
   // Execute WebGPU render pass for tracks canvas (genes and repeats)
-  const hasTracksInstances = instancedRenderer && 
+  const hasTracksInstances = instancedRenderer &&
       (instancedRenderer.rectInstances.length > 0 || 
        instancedRenderer.triangleInstances.length > 0 || 
        instancedRenderer.lineInstances.length > 0);
