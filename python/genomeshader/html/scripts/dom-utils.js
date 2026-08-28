@@ -914,3 +914,65 @@ mq?.addEventListener?.("change", () => {
     renderAll();
   }
 });
+
+// Hint tooltips: show an element's title= text after a short dwell (snappier
+// than the browser's native ~500ms popup and styled like the rest of the UI).
+// Cost is a single timer + delegated mouseover/out — no per-frame or render
+// work, so it never affects pan/zoom responsiveness.
+(function setupHintTooltips() {
+  const host = root || document.body;
+  if (!host || host._hintTipInstalled) return;
+  host._hintTipInstalled = true;
+  const DWELL_MS = 375; // 75% of the ~500ms native default
+  let tip = null, timer = null, current = null;
+
+  function ensureTip() {
+    if (tip && tip.isConnected) return tip;
+    tip = document.createElement("div");
+    tip.className = "hint-tooltip";
+    tip.setAttribute("role", "tooltip");
+    (getCurrentRoot() || root || document.body).appendChild(tip);
+    return tip;
+  }
+  function hide() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (current && current.dataset && current.dataset._hintTitle != null) {
+      current.setAttribute("title", current.dataset._hintTitle);
+      delete current.dataset._hintTitle;
+    }
+    current = null;
+    if (tip) tip.classList.remove("visible");
+  }
+  host.addEventListener("mouseover", (e) => {
+    const el = e.target && e.target.closest ? e.target.closest("[title]") : null;
+    if (!el || el === current) return;
+    hide();
+    const text = el.getAttribute("title");
+    if (!text) return;
+    current = el;
+    // Suppress the native tooltip while we own this hint.
+    el.dataset._hintTitle = text;
+    el.removeAttribute("title");
+    timer = setTimeout(() => {
+      const t = ensureTip();
+      t.textContent = text;
+      const r = current.getBoundingClientRect();
+      // Prefer below the element; keep it on-screen.
+      let left = Math.max(6, Math.min(r.left, window.innerWidth - 250));
+      let top = r.bottom + 6;
+      if (top > window.innerHeight - 40) top = Math.max(6, r.top - 28);
+      t.style.left = left + "px";
+      t.style.top = top + "px";
+      t.classList.add("visible");
+    }, DWELL_MS);
+  }, true);
+  host.addEventListener("mouseout", (e) => {
+    // Can't match on [title] here — we removed it to suppress the native popup.
+    // Hide when the pointer actually leaves `current` (into a node outside it).
+    if (current && (e.target === current || current.contains(e.target))
+        && (!e.relatedTarget || !current.contains(e.relatedTarget))) {
+      hide();
+    }
+  }, true);
+  host.addEventListener("click", hide, true);
+})();
