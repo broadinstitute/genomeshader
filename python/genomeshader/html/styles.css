@@ -677,7 +677,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   position: absolute !important;
   left: 12px !important;
   bottom: 12px !important;
-  z-index: 10 !important;
+  z-index: 300 !important;
   border: 1px solid var(--border2);
   background: var(--panel2);
   color: var(--text);
@@ -690,6 +690,18 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   place-items: center;
   font-size: 18px;
   line-height: 1;
+}
+/* Settings button stays in the bottom-left corner even when the left panel is
+   collapsed (never faded out with the panel body). */
+.app.sidebar-collapsed .sidebar-left > .gearBtn,
+.app.sidebar-collapsed .gearBtn {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+/* When the left panel is open, lift the button above the close-panel footer so
+   the two don't overlap. */
+.app:not(.sidebar-collapsed) .gearBtn {
+  bottom: 64px !important;
 }
 .gearBtn:hover { filter: brightness(1.06); }
 .gearBtn:active { transform: translateY(1px); }
