@@ -128,6 +128,13 @@ function getTrackLayout() {
   function isStandardTrack(trackId) {
     return standardTracks.includes(trackId) || (typeof trackId === "string" && trackId.startsWith("flow-"));
   }
+  // Annotation tracks now show an always-visible label at the top, so they must
+  // reserve header space for it (content is offset below the label). The flow /
+  // variant area keeps its full height with no reserved header.
+  const labelSpaceTracks = ["ideogram", "genes", "repeats", "reference", "ruler"];
+  function reservesLabelSpace(trackId) {
+    return !isStandardTrack(trackId) || labelSpaceTracks.includes(trackId);
+  }
 
   if (isVertical) {
     // Vertical mode: tracks side-by-side (left/width based)
@@ -147,7 +154,7 @@ function getTrackLayout() {
       
       // For standard tracks, don't reserve space for header (controls overlay on hover)
       // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
-      const usesHeaderSpace = !isStandardTrack(track.id);
+      const usesHeaderSpace = reservesLabelSpace(track.id);
       const isSmartTrack = track.id.startsWith("smart-track-");
       
       let effectiveWidth;
@@ -212,7 +219,7 @@ function getTrackLayout() {
       
       // For standard tracks, don't reserve space for header (controls overlay on hover)
       // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
-      const usesHeaderSpace = !isStandardTrack(track.id);
+      const usesHeaderSpace = reservesLabelSpace(track.id);
       const isSmartTrack = track.id.startsWith("smart-track-");
       
       let effectiveHeight;
