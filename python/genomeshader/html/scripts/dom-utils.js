@@ -192,14 +192,14 @@ function setVariantLayoutMode(mode) {
   updateVariantLayoutModeLabel();
 }
 function updateVariantLayoutModeLabel() {
-  const mode = state.variantLayoutMode || "equidistant";
+  const mode = state.variantLayoutMode || "genomic";
   const labelEl = document.getElementById("variantLayoutModeLabel");
   if (labelEl) {
     labelEl.textContent = mode === "equidistant" ? "Equidistant" : "Genomic";
   }
 }
 function getVariantLayoutMode() {
-  return state.variantLayoutMode || "equidistant";
+  return state.variantLayoutMode || "genomic";
 }
 function getStoredAggregateRareAlleles() {
   return localStorage.getItem("genomeshader.aggregateRareAlleles") === "true";

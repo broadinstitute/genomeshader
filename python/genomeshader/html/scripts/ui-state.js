@@ -82,7 +82,7 @@ const state = {
 
 // Initialize variant layout mode
 const storedVariantMode = getStoredVariantLayoutMode();
-state.variantLayoutMode = storedVariantMode ?? "equidistant";
+state.variantLayoutMode = storedVariantMode ?? "genomic";
 if (typeof getStoredAggregateRareAlleles === "function") {
   state.aggregateRareAlleles = getStoredAggregateRareAlleles();
 }
