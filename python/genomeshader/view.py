@@ -2784,6 +2784,7 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         expression (ipywidgets convention). Assign it to keep a handle without
         re-displaying.
         """
+        from IPython.display import clear_output, display
         from .widget import GenomeShaderWidget
 
         # Build the config with variants inlined (no comm/URL needed); this also
@@ -2794,12 +2795,24 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             self.render(locus, inline_payload=True)
         finally:
             self._progress_enabled = False
-        print("🧬 Ready — displaying viewer (select a variant to load reads).", flush=True)
-        return GenomeShaderWidget(
+
+        widget = GenomeShaderWidget(
             self,
             config=self._last_config,
             view_id=self._last_view_id or "gswidget",
         )
+        # The progress lines and any warnings pile up as stdout above the widget,
+        # and the output area doesn't scroll down to reveal it. Clear that text
+        # and display the widget ourselves so the viewer renders at the top of the
+        # cell output instead of being buried. clear_output(wait=True) only wipes
+        # once the widget actually displays, so nothing flickers on failure.
+        try:
+            clear_output(wait=True)
+            display(widget)
+            return None
+        except Exception:
+            # No IPython display context (e.g. plain Python) — just return it.
+            return widget
 
     def show(
         self,

@@ -82,14 +82,18 @@ def test_show_widget_wires_inlined_config(tmp_path, monkeypatch):
     s.render = fake_render
 
     fake_widget = Mock()
-    with patch("genomeshader.widget.GenomeShaderWidget", return_value=fake_widget) as WCls:
-        out = s.show_widget("Pf3D7_01_v3:1-100")
+    with patch("genomeshader.widget.GenomeShaderWidget", return_value=fake_widget) as WCls, \
+         patch("IPython.display.clear_output") as clr, \
+         patch("IPython.display.display") as disp:
+        s.show_widget("Pf3D7_01_v3:1-100")
 
-    # Returns the widget (Jupyter displays it as the cell's last expression).
-    assert out is fake_widget
+    # Widget built from the inlined config, and displayed after clearing the
+    # progress text so it isn't buried below stdout.
     _, kwargs = WCls.call_args
     assert kwargs["config"] == {"genome_build": "X", "region": "Pf3D7_01_v3:1-100"}
     assert kwargs["view_id"] == "vid123"
+    clr.assert_called_once()
+    disp.assert_called_once_with(fake_widget)
 
 
 def test_show_delegates_to_widget(tmp_path, monkeypatch):
