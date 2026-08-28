@@ -1466,7 +1466,9 @@ function renderGenesPanel() {
   }
   const esc = s => String(s == null ? "" : s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const num = n => Math.round(n).toLocaleString();
-  const rows = visible.map(g => {
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+  const cards = visible.map(g => {
     // Description straight from the GFF if the gene model carries one.
     const desc = g.description || g.product || g.note || g.Note || "";
     const strand = g.strand === "-" ? "−" : (g.strand === "+" ? "+" : "");
@@ -1474,40 +1476,40 @@ function renderGenesPanel() {
     const exons = Array.isArray(g.exons) ? g.exons : [];
     const txs = Array.isArray(g.transcripts) ? g.transcripts : [];
 
-    // Enumerate each transcript with its id, span and exon boundaries.
+    // One table per transcript: header (Exon / Start / End) + a row per exon.
     const txHtml = txs.map(t => {
       const tex = Array.isArray(t.exons) ? t.exons : [];
-      const exList = tex.map((ex, i) =>
-        `<div style="color:var(--muted);font-size:10px;margin-left:12px;">`
-        + `exon ${i + 1}: ${num(ex[0])}–${num(ex[1])}</div>`
+      const exRows = tex.map((ex, i) =>
+        `<tr><td>${i + 1}</td><td>${num(ex[0])}</td><td>${num(ex[1])}</td></tr>`
       ).join("");
-      return `<div style="margin-top:5px;">`
-        + `<div style="font-size:11px;font-weight:600;">${esc(t.id)} `
-        + `<span style="color:var(--muted);font-weight:400;">(${num(t.start)}–${num(t.end)}, ${tex.length} exon${tex.length === 1 ? "" : "s"})</span></div>`
-        + exList
+      return `<div class="gs-tx">`
+        + `<div class="gs-tx-h"><span>${esc(t.id)}</span>`
+        + `<span class="gs-tx-span">${num(t.start)}–${num(t.end)} · ${plural(tex.length, "exon")}</span></div>`
+        + (tex.length
+          ? `<table class="gs-ex"><thead><tr><th>Exon</th><th>Start</th><th>End</th></tr></thead>`
+            + `<tbody>${exRows}</tbody></table>`
+          : ``)
         + `</div>`;
     }).join("");
 
-    return `<div style="padding:10px 4px;border-bottom:1px solid var(--border2);">`
-      // Gene name = heading
-      + `<div style="font-weight:700;font-size:13px;">${esc(g.name)}`
-      + (strand ? ` <span style="color:var(--muted);font-weight:400;font-size:12px;">${strand}</span>` : ``)
+    return `<div class="gs-gene-card">`
+      + `<div class="gs-gene-name">${esc(g.name)}`
+      + (strand ? ` <span class="gs-strand">${strand}</span>` : ``)
       + `</div>`
-      // Description
-      + (desc ? `<div style="font-size:11px;margin-top:2px;color:var(--text);">${esc(desc)}</div>` : ``)
-      // ID
-      + (g.id ? `<div style="font-size:11px;color:var(--muted);margin-top:3px;">ID: ${esc(g.id)}</div>` : ``)
-      // Coordinates
-      + `<div style="font-size:11px;color:var(--muted);">${esc(state.contig)}:${loc}</div>`
-      // Counts
-      + `<div style="font-size:11px;color:var(--muted);">`
-      + `${txs.length} transcript${txs.length === 1 ? "" : "s"} · ${exons.length} exon${exons.length === 1 ? "" : "s"}</div>`
-      // Transcript + exon enumeration
-      + txHtml
+      + (desc ? `<div class="gs-gene-desc">${esc(desc)}</div>` : ``)
+      + `<table class="gs-kv"><tbody>`
+      + (g.id ? `<tr><td class="k">ID</td><td class="v">${esc(g.id)}</td></tr>` : ``)
+      + `<tr><td class="k">Location</td><td class="v">${esc(state.contig)}:${loc}</td></tr>`
+      + `<tr><td class="k">Strand</td><td class="v">${strand || "—"}</td></tr>`
+      + `<tr><td class="k">Transcripts</td><td class="v">${txs.length}</td></tr>`
+      + `<tr><td class="k">Exons</td><td class="v">${exons.length}</td></tr>`
+      + `</tbody></table>`
+      + (txs.length ? `<div class="gs-sub">Transcripts</div>` + txHtml : ``)
       + `</div>`;
   }).join("");
-  host.innerHTML = `<div style="font-size:11px;color:var(--muted);margin:4px 0 6px;">`
-    + `${visible.length} gene${visible.length > 1 ? "s" : ""} in view</div>` + rows;
+
+  host.innerHTML = `<div style="font-size:11px;color:var(--muted);margin:4px 0 8px;">`
+    + `${plural(visible.length, "gene")} in view</div>` + cards;
 }
 
 // -----------------------------

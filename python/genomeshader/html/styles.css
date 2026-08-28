@@ -1116,6 +1116,27 @@ svg.overlay {
   display: block;
 }
 
+/* Genes panel: a card + tables per gene. Class names are gene-panel specific,
+   so these unscoped rules are safe (and apply in fullscreen too). */
+.gs-gene-card { padding: 12px 2px 16px; border-bottom: 1px solid var(--border2); }
+.gs-gene-card:last-child { border-bottom: none; }
+.gs-gene-name { font-size: 14px; font-weight: 800; margin-bottom: 5px; word-break: break-word; }
+.gs-gene-name .gs-strand { color: var(--muted); font-weight: 500; font-size: 12px; }
+.gs-gene-desc { font-size: 11px; color: var(--text); margin-bottom: 8px; line-height: 1.4; }
+.gs-kv { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 10px; }
+.gs-kv td { padding: 4px 7px; border: 1px solid var(--border2); vertical-align: top; }
+.gs-kv td.k { color: var(--muted); width: 42%; white-space: nowrap; background: var(--panel2); font-weight: 600; }
+.gs-kv td.v { font-variant-numeric: tabular-nums; word-break: break-word; }
+.gs-sub { font-size: 12px; font-weight: 700; margin: 10px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.gs-tx { margin-bottom: 8px; border: 1px solid var(--border2); border-radius: 6px; overflow: hidden; }
+.gs-tx-h { font-size: 11px; font-weight: 700; padding: 5px 8px; background: var(--panel2); display: flex; justify-content: space-between; gap: 8px; }
+.gs-tx-h .gs-tx-span { color: var(--muted); font-weight: 400; white-space: nowrap; }
+.gs-ex { width: 100%; border-collapse: collapse; font-size: 10px; }
+.gs-ex th { text-align: right; color: var(--muted); font-weight: 600; padding: 3px 8px; border-top: 1px solid var(--border2); }
+.gs-ex th:first-child { text-align: left; }
+.gs-ex td { text-align: right; padding: 3px 8px; border-top: 1px solid var(--border2); font-variant-numeric: tabular-nums; }
+.gs-ex td:first-child { text-align: left; color: var(--muted); }
+
 /* SVG text classes */
 .svg-label { fill: var(--muted); font-size: 12px; font-weight: 600; }
 .svg-small { fill: var(--muted2); font-size: 10px; }
