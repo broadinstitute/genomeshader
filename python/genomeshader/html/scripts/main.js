@@ -3312,13 +3312,20 @@ function setupCanvasHover() {
         renderFlowCanvas();
         if (window.updateSelectionDisplay) window.updateSelectionDisplay();
       };
-      // Moving between variants selects that variant's ref allele (labels are
-      // [".", ref, alt1, ...], so ref is index 1; fall back to 0 if there's
-      // only a single label). Not all alleles — keeps the selection focused.
+      // Moving between variants selects that variant's ref allele. Node indices
+      // come from the display order (order.indexOf(label)), which drops the
+      // no-call when a variant has none — so ref is NOT always index 1. Match the
+      // ref by its label against the rendered node and use that node's index, so
+      // the track highlights the ref (and the pane shows ref) consistently.
       const selectVariantRef = (v) => {
         if (!v) return;
         const lbls = (getLabels && getLabels(v).labels) || [];
-        const refIdx = lbls.length > 1 ? 1 : 0;
+        const refLabel = lbls.length > 1 ? lbls[1] : lbls[0];  // [".", ref, alt...]
+        let refIdx = lbls.length > 1 ? 1 : 0;                  // fallback
+        const nodes = (window._alleleNodePositions || [])
+          .filter(n => String(n.variantId) === String(v.id));
+        const refNode = nodes.find(n => n.label === refLabel);
+        if (refNode && typeof refNode.alleleIndex === 'number') refIdx = refNode.alleleIndex;
         state.selectedAlleles.clear();
         state.selectedAlleles.add(makeAlleleSelectionKeyCompat(trackId, v.id, refIdx));
         refresh();
