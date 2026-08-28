@@ -100,47 +100,39 @@
           </div>
           <div class="left-tab-pane" data-left-tab="settings">
             <div class="menu settings-panel open" id="ctxMenu" role="menu" aria-hidden="false">
-      <div class="menuTitle">Display</div>
-      <div class="menuItem" id="themeItem" role="menuitem">
-        <span>Theme<span class="menuHotkey">T</span></span>
-        <span class="menuRight" id="themeLabel">Auto</span>
-      </div>
-
-      <div class="menuItem" id="orientationItem" role="menuitem">
-        <span>Orientation<span class="menuHotkey">O</span></span>
-        <span class="menuRight" id="orientationLabel">Horizontal</span>
-      </div>
-
-      <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
-        <span>Variant Layout<span class="menuHotkey">V</span></span>
-        <span class="menuRight" id="variantLayoutModeLabel">Genomic</span>
-      </div>
-
-      <div class="menuTitle">Alleles</div>
-      <div class="menuItem" id="aggregateRareAllelesItem" role="menuitem">
-        <span>Aggregate low-frequency</span>
-        <span class="menuRight">
-          <input type="checkbox" id="aggregateRareAllelesToggle" data-1p-ignore>
-        </span>
-      </div>
-      <div class="menuItem" id="aggregateRareAllelesCutoffItem" role="menuitem">
-        <span>Cutoff</span>
-        <span class="menuRight">
-          <input type="number" id="aggregateRareAllelesCutoffInput" min="0" max="50" step="0.5" value="2.0" data-1p-ignore>
-          <span>%</span>
-        </span>
-      </div>
-
-      <div class="menuItem" id="fullscreenItem" role="menuitem">
-        <span>Full screen<span class="menuHotkey">F</span></span>
-        <span class="menuRight" id="fullscreenLabel">Enter full screen</span>
-      </div>
-
-      <div class="menuTitle">Grouping</div>
-      <div class="menuItem" role="menuitem">
-        <span>Variable</span>
-        <span class="menuRight">Super-pop</span>
-      </div>
+      <table class="settings-table">
+        <tr class="settings-section"><td colspan="2">Display</td></tr>
+        <tr class="settings-row" id="themeItem" role="menuitem">
+          <td>Theme<span class="menuHotkey">T</span></td>
+          <td class="menuRight" id="themeLabel">Auto</td>
+        </tr>
+        <tr class="settings-row" id="orientationItem" role="menuitem">
+          <td>Orientation<span class="menuHotkey">O</span></td>
+          <td class="menuRight" id="orientationLabel">Horizontal</td>
+        </tr>
+        <tr class="settings-row" id="variantLayoutModeItem" role="menuitem">
+          <td>Variant Layout<span class="menuHotkey">V</span></td>
+          <td class="menuRight" id="variantLayoutModeLabel">Genomic</td>
+        </tr>
+        <tr class="settings-section"><td colspan="2">Alleles</td></tr>
+        <tr class="settings-row" id="aggregateRareAllelesItem" role="menuitem">
+          <td>Aggregate low-frequency</td>
+          <td class="menuRight"><input type="checkbox" id="aggregateRareAllelesToggle" data-1p-ignore></td>
+        </tr>
+        <tr class="settings-row" id="aggregateRareAllelesCutoffItem" role="menuitem">
+          <td>Cutoff</td>
+          <td class="menuRight"><input type="number" id="aggregateRareAllelesCutoffInput" min="0" max="50" step="0.5" value="2.0" data-1p-ignore> %</td>
+        </tr>
+        <tr class="settings-row" id="fullscreenItem" role="menuitem">
+          <td>Full screen<span class="menuHotkey">F</span></td>
+          <td class="menuRight" id="fullscreenLabel">Enter full screen</td>
+        </tr>
+        <tr class="settings-section"><td colspan="2">Grouping</td></tr>
+        <tr class="settings-row" role="menuitem">
+          <td>Variable</td>
+          <td class="menuRight">Super-pop</td>
+        </tr>
+      </table>
     </div>
           </div>
         </div>
