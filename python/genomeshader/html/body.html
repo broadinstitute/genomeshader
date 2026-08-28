@@ -141,6 +141,11 @@
 
     <div class="hud" id="hud"></div>
     <div class="tooltip" id="tooltip"></div>
+    <!-- Bottom status bar: shows text + a progress bar during background work. -->
+    <div class="status-bar" id="statusBar" role="status" aria-live="polite">
+      <span class="status-text"></span>
+      <span class="status-progress"><span class="status-progress-fill"></span></span>
+    </div>
   </div>
 
   <div class="sidebar-right" id="sidebarRight" style="position: absolute; right: 0; top: 0; bottom: 0; width: 8px; z-index: 100; pointer-events: auto;">

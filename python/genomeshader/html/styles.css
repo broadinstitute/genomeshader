@@ -1106,6 +1106,61 @@ svg.overlay {
   display: block;
 }
 
+/* Bottom status bar: background-processing text + progress. Hidden until a
+   message is set via window.__GS_STATUS(). */
+.status-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 26px;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel);
+  border-top: 1px solid var(--border2);
+  z-index: 400;
+  pointer-events: none;
+}
+.status-bar.visible { display: flex; }
+.status-bar .status-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  max-width: 70%;
+}
+.status-bar .status-progress {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel2);
+  overflow: hidden;
+  display: none;
+}
+.status-bar.has-progress .status-progress { display: block; }
+.status-bar .status-progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--blue, #2b6fff);
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+.status-bar.indeterminate .status-progress-fill {
+  width: 30% !important;
+  transition: none;
+  animation: gs-status-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes gs-status-indeterminate {
+  0%   { margin-left: -30%; }
+  100% { margin-left: 100%; }
+}
+
 /* Hint tooltips (element title= text, shown after a short dwell). Own element
    so it never contends with the data .tooltip above. */
 .hint-tooltip {

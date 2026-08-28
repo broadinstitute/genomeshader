@@ -985,3 +985,40 @@ mq?.addEventListener?.("change", () => {
   }, true);
   host.addEventListener("click", hide, true);
 })();
+
+// Bottom status bar controller. Call window.__GS_STATUS(message, opts):
+//   message   string to show, or null/false to hide the bar.
+//   opts.busy      show an indeterminate progress animation.
+//   opts.progress  0..1 for a determinate bar.
+//   opts.autoHide  ms after which the bar hides itself.
+// Available to all later scripts so any long-running action can report status.
+(function setupStatusBar() {
+  const bar = (typeof byId === "function" ? byId(root, "statusBar") : null)
+    || document.getElementById("statusBar");
+  if (!bar) { if (!window.__GS_STATUS) window.__GS_STATUS = function () {}; return; }
+  const textEl = bar.querySelector(".status-text");
+  const fillEl = bar.querySelector(".status-progress-fill");
+  let hideTimer = null;
+  function hide() {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    bar.classList.remove("visible", "has-progress", "indeterminate");
+  }
+  window.__GS_STATUS = function (message, opts) {
+    opts = opts || {};
+    if (message == null || message === false) { hide(); return; }
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (textEl) textEl.textContent = String(message);
+    bar.classList.add("visible");
+    const determinate = typeof opts.progress === "number";
+    bar.classList.toggle("has-progress", determinate || !!opts.busy);
+    if (determinate) {
+      bar.classList.remove("indeterminate");
+      if (fillEl) fillEl.style.width = Math.max(0, Math.min(100, opts.progress * 100)) + "%";
+    } else if (opts.busy) {
+      bar.classList.add("indeterminate");
+    } else {
+      bar.classList.remove("indeterminate");
+    }
+    if (opts.autoHide) hideTimer = setTimeout(hide, opts.autoHide);
+  };
+})();

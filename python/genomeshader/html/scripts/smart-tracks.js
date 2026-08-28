@@ -285,10 +285,13 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
   
   track.loading = true;
   renderAll();
-  
+  if (window.__GS_STATUS) {
+    window.__GS_STATUS('Loading reads' + (sampleId ? ' for ' + sampleId : '') + '…', { busy: true });
+  }
+
   // Convert selectedAlleles Set to array
   const allelesArray = Array.from(selectedAlleles);
-  
+
   return sendCommMessage('fetch_reads', {
     strategy: strategy,
     selected_alleles: allelesArray,
@@ -297,6 +300,10 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     .then(function(response) {
       track.loading = false;
       if (response.type === 'fetch_reads_response') {
+        if (window.__GS_STATUS) {
+          const sn = sampleId || response.sample_id;
+          window.__GS_STATUS('Loaded reads' + (sn ? ' for ' + sn : ''), { autoHide: 2000 });
+        }
         track.readsData = response.reads;
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
@@ -320,6 +327,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
         console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
+        if (window.__GS_STATUS) window.__GS_STATUS('Failed to load reads: ' + (response.error || 'error'), { autoHide: 5000 });
         throw new Error(response.error);
       }
       return null;
@@ -327,6 +335,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     .catch(function(err) {
       track.loading = false;
       console.error(`Failed to fetch reads for Smart track ${trackId}:`, err);
+      if (window.__GS_STATUS) window.__GS_STATUS('Failed to load reads', { autoHide: 5000 });
       renderAll();
       throw err;
     });
