@@ -509,6 +509,7 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
   let placeholder = null;
   let originalParent = null;
   let originalNextSibling = null;
+  let prevViewerStyle = null;
 
   const overlayId = `genomeshader-overlay-${viewId}`;
   const modalId = `genomeshader-modal-${viewId}`;
@@ -687,6 +688,13 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     }
 
     modalBody.appendChild(viewerEl);
+    // viewerEl is the #genomeshader-root container. Its inline style pins
+    // height:600px for the notebook cell; in fullscreen it must fill the modal
+    // body so the whole scoped subtree — and every container-scoped CSS rule —
+    // renders on the same basis as inline, just larger. Restored on exit.
+    prevViewerStyle = viewerEl.getAttribute('style');
+    viewerEl.style.width = '100%';
+    viewerEl.style.height = '100%';
     document.body.appendChild(overlay);
 
     const originalOverflow = document.body.style.overflow;
@@ -731,6 +739,11 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     // Remove menu close handler from modal body
     if (overlay && overlay._menuCloseHandler && overlay._modalBody) {
       overlay._modalBody.removeEventListener('click', overlay._menuCloseHandler, true);
+    }
+
+    if (prevViewerStyle !== null) {
+      viewerEl.setAttribute('style', prevViewerStyle);
+      prevViewerStyle = null;
     }
 
     if (placeholder && originalParent) {
@@ -802,9 +815,13 @@ let interactionBinding = null;
 
 const viewId = window.GENOMESHADER_VIEW_ID || document.querySelector('[data-view-id]')?.dataset.viewId || 'default';
 let focusModeController = null;
-if (fullscreenItem && app) {
+if (fullscreenItem && root && app) {
   focusModeController = installFocusMode({
-    viewerEl: app,
+    // Move the whole #genomeshader-root container (not just .app) so the
+    // container-scoped CSS from widget.py keeps matching in fullscreen —
+    // otherwise .app leaves its scope and the viewer falls back to unscoped
+    // styles.css, diverging from inline rendering.
+    viewerEl: root,
     toggleEl: fullscreenItem,
     viewId: viewId,
     onEnter: triggerResize,
