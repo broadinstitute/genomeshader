@@ -83,7 +83,12 @@ def _container_override_css(cid: str) -> str:
         f"{c} .tracks {{ position:absolute !important; left:0 !important; right:0 !important;"
         f" top:0 !important; height:var(--tracks-h,280px) !important; width:100% !important; }}",
         f"{c} #tracksContainer {{ position:relative !important; width:100% !important; height:100% !important; }}",
-        f"{c} #tracksSvg {{ width:100% !important; height:100% !important; display:block !important; }}",
+        # SVG text/vector layer (reference letters, gene shapes) must sit ABOVE
+        # the WebGPU raster layer (solid base-color blocks); otherwise the solid
+        # blocks hide the letters. pointer-events:none so it never blocks canvas
+        # hover — interactive hover regions set pointer-events:auto themselves.
+        f"{c} #tracksSvg {{ position:absolute !important; inset:0 !important; width:100% !important;"
+        f" height:100% !important; display:block !important; z-index:3 !important; pointer-events:none !important; }}",
         f"{c} #tracksWebGPU {{ position:absolute !important; inset:0 !important; width:100% !important;"
         f" height:100% !important; display:block !important; pointer-events:auto !important; z-index:1 !important; }}",
         f"{c} #flowWebGPU {{ pointer-events:auto !important; }}",
