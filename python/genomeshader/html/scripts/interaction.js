@@ -2485,20 +2485,33 @@ function renderFlowCanvas() {
     const textHeight = 11; // font size
     
     if (labelInfo.isVertical) {
-      // Vertical mode: rotated text
+      // Vertical mode: rotated text. Screen box is tooltipW wide, tooltipH tall.
       const labelX = labelInfo.nodeX + labelInfo.nodeW/2 - gap - 5 + 12;
-      const labelY = labelInfo.nodeY - 12;
-      
-      // Calculate dimensions for rotated tooltip
-      const tooltipW = textHeight + labelPadding * 2;
-      const tooltipH = textWidth + labelPadding * 2;
-      const tooltipX = labelX - tooltipH / 2;
-      const tooltipY = labelY - tooltipW / 2;
-      
+      const tooltipW = textHeight + labelPadding * 2;   // screen: horizontal thickness
+      const tooltipH = textWidth + labelPadding * 2;    // screen: vertical length (rotated)
+      const canvasH = ctx.canvas.clientHeight || ctx.canvas.height;
+      const nodeTop = labelInfo.nodeY;
+      const nodeH = labelInfo.nodeH;
+      const tipGap = 3;
+      // Same occlusion rule as horizontal: a small allele (< 2x tooltip) stays
+      // fully visible (box entirely off the node); a large one may overlap.
+      const isSmall = nodeH < 2 * tooltipH;
+      let labelY;
+      if (isSmall) {
+        const above = nodeTop - tipGap - tooltipH / 2;       // centre so the box bottom clears the node top
+        const below = nodeTop + nodeH + tipGap + tooltipH / 2;
+        if (above - tooltipH / 2 >= 2) labelY = above;
+        else if (below + tooltipH / 2 <= canvasH - 2) labelY = below;
+        else labelY = above;
+      } else {
+        labelY = nodeTop - 12; // partial overlap OK for large alleles
+      }
+      labelY = Math.max(2 + tooltipH / 2, Math.min(labelY, canvasH - 2 - tooltipH / 2));
+
       ctx.save();
       ctx.translate(labelX, labelY);
       ctx.rotate(-Math.PI/2);
-      
+
       // Draw tooltip background
       ctx.fillStyle = labelBgColor;
       ctx.strokeStyle = labelBorderColor;
@@ -2507,26 +2520,41 @@ function renderFlowCanvas() {
       roundRect(ctx, -tooltipH/2, -tooltipW/2, tooltipH, tooltipW, labelBorderRadius);
       ctx.fill();
       ctx.stroke();
-      
+
       // Draw text
       ctx.fillStyle = labelTextColor;
       ctx.fillText(text, -textWidth/2, textHeight/2 + 2);
-      
+
       ctx.restore();
     } else {
-      // Horizontal mode: normal text
-      const labelX = labelInfo.nodeX + 12;
-      const labelY = labelInfo.nodeY + 13;
-
-      // Calculate dimensions for tooltip
+      // Horizontal mode: normal text.
       const tooltipW = textWidth + labelPadding * 2;
       const tooltipH = textHeight + labelPadding * 2;
-      // Keep the box fully inside the canvas so it isn't clipped at the bottom
-      // (or any edge) by the flow area's bounds.
       const canvasW = ctx.canvas.clientWidth || ctx.canvas.width;
       const canvasH = ctx.canvas.clientHeight || ctx.canvas.height;
-      let tooltipX = labelX - labelPadding;
-      let tooltipY = labelY - textHeight - labelPadding;
+
+      const nodeTop = labelInfo.nodeY;
+      const nodeH = labelInfo.nodeH;
+      const tipGap = 3;
+      // Occlusion rule: a "small" allele (shorter than 2x the tooltip) must stay
+      // fully visible, so the tooltip sits entirely off the node — above it, or
+      // below when there's no room above. A "large" allele may be partly
+      // overlapped, so anchor the box at its top edge; that still leaves at least
+      // tooltipH (>= half the node) of the allele showing.
+      const isSmall = nodeH < 2 * tooltipH;
+      let tooltipY;
+      if (isSmall) {
+        const above = nodeTop - tooltipH - tipGap;
+        const below = nodeTop + nodeH + tipGap;
+        if (above >= 2) tooltipY = above;
+        else if (below + tooltipH <= canvasH - 2) tooltipY = below;
+        else tooltipY = above; // pathological (tiny canvas); final clamp handles it
+      } else {
+        tooltipY = nodeTop;
+      }
+
+      // Keep the box near the node horizontally, clamped on-screen.
+      let tooltipX = labelInfo.nodeX + 12 - labelPadding;
       tooltipX = Math.max(2, Math.min(tooltipX, canvasW - tooltipW - 2));
       tooltipY = Math.max(2, Math.min(tooltipY, canvasH - tooltipH - 2));
 
@@ -2539,7 +2567,7 @@ function renderFlowCanvas() {
       ctx.fill();
       ctx.stroke();
 
-      // Draw text at the (possibly clamped) box position.
+      // Draw text at the box position.
       ctx.fillStyle = labelTextColor;
       ctx.fillText(text, tooltipX + labelPadding, tooltipY + textHeight + labelPadding);
     }
