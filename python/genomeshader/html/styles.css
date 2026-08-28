@@ -1660,6 +1660,12 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   /* Children (controls) should not block when hidden, except hover area */
   pointer-events: none;
 }
+/* Flow (variant/alluvial) tracks: the top strip IS the interactive variant
+   area. Its hover strip must NOT intercept clicks meant for selecting or
+   deselecting variants — let them fall through to #flowOverlay beneath. */
+.track-control-container[data-track-id^="flow"] .track-hover-area {
+  pointer-events: none !important;
+}
 /* When hovered, controls should capture pointer events */
 .track-control-container.standard-track.track-hovered .track-controls {
   pointer-events: auto;
