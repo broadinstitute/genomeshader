@@ -263,9 +263,12 @@ function renderFlowCanvas() {
     } else {
       ctx = flowCanvas.getContext("2d");
       ctx.save();
-      ctx.translate(0, bandOffset);
+      // Vertical: the genome axis is the canvas height (totalFlowH) and bands
+      // tile across X. Horizontal: genome axis is the width (W) and bands tile
+      // down Y. The clip must span the full genome axis, not the band thickness.
+      ctx.translate(isVertical ? bandOffset : 0, isVertical ? 0 : bandOffset);
       ctx.beginPath();
-      ctx.rect(0, 0, W, bandHeight);
+      ctx.rect(0, 0, isVertical ? bandHeight : W, isVertical ? totalFlowH : bandHeight);
       ctx.clip();
     }
 
@@ -457,10 +460,10 @@ function renderFlowCanvas() {
   // Out-of-bounds shading on variant tracks (flow bands), matching tracks pane behavior.
   if (dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
     const dataStartPos = isVertical
-      ? yGenomeCanonical(dataBounds.start, H)
+      ? yGenomeCanonical(dataBounds.start, totalFlowH)
       : xGenomeCanonical(dataBounds.start, W);
     const dataEndPos = isVertical
-      ? yGenomeCanonical(dataBounds.end, H)
+      ? yGenomeCanonical(dataBounds.end, totalFlowH)
       : xGenomeCanonical(dataBounds.end, W);
 
     // Flow bands have a base background wash (0.035), so use a lighter overlay
@@ -513,7 +516,7 @@ function renderFlowCanvas() {
     
     // columns (horizontal lines in vertical mode) - shortened to end near where allele nodes start
     // Calculate where allele nodes start (left + margin + horizontal offset)
-    const left = 70;
+    const left = 20;
     const marginPercent = 0.1;
     const minMargin = 10;
     const trackWidth = flowLayout ? flowLayout.contentWidth : 300;
@@ -533,7 +536,7 @@ function renderFlowCanvas() {
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
         const y = variantMode === "genomic" 
-          ? yGenomeCanonical(v.pos, H)
+          ? yGenomeCanonical(v.pos, totalFlowH)
           : yColumn(i, sortedWin.length);
         const yScaled = yBandToFlow(y) * devicePixelRatio;
         flowInstancedRenderer.addLine(
@@ -552,7 +555,7 @@ function renderFlowCanvas() {
         ctx.lineWidth = isHovered ? 2.5 : 1;
         // Position column based on mode
         const y = variantMode === "genomic" 
-          ? yGenomeCanonical(v.pos, H)
+          ? yGenomeCanonical(v.pos, totalFlowH)
           : yColumn(i, sortedWin.length);
         ctx.beginPath();
         ctx.moveTo(junctionX, y);
@@ -599,7 +602,7 @@ function renderFlowCanvas() {
     if (uniquePositions.length > 0) {
       if (variantMode === "genomic") {
         // In genomic mode, check minimum spacing between actual positions
-        const positions = uniquePositions.map(pos => yGenomeCanonical(pos, H)).sort((a, b) => a - b);
+        const positions = uniquePositions.map(pos => yGenomeCanonical(pos, totalFlowH)).sort((a, b) => a - b);
         let minActualSpacing = Infinity;
         for (let i = 1; i < positions.length; i++) {
           const spacing = positions[i] - positions[i - 1];
@@ -630,7 +633,7 @@ function renderFlowCanvas() {
       // For equidistant mode, use the position index (not variant index) so variants at same position overlap
       let y;
       if (variantMode === "genomic") {
-        y = yGenomeCanonical(pos, H);
+        y = yGenomeCanonical(pos, totalFlowH);
       } else {
         // Use position index so all variants at same position get same Y coordinate
         y = yColumn(posIdx, uniquePositions.length);
@@ -687,9 +690,9 @@ function renderFlowCanvas() {
         const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
-        const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
+        const vy = yGenomeCanonical(v.pos, totalFlowH); // always use genomic position for ruler connection
         const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
+          ? yGenomeCanonical(v.pos, totalFlowH)
           : yColumn(i, sortedWin.length);
         flowInstancedRenderer.addLine(
           x0 * devicePixelRatio, yBandToFlow(vy) * devicePixelRatio,
@@ -705,9 +708,9 @@ function renderFlowCanvas() {
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
-        const vy = yGenomeCanonical(v.pos, H);
+        const vy = yGenomeCanonical(v.pos, totalFlowH);
         const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
+          ? yGenomeCanonical(v.pos, totalFlowH)
           : yColumn(i, sortedWin.length);
         ctx.beginPath();
         ctx.moveTo(x0, vy);
@@ -1138,7 +1141,7 @@ function renderFlowCanvas() {
     if (!Number.isFinite(posNum) || !Number.isFinite(nextBpAtVariant)) return null;
 
     if (isVertical) {
-      const gapEndY = yGenomeCanonical(nextBpAtVariant, H);
+      const gapEndY = yGenomeCanonical(nextBpAtVariant, totalFlowH);
       const gapStartY = gapEndY + gapSize;
       return {
         axis: "y",
@@ -1523,7 +1526,7 @@ function renderFlowCanvas() {
   
   if (isVertical) {
     const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
-    const left = 70;
+    const left = 20;
     
     // Calculate margin for allele nodes (same as in calculateAlleleSizes)
     const marginPercent = 0.1;
@@ -1565,7 +1568,7 @@ function renderFlowCanvas() {
       
       // Position based on variant layout mode
       const cy = variantMode === "genomic"
-        ? yGenomeCanonical(v.pos, H)
+        ? yGenomeCanonical(v.pos, totalFlowH)
         : yColumn(i, sortedWin.length);
       
       // Calculate total width of all nodes plus gaps
