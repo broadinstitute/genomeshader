@@ -870,7 +870,7 @@ function getDragAfterElement(container, y) {
 
 // Right sidebar collapse/expand
 function getRightSidebarCollapsed() {
-  const stored = localStorage.getItem("genomeshader.rightSidebarCollapsed");
+  const stored = gsLocalStorage.getItem("genomeshader.rightSidebarCollapsed");
   // Default to collapsed (true) if not set
   if (stored === null) {
     return true;
@@ -878,7 +878,7 @@ function getRightSidebarCollapsed() {
   return stored === "true";
 }
 function setRightSidebarCollapsed(collapsed) {
-  localStorage.setItem("genomeshader.rightSidebarCollapsed", String(collapsed));
+  gsLocalStorage.setItem("genomeshader.rightSidebarCollapsed", String(collapsed));
   updateRightSidebarState();
 }
 function updateRightSidebarState() {
@@ -901,7 +901,7 @@ function updateRightSidebarState() {
 // --sidebar-right-w CSS var on the container so the flex-basis rules honor it.
 const RIGHT_SIDEBAR_MIN_W = 200;
 function getRightSidebarWidth() {
-  const v = parseInt(localStorage.getItem("genomeshader.rightSidebarWidth"), 10);
+  const v = parseInt(gsLocalStorage.getItem("genomeshader.rightSidebarWidth"), 10);
   return (isFinite(v) && v >= RIGHT_SIDEBAR_MIN_W) ? v : 240;
 }
 function applyRightSidebarWidth(px) {
@@ -941,7 +941,7 @@ function setupRightSidebarResize(sidebarRight, app) {
     try { handle.releasePointerCapture(e.pointerId); } catch (err) {}
     const cur = getComputedStyle(sidebarRight).width;
     const px = Math.round(parseFloat(cur));
-    if (isFinite(px)) localStorage.setItem("genomeshader.rightSidebarWidth", String(px));
+    if (isFinite(px)) gsLocalStorage.setItem("genomeshader.rightSidebarWidth", String(px));
     requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (err) {} });
   };
   handle.addEventListener("pointerdown", (e) => {
@@ -971,11 +971,11 @@ if (typeof document !== 'undefined') {
 
 // Tab switching for right sidebar
 function getActiveTab() {
-  const stored = localStorage.getItem("genomeshader.rightSidebarTab");
+  const stored = gsLocalStorage.getItem("genomeshader.rightSidebarTab");
   return stored || "smart-tracks"; // Default to smart-tracks
 }
 function setActiveTab(tabName) {
-  localStorage.setItem("genomeshader.rightSidebarTab", tabName);
+  gsLocalStorage.setItem("genomeshader.rightSidebarTab", tabName);
   updateActiveTab();
 }
 function updateActiveTab() {

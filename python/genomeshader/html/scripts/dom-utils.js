@@ -80,10 +80,10 @@ if (hostMode === 'inline' && root && ctxMenu && !root.contains(ctxMenu)) {
 
 // Sidebar collapse/expand
 function getSidebarCollapsed() {
-  return localStorage.getItem("genomeshader.sidebarCollapsed") === "true";
+  return gsLocalStorage.getItem("genomeshader.sidebarCollapsed") === "true";
 }
 function setSidebarCollapsed(collapsed) {
-  localStorage.setItem("genomeshader.sidebarCollapsed", String(collapsed));
+  gsLocalStorage.setItem("genomeshader.sidebarCollapsed", String(collapsed));
   updateSidebarState();
 }
 function updateSidebarState() {
@@ -151,11 +151,11 @@ if (sidebar) {
 updateSidebarState();
 
 function getStoredTheme() {
-  return localStorage.getItem("genomeshader.theme"); // "dark" | "light" | "auto" | null
+  return gsLocalStorage.getItem("genomeshader.theme"); // "dark" | "light" | "auto" | null
 }
 function setTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
-  localStorage.setItem("genomeshader.theme", theme);
+  gsLocalStorage.setItem("genomeshader.theme", theme);
   updateThemeLabel();
 }
 function updateThemeLabel() {
@@ -163,10 +163,10 @@ function updateThemeLabel() {
   themeLabel.textContent = t === "auto" ? "Auto" : (t === "light" ? "Light" : "Dark");
 }
 function getStoredOrientation() {
-  return localStorage.getItem("genomeshader.orientation"); // "horizontal" | "vertical" | null
+  return gsLocalStorage.getItem("genomeshader.orientation"); // "horizontal" | "vertical" | null
 }
 function setOrientation(o) {
-  localStorage.setItem("genomeshader.orientation", o);
+  gsLocalStorage.setItem("genomeshader.orientation", o);
   updateOrientationState();
 }
 function updateOrientationState() {
@@ -179,10 +179,10 @@ function isVerticalMode() {
   return (getStoredOrientation() ?? "horizontal") === "vertical";
 }
 function getStoredVariantLayoutMode() {
-  return localStorage.getItem("genomeshader.variantLayoutMode"); // "equidistant" | "genomic" | null
+  return gsLocalStorage.getItem("genomeshader.variantLayoutMode"); // "equidistant" | "genomic" | null
 }
 function setVariantLayoutMode(mode) {
-  localStorage.setItem("genomeshader.variantLayoutMode", mode);
+  gsLocalStorage.setItem("genomeshader.variantLayoutMode", mode);
   state.variantLayoutMode = mode;
   updateVariantLayoutModeLabel();
 }
@@ -197,31 +197,31 @@ function getVariantLayoutMode() {
   return state.variantLayoutMode || "genomic";
 }
 function getStoredLockAlleles() {
-  return localStorage.getItem("genomeshader.lockAlleles") === "true";
+  return gsLocalStorage.getItem("genomeshader.lockAlleles") === "true";
 }
 function setLockAlleles(enabled) {
   const v = enabled === true;
-  localStorage.setItem("genomeshader.lockAlleles", v ? "true" : "false");
+  gsLocalStorage.setItem("genomeshader.lockAlleles", v ? "true" : "false");
   state.lockAlleles = v;
   if (lockAllelesToggle) lockAllelesToggle.checked = v;
 }
 function getStoredAggregateRareAlleles() {
-  return localStorage.getItem("genomeshader.aggregateRareAlleles") === "true";
+  return gsLocalStorage.getItem("genomeshader.aggregateRareAlleles") === "true";
 }
 function setAggregateRareAlleles(enabled) {
   const v = enabled === true;
-  localStorage.setItem("genomeshader.aggregateRareAlleles", v ? "true" : "false");
+  gsLocalStorage.setItem("genomeshader.aggregateRareAlleles", v ? "true" : "false");
   state.aggregateRareAlleles = v;
   updateAggregateRareAllelesControls();
 }
 function getStoredAggregateRareAllelesCutoff() {
-  const raw = parseFloat(localStorage.getItem("genomeshader.aggregateRareAllelesCutoffPct"));
+  const raw = parseFloat(gsLocalStorage.getItem("genomeshader.aggregateRareAllelesCutoffPct"));
   if (!isFinite(raw)) return 2.0;
   return Math.max(0, Math.min(50, raw));
 }
 function setAggregateRareAllelesCutoff(cutoffPct) {
   const clamped = Math.max(0, Math.min(50, Number(cutoffPct)));
-  localStorage.setItem("genomeshader.aggregateRareAllelesCutoffPct", String(clamped));
+  gsLocalStorage.setItem("genomeshader.aggregateRareAllelesCutoffPct", String(clamped));
   state.aggregateRareAllelesCutoffPct = clamped;
   updateAggregateRareAllelesControls();
 }
@@ -242,7 +242,7 @@ updateThemeLabel();
 // Left panel tabs (samples / settings). Settings now lives inline in its own
 // left tab instead of a floating popup, so openMenu just switches to it.
 function getActiveLeftTab() {
-  return localStorage.getItem("genomeshader.leftTab") || "samples";
+  return gsLocalStorage.getItem("genomeshader.leftTab") || "samples";
 }
 function updateLeftTab() {
   const active = getActiveLeftTab();
@@ -256,7 +256,7 @@ function updateLeftTab() {
 }
 function setLeftTab(name, openIfCollapsed) {
   if (!name) return;
-  localStorage.setItem("genomeshader.leftTab", name);
+  gsLocalStorage.setItem("genomeshader.leftTab", name);
   updateLeftTab();
   if (openIfCollapsed && getSidebarCollapsed()) setSidebarCollapsed(false);
 }

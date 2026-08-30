@@ -3086,7 +3086,7 @@ function setupCanvasHover() {
 
   function loadInfoVisibleFieldsByTrackPreference() {
     try {
-      const raw = localStorage.getItem(INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY);
+      const raw = gsLocalStorage.getItem(INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY);
       const byTrack = {};
       if (raw == null) return byTrack;
       const parsed = JSON.parse(raw);
@@ -3109,7 +3109,7 @@ function setupCanvasHover() {
         const setVal = byTrack[trackKey];
         out[trackKey] = Array.from(setVal || []).filter(k => typeof k === 'string' && k.length > 0);
       });
-      localStorage.setItem(INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY, JSON.stringify(out));
+      gsLocalStorage.setItem(INFO_VISIBLE_FIELDS_BY_TRACK_STORAGE_KEY, JSON.stringify(out));
     } catch (_) {
       // ignore storage errors
     }
