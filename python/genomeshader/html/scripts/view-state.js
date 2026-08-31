@@ -203,6 +203,30 @@ function isInsertion(variant) {
   return variant.altAlleles.some(alt => alt.length > refLen);
 }
 
+function isDeletion(variant) {
+  if (variant.hasOwnProperty('isDeletion')) {
+    return variant.isDeletion === true;
+  }
+  if (!variant.refAllele || !variant.altAlleles) return false;
+  const refLen = variant.refAllele.length;
+  return variant.altAlleles.some(alt => alt.length < refLen);
+}
+
+// An indel = insertion or deletion (anything that changes length vs the ref).
+function isIndel(variant) {
+  return isInsertion(variant) || isDeletion(variant);
+}
+
+// Longest deletion span (ref bases removed) for a variant.
+function getMaxDeletionLength(variant) {
+  if (variant.hasOwnProperty('maxDeletionLength')) {
+    return variant.maxDeletionLength || 0;
+  }
+  if (!variant.refAllele || !variant.altAlleles) return 0;
+  const refLen = variant.refAllele.length;
+  return Math.max(0, ...variant.altAlleles.map(alt => Math.max(0, refLen - alt.length)));
+}
+
 // Get the longest insertion allele length for a variant
 // Uses precomputed value from backend if available, otherwise computes it
 function getMaxInsertionLength(variant) {

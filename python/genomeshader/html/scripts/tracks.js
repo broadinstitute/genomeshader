@@ -1236,6 +1236,8 @@ function renderTracks() {
     const v = rulerVariants[idx];
     const variantId = String(v.id);
     if (v.pos < state.startBp || v.pos > state.endBp) continue;
+    // Indel track: only positions with an insertion or deletion.
+    if (typeof isIndel === "function" && !isIndel(v)) continue;
     const pos = genomePos(v.pos);
     const isHovered = (state.hoveredVariantId != null && variantId === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
     const strokeWidth = isHovered ? 2.5 : 1.2;

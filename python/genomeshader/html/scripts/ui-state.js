@@ -32,7 +32,7 @@ const state = {
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
     { id: "repeats", label: "RepeatMasker", collapsed: false, height: 40, minHeight: 30 },
     { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
-    { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
+    { id: "ruler", label: "Indel", collapsed: false, height: 68, minHeight: 40 },
     { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 110 }
   ],
   trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
