@@ -105,6 +105,8 @@ Each maps to a fixed regression:
 | `test_comment_time_has_timezone` | comment timestamps render with a timezone token |
 | `test_indel_toggle_cycle` | Indel marker cycles off→ins→del→off on mixed positions, toggles on pure |
 | `test_zero_carrier_allele_label_is_honest` | 0-carrier alleles say so, not a bare "0 samples" |
+| `test_comment_thread_logic` | unread/participant detection + unread-floats-to-top sort + author/anchor filter |
+| `test_comment_pin_is_clickable` | comment pins opt into pointer events (clickable to open) |
 
 #### Adding a test
 
@@ -147,6 +149,10 @@ can seed comm state / stand up a real-GPU runner:
   covered by `test_allele_reorder_indicator_matches_landing`; the drag gesture
   itself is manual.
 - **Vertical sample/read (smart) track**: comm + WebGPU driven.
+- **Comment threads UI**: reply box, the "NEW" chip + unread left-border, the
+  command-strip badge, and the sort/filter selects. The pure logic
+  (sort/filter/unread/participant) is unit-tested; the rendered DOM + badge need
+  comm-seeded comments, which the harness can't provide — verify by hand.
 - **Repeated-reference deletion rows**: expanding a deletion on the Indel track
   grows the reference track by one row per deletion, each rendering the deleted
   bases greyed-but-legible with a strike-through. The state machine

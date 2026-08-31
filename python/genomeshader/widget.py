@@ -293,6 +293,16 @@ class GenomeShaderWidget(anywidget.AnyWidget):
             except Exception as e:
                 self.send({"type": "comments_changed", "request_id": request_id,
                            "action": "update", "error": str(e)})
+        elif msg_type == "comments_reply":
+            try:
+                c = self._shader.reply_comment(content.get("id"),
+                                               body=content.get("body"),
+                                               author=(content.get("author") or None))
+                self.send({"type": "comments_changed", "request_id": request_id,
+                           "action": "reply", "comment": c})
+            except Exception as e:
+                self.send({"type": "comments_changed", "request_id": request_id,
+                           "action": "reply", "error": str(e)})
         elif msg_type == "comments_delete":
             try:
                 ok = self._shader.delete_comment(content.get("id"))

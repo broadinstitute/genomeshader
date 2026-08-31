@@ -248,6 +248,52 @@ def test_allele_reorder_indicator_matches_landing(browser, tmp_path):
     page.close()
 
 
+def test_comment_thread_logic(browser, tmp_path):
+    """Unread detection, participant check, unread-floats-to-top sort, and
+    author/anchor filtering — the pure functions behind comment threads."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    out = page.evaluate(
+        """() => {
+          const S = window.__gsCommentSort, F = window.__gsCommentFilter,
+                U = window.__gsCommentUnread, P = window.__gsCommentParticipant;
+          if (!S || !F || !U || !P) return null;
+          const me = "alice";
+          const c1 = { id: "1", author: "alice", created: "2026-01-01T00:00Z",
+                       anchor: { type: "region", locus: { contig: "x", pos: 10 } },
+                       replies: [{ author: "bob", created: "2026-02-01T00:00Z", body: "r" }] };
+          const c2 = { id: "2", author: "bob", created: "2026-03-01T00:00Z",
+                       anchor: { type: "allele", locus: { contig: "x", pos: 20 } }, replies: [] };
+          const c3 = { id: "3", author: "carol", created: "2026-04-01T00:00Z",
+                       anchor: { type: "region", locus: { contig: "x", pos: 5 } }, replies: [] };
+          const list = [c1, c2, c3];
+          return {
+            // alice authored c1; bob replied after -> unread for alice
+            unread_c1: U(c1, me, null),
+            // already seen past bob's reply -> not unread
+            seen_c1: U(c1, me, "2026-02-02T00:00Z"),
+            // alice not in c2 -> not a participant, never unread
+            part_c2: P(c2, me),
+            // sort by position, but unread (c1) still floats to top
+            sortTop: S(list, "position", me, { "1": null }).map(c => c.id),
+            // pure position order when nothing unread
+            sortPos: S(list, "position", me, { "1": "2999-01-01T00:00Z" }).map(c => c.id),
+            filterAuthor: F(list, { author: "bob" }).map(c => c.id),
+            filterAnchor: F(list, { anchor: "allele" }).map(c => c.id),
+          };
+        }"""
+    )
+    assert out is not None, "comment helpers not exposed"
+    assert out["unread_c1"] is True
+    assert out["seen_c1"] is False
+    assert out["part_c2"] is False
+    assert out["sortTop"][0] == "1"                       # unread floats up
+    assert out["sortPos"] == ["3", "1", "2"]              # by pos 5,10,20
+    assert out["filterAuthor"] == ["2"]
+    assert out["filterAnchor"] == ["2"]
+    page.close()
+
+
 def test_comment_pin_is_clickable(browser, tmp_path):
     """A rendered comment pin must opt into pointer events — #tracksSvg is
     click-through, so without pointer-events:auto the pin can't be clicked to

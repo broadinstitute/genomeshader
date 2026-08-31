@@ -160,6 +160,43 @@ def test_comment_store_crud(tmp_path, monkeypatch):
     assert s.list_comments() == []
 
 
+def test_comment_replies(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    s.gcs_session_dir = str(tmp_path / "session")
+    monkeypatch.setenv("GENOMESHADER_USER", "alice@lab")
+    c = s.create_comment({"type": "region", "ref": "chr1:1-9",
+                          "locus": {"contig": "chr1", "pos": 5}}, "thread start")
+
+    r = s.reply_comment(c["id"], "a reply", author="bob@lab")
+    assert len(r["replies"]) == 1
+    assert r["replies"][0]["author"] == "bob@lab" and r["replies"][0]["body"] == "a reply"
+    assert r["updated"] >= r["created"]           # activity bumped
+    assert r["replies"][0]["id"] != c["id"]
+
+    r2 = s.reply_comment(c["id"], "second", author="alice@lab")
+    assert [x["author"] for x in r2["replies"]] == ["bob@lab", "alice@lab"]
+    # persisted
+    assert s.list_comments()[0]["replies"][1]["body"] == "second"
+    # unknown id -> None
+    assert s.reply_comment("nope", "x") is None
+
+
+def test_widget_comments_reply_comm(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    s.gcs_session_dir = str(tmp_path / "session")
+    w = GenomeShaderWidget(s, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+    w._on_custom_msg(w, {"type": "comments_create", "request_id": "c1",
+                         "anchor": {"type": "region", "locus": {"contig": "chr1", "pos": 5}},
+                         "body": "note"}, [])
+    cid = sent[-1]["comment"]["id"]
+    w._on_custom_msg(w, {"type": "comments_reply", "request_id": "c2",
+                         "id": cid, "body": "reply!", "author": "bob@lab"}, [])
+    assert sent[-1]["action"] == "reply"
+    assert sent[-1]["comment"]["replies"][0]["body"] == "reply!"
+
+
 def test_widget_comments_comm_roundtrip(tmp_path, monkeypatch):
     s = _shader(tmp_path, monkeypatch)
     s.gcs_session_dir = str(tmp_path / "session")

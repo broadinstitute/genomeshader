@@ -14,6 +14,10 @@
   let draftAnchor = null;      // anchor captured when the create form opened
   let flashId = null;          // comment to briefly highlight (after pin click)
   let navIndex = 0;            // cursor for the prev/next comment navigator
+  let replyingId = null;       // comment id with an open reply box
+  let sortMode = "activity";   // activity | newest | oldest | author | position
+  let filterAuthor = "";       // "" = all
+  let filterAnchor = "";       // "" = all
   let _composeCtl = null;      // controller for the open compose form (live updates)
 
   // The viewer calls this when the allele selection changes; keep the open
@@ -100,6 +104,117 @@
     return p != null && p >= state.startBp && p <= state.endBp;
   }
 
+  // ---- threads / unread / sort / filter (pure, exposed for tests) ---------
+  // Newest activity timestamp on a thread: the comment itself or any reply.
+  function commentActivityTime(c) {
+    let t = String((c && c.created) || "");
+    if (c && c.updated && c.updated > t) t = c.updated;
+    for (const r of ((c && c.replies) || [])) if (r.created && r.created > t) t = r.created;
+    return t;
+  }
+  // Am I in this thread (author of the comment or of any reply)?
+  function commentParticipant(c, me) {
+    if (!me) return false;
+    if ((c.author || "") === me) return true;
+    return ((c.replies || []).some(r => (r.author || "") === me));
+  }
+  // Newest reply authored by someone other than me ("" if none).
+  function commentNewestOtherActivity(c, me) {
+    let t = "";
+    for (const r of ((c.replies) || [])) {
+      if ((r.author || "") !== me && r.created && r.created > t) t = r.created;
+    }
+    return t;
+  }
+  // Unread = I'm a participant and someone else has posted since I last looked.
+  function commentUnread(c, me, seenIso) {
+    if (!commentParticipant(c, me)) return false;
+    const other = commentNewestOtherActivity(c, me);
+    if (!other) return false;
+    return !seenIso || other > seenIso;
+  }
+  function commentAnchorType(c) { return ((c.anchor || {}).type) || "region"; }
+
+  function sortComments(list, mode, me, seenMap) {
+    const arr = list.slice();
+    const unreadOf = (c) => commentUnread(c, me, seenMap ? seenMap[c.id] : null) ? 1 : 0;
+    const byMode = {
+      activity: (a, b) => commentActivityTime(b).localeCompare(commentActivityTime(a)),
+      newest:   (a, b) => String(b.created || "").localeCompare(String(a.created || "")),
+      oldest:   (a, b) => String(a.created || "").localeCompare(String(b.created || "")),
+      author:   (a, b) => String(a.author || "").localeCompare(String(b.author || "")),
+      position: (a, b) => {
+        const pa = pinPos(a.anchor || {}), pb = pinPos(b.anchor || {});
+        if (pa == null && pb == null) return 0;
+        if (pa == null) return 1;
+        if (pb == null) return -1;
+        return pa - pb;
+      },
+    };
+    const cmp = byMode[mode] || byMode.activity;
+    arr.sort((a, b) => (unreadOf(b) - unreadOf(a)) || cmp(a, b));  // unread floats to top
+    return arr;
+  }
+  function filterComments(list, f) {
+    f = f || {};
+    return list.filter(c => {
+      if (f.author && (c.author || "") !== f.author) return false;
+      if (f.anchor && commentAnchorType(c) !== f.anchor) return false;
+      return true;
+    });
+  }
+  function commentAuthors(list) {
+    const s = new Set();
+    for (const c of list) {
+      if (c.author) s.add(c.author);
+      for (const r of (c.replies || [])) if (r.author) s.add(r.author);
+    }
+    return Array.from(s).sort();
+  }
+  if (typeof window !== "undefined") {
+    window.__gsCommentSort = sortComments;
+    window.__gsCommentFilter = filterComments;
+    window.__gsCommentUnread = commentUnread;
+    window.__gsCommentParticipant = commentParticipant;
+  }
+
+  // ---- per-user read state (localStorage; "" author => anon) ---------------
+  function seenKey(me, id) { return "gs.comment.seen." + (me || "anon") + "." + id; }
+  function getSeen(me, id) {
+    try { return gsLocalStorage.getItem(seenKey(me, id)) || null; } catch (e) { return null; }
+  }
+  function setSeen(me, id, iso) {
+    try { gsLocalStorage.setItem(seenKey(me, id), iso); } catch (e) {}
+  }
+  function buildSeenMap(list, me) {
+    const m = {}; for (const c of list) m[c.id] = getSeen(me, c.id); return m;
+  }
+  function unreadCount(list, me) {
+    let n = 0; for (const c of list) if (commentUnread(c, me, getSeen(me, c.id))) n++; return n;
+  }
+  function commentsTabActive() {
+    return (typeof getActiveTab === "function") && getActiveTab() === "comments";
+  }
+  // Badge on the Comments command-strip icon when threads have unread activity.
+  function updateCommentBadge() {
+    const icon = document.querySelector('.command-strip-icon[data-tab="comments"]');
+    if (!icon) return;
+    const n = unreadCount(state.comments || [], currentAuthor);
+    let dot = icon.querySelector(".gs-comment-badge");
+    if (n > 0) {
+      if (!dot) {
+        dot = document.createElement("span");
+        dot.className = "gs-comment-badge";
+        dot.style.cssText = "position:absolute;top:5px;right:5px;min-width:8px;height:8px;"
+          + "border-radius:5px;background:var(--blue);box-shadow:0 0 0 1.5px var(--panel);";
+        if (getComputedStyle(icon).position === "static") icon.style.position = "relative";
+        icon.appendChild(dot);
+      }
+    } else if (dot) {
+      dot.remove();
+    }
+  }
+
   // ---- rendering -----------------------------------------------------------
   function render() {
     const h = host(); if (!h) return;
@@ -134,11 +249,59 @@
       h.appendChild(m); return;
     }
 
-    // Newest first for reading.
-    const sorted = state.comments.slice().sort((a, b) =>
-      String(b.created || "").localeCompare(String(a.created || "")));
+    // Filter, then sort (unread floats to top). Compute unread against the read
+    // state captured BEFORE this render, so newly-arrived replies still show as
+    // new this time around.
+    const me = currentAuthor;
+    const seenMap = buildSeenMap(state.comments, me);
+    const filtered = filterComments(state.comments, { author: filterAuthor, anchor: filterAnchor });
+    const sorted = sortComments(filtered, sortMode, me, seenMap);
+
+    h.appendChild(controlsBar());
     h.appendChild(navBar(sorted));
-    sorted.forEach(c => h.appendChild(commentCard(c)));
+    sorted.forEach(c => h.appendChild(commentCard(c, commentUnread(c, me, seenMap[c.id]))));
+
+    if (!sorted.length) {
+      const m = document.createElement("div");
+      m.style.cssText = "font-size:11px;color:var(--muted);padding:6px 2px;";
+      m.textContent = "No comments match the current filter.";
+      h.appendChild(m);
+    }
+
+    // Acknowledge: viewing the tab marks the shown threads read + clears badge.
+    if (commentsTabActive()) {
+      for (const c of sorted) setSeen(me, c.id, commentActivityTime(c));
+    }
+    updateCommentBadge();
+  }
+
+  // Sort + filter controls.
+  function controlsBar() {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;padding:0 2px 8px;";
+    const mkSel = (value, opts, onChange, title) => {
+      const s = document.createElement("select");
+      s.title = title || "";
+      s.style.cssText = "flex:1 1 auto;min-width:88px;font-size:11px;padding:3px 4px;"
+        + "border:1px solid var(--border2);border-radius:5px;background:var(--panel);color:var(--text);";
+      opts.forEach(([v, lbl]) => {
+        const o = document.createElement("option"); o.value = v; o.textContent = lbl;
+        if (v === value) o.selected = true; s.appendChild(o);
+      });
+      s.addEventListener("change", () => onChange(s.value));
+      return s;
+    };
+    wrap.appendChild(mkSel(sortMode, [
+      ["activity", "Sort: recent activity"], ["newest", "Sort: newest"],
+      ["oldest", "Sort: oldest"], ["author", "Sort: author"], ["position", "Sort: position"],
+    ], (v) => { sortMode = v; render(); }, "Sort comments"));
+    const authorOpts = [["", "All authors"]].concat(commentAuthors(state.comments).map(a => [a, a]));
+    wrap.appendChild(mkSel(filterAuthor, authorOpts, (v) => { filterAuthor = v; render(); }, "Filter by author"));
+    wrap.appendChild(mkSel(filterAnchor, [
+      ["", "All types"], ["region", "Regions"], ["allele", "Alleles"], ["variant", "Variants"],
+      ["gene", "Genes"], ["sample", "Samples"], ["read", "Reads"],
+    ], (v) => { filterAnchor = v; render(); }, "Filter by anchor type"));
+    return wrap;
   }
 
   // Total count + a prev/next navigator that walks the comment list, flashing
@@ -201,12 +364,14 @@
     return chip;
   }
 
-  function commentCard(c) {
+  function commentCard(c, unread) {
     const card = document.createElement("div");
     card.setAttribute("data-cid", c.id);
     const flash = (c.id === flashId);
     card.style.cssText = "border:1px solid var(--border2);border-radius:8px;padding:9px 10px;margin:0 2px 8px;"
-      + "background:var(--panel);" + (flash ? "outline:2px solid var(--blue);" : "");
+      + "background:var(--panel);"
+      + (unread ? "border-left:3px solid var(--blue);" : "")
+      + (flash ? "outline:2px solid var(--blue);" : "");
     if (flash) setTimeout(() => { flashId = null; }, 1600);
 
     const a = c.anchor || {};
@@ -216,6 +381,13 @@
     const chip = anchorChip(a, a.sample);
     chip.style.flex = "1";
     chipRow.appendChild(chip);
+    if (unread) {
+      const nb = document.createElement("span");
+      nb.textContent = "NEW";
+      nb.style.cssText = "flex:0 0 auto;font-size:8px;font-weight:bold;letter-spacing:.05em;color:#fff;"
+        + "background:var(--blue);border-radius:3px;padding:1px 4px;";
+      chipRow.appendChild(nb);
+    }
     if (goable) {
       const go = iconBtn("⤖", "Go to locus");
       go.addEventListener("click", () => {
@@ -253,7 +425,47 @@
     actions.appendChild(edit); actions.appendChild(del);
     meta.appendChild(who); meta.appendChild(actions);
     card.appendChild(meta);
+    card.appendChild(repliesBlock(c));
     return card;
+  }
+
+  // Thread replies + an inline reply box.
+  function repliesBlock(c) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "margin-top:8px;";
+    const replies = c.replies || [];
+    if (replies.length) {
+      const list = document.createElement("div");
+      list.style.cssText = "border-left:2px solid var(--border2);margin:4px 0 6px;padding-left:8px;"
+        + "display:flex;flex-direction:column;gap:6px;";
+      replies.forEach(r => {
+        const item = document.createElement("div");
+        const rb = document.createElement("div");
+        rb.style.cssText = "font-size:11.5px;color:var(--text);line-height:1.45;word-break:break-word;";
+        rb.innerHTML = md(r.body);
+        const rm = document.createElement("div");
+        rm.style.cssText = "font-size:9.5px;color:var(--muted);margin-top:2px;";
+        rm.textContent = (r.author || "unknown") + " · " + fmtTime(r.created);
+        item.appendChild(rb); item.appendChild(rm);
+        list.appendChild(item);
+      });
+      wrap.appendChild(list);
+    }
+    if (replyingId === c.id) {
+      const box = textarea("");
+      box.style.marginTop = "4px";
+      const btns = rowBtns("Reply", () => {
+        const v = box.value.trim();
+        if (v) createReply(c.id, v);
+      }, () => { replyingId = null; render(); });
+      wrap.appendChild(box); wrap.appendChild(btns);
+      setTimeout(() => { try { box.focus(); } catch (e) {} }, 0);
+    } else {
+      const reply = linkBtn("Reply");
+      reply.addEventListener("click", () => { replyingId = c.id; editingId = null; composing = false; render(); });
+      wrap.appendChild(reply);
+    }
+    return wrap;
   }
 
   function iconBtn(txt, title) {
@@ -563,6 +775,7 @@
       currentAuthor = resp.author || currentAuthor;
       state.comments = Array.isArray(resp.comments) ? resp.comments : [];
       render();
+      updateCommentBadge();
       if (typeof renderAll === "function") renderAll(); // refresh on-track pins
     }).catch(() => {
       loading = false; loaded = true;
@@ -579,6 +792,18 @@
       render();
       if (typeof renderAll === "function") renderAll();
     }).catch(() => { composing = false; render(); });
+  }
+
+  function createReply(id, body) {
+    if (typeof sendCommMessage !== "function") return;
+    sendCommMessage("comments_reply", { id: id, body: body, author: currentAuthor || null }).then(resp => {
+      if (resp && resp.comment) {
+        const i = state.comments.findIndex(c => c.id === id);
+        if (i >= 0) state.comments[i] = resp.comment;
+      }
+      replyingId = null; render();
+      if (typeof renderAll === "function") renderAll();
+    }).catch(() => { replyingId = null; render(); });
   }
 
   function updateComment(id, body) {

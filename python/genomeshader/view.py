@@ -2510,6 +2510,25 @@ class GenomeShader:
         self._uri_write_json(uri, c)
         return c
 
+    def reply_comment(self, comment_id: str, body: str, author: Optional[str] = None) -> Optional[dict]:
+        """Append a reply to a comment thread and return the updated comment."""
+        import uuid
+        uri = f"{self._comments_dir()}/{comment_id}.json"
+        c = self._uri_read_json(uri)
+        if not isinstance(c, dict):
+            return None
+        now = self._now_iso()
+        author = author or self._comment_author()
+        reply = {"id": uuid.uuid4().hex, "author": author,
+                 "body": str(body or ""), "created": now}
+        c.setdefault("replies", []).append(reply)
+        # Bump the thread's updated stamp so clients can detect new activity.
+        c["updated"] = now
+        c["updatedBy"] = author
+        c.setdefault("history", []).append({"action": "replied", "by": author, "at": now})
+        self._uri_write_json(uri, c)
+        return c
+
     def delete_comment(self, comment_id: str, author: Optional[str] = None) -> bool:
         uri = f"{self._comments_dir()}/{comment_id}.json"
         if uri.startswith("gs://"):
