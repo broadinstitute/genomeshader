@@ -18,6 +18,8 @@
   let sortMode = "activity";   // activity | newest | oldest | author | position
   let filterAuthor = "";       // "" = all
   let filterAnchor = "";       // "" = all
+  let seenState = {};          // {commentId: lastSeenIso} for the current user
+  let _seenWriteTimer = null;  // debounce for the write-through to the bucket
   let _composeCtl = null;      // controller for the open compose form (live updates)
 
   // The viewer calls this when the allele selection changes; keep the open
@@ -178,19 +180,57 @@
     window.__gsCommentParticipant = commentParticipant;
   }
 
-  // ---- per-user read state (localStorage; "" author => anon) ---------------
-  function seenKey(me, id) { return "gs.comment.seen." + (me || "anon") + "." + id; }
-  function getSeen(me, id) {
-    try { return gsLocalStorage.getItem(seenKey(me, id)) || null; } catch (e) { return null; }
+  // ---- per-user read state -------------------------------------------------
+  // One map {commentId: lastSeenIso} per user. localStorage is the hot cache;
+  // the session bucket (comment_read_state/<user>.json) is the durable, cross-
+  // device backing. On load we merge both (max timestamp); on ack we update
+  // localStorage instantly and debounce a single write-through to the bucket.
+  function seenLsKey(me) { return "gs.comment.seen." + (me || "anon"); }
+  function loadSeenLocal(me) {
+    try { const raw = gsLocalStorage.getItem(seenLsKey(me)); const m = raw ? JSON.parse(raw) : null;
+      return (m && typeof m === "object") ? m : {}; } catch (e) { return {}; }
   }
-  function setSeen(me, id, iso) {
-    try { gsLocalStorage.setItem(seenKey(me, id), iso); } catch (e) {}
+  function saveSeenLocal(me) {
+    try { gsLocalStorage.setItem(seenLsKey(me), JSON.stringify(seenState)); } catch (e) {}
   }
-  function buildSeenMap(list, me) {
-    const m = {}; for (const c of list) m[c.id] = getSeen(me, c.id); return m;
+  function mergeMaxInto(target, src) {
+    for (const k in (src || {})) {
+      const v = String(src[k] || "");
+      if (v && (!target[k] || v > target[k])) target[k] = v;
+    }
+    return target;
+  }
+  // Merge durable (bucket) + local read-state at load time.
+  function initSeenState(me, gcsSeen) {
+    seenState = {};
+    mergeMaxInto(seenState, loadSeenLocal(me));
+    mergeMaxInto(seenState, gcsSeen || {});
+    saveSeenLocal(me);
+  }
+  function getSeen(id) { return seenState[id] || null; }
+  function setSeen(id, iso) {
+    iso = String(iso || "");
+    if (!iso) return;
+    if (!seenState[id] || iso > seenState[id]) {
+      seenState[id] = iso;
+      saveSeenLocal(currentAuthor);
+      scheduleSeenWrite();
+    }
+  }
+  function scheduleSeenWrite() {
+    if (_seenWriteTimer) return;                 // one batched write per burst
+    _seenWriteTimer = setTimeout(() => {
+      _seenWriteTimer = null;
+      if (typeof sendCommMessage === "function") {
+        try { sendCommMessage("comments_read_set", { seen: seenState }); } catch (e) {}
+      }
+    }, 3000);
+  }
+  function buildSeenMap(list) {
+    const m = {}; for (const c of list) m[c.id] = getSeen(c.id); return m;
   }
   function unreadCount(list, me) {
-    let n = 0; for (const c of list) if (commentUnread(c, me, getSeen(me, c.id))) n++; return n;
+    let n = 0; for (const c of list) if (commentUnread(c, me, getSeen(c.id))) n++; return n;
   }
   function commentsTabActive() {
     return (typeof getActiveTab === "function") && getActiveTab() === "comments";
@@ -253,7 +293,7 @@
     // state captured BEFORE this render, so newly-arrived replies still show as
     // new this time around.
     const me = currentAuthor;
-    const seenMap = buildSeenMap(state.comments, me);
+    const seenMap = buildSeenMap(state.comments);
     const filtered = filterComments(state.comments, { author: filterAuthor, anchor: filterAnchor });
     const sorted = sortComments(filtered, sortMode, me, seenMap);
 
@@ -270,7 +310,7 @@
 
     // Acknowledge: viewing the tab marks the shown threads read + clears badge.
     if (commentsTabActive()) {
-      for (const c of sorted) setSeen(me, c.id, commentActivityTime(c));
+      for (const c of sorted) setSeen(c.id, commentActivityTime(c));
     }
     updateCommentBadge();
   }
@@ -774,9 +814,17 @@
       loading = false; loaded = true;
       currentAuthor = resp.author || currentAuthor;
       state.comments = Array.isArray(resp.comments) ? resp.comments : [];
-      render();
-      updateCommentBadge();
-      if (typeof renderAll === "function") renderAll(); // refresh on-track pins
+      // Pull the durable per-user read-state from the bucket and merge it with
+      // the local cache before rendering, so unread is correct across devices.
+      const finish = (gcsSeen) => {
+        initSeenState(currentAuthor, gcsSeen);
+        render();
+        updateCommentBadge();
+        if (typeof renderAll === "function") renderAll(); // refresh on-track pins
+      };
+      sendCommMessage("comments_read_get", {})
+        .then(r => finish(r && r.seen))
+        .catch(() => finish(null));
     }).catch(() => {
       loading = false; loaded = true;
       render();

@@ -197,6 +197,36 @@ def test_widget_comments_reply_comm(tmp_path, monkeypatch):
     assert sent[-1]["comment"]["replies"][0]["body"] == "reply!"
 
 
+def test_comment_read_state_blob(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    s.gcs_session_dir = str(tmp_path / "session")
+    monkeypatch.setenv("GENOMESHADER_USER", "alice@lab")
+    assert s.get_comment_read_state() == {}                       # empty by default
+    assert s.set_comment_read_state({"c1": "2026-01-01T00:00:00+00:00"}) is True
+    assert s.get_comment_read_state() == {"c1": "2026-01-01T00:00:00+00:00"}
+    # per-user: bob has his own, independent blob
+    monkeypatch.setenv("GENOMESHADER_USER", "bob@lab")
+    assert s.get_comment_read_state() == {}
+    # read-state file must NOT pollute the comment listing
+    s.create_comment({"type": "region", "locus": {"contig": "chr1", "pos": 5}}, "x")
+    assert all("read" not in (c.get("body", "") or "") for c in s.list_comments())
+    assert len(s.list_comments()) == 1
+
+
+def test_widget_comments_read_comm(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    s.gcs_session_dir = str(tmp_path / "session")
+    w = GenomeShaderWidget(s, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+    w._on_custom_msg(w, {"type": "comments_read_set", "request_id": "r1",
+                         "seen": {"c1": "2026-05-01T00:00:00+00:00"}}, [])
+    assert sent[-1]["type"] == "comments_read_saved" and sent[-1]["ok"] is True
+    w._on_custom_msg(w, {"type": "comments_read_get", "request_id": "r2"}, [])
+    assert sent[-1]["type"] == "comments_read_state"
+    assert sent[-1]["seen"] == {"c1": "2026-05-01T00:00:00+00:00"}
+
+
 def test_widget_comments_comm_roundtrip(tmp_path, monkeypatch):
     s = _shader(tmp_path, monkeypatch)
     s.gcs_session_dir = str(tmp_path / "session")

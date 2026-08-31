@@ -303,6 +303,19 @@ class GenomeShaderWidget(anywidget.AnyWidget):
             except Exception as e:
                 self.send({"type": "comments_changed", "request_id": request_id,
                            "action": "reply", "error": str(e)})
+        elif msg_type == "comments_read_get":
+            try:
+                self.send({"type": "comments_read_state", "request_id": request_id,
+                           "seen": self._shader.get_comment_read_state()})
+            except Exception as e:
+                self.send({"type": "comments_read_state", "request_id": request_id,
+                           "seen": {}, "error": str(e)})
+        elif msg_type == "comments_read_set":
+            try:
+                ok = self._shader.set_comment_read_state(content.get("seen") or {})
+                self.send({"type": "comments_read_saved", "request_id": request_id, "ok": ok})
+            except Exception as e:
+                self.send({"type": "comments_read_saved", "request_id": request_id, "error": str(e)})
         elif msg_type == "comments_delete":
             try:
                 ok = self._shader.delete_comment(content.get("id"))

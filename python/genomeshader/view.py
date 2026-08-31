@@ -2529,6 +2529,27 @@ class GenomeShader:
         self._uri_write_json(uri, c)
         return c
 
+    def _read_state_uri(self, user: str) -> str:
+        import re
+        safe = re.sub(r"[^A-Za-z0-9._@-]", "_", user or "anon")
+        base = str(self.gcs_session_dir or "").rstrip("/")
+        # Sibling of comments/ so it never shows up in the comment listing.
+        return base + "/comment_read_state/" + safe + ".json"
+
+    def get_comment_read_state(self, user: Optional[str] = None) -> dict:
+        """Per-user {comment_id: last_seen_iso} map (one small blob), or {}."""
+        user = user or self._comment_author()
+        data = self._uri_read_json(self._read_state_uri(user))
+        return data if isinstance(data, dict) else {}
+
+    def set_comment_read_state(self, seen: dict, user: Optional[str] = None) -> bool:
+        """Overwrite the caller's read-state blob. Per-user file => no cross-user
+        contention; last-write-wins is fine for a single user's own state."""
+        user = user or self._comment_author()
+        if not isinstance(seen, dict):
+            seen = {}
+        return self._uri_write_json(self._read_state_uri(user), seen)
+
     def delete_comment(self, comment_id: str, author: Optional[str] = None) -> bool:
         uri = f"{self._comments_dir()}/{comment_id}.json"
         if uri.startswith("gs://"):
