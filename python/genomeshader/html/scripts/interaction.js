@@ -83,60 +83,18 @@ function renderFlowCanvas() {
   const insertionLookupForFlow = (typeof insertionVariantsLookup !== "undefined" && Array.isArray(insertionVariantsLookup))
     ? insertionVariantsLookup
     : (((window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.insertion_variants_lookup) || []));
-  const getTotalExpandedInsertionGapBpForFlowAll = () => {
-    let totalBp = 0;
-    const countedIds = new Set();
-    if (insertionLookupForFlow && insertionLookupForFlow.length > 0 && typeof getInsertionGapBpForLookupEntry === "function") {
-      for (const entry of insertionLookupForFlow) {
-        const id = String(entry && entry.id);
-        if (!id || countedIds.has(id)) continue;
-        if (!expandedInsertionsForFlow.has(id)) continue;
-        countedIds.add(id);
-        totalBp += getInsertionGapBpForLookupEntry(entry);
-      }
-      return totalBp;
-    }
-    for (const v of variants) {
-      const id = String(v && v.id);
-      if (!id || countedIds.has(id)) continue;
-      if (!expandedInsertionsForFlow.has(id) || !isInsertion(v)) continue;
-      countedIds.add(id);
-      totalBp += (typeof getInsertionGapBpForVariant === "function")
-        ? getInsertionGapBpForVariant(v)
-        : 0;
-    }
-    return totalBp;
-  };
-  const getAccumulatedGapBpForFlowAll = (bp) => {
-    const bpNum = Number(bp);
-    if (!Number.isFinite(bpNum)) return 0;
-    let accumulated = 0;
-    const countedIds = new Set();
-    if (insertionLookupForFlow && insertionLookupForFlow.length > 0 && typeof getInsertionGapBpForLookupEntry === "function") {
-      for (const entry of insertionLookupForFlow) {
-        const pos = Number(entry && entry.pos);
-        if (!Number.isFinite(pos) || !(pos < bpNum)) continue;
-        const id = String(entry && entry.id);
-        if (!id || countedIds.has(id)) continue;
-        if (!expandedInsertionsForFlow.has(id)) continue;
-        countedIds.add(id);
-        accumulated += getInsertionGapBpForLookupEntry(entry);
-      }
-      return accumulated;
-    }
-    for (const v of variants) {
-      const pos = Number(v && v.pos);
-      if (!Number.isFinite(pos) || !(pos < bpNum)) continue;
-      const id = String(v && v.id);
-      if (!id || countedIds.has(id)) continue;
-      if (!expandedInsertionsForFlow.has(id) || !isInsertion(v)) continue;
-      countedIds.add(id);
-      accumulated += (typeof getInsertionGapBpForVariant === "function")
-        ? getInsertionGapBpForVariant(v)
-        : 0;
-    }
-    return accumulated;
-  };
+  // Use the SAME insertion-gap accounting as the ruler/reference/genes tracks
+  // (the global, view-restricted getAccumulatedGapBp/getTotalExpandedInsertionGapBp)
+  // so the flow stays in exact horizontal sync with them. Previously the flow
+  // counted ALL expanded insertions — including ones scrolled off the left edge
+  // — while the ruler dropped those past the view start, so the two drifted
+  // apart when insertions were expanded and you panned.
+  const getTotalExpandedInsertionGapBpForFlowAll = () =>
+    (typeof getTotalExpandedInsertionGapBp === "function")
+      ? getTotalExpandedInsertionGapBp(expandedInsertionsForFlow) : 0;
+  const getAccumulatedGapBpForFlowAll = (bp) =>
+    (typeof getAccumulatedGapBp === "function")
+      ? getAccumulatedGapBp(bp, expandedInsertionsForFlow) : 0;
   const totalExpandedGapBpForFlow = getTotalExpandedInsertionGapBpForFlowAll();
   const flowSpanBp = state.endBp - state.startBp;
   const flowEffectiveSpanBp = flowSpanBp + totalExpandedGapBpForFlow;
