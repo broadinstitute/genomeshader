@@ -647,10 +647,16 @@
       }
       const title = el("title", {}, n === 1 ? (group.items[0].author + ": " + (group.items[0].body || "").slice(0, 80)) : (n + " comments"));
       g.appendChild(title);
-      g.addEventListener("click", (e) => {
+      // Open on pointerdown (not click) and stop it propagating, mirroring the
+      // Indel markers: otherwise `main` grabs the pointerdown to start a pan and
+      // the synthesized click never reaches the pin.
+      const openThis = (e) => {
         e.stopPropagation();
+        e.preventDefault();
         openToComment(group.items[0].id);
-      });
+      };
+      g.addEventListener("pointerdown", openThis);
+      g.addEventListener("click", openThis);
       svg.appendChild(g);
     });
   };
