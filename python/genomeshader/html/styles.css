@@ -1699,11 +1699,12 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   height: 6px;
   cursor: ns-resize;
   z-index: 15;
-  background: transparent;
+  /* The divider is the full-height band at rest — the same width/thickness as
+     the highlight shown on hover — so boundaries are consistently visible and
+     grabbable. Hover/active just tint the same band with the accent colour. */
+  background: var(--track-boundary);
   pointer-events: auto;
-  transition: opacity 0.2s ease;
-  /* Clear boundary at bottom of track so extent and handle are obvious */
-  border-top: 1px solid var(--track-boundary);
+  transition: background 0.15s ease, opacity 0.2s ease;
 }
 /* Standard tracks: keep the divider line visible at rest (so track boundaries
    are findable and resizable); the grab highlight still appears on hover. */
