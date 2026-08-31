@@ -1694,7 +1694,12 @@ function renderFlowCanvas() {
           .filter((k, idx, arr) => arr.indexOf(k) === idx);
         
         if (isHovered || isPinned || isSelected) {
-          const labelText = `${label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
+          let _indelTag = "";
+          if (v && v.refAllele && typeof actualAllele === "string" && actualAllele !== "." && actualAllele.length > 0) {
+            if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
+            else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
+          }
+          const labelText = `${label}${_indelTag} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
           allLabelsToDraw.push({
             label: label,
             text: labelText,
@@ -1963,7 +1968,12 @@ function renderFlowCanvas() {
           .filter((k, idx, arr) => arr.indexOf(k) === idx);
         
         if (isHovered || isPinned || isSelected) {
-          const labelText = `${label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
+          let _indelTag = "";
+          if (v && v.refAllele && typeof actualAllele === "string" && actualAllele !== "." && actualAllele.length > 0) {
+            if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
+            else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
+          }
+          const labelText = `${label}${_indelTag} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
           allLabelsToDraw.push({
             label: label,
             text: labelText,
