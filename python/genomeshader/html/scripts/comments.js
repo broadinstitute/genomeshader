@@ -13,6 +13,15 @@
   let editingId = null;        // comment being edited
   let draftAnchor = null;      // anchor captured when the create form opened
   let flashId = null;          // comment to briefly highlight (after pin click)
+  let _composeCtl = null;      // controller for the open compose form (live updates)
+
+  // The viewer calls this when the allele selection changes; keep the open
+  // compose form's allele choice in sync with a fresh track click.
+  window.__GS_onSelectionChange = function () {
+    if (composing && _composeCtl && typeof _composeCtl.onSelectionChange === "function") {
+      try { _composeCtl.onSelectionChange(); } catch (e) {}
+    }
+  };
 
   function host() {
     return (typeof byIdDynamic === "function" ? byIdDynamic("commentsContent") : null)
@@ -288,9 +297,11 @@
     render();
   }
 
+  function _alleleKey(c) { return c ? ((c.trackId || "") + "|" + c.variantId + "|" + c.alleleIndex) : ""; }
+
   function composeForm() {
     const opts = (window.__GS_anchorOptions ? window.__GS_anchorOptions()
-      : { contig: "", region: { start: 0, end: 0 }, genes: [], samples: [], reads: [] });
+      : { contig: "", region: { start: 0, end: 0 }, genes: [], samples: [], reads: [], alleleChoices: [] });
     const contig = opts.contig || "";
     const wrap = document.createElement("div");
     wrap.style.cssText = "border:1px solid var(--border2);border-radius:8px;padding:9px 10px;background:var(--panel);";
@@ -307,61 +318,121 @@
     wrap.appendChild(_fieldLabel("Comment on"));
     const typeSel = document.createElement("select");
     typeSel.style.cssText = _inputCss();
+    const hasAllele = !!(opts.allele || (opts.alleleChoices && opts.alleleChoices.length));
     const typeDefs = [];
-    if (opts.allele) typeDefs.push(["allele", opts.allele.isAllele ? "Selected allele" : "Selected variant"]);
+    if (hasAllele) typeDefs.push(["allele", "Allele / variant"]);
     typeDefs.push(["region", "Current region"]);
     if (opts.genes && opts.genes.length) typeDefs.push(["gene", "Gene in view"]);
     if (opts.samples && opts.samples.length) typeDefs.push(["sample", "Sample"]);
     if (opts.reads && opts.reads.length) typeDefs.push(["read", "Loaded read track"]);
     typeDefs.forEach(([v, lbl]) => { const o = document.createElement("option"); o.value = v; o.textContent = lbl; typeSel.appendChild(o); });
-    typeSel.value = opts.allele ? "allele" : "region";
+    typeSel.value = hasAllele ? "allele" : "region";
     wrap.appendChild(typeSel);
 
     const detail = document.createElement("div");
     wrap.appendChild(detail);
     const picked = {
+      allele: null,
       gene: (opts.genes && opts.genes[0]) || null,
       sample: (opts.samples && opts.samples[0]) || "",
       read: (opts.reads && opts.reads[0]) || null,
     };
+
     function renderDetail() {
       detail.innerHTML = "";
       const t = typeSel.value;
-      if (t === "allele" && opts.allele) {
-        detail.appendChild(_readonly(opts.allele.ref));
+      if (t === "allele") {
+        const choices = (opts.alleleChoices && opts.alleleChoices.length)
+          ? opts.alleleChoices : (opts.allele ? [opts.allele] : []);
+        if (!choices.length) {
+          detail.appendChild(_readonly("No alleles in view — pan to a variant, or pick another type."));
+          picked.allele = null;
+        } else {
+          const sel = document.createElement("select"); sel.style.cssText = _inputCss();
+          choices.forEach((c, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = c.ref; sel.appendChild(o); });
+          let defIdx = 0;
+          if (opts.allele) { const k = _alleleKey(opts.allele); const j = choices.findIndex(c => _alleleKey(c) === k); if (j >= 0) defIdx = j; }
+          sel.value = String(defIdx);
+          picked.allele = choices[defIdx] || null;
+          sel.addEventListener("change", () => { picked.allele = choices[+sel.value] || null; validate(); });
+          detail.appendChild(sel);
+        }
       } else if (t === "region") {
         detail.appendChild(_readonly(`${contig}:${opts.region.start.toLocaleString()}-${opts.region.end.toLocaleString()}`));
       } else if (t === "gene") {
         const gs = document.createElement("select"); gs.style.cssText = _inputCss();
         opts.genes.forEach(g => { const o = document.createElement("option"); o.value = g.name; o.textContent = g.name; gs.appendChild(o); });
         if (picked.gene) gs.value = picked.gene.name;
-        gs.addEventListener("change", () => { picked.gene = opts.genes.find(g => g.name === gs.value) || null; });
+        gs.addEventListener("change", () => { picked.gene = opts.genes.find(g => g.name === gs.value) || null; validate(); });
         detail.appendChild(gs);
       } else if (t === "sample") {
-        detail.appendChild(sampleAutocomplete(opts.samples, picked.sample, (v) => { picked.sample = v; }));
+        detail.appendChild(sampleAutocomplete(opts.samples, picked.sample, (v) => { picked.sample = v; validate(); }));
       } else if (t === "read") {
         const rs = document.createElement("select"); rs.style.cssText = _inputCss();
         opts.reads.forEach((r, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = "reads · " + (r.label || r.sample); rs.appendChild(o); });
-        rs.addEventListener("change", () => { picked.read = opts.reads[+rs.value] || null; });
+        rs.addEventListener("change", () => { picked.read = opts.reads[+rs.value] || null; validate(); });
         detail.appendChild(rs);
       }
     }
-    typeSel.addEventListener("change", renderDetail);
-    renderDetail();
 
     wrap.appendChild(_fieldLabel("Comment"));
     const ta = textarea("");
     wrap.appendChild(ta);
 
-    wrap.appendChild(rowBtns("Save", () => {
-      const author = auth.value.trim();
-      if (!author) { auth.style.borderColor = "var(--danger,#e5534b)"; auth.focus(); return; }
-      const body = ta.value.trim();
-      if (!body) { ta.focus(); return; }
+    // Buttons — Save stays disabled until every required field is valid.
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:6px;justify-content:flex-end;";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.style.cssText = "padding:5px 10px;border:1px solid var(--border2);border-radius:6px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer;";
+    cancel.addEventListener("click", () => { composing = false; render(); });
+    const save = document.createElement("button");
+    save.textContent = "Save";
+    save.addEventListener("click", () => {
+      if (save.disabled) return;
       const anchor = _buildAnchor(typeSel.value, opts, contig, picked);
-      if (!anchor) { renderDetail(); return; }
-      createComment(anchor, body, author);
-    }, () => { composing = false; render(); }));
+      if (!anchor) { validate(); return; }
+      createComment(anchor, ta.value.trim(), auth.value.trim());
+    });
+    btnRow.appendChild(cancel); btnRow.appendChild(save);
+    wrap.appendChild(btnRow);
+
+    function anchorValid() {
+      const t = typeSel.value;
+      if (t === "allele") return !!picked.allele;
+      if (t === "gene") return !!picked.gene;
+      if (t === "sample") return !!(picked.sample && picked.sample.trim());
+      if (t === "read") return !!picked.read;
+      return true; // region is always valid
+    }
+    function validate() {
+      const ok = !!auth.value.trim() && !!ta.value.trim() && anchorValid();
+      save.disabled = !ok;
+      save.style.cssText = "padding:5px 12px;border:1px solid var(--blue);border-radius:6px;font-size:11px;"
+        + (ok ? "background:var(--blue);color:#fff;cursor:pointer;opacity:1;"
+              : "background:var(--blue);color:#fff;cursor:not-allowed;opacity:0.45;");
+    }
+
+    auth.addEventListener("input", validate);
+    ta.addEventListener("input", validate);
+    typeSel.addEventListener("change", () => { renderDetail(); validate(); });
+    renderDetail();
+    validate();
+
+    // Live-update the allele choice when the user clicks a new allele in the
+    // track while this form is open.
+    _composeCtl = {
+      onSelectionChange() {
+        if (typeSel.value !== "allele") return;
+        const fresh = window.__GS_anchorOptions ? window.__GS_anchorOptions() : null;
+        if (!fresh || !fresh.allele) return;
+        opts.alleleChoices = fresh.alleleChoices || opts.alleleChoices;
+        opts.allele = fresh.allele;
+        renderDetail();   // defaults the dropdown to the newly selected allele
+        validate();
+      },
+    };
+
     setTimeout(() => { (auth.value ? ta : auth).focus(); }, 0);
     return wrap;
   }

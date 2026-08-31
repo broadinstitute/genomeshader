@@ -3024,6 +3024,29 @@ function setupCanvasHover() {
         };
       }
     } catch (e) {}
+    // All alleles currently rendered in view — so the dialog can offer an allele
+    // to comment on even when nothing is selected.
+    try {
+      const posById = {};
+      const tcfg = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+      const allVars = tcfg.length ? tcfg.flatMap(t => t.variants_data || [])
+                                  : ((typeof variants !== "undefined" && Array.isArray(variants)) ? variants : []);
+      allVars.forEach(v => { if (v && v.id != null) posById[String(v.id)] = Number(v.pos); });
+      const seen = new Set();
+      opts.alleleChoices = (window._alleleNodePositions || []).map(n => {
+        const pos = posById[String(n.variantId)];
+        if (pos == null || pos < state.startBp || pos > state.endBp) return null;
+        const key = (n.trackId || "") + "|" + n.variantId + "|" + n.alleleIndex;
+        if (seen.has(key)) return null; seen.add(key);
+        const label = n.label || ("allele " + n.alleleIndex);
+        return {
+          variantId: String(n.variantId), alleleIndex: Number(n.alleleIndex),
+          label: label, pos: pos, trackId: n.trackId || null,
+          ref: `${contig}:${pos.toLocaleString()} (${label})`,
+          isAllele: !!(n.label && n.label !== "ref"),
+        };
+      }).filter(Boolean).sort((a, b) => (a.pos - b.pos) || (a.alleleIndex - b.alleleIndex));
+    } catch (e) { opts.alleleChoices = []; }
     try {
       const all = (typeof transcripts !== "undefined" && Array.isArray(transcripts)) ? transcripts : [];
       const seen = new Set();
@@ -4955,6 +4978,8 @@ function setupCanvasHover() {
     updateSampleStrategySection();
     renderVariantsTabSelection();
     scheduleCandidateRecompute();
+    // Keep an open comment dialog's allele choice in sync with the selection.
+    if (window.__GS_onSelectionChange) { try { window.__GS_onSelectionChange(); } catch (e) {} }
   }
   
   // Setup sample selection strategy controls
