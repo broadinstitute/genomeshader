@@ -401,7 +401,17 @@ function tracksWidthPx() {
   const w = tracksSvg.getBoundingClientRect().width;
   return isNaN(w) || w <= 0 ? 0 : w;
 }
-function flowWidthPx()   { return rectW(flow); }
+function flowWidthPx() {
+  // The flow shares the horizontal genome axis with every other track, so it
+  // must map bp -> x using the SAME width as the ruler/reference/genes
+  // (tracksWidthPx). Reading the flow element's own width instead lets any DOM
+  // width difference — e.g. a scrollbar in JupyterLab or fullscreen — desync the
+  // flow from the Indel track. In vertical mode the flow width is the cross
+  // (allele) axis, so keep the element's own width there.
+  if (typeof isVerticalMode === "function" && isVerticalMode()) return rectW(flow);
+  const tw = (typeof tracksWidthPx === "function") ? tracksWidthPx() : 0;
+  return tw > 0 ? tw : rectW(flow);
+}
 function flowHeightPx()  { return rectH(flow); }
 
 function cssVar(name) {
