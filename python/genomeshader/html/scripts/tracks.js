@@ -1865,11 +1865,15 @@ function renderTracks() {
           const hiBp = Math.min(d.hiBp, Math.floor(state.endBp));
           if (hiBp < loBp) return;
           for (let bp = loBp; bp <= hiBp; bp++) {
-            const xa = genomePos(bp), xb = genomePos(bp + 1);
+            // Use the SAME position + base indexing as the main reference row so
+            // the deleted bases line up under it: genomePosCanonical (gap-aware)
+            // and refSeq index bp - refSeqStartBp - 1 (VCF pos is 1-based while
+            // refSeq is 0-based from refSeqStartBp).
+            const xa = genomePosCanonical(bp), xb = genomePosCanonical(bp + 1);
             const x = Math.min(xa, xb), w = Math.max(1, Math.abs(xb - xa));
             let base = "";
             if (refSeq && refSeq.length) {
-              const idx = bp - refSeqStartBp;
+              const idx = bp - refSeqStartBp - 1;
               if (idx >= 0 && idx < refSeq.length) base = String(refSeq[idx]).toUpperCase();
             }
             const rgb = nucleotideColors[base] || [127, 127, 127];
@@ -1884,8 +1888,8 @@ function renderTracks() {
                 style: `fill:${baseLetterColor[base] || "#ffffff"};font-size:10px;font-weight:bold;` }, base));
             }
           }
-          const sx = Math.min(genomePos(loBp), genomePos(hiBp + 1));
-          const ex = Math.max(genomePos(loBp), genomePos(hiBp + 1));
+          const sx = Math.min(genomePosCanonical(loBp), genomePosCanonical(hiBp + 1));
+          const ex = Math.max(genomePosCanonical(loBp), genomePosCanonical(hiBp + 1));
           // strike-through + outline: reads as "these ref bases are deleted".
           tracksSvg.appendChild(el("line", { x1: sx, x2: ex, y1: rowTop + rowH / 2, y2: rowTop + rowH / 2,
             stroke: edge, "stroke-width": 1.5 }));
