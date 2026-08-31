@@ -406,7 +406,13 @@ mod tests {
     fn explicit_index_with_nondefault_name() {
         // Index not adjacent-named: copy it to a custom filename and pass it
         // explicitly. Must region-seek identically to the adjacent-index case.
-        let custom = format!("{}/tests/fixtures/renamed_index.tbi", env!("CARGO_MANIFEST_DIR"));
+        let custom = std::env::temp_dir()
+            .join(format!(
+                "genomeshader-renamed-index-{}-{}.tbi",
+                std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            ))
+            .to_string_lossy().to_string();
         std::fs::copy(format!("{}/tests/fixtures/tiny.vcf.gz.tbi", env!("CARGO_MANIFEST_DIR")),
                       &custom).unwrap();
         let df = extract_variants(&fixture(), Some(&custom), None, &"chr1".to_string(), &150, &350).unwrap();
