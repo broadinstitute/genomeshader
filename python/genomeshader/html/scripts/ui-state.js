@@ -33,7 +33,7 @@ const state = {
     { id: "repeats", label: "RepeatMasker", collapsed: false, height: 40, minHeight: 30 },
     { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
     { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
-    { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 130, minHeight: 100 }
+    { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 110 }
   ],
   trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
   trackResizeState: null, // { trackId, startX, startY, startHeight }
@@ -202,7 +202,7 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && w
       id: t.id,
       label: t.label,
       collapsed: false,
-      height: 130,
+      height: 150,
       minHeight: 100
     });
   });

@@ -1616,8 +1616,10 @@ function renderFlowCanvas() {
         const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
         const dragOffsetY = isDragging ? state.alleleDragState.offsetY : 0;
         
+        // Reordering slides an allele only along the stacking axis (X here);
+        // its genome-axis position (Y) stays locked to the variant.
         const nodeX = x + dragOffsetX;
-        const nodeY = cy - nodeH/2 + dragOffsetY;
+        const nodeY = cy - nodeH/2;
 
         // Get colors based on allele type (use actual allele from map, not extracted from label)
         const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
@@ -1883,7 +1885,9 @@ function renderFlowCanvas() {
         const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
         const dragOffsetY = isDragging ? state.alleleDragState.offsetY : 0;
         
-        const nodeX = cx - nodeW/2 + dragOffsetX;
+        // Reordering slides an allele only along the stacking axis (Y here);
+        // its genome-axis position (X) stays locked to the variant.
+        const nodeX = cx - nodeW/2;
         const nodeY = y + dragOffsetY;
 
         // Get colors based on allele type (use actual allele from map, not extracted from label)
