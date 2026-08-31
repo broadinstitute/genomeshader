@@ -29,13 +29,19 @@ fn gcs_list_uris(path: &str) -> Result<Vec<String>> {
     let glob = format!("{}/**", path.trim_end_matches('/'));
 
     let run = |cmd: &str, args: &[&str]| -> Result<String> {
+        // Capture stderr (not /dev/null) so a failure carries the real reason
+        // (e.g. a 401/403 auth error) instead of a bare exit status.
         let output = Command::new(cmd)
             .args(args)
-            .stderr(Stdio::null())
             .output()
             .map_err(|e| anyhow!("failed to run {}: {}", cmd, e))?;
         if !output.status.success() {
-            return Err(anyhow!("{} exited with {}", cmd, output.status));
+            let detail = String::from_utf8_lossy(&output.stderr);
+            let detail = detail.trim();
+            if detail.is_empty() {
+                return Err(anyhow!("{} exited with {}", cmd, output.status));
+            }
+            return Err(anyhow!("{} exited with {}: {}", cmd, output.status, detail));
         }
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     };
@@ -208,16 +214,68 @@ fn _cloud_storage_client_upload_fallback(local_path: &PathBuf, path: &str) -> Re
     Ok(())
 }
 
+/// Heuristic: does a `gcloud`/`gsutil` error string look like an auth failure
+/// (rather than a missing CLI or a genuinely absent path)? Used to lead the
+/// user-facing message with the exact fix.
+fn looks_like_auth_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    msg.contains("401")
+        || msg.contains("403")
+        || lower.contains("credential")
+        || lower.contains("anonymous")
+        || lower.contains("does not have")
+        || lower.contains("unauthorized")
+        || lower.contains("login")
+}
+
 #[pyfunction]
 pub fn _gcs_list_files_of_type(path: String, suffix: &str) -> PyResult<Vec<String>> {
     let uris = gcs_list_uris(&path).map_err(|e| {
+        let msg = e.to_string();
+        let looks_auth = looks_like_auth_error(&msg);
+        // When the failure looks like an auth problem, lead with the exact fix
+        // rather than the generic "is it installed?" note — this is almost
+        // always an expired/absent gcloud login, not a missing CLI.
+        let hint = if looks_auth {
+            "This looks like an authentication problem (not a code change). Run \
+             `gcloud auth application-default login` (and, if listing still fails, \
+             `gcloud auth login`), then retry. Or pass explicit file paths instead \
+             of a directory."
+        } else {
+            "Ensure gcloud (or gsutil) is installed and authenticated \
+             (`gcloud auth application-default login`), or pass explicit file paths \
+             instead of a directory."
+        };
         PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Could not list '{}': {}. Ensure gcloud (or gsutil) is installed and \
-             authenticated (`gcloud auth application-default login`), or pass explicit \
-             file paths instead of a directory.",
-            path, e
+            "Could not list '{}': {}. {}",
+            path, msg, hint
         ))
     })?;
 
     Ok(uris.into_iter().filter(|u| u.ends_with(suffix)).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_auth_error;
+
+    #[test]
+    fn auth_errors_are_detected() {
+        // Real gsutil/gcloud auth failures.
+        assert!(looks_like_auth_error(
+            "ServiceException: 401 Anonymous caller does not have storage.objects.list access"
+        ));
+        assert!(looks_like_auth_error("AccessDeniedException: 403 Caller does not have permission"));
+        assert!(looks_like_auth_error(
+            "You do not currently have an active account selected; please run `gcloud auth login`"
+        ));
+        assert!(looks_like_auth_error("Reauthentication required. Please run: gcloud auth login"));
+    }
+
+    #[test]
+    fn non_auth_errors_are_not_flagged() {
+        assert!(!looks_like_auth_error("gsutil: command not found"));
+        assert!(!looks_like_auth_error("CommandException: One or more URLs matched no objects"));
+        assert!(!looks_like_auth_error("gsutil exited with exit status: 2"));
+    }
 }
