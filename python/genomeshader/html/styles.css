@@ -1461,32 +1461,33 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   color: var(--text);
 }
 
-/* Vertical mode: track controls at bottom, vertically oriented */
+/* Vertical mode: track name + menu chip at the TOP-LEFT of each track column
+   (mirrors horizontal, where each track label sits at its top-left), upright. */
 .main.vertical .track-control-container {
   position: absolute;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: flex-start;
 }
 .main.vertical .track-controls {
   width: auto;
   height: auto;
   min-height: 24px;
-  flex-direction: column;
-  padding: 6px 4px;
+  flex-direction: row;
+  padding: 4px 6px;
   border: 1px solid var(--border2);
-  border-radius: 12px;
+  border-radius: 10px;
   position: relative;
   left: 0;
-  top: auto;
-  bottom: 0;
+  top: 0;
+  bottom: auto;
   right: auto;
   transform: none;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 6px;
-  margin-bottom: 0;
+  margin: 2px 0 0 2px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 .main.vertical .track-label {

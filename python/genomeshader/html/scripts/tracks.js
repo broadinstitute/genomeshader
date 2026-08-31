@@ -252,8 +252,7 @@ function renderTracks() {
         y: labelY,
         class: "svg-chr",
         "text-anchor": "middle",
-        "dominant-baseline": "middle",
-        transform: "rotate(-90 " + (ideogramX + ideogramW/2) + " " + labelY + ")"
+        "dominant-baseline": "middle"
       }, state.contig));
     } else {
       // Right-align the contig name in the gutter, ending 12px before the band.
@@ -821,9 +820,8 @@ function renderTracks() {
         x: perpPos - 8,
         y: geneNameY,
         class:"svg-geneName",
-        "text-anchor": "start",
-        "dominant-baseline": "text-after-edge",
-        transform: "rotate(-90 " + (perpPos - 8) + " " + geneNameY + ")"
+        "text-anchor": "middle",
+        "dominant-baseline": "middle"
       }, `${gene.name}`));
       // Strand indicator to the right of the gene track (just a bit to the right)
       tracksSvg.appendChild(el("text", {
@@ -1153,8 +1151,7 @@ function renderTracks() {
           y: pos,
           class: "svg-small",
           "text-anchor": "start",
-          "dominant-baseline": "middle",
-          transform: "rotate(-90 " + (baseX + 26) + " " + pos + ")"
+          "dominant-baseline": "middle"
         }, formatBp(Math.round(bp), span));
         tracksSvg.appendChild(textEl);
         majorTickLabelPositions.push(pos);
@@ -1189,15 +1186,13 @@ function renderTracks() {
 
     if (!hasNearbyBottomTick) {
       const textEl = el("text", {
-        x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
-        transform: "rotate(-90 " + (baseX + 26) + " " + bottomEdgeY + ")"
+        x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
       }, formatBp(Math.round(state.startBp), span));
       tracksSvg.appendChild(textEl);
     }
     if (!hasNearbyTopTick) {
       const textEl = el("text", {
-        x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
-        transform: "rotate(-90 " + (baseX + 26) + " " + topEdgeY + ")"
+        x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
       }, formatBp(Math.round(state.endBp), span));
       tracksSvg.appendChild(textEl);
     }
@@ -1685,8 +1680,7 @@ function renderTracks() {
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`,
-                transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             } else {
@@ -1733,8 +1727,7 @@ function renderTracks() {
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`,
-                transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }

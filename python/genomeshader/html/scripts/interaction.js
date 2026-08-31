@@ -651,9 +651,8 @@ function renderFlowCanvas() {
           : variantsAtPos[0].id;
         
         ctx.save();
-        ctx.translate(14, y + 6);
-        ctx.rotate(-Math.PI/2);
-        ctx.fillText(displayText, 0, 0);
+        ctx.textBaseline = "middle";
+        ctx.fillText(displayText, 2, y + 3);   // upright, left of the alleles
         ctx.restore();
       }
       
