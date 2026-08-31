@@ -1838,6 +1838,40 @@ function renderTracks() {
         stroke: "rgba(127,127,127,0.12)"
       }));
     }
+
+    // Deletion shading: grey out the reference bases spanned by each deletion in
+    // view (with a strike-through), so a deletion reads as "these ref bases are
+    // gone" — the counterpart to the insertion-gap expansion.
+    if (typeof isDeletion === "function") {
+      const vcfg = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+      const delVars = vcfg.length ? vcfg.flatMap(t => t.variants_data || [])
+        : ((typeof variants !== "undefined" && Array.isArray(variants)) ? variants : []);
+      const seenDel = new Set();
+      const fill = "rgba(120,120,120,0.5)", edge = "rgba(80,80,80,0.85)";
+      for (const v of delVars) {
+        if (!v || v.pos == null || !isDeletion(v)) continue;
+        const delLen = (typeof getMaxDeletionLength === "function") ? getMaxDeletionLength(v) : 0;
+        if (!(delLen > 0)) continue;
+        const key = String(v.id); if (seenDel.has(key)) continue; seenDel.add(key);
+        // Deleted ref bases are the ones after the anchor: [pos+1, pos+delLen].
+        const loBp = Math.max(Number(v.pos) + 1, state.startBp);
+        const hiBp = Math.min(Number(v.pos) + delLen, state.endBp);
+        if (hiBp < loBp) continue;
+        const a = genomePos(loBp), b = genomePos(hiBp + 1);
+        const lo = Math.min(a, b), hi = Math.max(a, b), mid = (lo + hi) / 2;
+        if (isVertical) {
+          tracksSvg.appendChild(el("rect", { x: referenceX, y: lo, width: referenceW, height: Math.max(1, hi - lo),
+            fill: fill, stroke: edge, "stroke-width": 1 }));
+          tracksSvg.appendChild(el("line", { x1: referenceX, x2: referenceX + referenceW, y1: mid, y2: mid,
+            stroke: edge, "stroke-width": 1 }));
+        } else {
+          tracksSvg.appendChild(el("rect", { x: lo, y: referenceY, width: Math.max(1, hi - lo), height: referenceH,
+            fill: fill, stroke: edge, "stroke-width": 1 }));
+          tracksSvg.appendChild(el("line", { x1: lo, x2: hi, y1: referenceY + referenceH / 2, y2: referenceY + referenceH / 2,
+            stroke: edge, "stroke-width": 1 }));
+        }
+      }
+    }
   }
 
   // UCSC interval tracks (added on demand via the UCSC Tracks tab). Boxes go on

@@ -866,6 +866,8 @@ function renderFlowCanvas() {
     if (useWebGPU) {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
+        // Indels are shown on the Indel track; skip their connector line here.
+        if (typeof isIndel === "function" && isIndel(v)) continue;
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
@@ -883,6 +885,8 @@ function renderFlowCanvas() {
     } else {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
+        // Indels are shown on the Indel track; skip their connector line here.
+        if (typeof isIndel === "function" && isIndel(v)) continue;
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
