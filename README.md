@@ -103,6 +103,8 @@ Each maps to a fixed regression:
 | `test_right_click_does_not_stick_pan` | right-click then a button-less move must not scroll the view |
 | `test_allele_reorder_indicator_matches_landing` | the drop bar sits exactly where a dragged allele lands (reorder geometry) |
 | `test_comment_time_has_timezone` | comment timestamps render with a timezone token |
+| `test_indel_toggle_cycle` | Indel marker cycles off→ins→del→off on mixed positions, toggles on pure |
+| `test_zero_carrier_allele_label_is_honest` | 0-carrier alleles say so, not a bare "0 samples" |
 
 #### Adding a test
 
@@ -145,3 +147,9 @@ can seed comm state / stand up a real-GPU runner:
   covered by `test_allele_reorder_indicator_matches_landing`; the drag gesture
   itself is manual.
 - **Vertical sample/read (smart) track**: comm + WebGPU driven.
+- **Repeated-reference deletion rows**: expanding a deletion on the Indel track
+  grows the reference track by one row per deletion, each rendering the deleted
+  bases greyed-but-legible with a strike-through. The state machine
+  (`nextIndelExpansion`) and filter are unit-testable, but the SVG rows need real
+  variant data + a render — the harness ships none and doesn't expose `renderAll`.
+  Verify the rows draw, stack, and stay legible by hand.

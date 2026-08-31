@@ -248,6 +248,37 @@ def test_allele_reorder_indicator_matches_landing(browser, tmp_path):
     page.close()
 
 
+def test_indel_toggle_cycle(browser, tmp_path):
+    """Mixed ins+del positions cycle off -> ins -> del -> off on click; pure
+    ins/del just toggle. Guards the Indel-marker state machine."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    seq = page.evaluate(
+        """() => {
+          const f = window.__gsNextIndelExpansion;
+          if (!f) return null;
+          // mixed: walk the cycle from off
+          const a = f(true, true, false, false);   // -> ins
+          const b = f(true, true, a.ins, a.del);    // -> del
+          const c = f(true, true, b.ins, b.del);    // -> off
+          // pure insertion toggles
+          const d = f(true, false, false, false);   // -> ins
+          const e = f(true, false, true, false);    // -> off
+          // pure deletion toggles
+          const g = f(false, true, false, false);   // -> del
+          return { a, b, c, d, e, g };
+        }"""
+    )
+    assert seq is not None, "helper not exposed"
+    assert seq["a"] == {"ins": True, "del": False}
+    assert seq["b"] == {"ins": False, "del": True}
+    assert seq["c"] == {"ins": False, "del": False}
+    assert seq["d"] == {"ins": True, "del": False}
+    assert seq["e"] == {"ins": False, "del": False}
+    assert seq["g"] == {"ins": False, "del": True}
+    page.close()
+
+
 def test_zero_carrier_allele_label_is_honest(browser, tmp_path):
     """An allele carried by none of the loaded samples must say so, not render a
     bare '0 samples' that reads as a failed count."""

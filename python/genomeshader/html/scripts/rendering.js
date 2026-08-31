@@ -244,9 +244,14 @@ function getTrackLayout() {
           safeContentTop = currentY + effectiveHeight;
         }
       } else {
-        // Open state: full height with header space
-        effectiveHeight = usesHeaderSpace ? headerH + (track.height || 0) : (track.height || 0);
-        safeContentHeight = track.height || 0;
+        // Open state: full height with header space. The reference track grows
+        // by one row per expanded deletion in view (repeated-reference rows, the
+        // vertical analogue of stacking multiple insertion rows).
+        const _refExtra = (track.id === "reference" && typeof getExpandedDeletionsInView === "function")
+          ? getExpandedDeletionsInView().length * DELETION_ROW_H : 0;
+        const _openH = (track.height || 0) + _refExtra;
+        effectiveHeight = usesHeaderSpace ? headerH + _openH : _openH;
+        safeContentHeight = _openH;
         safeContentTop = usesHeaderSpace ? currentY + headerH : currentY;
       }
       

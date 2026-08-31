@@ -228,6 +228,51 @@ function formatAlleleSampleCount(n) {
 }
 if (typeof window !== "undefined") window.__gsFormatAlleleSampleCount = formatAlleleSampleCount;
 
+// Next Indel-marker expansion state on click. A position that is BOTH an
+// insertion and a deletion cycles off -> ins -> del -> off so either can be
+// inspected; pure insertions/deletions just toggle. Returns the target
+// membership for the (expandedInsertions, expandedDeletions) sets.
+function nextIndelExpansion(isIns, isDel, curIns, curDel) {
+  if (isIns && isDel) {
+    if (curIns) return { ins: false, del: true };   // ins -> del
+    if (curDel) return { ins: false, del: false };  // del -> off
+    return { ins: true, del: false };               // off -> ins
+  }
+  if (isIns) return { ins: !curIns, del: false };
+  return { ins: false, del: !curDel };
+}
+if (typeof window !== "undefined") window.__gsNextIndelExpansion = nextIndelExpansion;
+
+// Height (px) of one repeated reference row drawn per expanded deletion.
+const DELETION_ROW_H = 20;
+
+// Expanded deletions overlapping the current view, sorted by start. Each entry
+// carries the deleted ref span [loBp, hiBp] (1-based genomic, inclusive) so the
+// reference track can repeat itself once per deletion (the vertical analogue of
+// stacking multiple insertion rows in the variants track).
+function getExpandedDeletionsInView() {
+  const out = [];
+  if (!state.expandedDeletions || !state.expandedDeletions.size) return out;
+  if (typeof isDeletion !== "function") return out;
+  const vcfg = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  const vars = vcfg.length ? vcfg.flatMap(t => t.variants_data || [])
+    : ((typeof variants !== "undefined" && Array.isArray(variants)) ? variants : []);
+  const seen = new Set();
+  for (const v of vars) {
+    if (!v || v.pos == null || !isDeletion(v)) continue;
+    if (!state.expandedDeletions.has(String(v.id))) continue;
+    const key = String(v.id); if (seen.has(key)) continue; seen.add(key);
+    const delLen = (typeof getMaxDeletionLength === "function") ? getMaxDeletionLength(v) : 0;
+    if (!(delLen > 0)) continue;
+    // Deleted ref bases are the ones after the anchor: [pos+1, pos+delLen].
+    const loBp = Number(v.pos) + 1, hiBp = Number(v.pos) + delLen;
+    if (hiBp < state.startBp || loBp > state.endBp) continue;  // off-view
+    out.push({ v: v, delLen: delLen, loBp: loBp, hiBp: hiBp });
+  }
+  out.sort((a, b) => (a.loBp - b.loBp) || (a.hiBp - b.hiBp));
+  return out;
+}
+
 // Longest deletion span (ref bases removed) for a variant.
 function getMaxDeletionLength(variant) {
   if (variant.hasOwnProperty('maxDeletionLength')) {
