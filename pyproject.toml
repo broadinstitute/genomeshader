@@ -17,6 +17,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# Headless UI tests (python/tests/headless). Also needs a browser binary:
+#   python -m playwright install chromium
+test-ui = ["pytest", "playwright", "anywidget"]
 
 [tool.maturin]
 python-source = "python"

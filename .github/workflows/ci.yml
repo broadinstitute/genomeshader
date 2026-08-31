@@ -42,6 +42,21 @@ jobs:
           source ../.venv/bin/activate
           pytest -q
 
+      # Headless UI regression tests: render the real frontend in headless
+      # Chromium and assert on layout/coordinates/interactions. Reuses the
+      # maturin build above (importing genomeshader pulls the Rust ext).
+      - name: Install Playwright + Chromium (headless UI)
+        run: |
+          source .venv/bin/activate
+          pip install playwright anywidget
+          python -m playwright install --with-deps chromium
+
+      - name: Run headless UI tests
+        working-directory: python
+        run: |
+          source ../.venv/bin/activate
+          pytest tests/headless -q
+
   build-smoke-wheel:
     name: build-smoke-wheel
     runs-on: ubuntu-latest
