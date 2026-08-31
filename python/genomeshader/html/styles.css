@@ -34,6 +34,13 @@
   --hudBg: rgba(0,0,0,0.35);
 }
 
+/* Tell the browser the active colour scheme so native controls (number-input
+   spinner arrows, checkboxes, scrollbars) match the selected theme. */
+html[data-theme="dark"]  { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
+@media (prefers-color-scheme: light) { html[data-theme="auto"] { color-scheme: light; } }
+@media (prefers-color-scheme: dark)  { html[data-theme="auto"] { color-scheme: dark; } }
+
 html[data-theme="light"] {
   --bg: #f7f8fb;
   --panel: #ffffff;
