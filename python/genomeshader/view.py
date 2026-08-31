@@ -2426,6 +2426,101 @@ class GenomeShader:
         self._gcloud_account_cache = acct
         return acct
 
+    # ---- background credential refresh ------------------------------------
+    _GCS_TOKEN_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
+
+    def _mint_token_subprocess(self) -> Optional[str]:
+        """Fallback token mint via the gcloud CLI (ADC)."""
+        try:
+            out = subprocess.run(
+                ["gcloud", "auth", "application-default", "print-access-token"],
+                capture_output=True, text=True, timeout=30, check=False)
+            if out.returncode == 0:
+                tok = (out.stdout or "").strip()
+                return tok or None
+        except Exception:
+            pass
+        return None
+
+    def _refresh_gcs_token_once(self, scopes=None):
+        """Mint a fresh ADC access token and publish it to the env vars htslib
+        (GCS_OAUTH_TOKEN) and gcloud (CLOUDSDK_AUTH_ACCESS_TOKEN) read. Returns
+        (seconds_until_next_refresh, ok)."""
+        token, expiry_secs, errs = None, None, []
+        try:  # pythonic path — no CLI, refreshes from the stored refresh token
+            import google.auth
+            from google.auth.transport.requests import Request
+            creds, _ = google.auth.default(scopes=scopes or self._GCS_TOKEN_SCOPES)
+            creds.refresh(Request())
+            token = creds.token
+            if getattr(creds, "expiry", None):
+                import datetime
+                expiry_secs = (creds.expiry - datetime.datetime.utcnow()).total_seconds()
+        except Exception as e:
+            errs.append(f"google-auth: {e}")
+        if not token:  # CLI fallback (same ADC)
+            token = self._mint_token_subprocess()
+            if not token:
+                errs.append("gcloud print-access-token failed")
+
+        prev = getattr(self, "_cred_refresh_last_error", "__init__")
+        if token:
+            os.environ["GCS_OAUTH_TOKEN"] = token
+            os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = token
+            if prev is not None and getattr(self, "_cred_refresh_verbose", False):
+                import sys
+                span = f" (~{int(expiry_secs)}s)" if expiry_secs else ""
+                print(f"[genomeshader] GCS credentials refreshed{span}.", file=sys.stderr)
+            self._cred_refresh_last_error = None
+            delay = (expiry_secs - 300) if expiry_secs else 2700  # ~5 min before expiry
+            return max(60, min(delay, 3600)), True
+
+        msg = "; ".join(errs) or "could not mint an access token"
+        if prev != msg:  # log the reauth hint once per new failure
+            import sys
+            print(f"[genomeshader] credential refresh failed: {msg}\n"
+                  f"  re-run `gcloud auth application-default login` to re-authenticate.",
+                  file=sys.stderr)
+        self._cred_refresh_last_error = msg
+        return 300, False  # back off, keep trying so it resumes after re-login
+
+    def start_credential_refresh(self, interval_seconds=None, scopes=None, verbose=True):
+        """Keep GCS credentials fresh in the background.
+
+        Re-mints the ADC access token shortly before it expires and republishes
+        it to GCS_OAUTH_TOKEN / CLOUDSDK_AUTH_ACCESS_TOKEN (what htslib and gcloud
+        read), on a daemon thread. Call once; idempotent. Returns the thread.
+
+        The refresh uses the stored refresh token (non-interactive), so it holds
+        for the whole org reauth window; when that finally lapses it logs a hint
+        to re-run `gcloud auth application-default login` and keeps retrying so it
+        resumes automatically once you re-authenticate.
+        """
+        existing = getattr(self, "_cred_refresh_thread", None)
+        if existing is not None and existing.is_alive():
+            return existing
+        self._cred_refresh_stop = threading.Event()
+        self._cred_refresh_verbose = verbose
+        self._cred_refresh_last_error = "__init__"
+
+        def _loop():
+            while not self._cred_refresh_stop.is_set():
+                delay, _ok = self._refresh_gcs_token_once(scopes)
+                if interval_seconds:
+                    delay = interval_seconds
+                self._cred_refresh_stop.wait(max(5, delay))
+
+        t = threading.Thread(target=_loop, name="gs-cred-refresh", daemon=True)
+        self._cred_refresh_thread = t
+        t.start()
+        return t
+
+    def stop_credential_refresh(self):
+        """Stop the background credential refresher (if running)."""
+        ev = getattr(self, "_cred_refresh_stop", None)
+        if ev is not None:
+            ev.set()
+
     @staticmethod
     def _now_iso() -> str:
         from datetime import datetime, timezone

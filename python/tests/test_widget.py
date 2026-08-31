@@ -197,6 +197,37 @@ def test_widget_comments_reply_comm(tmp_path, monkeypatch):
     assert sent[-1]["comment"]["replies"][0]["body"] == "reply!"
 
 
+def test_credential_refresh_publishes_token(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    monkeypatch.delenv("GCS_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLOUDSDK_AUTH_ACCESS_TOKEN", raising=False)
+    # Force the CLI fallback path with a known token (no real ADC in tests).
+    monkeypatch.setattr(type(s), "_mint_token_subprocess", lambda self: "TOK123")
+
+    delay, ok = s._refresh_gcs_token_once()
+    assert ok is True
+    assert os.environ["GCS_OAUTH_TOKEN"] == "TOK123"
+    assert os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] == "TOK123"
+    assert 60 <= delay <= 3600
+
+    # No token available -> failure, back off, don't crash.
+    monkeypatch.setattr(type(s), "_mint_token_subprocess", lambda self: None)
+    s._cred_refresh_last_error = None
+    delay2, ok2 = s._refresh_gcs_token_once()
+    assert ok2 is False and delay2 == 300
+
+
+def test_credential_refresh_thread_lifecycle(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    monkeypatch.setattr(type(s), "_mint_token_subprocess", lambda self: "TOK")
+    # long interval so the loop refreshes once then parks on the stop event
+    t = s.start_credential_refresh(interval_seconds=3600, verbose=False)
+    assert t.is_alive()
+    assert s.start_credential_refresh() is t          # idempotent
+    s.stop_credential_refresh()
+    assert s._cred_refresh_stop.is_set()
+
+
 def test_comment_read_state_blob(tmp_path, monkeypatch):
     s = _shader(tmp_path, monkeypatch)
     s.gcs_session_dir = str(tmp_path / "session")
