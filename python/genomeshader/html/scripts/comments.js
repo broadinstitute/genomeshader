@@ -13,6 +13,7 @@
   let editingId = null;        // comment being edited
   let draftAnchor = null;      // anchor captured when the create form opened
   let flashId = null;          // comment to briefly highlight (after pin click)
+  let navIndex = 0;            // cursor for the prev/next comment navigator
   let _composeCtl = null;      // controller for the open compose form (live updates)
 
   // The viewer calls this when the allele selection changes; keep the open
@@ -64,10 +65,23 @@
 
   function fmtTime(iso) {
     if (!iso) return "";
-    // "2026-08-28T18:41:48+00:00" -> "2026-08-28 18:41" (keep it simple/stable)
-    const m = String(iso).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
-    return m ? m[1] + " " + m[2] : String(iso);
+    // Render the stored (UTC) time in the viewer's local zone, with the zone
+    // abbreviation, e.g. "2026-08-28 14:41 EDT".
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) {
+      const m = String(iso).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+      return m ? m[1] + " " + m[2] : String(iso);
+    }
+    const p = (n) => String(n).padStart(2, "0");
+    let tz = "";
+    try {
+      const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(d);
+      tz = (parts.find((x) => x.type === "timeZoneName") || {}).value || "";
+    } catch (e) {}
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}${tz ? " " + tz : ""}`;
   }
+  // Exposed for the headless timezone regression test.
+  if (typeof window !== "undefined") window.__gsFmtCommentTime = fmtTime;
 
   const ANCHOR_ICON = { region: "▦", variant: "◆", allele: "◇", gene: "⌬", sample: "◉", read: "≡" };
   function anchorIcon(a) { return (a && ANCHOR_ICON[a.type]) || "◆"; }
@@ -123,7 +137,56 @@
     // Newest first for reading.
     const sorted = state.comments.slice().sort((a, b) =>
       String(b.created || "").localeCompare(String(a.created || "")));
+    h.appendChild(navBar(sorted));
     sorted.forEach(c => h.appendChild(commentCard(c)));
+  }
+
+  // Total count + a prev/next navigator that walks the comment list, flashing
+  // and (if the comment has a locus) recentering the view on each. Arrows are
+  // disabled at the ends.
+  function navBar(sorted) {
+    const n = sorted.length;
+    if (navIndex >= n) navIndex = n - 1;
+    if (navIndex < 0) navIndex = 0;
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;"
+      + "padding:2px 4px 8px;font-size:11px;color:var(--muted);";
+    const count = document.createElement("span");
+    count.textContent = n + " comment" + (n === 1 ? "" : "s");
+    wrap.appendChild(count);
+    const nav = document.createElement("span");
+    nav.style.cssText = "display:flex;align-items:center;gap:6px;";
+    const mk = (txt, title, enabled, onClick) => {
+      const b = document.createElement("button");
+      b.textContent = txt; b.title = title; b.disabled = !enabled;
+      b.style.cssText = "width:22px;height:22px;line-height:1;padding:0;border:1px solid var(--border2);"
+        + "border-radius:5px;background:var(--panel);color:var(--text);"
+        + "cursor:" + (enabled ? "pointer" : "default") + ";opacity:" + (enabled ? "1" : "0.4") + ";";
+      if (enabled) b.addEventListener("click", onClick);
+      return b;
+    };
+    nav.appendChild(mk("‹", "Previous comment", navIndex > 0, () => { navIndex--; navTo(sorted[navIndex]); }));
+    const pos = document.createElement("span");
+    pos.textContent = (n ? navIndex + 1 : 0) + "/" + n;
+    pos.style.cssText = "min-width:34px;text-align:center;";
+    nav.appendChild(pos);
+    nav.appendChild(mk("›", "Next comment", navIndex < n - 1, () => { navIndex++; navTo(sorted[navIndex]); }));
+    wrap.appendChild(nav);
+    return wrap;
+  }
+
+  function navTo(c) {
+    if (!c) return;
+    flashId = c.id;
+    const a = c.anchor || {};
+    if (pinPos(a) != null && window.__GS_gotoComment) {
+      try { window.__GS_gotoComment(a); } catch (e) {}
+    }
+    render();
+    setTimeout(() => {
+      const h = host();
+      if (h) { const card = h.querySelector('[data-cid="' + c.id + '"]'); if (card) card.scrollIntoView({ block: "center" }); }
+    }, 40);
   }
 
   function anchorChip(a, sample) {

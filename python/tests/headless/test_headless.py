@@ -248,6 +248,21 @@ def test_allele_reorder_indicator_matches_landing(browser, tmp_path):
     page.close()
 
 
+def test_comment_time_has_timezone(browser, tmp_path):
+    """Comment timestamps must render with a timezone token (regression: the old
+    formatter dropped the zone entirely)."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    out = page.evaluate(
+        "() => window.__gsFmtCommentTime ? window.__gsFmtCommentTime('2026-08-28T18:41:48+00:00') : null"
+    )
+    assert out is not None, "fmtTime helper not exposed"
+    # e.g. "2026-08-28 14:41 EDT" — date, time, then a non-empty zone token.
+    import re
+    assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \S+", out), out
+    page.close()
+
+
 # NOTE: allele *selection* is driven by the WebGPU interaction layer, which does
 # not paint (or receive clicks) under swiftshader in headless Chromium, so
 # selection behavior (e.g. double-click-keeps-selection) can't be asserted here.

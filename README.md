@@ -100,6 +100,9 @@ Each maps to a fixed regression:
 | `test_vertical_spreads_variants` | vertical mode maps variants across the full genome axis |
 | `test_fullscreen_cycle_keeps_tracks` | enter/exit/enter fullscreen keeps the tracks |
 | `test_double_click_coalesces_renders` | double-click coalesces to one render (not the 6-render storm) |
+| `test_right_click_does_not_stick_pan` | right-click then a button-less move must not scroll the view |
+| `test_allele_reorder_indicator_matches_landing` | the drop bar sits exactly where a dragged allele lands (reorder geometry) |
+| `test_comment_time_has_timezone` | comment timestamps render with a timezone token |
 
 #### Adding a test
 
@@ -117,3 +120,28 @@ Prefer deterministic DOM/state assertions over pixels or timing. For
 interaction tests, drive real input (`page.mouse.click/dblclick`, `page.keyboard`)
 rather than synthetic events — synthetic `MouseEvent`s default to clientX=0 and
 trip edge handlers.
+
+When a bug is fixed, add a test here so it can't regress. Where a pure helper
+drives the behavior, expose it on `window` (see `allele-reorder.js`,
+`__gsFmtCommentTime`) and assert the real function — that guards the actual code,
+not a replica.
+
+#### Deferred / manual-check list
+
+Behaviors a fixed bug depends on that the headless harness **can't** yet reach
+(no live ipywidgets comm to seed data; WebGPU interaction layer doesn't paint or
+receive clicks under swiftshader). Verify these by hand in JupyterLab until we
+can seed comm state / stand up a real-GPU runner:
+
+- **Comments tab — count + prev/next navigator**: count is correct; arrows
+  disable at the first/last comment; each step recenters + flashes. (Needs
+  comm-seeded `state.comments` + the tab's `render`, neither exposed.)
+- **Comment pins on the reference track**: pins ride the reference band (not the
+  Indel track) and stay put on pan/zoom. (Pin draw is exposed as
+  `__GS_renderCommentPins`, but placement is only meaningful with real comments +
+  the track layout.)
+- **Allele selection / double-click-keeps-selection / drag *feel***: the
+  interaction canvas is WebGPU (no clicks headless). Reorder *geometry* is
+  covered by `test_allele_reorder_indicator_matches_landing`; the drag gesture
+  itself is manual.
+- **Vertical sample/read (smart) track**: comm + WebGPU driven.

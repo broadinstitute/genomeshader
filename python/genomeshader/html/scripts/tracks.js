@@ -1440,16 +1440,6 @@ function renderTracks() {
     }
   }
 
-    // Comment pins (defined in comments.js): one marker per in-view comment on the locus track.
-    if (typeof window.__GS_renderCommentPins === "function") {
-      try {
-        window.__GS_renderCommentPins({
-          svg: tracksSvg, el: el, genomePos: genomePos,
-          baseX: baseX, baseY: baseY, isVertical: isVertical,
-        });
-      } catch (e) {}
-    }
-
     // separator
     if (isVertical) {
       tracksSvg.appendChild(el("line", {
@@ -1864,6 +1854,17 @@ function renderTracks() {
             stroke: edge, "stroke-width": 1 }));
         }
       }
+    }
+
+    // Comment pins (defined in comments.js): comments are a baseline annotation,
+    // so their markers ride the reference track rather than the Indel track.
+    if (typeof window.__GS_renderCommentPins === "function") {
+      try {
+        window.__GS_renderCommentPins({
+          svg: tracksSvg, el: el, genomePos: genomePos,
+          baseX: referenceX + referenceW, baseY: referenceY, isVertical: isVertical,
+        });
+      } catch (e) {}
     }
   }
 
