@@ -276,13 +276,48 @@ function removeSmartTrackWebGPU(trackId) {
 }
 
 // Fetch reads for a Smart track
+// In-memory reads cache so re-opening a read track (remove + re-add, or any
+// re-fetch) for the same sample at the same locus reappears instantly instead
+// of round-tripping the comm. Keyed by sampleId|locus; capped LRU-ish.
+const _smartReadsCache = new Map();
+const _SMART_READS_CACHE_MAX = 24;
+function _readsLocusSig() {
+  try {
+    return state.contig + ":" + Math.floor(state.startBp) + "-" + Math.ceil(state.endBp);
+  } catch (e) { return ""; }
+}
+function _cacheSmartReads(sampleId, reads, bamUrls) {
+  if (!sampleId) return;
+  const key = sampleId + "|" + _readsLocusSig();
+  _smartReadsCache.delete(key);          // move-to-front
+  _smartReadsCache.set(key, { reads: reads, bamUrls: bamUrls || [] });
+  while (_smartReadsCache.size > _SMART_READS_CACHE_MAX) {
+    _smartReadsCache.delete(_smartReadsCache.keys().next().value);
+  }
+}
+
 function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) {
     console.error(`Smart track ${trackId} not found`);
     return Promise.reject(new Error('Track not found'));
   }
-  
+
+  // Instant path: a known sample previously loaded at this locus.
+  const cacheKey = sampleId ? (sampleId + "|" + _readsLocusSig()) : null;
+  if (cacheKey && _smartReadsCache.has(cacheKey)) {
+    const hit = _smartReadsCache.get(cacheKey);
+    track.loading = false;
+    track.readsData = hit.reads;
+    track.readsLayout = processReadsData(hit.reads);
+    track.sampleId = sampleId;
+    track.bamUrls = hit.bamUrls || [];
+    updateSmartTrackLabel(track);
+    renderAll();
+    if (window.__GS_STATUS) window.__GS_STATUS(false);
+    return Promise.resolve(track.readsLayout);
+  }
+
   track.loading = true;
   renderAll();
   if (window.__GS_STATUS) {
@@ -308,7 +343,8 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
         track.bamUrls = response.bam_urls || [];
-        
+        _cacheSmartReads(track.sampleId, response.reads, track.bamUrls);
+
         // Update track label to use sample name
         updateSmartTrackLabel(track);
         
