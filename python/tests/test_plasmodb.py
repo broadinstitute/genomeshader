@@ -235,6 +235,38 @@ def test_fetch_gs_uses_session_cp(tmp_path):
     assert os.path.basename(out) == "src.fa" and open(out).read() == "DATA"
 
 
+def test_fetch_gs_falls_back_to_public_https(tmp_path, monkeypatch):
+    # gcloud/gsutil fail (unauthenticated or missing) -> the anonymous public
+    # HTTPS endpoint serves the object, so staging a public reference still works.
+    sess = Mock()
+    sess._gcs_cp.return_value = False
+    seen = {}
+    def fake_dl(url, dst):
+        seen["url"] = url
+        with open(dst, "w") as fh:
+            fh.write("PUB")
+    monkeypatch.setattr("genomeshader.plasmodb._http_download", fake_dl)
+    out = _fetch_to_local(sess, "gs://broad-malaria-public/ref.fa", str(tmp_path))
+    assert open(out).read() == "PUB"
+    assert seen["url"] == "https://storage.googleapis.com/broad-malaria-public/ref.fa"
+
+
+def test_fetch_gs_total_failure_reports_reason(tmp_path, monkeypatch):
+    # Both gcloud/gsutil and the HTTPS fallback fail -> the error must surface the
+    # real reason, not a bare "failed to fetch".
+    sess = Mock()
+    sess._gcs_cp.return_value = False
+    def boom(url, dst):
+        raise RuntimeError("HTTP 403")
+    monkeypatch.setattr("genomeshader.plasmodb._http_download", boom)
+    monkeypatch.setattr("genomeshader.plasmodb._run_capture",
+                        lambda cmd: (127, "gcloud: command not found"))
+    with pytest.raises(RuntimeError) as ei:
+        _fetch_to_local(sess, "gs://private/ref.fa", str(tmp_path))
+    msg = str(ei.value)
+    assert "HTTP 403" in msg and "gcloud" in msg and "gcloud auth login" in msg
+
+
 def test_fetch_http_streams(tmp_path, monkeypatch):
     class FakeResp:
         status_code = 200

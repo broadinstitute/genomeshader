@@ -47,20 +47,37 @@ def _open_text(path: str):
     return open(path, "r")
 
 
-def _s3_cp(src: str, dst: str) -> bool:
-    """Copy s3://... -> local via the aws CLI, mirroring view._gcs_cp."""
+def _run_capture(cmd):
+    """Run a command, capturing combined stdout+stderr so failures can be
+    reported instead of swallowed. Returns (returncode, text); 127 == not found."""
     try:
-        rc = subprocess.run(
-            ["aws", "s3", "cp", src, dst],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).returncode
-        return rc == 0
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+        return p.returncode, (p.stdout or b"").decode("utf-8", "replace").strip()
     except FileNotFoundError:
-        raise RuntimeError(
-            "aws CLI not found; install awscli to fetch s3:// references"
-        )
+        return 127, f"{cmd[0]}: command not found"
+
+
+def _http_download(url: str, dst: str) -> None:
+    """Stream an HTTP(S) URL to a local file. Raises on a non-200 response."""
+    import requests
+    with requests.get(url, stream=True) as r:
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        with open(dst, "wb") as fh:
+            for chunk in r.iter_content(chunk_size=1 << 16):
+                fh.write(chunk)
+
+
+def _s3_cp(src: str, dst: str) -> bool:
+    """Copy s3://... -> local via the aws CLI, surfacing the CLI error on failure."""
+    rc, out = _run_capture(["aws", "s3", "cp", src, dst])
+    if rc == 127:
+        raise RuntimeError("aws CLI not found; install awscli to fetch s3:// references")
+    if rc != 0:
+        raise RuntimeError(f"aws s3 cp failed (exit {rc}): {out}")
+    return True
+
+
 
 
 def _fetch_to_local(session, uri: Optional[str], tmpdir: str) -> Optional[str]:
@@ -81,19 +98,33 @@ def _fetch_to_local(session, uri: Optional[str], tmpdir: str) -> Optional[str]:
     dst = os.path.join(tmpdir, os.path.basename(uri.split("?", 1)[0]))
 
     if scheme == "gs":
+        # Primary: gcloud/gsutil via the session (respects any session auth).
         if not session._gcs_cp(uri, dst):
-            raise RuntimeError(f"failed to fetch {uri} (gcloud/gsutil)")
+            # Fallback: the anonymous public HTTPS endpoint serves public objects
+            # (e.g. gs://broad-malaria-public/...) with no credentials at all, so
+            # staging a public reference works even when gcloud is unauthenticated
+            # or not installed.
+            https = "https://storage.googleapis.com/" + uri[len("gs://"):]
+            try:
+                _http_download(https, dst)
+            except Exception as e:
+                # Only now (total failure) pay for a captured gcloud run so the
+                # real reason is in the message instead of being swallowed.
+                rc, out = _run_capture(["gcloud", "storage", "cp", uri, dst])
+                raise RuntimeError(
+                    f"failed to fetch {uri}"
+                    f"\n  gcloud: {out or ('exit ' + str(rc))}"
+                    f"\n  anonymous https ({https}): {e}"
+                    "\n(for a private object, authenticate gcloud — `gcloud auth login` — "
+                    "or install the Google Cloud CLI)"
+                )
     elif scheme == "s3":
-        if not _s3_cp(uri, dst):
-            raise RuntimeError(f"failed to fetch {uri} (aws s3 cp)")
+        _s3_cp(uri, dst)
     elif scheme in ("http", "https"):
-        import requests
-        with requests.get(uri, stream=True) as r:
-            if r.status_code != 200:
-                raise RuntimeError(f"failed to fetch {uri} (HTTP {r.status_code})")
-            with open(dst, "wb") as fh:
-                for chunk in r.iter_content(chunk_size=1 << 16):
-                    fh.write(chunk)
+        try:
+            _http_download(uri, dst)
+        except Exception as e:
+            raise RuntimeError(f"failed to fetch {uri} ({e})")
     else:
         raise ValueError(f"unsupported scheme in reference path: {uri}")
     return dst
