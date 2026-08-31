@@ -5588,6 +5588,10 @@ function bindInteractions(root, state, main) {
   };
 
   const onPointerDown = (e) => {
+    // Only the primary button (left mouse / touch / pen) pans or selects. A
+    // right- or middle-click must not start a drag — otherwise its pointerup can
+    // be swallowed by the context menu and the pan sticks "on".
+    if (e.button !== 0) return;
     if (tryToggleInsertionFromRulerHit(e)) {
       e.preventDefault();
       e.stopPropagation();
@@ -5635,6 +5639,18 @@ function bindInteractions(root, state, main) {
   };
 
   const onPointerMove = (e) => {
+    // Self-heal a stuck pan: if we think a drag is in progress but the mouse's
+    // left button isn't actually held (buttons bit 1 clear), the pointerup was
+    // lost (e.g. a right-click's context menu ate it). Reset so the view stops
+    // scrolling on a button-less move.
+    if (e.pointerType === "mouse" && !(e.buttons & 1) &&
+        (state.dragging || state.pointers.size || state.pendingFlowDrag || state.livePanOffset)) {
+      state.pendingFlowDrag = null;
+      if (state.livePanOffset) endLivePan();
+      state.pointers.clear();
+      state.dragging = false;
+      return;
+    }
     // Promote a deferred variants-strip press to a real pan once it moves past a
     // small threshold (below that, it's a click and selection handles it).
     if (state.pendingFlowDrag && state.pendingFlowDrag.pointerId === e.pointerId) {

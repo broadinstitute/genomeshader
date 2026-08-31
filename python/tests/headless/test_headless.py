@@ -187,6 +187,23 @@ def test_double_click_coalesces_renders(browser, tmp_path):
     assert rc <= 2, f"double-click triggered {rc} renderAll (regression to the render storm)"
     page.close()
 
+def test_right_click_does_not_stick_pan(browser, tmp_path):
+    """Right-click then a button-less move must not scroll the view (the pan
+    must not get stuck 'on')."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    start = page.evaluate("() => window.__GS_STATE.startBp")
+    page.mouse.move(600, 400)
+    page.mouse.down(button="right")
+    page.mouse.up(button="right")
+    page.mouse.move(400, 400)      # move with no button held
+    page.mouse.move(250, 400)
+    page.wait_for_timeout(200)
+    end = page.evaluate("() => window.__GS_STATE.startBp")
+    assert end == start, f"view scrolled after a right-click ({start} -> {end})"
+    page.close()
+
+
 # NOTE: allele *selection* is driven by the WebGPU interaction layer, which does
 # not paint (or receive clicks) under swiftshader in headless Chromium, so
 # selection behavior (e.g. double-click-keeps-selection) can't be asserted here.
