@@ -892,9 +892,11 @@ function updateRightSidebarState() {
   } else {
     app.classList.remove("sidebar-right-collapsed");
   }
-  // Reflow immediately so the tracks resize to the new width instead of waiting
-  // on the debounced ResizeObserver (which still handles the transition tail).
-  requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (e) {} });
+  // Reflow via the rAF-deduped scheduleRender so opening both panels at once
+  // (e.g. double-click an allele) coalesces to one render, not a storm. The
+  // debounced ResizeObserver still handles the transition tail.
+  if (typeof scheduleRender === "function") scheduleRender();
+  else requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (e) {} });
 }
 
 // Right sidebar width (drag-to-resize). Stored in px; applied via the

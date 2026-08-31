@@ -96,9 +96,12 @@ function updateSidebarState() {
   } else {
     app.classList.remove("sidebar-collapsed");
   }
-  // Reflow immediately so the tracks resize to the new width instead of waiting
-  // on the debounced ResizeObserver (which still handles the transition tail).
-  requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (e) {} });
+  // Reflow so the tracks resize to the new width instead of waiting on the
+  // debounced ResizeObserver (which still handles the transition tail). Use the
+  // rAF-deduped scheduleRender so opening both panels at once (e.g. double-click
+  // an allele) coalesces to one render instead of a renderAll storm.
+  if (typeof scheduleRender === "function") scheduleRender();
+  else requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (e) {} });
 }
 
 // Make sidebar border clickable - always bind regardless of hostMode

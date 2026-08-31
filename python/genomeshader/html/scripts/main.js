@@ -2047,7 +2047,10 @@ function renderAll() {
 // single frame collapse to one renderAll() on the next animation frame, instead
 // of a full synchronous rebuild per event. This keeps the main thread from
 // blocking and inputs from queuing up (the freeze-then-catch-up).
-let _renderScheduled = false;
+// var (not let): scheduleRender is called from init paths in earlier scripts
+// (e.g. updateSidebarState during dom-utils load) before this line runs; a `let`
+// would be in the temporal dead zone and throw. var hoists to undefined (falsy).
+var _renderScheduled = false;
 function scheduleRender() {
   if (_renderScheduled) return;
   _renderScheduled = true;
@@ -6044,7 +6047,7 @@ new ResizeObserver(debounce(() => {
       console.error("WebGPU resize error:", error);
     }
   }
-  renderAll();
+  if (typeof scheduleRender === "function") scheduleRender(); else renderAll();
 }, 100)).observe(flow);
 new ResizeObserver(debounce(() => {
   // Handle WebGPU canvas resize when tracks container resizes
@@ -6055,7 +6058,7 @@ new ResizeObserver(debounce(() => {
       console.error("WebGPU resize error:", error);
     }
   }
-  renderAll();
+  if (typeof scheduleRender === "function") scheduleRender(); else renderAll();
 }, 100)).observe(tracksSvg);
 window.addEventListener("resize", () => {
   // Handle WebGPU canvas resize
