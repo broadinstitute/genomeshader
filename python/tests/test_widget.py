@@ -112,6 +112,32 @@ def test_esm_includes_comments_ui():
     assert "comments_create" in esm             # comm bridge from the UI
 
 
+def test_esm_viewer_height_is_tall():
+    # Notebook viewer gets plenty of vertical room (regressed to 600 once).
+    esm = _build_esm()
+    assert "height:1200px" in esm
+
+
+def _body_html():
+    from genomeshader.widget import _html_dir
+    return (_html_dir() / "body.html").read_text(encoding="utf-8")
+
+
+def test_no_right_panel_settings_button():
+    # Settings live in the left panel; the right command strip must not carry a
+    # Settings button (it switched to a nonexistent tab).
+    body = _body_html()
+    assert 'data-tab="settings"' not in body       # right strip uses data-tab=...
+    assert 'data-left-tab="settings"' in body       # left panel settings tab stays
+
+
+def test_strategy_order_best_evidence_first():
+    # Read-selection strategy: Best evidence is the default (first), Random last.
+    body = _body_html()
+    assert body.index('value="best_evidence"') < body.index('value="random"')
+    assert "strategy: 'best_evidence'" in _build_esm()   # JS state default (raw in ESM)
+
+
 def test_comment_store_crud(tmp_path, monkeypatch):
     # Point the session dir at a local folder so the store uses its os fallback.
     s = _shader(tmp_path, monkeypatch)
