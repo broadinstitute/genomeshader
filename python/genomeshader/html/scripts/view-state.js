@@ -217,6 +217,17 @@ function isIndel(variant) {
   return isInsertion(variant) || isDeletion(variant);
 }
 
+// Carrier-count phrase for allele labels/tooltips. The count is over the samples
+// present in the variant data (the loaded/selected cohort), NOT the read tracks
+// you've opened. A zero means none of those samples carry this allele — say so
+// plainly instead of a bare "0 samples", which reads as a failed count.
+function formatAlleleSampleCount(n) {
+  n = Number(n) || 0;
+  if (n === 0) return "no loaded samples carry this allele";
+  return n + " sample" + (n === 1 ? "" : "s");
+}
+if (typeof window !== "undefined") window.__gsFormatAlleleSampleCount = formatAlleleSampleCount;
+
 // Longest deletion span (ref bases removed) for a variant.
 function getMaxDeletionLength(variant) {
   if (variant.hasOwnProperty('maxDeletionLength')) {

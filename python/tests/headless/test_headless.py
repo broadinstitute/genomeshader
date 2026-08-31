@@ -248,6 +248,21 @@ def test_allele_reorder_indicator_matches_landing(browser, tmp_path):
     page.close()
 
 
+def test_zero_carrier_allele_label_is_honest(browser, tmp_path):
+    """An allele carried by none of the loaded samples must say so, not render a
+    bare '0 samples' that reads as a failed count."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    zero = page.evaluate("() => window.__gsFormatAlleleSampleCount ? window.__gsFormatAlleleSampleCount(0) : null")
+    one = page.evaluate("() => window.__gsFormatAlleleSampleCount(1)")
+    many = page.evaluate("() => window.__gsFormatAlleleSampleCount(7)")
+    assert zero is not None, "formatter not exposed"
+    assert "0 sample" not in zero and "carry" in zero, zero
+    assert one == "1 sample"
+    assert many == "7 samples"
+    page.close()
+
+
 def test_comment_time_has_timezone(browser, tmp_path):
     """Comment timestamps must render with a timezone token (regression: the old
     formatter dropped the zone entirely)."""

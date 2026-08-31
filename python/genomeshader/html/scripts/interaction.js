@@ -1656,7 +1656,7 @@ function renderFlowCanvas() {
             if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
             else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
           }
-          const labelText = `${label}${_indelTag} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
+          const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}`;
           allLabelsToDraw.push({
             label: label,
             text: labelText,
@@ -1921,7 +1921,7 @@ function renderFlowCanvas() {
             if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
             else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
           }
-          const labelText = `${label}${_indelTag} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
+          const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}`;
           allLabelsToDraw.push({
             label: label,
             text: labelText,

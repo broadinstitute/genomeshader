@@ -2653,7 +2653,7 @@ function setupCanvasHover() {
           const sampleCount = Number.isFinite(hovered.node.sampleCount)
             ? hovered.node.sampleCount
             : 0;
-          hoveredNodeLabel = `${hovered.label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
+          hoveredNodeLabel = `${hovered.label} - ${formatAlleleSampleCount(sampleCount)}`;
         }
         
         // Update hover state and tooltip if changed
