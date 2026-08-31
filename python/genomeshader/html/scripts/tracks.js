@@ -1271,18 +1271,18 @@ function renderTracks() {
       renderHoverOnly();
     });
     
-    // For insertions, add pointerdown handler to the line itself
-    if (isInsertion(v)) {
+    // Indels are toggleable on the line itself: insertions expand their gap,
+    // deletions shade their deleted ref bases.
+    const _indelIsIns = isInsertion(v);
+    const _indelSet = () => (_indelIsIns ? state.expandedInsertions : state.expandedDeletions);
+    if (typeof isIndel === "function" && isIndel(v)) {
       lineEl.style.pointerEvents = "auto";
-      lineEl.setAttribute("title", "Click to expand insertion");
+      lineEl.setAttribute("title", _indelIsIns ? "Click to expand insertion" : "Click to show deleted bases");
       lineEl.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(variantId)) {
-          state.expandedInsertions.delete(variantId);
-        } else {
-          state.expandedInsertions.add(variantId);
-        }
+        const set = _indelSet();
+        if (set.has(variantId)) set.delete(variantId); else set.add(variantId);
         renderAll();
       });
     }
@@ -1294,8 +1294,8 @@ function renderTracks() {
     }
     state.locusVariantElements.get(idx).lineEl = lineEl;
     
-    // For insertions, add a larger invisible clickable area AFTER the line (so it's on top)
-    if (isInsertion(v)) {
+    // Larger invisible clickable area for the indel toggle (easier to hit)
+    if (typeof isIndel === "function" && isIndel(v)) {
       // Add an invisible wider rectangle for easier clicking
       let clickArea;
       if (isVertical) {
@@ -1319,7 +1319,7 @@ function renderTracks() {
           "data-variant-id": variantId
         });
       }
-      clickArea.setAttribute("title", "Click to expand insertion");
+      clickArea.setAttribute("title", _indelIsIns ? "Click to expand insertion" : "Click to show deleted bases");
       clickArea.addEventListener("mouseenter", () => {
         state.hoveredVariantIndex = idx;
         state.hoveredVariantId = variantId;
@@ -1333,11 +1333,8 @@ function renderTracks() {
       clickArea.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(variantId)) {
-          state.expandedInsertions.delete(variantId);
-        } else {
-          state.expandedInsertions.add(variantId);
-        }
+        const set = _indelSet();
+        if (set.has(variantId)) set.delete(variantId); else set.add(variantId);
         renderAll();
       });
       tracksSvg.appendChild(clickArea);
@@ -1843,6 +1840,9 @@ function renderTracks() {
       const fill = "rgba(120,120,120,0.5)", edge = "rgba(80,80,80,0.85)";
       for (const v of delVars) {
         if (!v || v.pos == null || !isDeletion(v)) continue;
+        // Only shade when this deletion is selected/expanded on the Indel track
+        // (click its marker), mirroring insertion expansion.
+        if (!(state.expandedDeletions && state.expandedDeletions.has(String(v.id)))) continue;
         const delLen = (typeof getMaxDeletionLength === "function") ? getMaxDeletionLength(v) : 0;
         if (!(delLen > 0)) continue;
         const key = String(v.id); if (seenDel.has(key)) continue; seenDel.add(key);

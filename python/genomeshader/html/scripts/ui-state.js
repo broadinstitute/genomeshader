@@ -11,6 +11,7 @@ const state = {
   hoveredVariantIndex: null, // index of hovered variant, or null
   hoveredVariantId: null,    // id of hovered variant (for multi-track ruler/flow), or null
   expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
+  expandedDeletions: new Set(),  // Set of deletion variant IDs whose deleted ref bases are shown (shaded)
   hoveredRepeatTooltip: null, // { text, x, y } or null
   hoveredVariantLabelTooltip: null, // { text, x, y } or null
   locusVariantElements: new Map(), // Map of variant index -> { lineEl, circleEl } for Locus track
