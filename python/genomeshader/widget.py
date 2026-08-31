@@ -40,6 +40,7 @@ def _html_dir() -> Path:
 _SCRIPT_ORDER = [
     "cleanup.js", "webgpu-core.js", "webgpu-renderer.js", "webgpu-bezier.js",
     "widget-comms.js", "dom-utils.js", "ui-state.js", "view-state.js",
+    "allele-reorder.js",
     "smart-tracks.js", "rendering.js", "tracks.js", "interaction.js", "main.js",
     "ucsc-tracks.js", "comments.js",
 ]

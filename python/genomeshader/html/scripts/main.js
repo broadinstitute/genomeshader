@@ -2590,29 +2590,19 @@ function setupCanvasHover() {
           // Drop position by NEAREST MIDPOINT along the stacking axis (no need to
           // hover precisely over a node or stay on the variant's column): insert
           // before the first node whose midpoint is past the pointer.
-          const sizeOf = (j) => (isVertical
-            ? (alleleSizes[getAlleleKey(order[j])] || baseNodeW)
-            : (alleleSizes[getAlleleKey(order[j])] || baseNodeH));
+          const sizes = order.map((lbl) => (isVertical
+            ? (alleleSizes[getAlleleKey(lbl)] || baseNodeW)
+            : (alleleSizes[getAlleleKey(lbl)] || baseNodeH)));
           let total = 0;
-          for (let j = 0; j < order.length; j++) total += sizeOf(j) + (j < order.length - 1 ? gap : 0);
+          for (let j = 0; j < sizes.length; j++) total += sizes[j] + (j < sizes.length - 1 ? gap : 0);
           if (isVertical) {
             const left = 70, W = flowWidthPx();
             const start = left + Math.max(0, ((W - left - margin) - total) / 2);
-            let cur = start; newIndex = order.length - 1;
-            for (let j = 0; j < order.length; j++) {
-              const nodeW = sizeOf(j);
-              if (x < cur + nodeW / 2) { newIndex = j; break; }
-              cur += nodeW + gap;
-            }
+            newIndex = alleleNearestDropIndex(x, start, sizes, gap);
           } else {
             const top = 20, H = flowHeightPx();
             const start = top + Math.max(0, ((H - top - margin) - total) / 2);
-            let cur = start; newIndex = order.length - 1;
-            for (let j = 0; j < order.length; j++) {
-              const nodeH = sizeOf(j);
-              if (y < cur + nodeH / 2) { newIndex = j; break; }
-              cur += nodeH + gap;
-            }
+            newIndex = alleleNearestDropIndex(y, start, sizes, gap);
           }
         }
         
@@ -2763,80 +2753,22 @@ function setupCanvasHover() {
       const nodeH = constants.baseNodeH;
       const gap = constants.gap;
       
-      let newIndex = -1;
-      if (isVertical) {
-        const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
-        const v = sortedWin.find(v => v.id === dragState.variantId);
-        if (!v) {
-          state.alleleDragState = null;
-          flowCanvas.style.cursor = "";
-          if (flowWebGPU) flowWebGPU.style.cursor = "";
-          renderFlowCanvas();
-          return;
+      // Land the allele exactly where the live drop bar showed it: reuse the
+      // move handler's nearest-midpoint dropIndex. The old code recomputed the
+      // index here with a different (precise-hit) rule, so the landing never
+      // matched the indicator.
+      const newIndex = (dragState.dropIndex != null) ? dragState.dropIndex : -1;
+
+      // dropIndex is an insert-before index in [0, order.length]. Removing the
+      // dragged item shifts everything past it left by one, so adjust insertAt.
+      const from = order.indexOf(dragState.label);
+      if (newIndex >= 0 && from >= 0) {
+        const insertAt = alleleDropInsertAt(newIndex, from);
+        if (insertAt !== from) {
+          order.splice(from, 1);
+          order.splice(insertAt, 0, dragState.label);
+          state.variantAlleleOrder.set(variantOrderKey, order);
         }
-        const left = 70;
-        const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, flowHeightPx())
-          : yColumn(sortedWin.findIndex(v2 => v2.id === v.id), sortedWin.length);
-        
-        // Check if dropped near a node position
-        for (let j = 0; j < order.length; j++) {
-          const nodeX = left + j * (nodeW + gap);
-          if (Math.abs(x - nodeX) < (nodeW + gap) / 2 && 
-              Math.abs(y - cy) < nodeH / 2) {
-            newIndex = j;
-            break;
-          }
-        }
-        
-        // If no match found, check if mouse is beyond the last node (for dropping at last position)
-        if (newIndex === -1 && Math.abs(y - cy) < nodeH / 2) {
-          const lastNodeX = left + (order.length - 1) * (nodeW + gap);
-          // Check if mouse is to the right of the last node (within reasonable distance)
-          if (x > lastNodeX - (nodeW + gap) / 2 && x < lastNodeX + nodeW + gap + (nodeW + gap) / 2) {
-            newIndex = order.length - 1;
-          }
-        }
-      } else {
-        const v = win.find(v => v.id === dragState.variantId);
-        if (!v) {
-          state.alleleDragState = null;
-          flowCanvas.style.cursor = "";
-          if (flowWebGPU) flowWebGPU.style.cursor = "";
-          renderFlowCanvas();
-          return;
-        }
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, flowWidthPx())
-          : xColumn(win.findIndex(v2 => v2.id === v.id), win.length);
-        const top = 20;
-        
-        // Check if dropped near a node position
-        for (let j = 0; j < order.length; j++) {
-          const nodeY = top + j * (nodeH + gap);
-          if (Math.abs(x - cx) < nodeW / 2 && 
-              Math.abs(y - nodeY) < (nodeH + gap) / 2) {
-            newIndex = j;
-            break;
-          }
-        }
-        
-        // If no match found, check if mouse is below the last node (for dropping at last position)
-        if (newIndex === -1 && Math.abs(x - cx) < nodeW / 2) {
-          const lastNodeY = top + (order.length - 1) * (nodeH + gap);
-          // Check if mouse is below the last node (within reasonable distance)
-          if (y > lastNodeY - (nodeH + gap) / 2 && y < lastNodeY + nodeH + gap + (nodeH + gap) / 2) {
-            newIndex = order.length - 1;
-          }
-        }
-      }
-      
-      // Reorder if dropped at a valid position
-      if (newIndex >= 0 && newIndex !== order.indexOf(dragState.label)) {
-        const currentIndex = order.indexOf(dragState.label);
-        order.splice(currentIndex, 1);
-        order.splice(newIndex, 0, dragState.label);
-        state.variantAlleleOrder.set(variantOrderKey, order);
       }
       
       state.alleleDragState = null;

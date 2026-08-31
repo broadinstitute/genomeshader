@@ -1720,8 +1720,10 @@ function renderFlowCanvas() {
         const dropIdx = state.alleleDragState.dropIndex;
         const currentIdx = order.indexOf(state.alleleDragState.label);
         
-        // Only show indicator if dropping at a different position
-        if (dropIdx !== currentIdx) {
+        // Only show indicator if dropping at a different position. Inserting
+        // before self (currentIdx) or before the next node (currentIdx+1) both
+        // leave the order unchanged, so hide the bar in those cases too.
+        if (dropIdx !== currentIdx && dropIdx !== currentIdx + 1) {
           // Calculate drop position accounting for variable node widths, margin, and centering
           // Recalculate total width and horizontal offset (same as above)
           let totalNodesWidth = 0;
@@ -1737,20 +1739,9 @@ function renderFlowCanvas() {
           const availableWidth = W - left - margin;
           const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
           
-          let indicatorX = left + horizontalOffset;
-          for (let k = 0; k < dropIdx; k++) {
-            const label = order[k];
-            const alleleKey = getAlleleKey(label);
-            const nodeW = alleleSizes[alleleKey] || baseNodeW;
-            indicatorX += nodeW + gap;
-          }
-          // For the last position, draw after the last node
-          if (dropIdx === order.length - 1) {
-            const label = order[dropIdx];
-            const alleleKey = getAlleleKey(label);
-            const nodeW = alleleSizes[alleleKey] || baseNodeW;
-            indicatorX += nodeW;
-          }
+          const insertAt = alleleDropInsertAt(dropIdx, currentIdx);
+          const nodeSizes = order.map(l => alleleSizes[getAlleleKey(l)] || baseNodeW);
+          const indicatorX = alleleDropIndicatorPos(left + horizontalOffset, nodeSizes, gap, currentIdx, insertAt);
           ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
           ctx.lineWidth = 2;
           ctx.beginPath();
@@ -1994,8 +1985,10 @@ function renderFlowCanvas() {
         const dropIdx = state.alleleDragState.dropIndex;
         const currentIdx = order.indexOf(state.alleleDragState.label);
         
-        // Only show indicator if dropping at a different position
-        if (dropIdx !== currentIdx) {
+        // Only show indicator if dropping at a different position. Inserting
+        // before self (currentIdx) or before the next node (currentIdx+1) both
+        // leave the order unchanged, so hide the bar in those cases too.
+        if (dropIdx !== currentIdx && dropIdx !== currentIdx + 1) {
           // Calculate drop position accounting for variable node heights, margin, and centering
           // Recalculate total height and vertical offset (same as above)
           let totalNodesHeight = 0;
@@ -2011,20 +2004,9 @@ function renderFlowCanvas() {
           const availableHeight = H - top - margin;
           const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
           
-          let indicatorY = top + verticalOffset;
-          for (let k = 0; k < dropIdx; k++) {
-            const label = order[k];
-            const alleleKey = getAlleleKey(label);
-            const nodeH = alleleSizes[alleleKey] || baseNodeH;
-            indicatorY += nodeH + gap;
-          }
-          // For the last position, draw after the last node
-          if (dropIdx === order.length - 1) {
-            const label = order[dropIdx];
-            const alleleKey = getAlleleKey(label);
-            const nodeH = alleleSizes[alleleKey] || baseNodeH;
-            indicatorY += nodeH;
-          }
+          const insertAt = alleleDropInsertAt(dropIdx, currentIdx);
+          const nodeSizes = order.map(l => alleleSizes[getAlleleKey(l)] || baseNodeH);
+          const indicatorY = alleleDropIndicatorPos(top + verticalOffset, nodeSizes, gap, currentIdx, insertAt);
           ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
           ctx.lineWidth = 2;
           ctx.beginPath();

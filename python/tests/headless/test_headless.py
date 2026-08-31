@@ -204,6 +204,50 @@ def test_right_click_does_not_stick_pan(browser, tmp_path):
     page.close()
 
 
+def test_allele_reorder_indicator_matches_landing(browser, tmp_path):
+    """The blue drop bar must sit exactly where the dragged allele lands. This
+    guards the reorder desync bug: the move handler's drop-index, the indicator
+    bar position, and the mouseup reorder all go through the shared
+    allele-reorder helpers, so a sweep over pointer positions and drag sources
+    proves indicator-position == landing-position. Pure geometry (the real
+    exposed functions), so it runs without the WebGPU layer painting."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    mismatches = page.evaluate(
+        """() => {
+          const nid = window.__gsAlleleNearestDropIndex;
+          const ins = window.__gsAlleleDropInsertAt;
+          const pos = window.__gsAlleleDropIndicatorPos;
+          if (!nid || !ins || !pos) return ['helpers not exposed'];
+          const sizes = [10, 30, 8, 20, 14], gap = 8, start = 100;
+          const layout = (sz) => { const p=[]; let c=start; for(const s of sz){p.push(c); c+=s+gap;} return p; };
+          const mids = (sz) => layout(sz).map((x,i)=>x+sz[i]/2);
+          const bad = [];
+          for (let from=0; from<sizes.length; from++) {
+            for (let x=start-20; x<start+220; x++) {
+              // real move-handler rule via the exposed nearest-drop-index
+              const m = mids(sizes);
+              // emulate the handler's start/sizes: same array, same centering
+              const dropIndex = nid(x, start, sizes, gap);
+              const insertAt = ins(dropIndex, from);
+              if (insertAt === from) continue;               // no-op, bar hidden
+              const indicator = pos(start, sizes, gap, from, insertAt);
+              // landing: remove dragged, insert at insertAt, relayout
+              const order = sizes.map((_,i)=>i), sz = sizes.slice();
+              const d = order.splice(from,1)[0], ds = sz.splice(from,1)[0];
+              order.splice(insertAt,0,d); sz.splice(insertAt,0,ds);
+              const landed = layout(sz)[insertAt];
+              if (Math.abs(landed - indicator) > 0.001)
+                bad.push(`from=${from} x=${x} drop=${dropIndex} insertAt=${insertAt} bar=${indicator} landed=${landed}`);
+            }
+          }
+          return bad;
+        }"""
+    )
+    assert mismatches == [], mismatches[:5]
+    page.close()
+
+
 # NOTE: allele *selection* is driven by the WebGPU interaction layer, which does
 # not paint (or receive clicks) under swiftshader in headless Chromium, so
 # selection behavior (e.g. double-click-keeps-selection) can't be asserted here.
