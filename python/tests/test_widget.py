@@ -182,6 +182,23 @@ def test_widget_comments_comm_roundtrip(tmp_path, monkeypatch):
     assert sent[-1]["action"] == "delete" and sent[-1]["ok"] is True
 
 
+def test_widget_comment_author_and_anchor_passthrough(tmp_path, monkeypatch):
+    # The dialog supplies an explicit author + a chosen anchor type (e.g. sample);
+    # both must be stored on the comment.
+    s = _shader(tmp_path, monkeypatch)
+    s.gcs_session_dir = str(tmp_path / "session")
+    w = GenomeShaderWidget(s, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+    w._on_custom_msg(w, {"type": "comments_create", "request_id": "a1",
+                         "anchor": {"type": "sample", "ref": "HG002", "sample": "HG002",
+                                    "locus": {"contig": "chr1", "pos": 5}},
+                         "body": "note", "author": "Dr. Real <dr@lab>"}, [])
+    c = sent[-1]["comment"]
+    assert c["author"] == "Dr. Real <dr@lab>"
+    assert c["anchor"]["type"] == "sample" and c["anchor"]["sample"] == "HG002"
+
+
 def test_reads_payload_disk_cache(tmp_path, monkeypatch):
     # Second fetch of the same (locus, bam set) is served from local disk — the
     # Rust fetch runs exactly once.

@@ -60,7 +60,7 @@
     return m ? m[1] + " " + m[2] : String(iso);
   }
 
-  const ANCHOR_ICON = { region: "▦", variant: "◆", allele: "◇", gene: "⌬", sample: "◉" };
+  const ANCHOR_ICON = { region: "▦", variant: "◆", allele: "◇", gene: "⌬", sample: "◉", read: "≡" };
   function anchorIcon(a) { return (a && ANCHOR_ICON[a.type]) || "◆"; }
 
   function pinPos(a) {
@@ -232,32 +232,173 @@
     return row;
   }
 
+  function _fieldLabel(text) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:10.5px;color:var(--muted);margin:6px 0 2px;";
+    d.textContent = text;
+    return d;
+  }
+  function _inputCss() {
+    return "width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--border2);"
+      + "border-radius:6px;background:var(--bg,var(--panel));color:var(--text);font-size:12px;margin:0 0 2px;";
+  }
+  function _readonly(text) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;color:var(--text);padding:6px 8px;border:1px dashed var(--border2);"
+      + "border-radius:6px;background:var(--panel);word-break:break-word;margin:0 0 2px;";
+    d.textContent = text;
+    return d;
+  }
+  // Sample picker with autocomplete over the known sample list (same source the
+  // sample-search box uses). Calls onPick(value) as the text changes / on select.
+  function sampleAutocomplete(samples, initial, onPick) {
+    const box = document.createElement("div");
+    box.style.position = "relative";
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.value = initial || ""; inp.placeholder = "type a sample name…";
+    inp.setAttribute("data-1p-ignore", ""); inp.style.cssText = _inputCss();
+    const results = document.createElement("div");
+    results.style.cssText = "display:none;max-height:160px;overflow-y:auto;border:1px solid var(--border2);"
+      + "border-radius:6px;background:var(--panel);position:absolute;left:0;right:0;z-index:5;";
+    const draw = () => {
+      const q = inp.value.trim().toLowerCase();
+      results.innerHTML = "";
+      const matches = (samples || []).filter(s => !q || s.toLowerCase().includes(q)).slice(0, 50);
+      if (!matches.length) { results.style.display = "none"; return; }
+      matches.forEach(s => {
+        const r = document.createElement("div");
+        r.textContent = s;
+        r.style.cssText = "padding:5px 8px;font-size:12px;cursor:pointer;color:var(--text);";
+        r.addEventListener("mouseenter", () => r.style.background = "var(--panel2)");
+        r.addEventListener("mouseleave", () => r.style.background = "");
+        r.addEventListener("mousedown", (e) => { e.preventDefault(); inp.value = s; onPick(s); results.style.display = "none"; });
+        results.appendChild(r);
+      });
+      results.style.display = "block";
+    };
+    inp.addEventListener("input", () => { onPick(inp.value.trim()); draw(); });
+    inp.addEventListener("focus", draw);
+    inp.addEventListener("blur", () => setTimeout(() => { results.style.display = "none"; }, 150));
+    box.appendChild(inp); box.appendChild(results);
+    return box;
+  }
+
   function openCompose() {
     composing = true; editingId = null;
-    draftAnchor = (window.__GS_getCommentAnchor ? window.__GS_getCommentAnchor() : { type: "region", ref: "", locus: {} });
     render();
   }
 
   function composeForm() {
+    const opts = (window.__GS_anchorOptions ? window.__GS_anchorOptions()
+      : { contig: "", region: { start: 0, end: 0 }, genes: [], samples: [], reads: [] });
+    const contig = opts.contig || "";
     const wrap = document.createElement("div");
     wrap.style.cssText = "border:1px solid var(--border2);border-radius:8px;padding:9px 10px;background:var(--panel);";
-    const title = document.createElement("div");
-    title.style.cssText = "font-size:11px;color:var(--muted);margin-bottom:6px;";
-    title.textContent = "New comment on:";
-    wrap.appendChild(title);
-    wrap.appendChild(anchorChip(draftAnchor, null));
+
+    // Author — required (prefilled from Google/OS identity when known).
+    wrap.appendChild(_fieldLabel("Your name / email (required)"));
+    const auth = document.createElement("input");
+    auth.type = "text"; auth.setAttribute("data-1p-ignore", ""); auth.placeholder = "required";
+    auth.value = (currentAuthor && currentAuthor !== "unknown") ? currentAuthor : "";
+    auth.style.cssText = _inputCss();
+    wrap.appendChild(auth);
+
+    // What to comment on.
+    wrap.appendChild(_fieldLabel("Comment on"));
+    const typeSel = document.createElement("select");
+    typeSel.style.cssText = _inputCss();
+    const typeDefs = [];
+    if (opts.allele) typeDefs.push(["allele", opts.allele.isAllele ? "Selected allele" : "Selected variant"]);
+    typeDefs.push(["region", "Current region"]);
+    if (opts.genes && opts.genes.length) typeDefs.push(["gene", "Gene in view"]);
+    if (opts.samples && opts.samples.length) typeDefs.push(["sample", "Sample"]);
+    if (opts.reads && opts.reads.length) typeDefs.push(["read", "Loaded read track"]);
+    typeDefs.forEach(([v, lbl]) => { const o = document.createElement("option"); o.value = v; o.textContent = lbl; typeSel.appendChild(o); });
+    typeSel.value = opts.allele ? "allele" : "region";
+    wrap.appendChild(typeSel);
+
+    const detail = document.createElement("div");
+    wrap.appendChild(detail);
+    const picked = {
+      gene: (opts.genes && opts.genes[0]) || null,
+      sample: (opts.samples && opts.samples[0]) || "",
+      read: (opts.reads && opts.reads[0]) || null,
+    };
+    function renderDetail() {
+      detail.innerHTML = "";
+      const t = typeSel.value;
+      if (t === "allele" && opts.allele) {
+        detail.appendChild(_readonly(opts.allele.ref));
+      } else if (t === "region") {
+        detail.appendChild(_readonly(`${contig}:${opts.region.start.toLocaleString()}-${opts.region.end.toLocaleString()}`));
+      } else if (t === "gene") {
+        const gs = document.createElement("select"); gs.style.cssText = _inputCss();
+        opts.genes.forEach(g => { const o = document.createElement("option"); o.value = g.name; o.textContent = g.name; gs.appendChild(o); });
+        if (picked.gene) gs.value = picked.gene.name;
+        gs.addEventListener("change", () => { picked.gene = opts.genes.find(g => g.name === gs.value) || null; });
+        detail.appendChild(gs);
+      } else if (t === "sample") {
+        detail.appendChild(sampleAutocomplete(opts.samples, picked.sample, (v) => { picked.sample = v; }));
+      } else if (t === "read") {
+        const rs = document.createElement("select"); rs.style.cssText = _inputCss();
+        opts.reads.forEach((r, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = "reads · " + (r.label || r.sample); rs.appendChild(o); });
+        rs.addEventListener("change", () => { picked.read = opts.reads[+rs.value] || null; });
+        detail.appendChild(rs);
+      }
+    }
+    typeSel.addEventListener("change", renderDetail);
+    renderDetail();
+
+    wrap.appendChild(_fieldLabel("Comment"));
     const ta = textarea("");
-    const samp = sampleInput(draftAnchor && draftAnchor.sample ? draftAnchor.sample : "");
-    wrap.appendChild(samp);
     wrap.appendChild(ta);
+
     wrap.appendChild(rowBtns("Save", () => {
+      const author = auth.value.trim();
+      if (!author) { auth.style.borderColor = "var(--danger,#e5534b)"; auth.focus(); return; }
       const body = ta.value.trim();
       if (!body) { ta.focus(); return; }
-      const anchor = Object.assign({}, draftAnchor, { sample: (samp.value.trim() || null) });
-      createComment(anchor, body);
+      const anchor = _buildAnchor(typeSel.value, opts, contig, picked);
+      if (!anchor) { renderDetail(); return; }
+      createComment(anchor, body, author);
     }, () => { composing = false; render(); }));
-    setTimeout(() => ta.focus(), 0);
+    setTimeout(() => { (auth.value ? ta : auth).focus(); }, 0);
     return wrap;
+  }
+
+  function _buildAnchor(type, opts, contig, picked) {
+    const region = opts.region || { start: 0, end: 0 };
+    const mid = Math.round((region.start + region.end) / 2);
+    const regionLocus = { contig: contig, start: region.start, end: region.end, pos: mid };
+    if (type === "allele" && opts.allele) {
+      const a = opts.allele;
+      return {
+        type: a.isAllele ? "allele" : "variant", ref: a.ref,
+        locus: { contig: contig, pos: a.pos }, variantId: a.variantId,
+        alleleIndex: a.alleleIndex, alleleLabel: a.label, trackId: a.trackId, sample: null,
+      };
+    }
+    if (type === "gene" && picked.gene) {
+      const g = picked.gene;
+      return {
+        type: "gene", ref: g.name, gene: g.name,
+        locus: { contig: contig, start: g.start, end: g.end, pos: Math.round((g.start + g.end) / 2) }, sample: null,
+      };
+    }
+    if (type === "sample") {
+      const s = (picked.sample || "").trim();
+      if (!s) return null;
+      return { type: "sample", ref: s, sample: s, locus: regionLocus };
+    }
+    if (type === "read" && picked.read) {
+      const r = picked.read;
+      return { type: "read", ref: "reads · " + (r.label || r.sample), sample: r.sample, locus: regionLocus };
+    }
+    return {
+      type: "region",
+      ref: `${contig}:${region.start.toLocaleString()}-${region.end.toLocaleString()}`,
+      locus: regionLocus, sample: null,
+    };
   }
 
   function editForm(c) {
@@ -295,9 +436,10 @@
     });
   }
 
-  function createComment(anchor, body) {
+  function createComment(anchor, body, author) {
     if (typeof sendCommMessage !== "function") return;
-    sendCommMessage("comments_create", { anchor: anchor, body: body }).then(resp => {
+    if (author) currentAuthor = author;   // remember for the next comment
+    sendCommMessage("comments_create", { anchor: anchor, body: body, author: author || null }).then(resp => {
       if (resp && resp.comment) state.comments.push(resp.comment);
       composing = false; draftAnchor = null;
       render();

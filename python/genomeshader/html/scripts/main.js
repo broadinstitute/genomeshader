@@ -3003,6 +3003,53 @@ function setupCanvasHover() {
     };
   };
 
+  // Everything the comment dialog can anchor to right now: the current region,
+  // the selected allele/variant, genes in view, the known samples, and loaded
+  // read tracks. The dialog builds its chooser from this.
+  window.__GS_anchorOptions = function () {
+    const contig = state.contig;
+    const start = Math.floor(state.startBp), end = Math.ceil(state.endBp);
+    const opts = { contig: contig, region: { start: start, end: end } };
+    try {
+      const sel = getSelectedAlleleInfo() || [];
+      if (sel.length) {
+        const s = sel[0], v = s.variant || {};
+        const posText = `${contig}:${Number(v.pos || 0).toLocaleString()}`;
+        opts.allele = {
+          ref: s.label ? `${posText} (${s.label})` : posText,
+          pos: Number(v.pos), variantId: String(s.variantId),
+          alleleIndex: (s.alleleIndex != null ? Number(s.alleleIndex) : null),
+          label: s.label || null, trackId: s.trackId || null,
+          isAllele: !!(s.alleleIndex != null && s.label && s.label !== "ref"),
+        };
+      }
+    } catch (e) {}
+    try {
+      const all = (typeof transcripts !== "undefined" && Array.isArray(transcripts)) ? transcripts : [];
+      const seen = new Set();
+      opts.genes = all
+        .filter(g => g && g.name && typeof g.start === "number" && typeof g.end === "number"
+                     && g.end >= state.startBp && g.start <= state.endBp)
+        .filter(g => { if (seen.has(g.name)) return false; seen.add(g.name); return true; })
+        .map(g => ({ name: g.name, start: g.start, end: g.end }))
+        .sort((a, b) => a.start - b.start);
+    } catch (e) { opts.genes = []; }
+    try {
+      let ids = (state.sampleSelection && state.sampleSelection.allSampleIds) || [];
+      if (!ids.length) {
+        const sm = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.sample_mapping) || {};
+        ids = Object.keys(sm);
+      }
+      opts.samples = ids.slice().sort();
+    } catch (e) { opts.samples = []; }
+    try {
+      opts.reads = (state.smartTracks || [])
+        .filter(t => t && t.sampleId)
+        .map(t => ({ sample: t.sampleId, label: t.label || t.sampleId }));
+    } catch (e) { opts.reads = []; }
+    return opts;
+  };
+
   // Navigate the view to a comment's anchor. Same-contig framing; if the anchor
   // is on another contig we switch state.contig and reframe (read data may lag
   // until the next fetch — acceptable, cross-contig comments are rare).

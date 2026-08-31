@@ -275,7 +275,8 @@ class GenomeShaderWidget(anywidget.AnyWidget):
         elif msg_type == "comments_create":
             try:
                 c = self._shader.create_comment(content.get("anchor") or {},
-                                                content.get("body") or "")
+                                                content.get("body") or "",
+                                                author=(content.get("author") or None))
                 self.send({"type": "comments_changed", "request_id": request_id,
                            "action": "create", "comment": c})
             except Exception as e:

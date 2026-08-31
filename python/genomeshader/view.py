@@ -2398,11 +2398,33 @@ class GenomeShader:
             v = os.environ.get(env)
             if v:
                 return v
+        acct = self._gcloud_account()
+        if acct:
+            return acct
         try:
             import getpass
             return getpass.getuser()
         except Exception:
             return "unknown"
+
+    def _gcloud_account(self) -> Optional[str]:
+        """The active Google account email from gcloud credentials (ADC), or None.
+        Cached — a gcloud shell-out per comment would be wasteful."""
+        cached = getattr(self, "_gcloud_account_cache", "__unset__")
+        if cached != "__unset__":
+            return cached
+        acct = None
+        try:
+            out = subprocess.run(
+                ["gcloud", "config", "get-value", "account"],
+                capture_output=True, text=True, timeout=5, check=False)
+            val = (out.stdout or "").strip()
+            if val and val.lower() not in ("", "(unset)"):
+                acct = val
+        except Exception:
+            acct = None
+        self._gcloud_account_cache = acct
+        return acct
 
     @staticmethod
     def _now_iso() -> str:
