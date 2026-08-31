@@ -54,7 +54,7 @@ def _container_override_css(cid: str) -> str:
     """
     c = "#" + cid
     return "\n".join([
-        f"{c} {{ height:900px; display:block; position:relative; overflow:visible;"
+        f"{c} {{ height:1200px; display:block; position:relative; overflow:visible;"
         f" --sidebar-w:240px; --sidebar-right-w:240px; --tracks-h:280px; --flow-h:500px; --reads-h:220px; }}",
         # Flex row: sidebar-left | main | sidebar-right. As siblings they cannot
         # overlap — main flexes to fill whatever the panels leave, so expanding a
@@ -185,7 +185,7 @@ def _build_esm() -> str:
         "    el.appendChild(ostyle);\n"
         "    const container = document.createElement('div');\n"
         "    container.id = cid;\n"
-        "    container.setAttribute('style', 'width:100%;height:900px;position:relative;overflow:visible;background:var(--bg,#0b0d10);isolation:isolate;');\n"
+        "    container.setAttribute('style', 'width:100%;height:1200px;position:relative;overflow:visible;background:var(--bg,#0b0d10);isolation:isolate;');\n"
         "    container.innerHTML = " + json.dumps(body) + ";\n"
         "    el.appendChild(container);\n"
         "    __runViewer__().catch(function (e) { console.error('Genomeshader viewer error:', e); });\n"

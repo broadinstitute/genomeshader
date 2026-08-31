@@ -5321,25 +5321,25 @@ function livePanBy(dxPx) {
   state.livePanOffset = (state.livePanOffset || 0) + dxPx;
   _panLayers().forEach(e => { e.style.transform = "translateX(" + state.livePanOffset + "px)"; });
 
-  // The transform alone would leave newly-exposed edges empty. Re-render on a
-  // throttle DURING the drag (resetting the transform) so those regions fill in;
-  // the transform still gives 60fps smoothness between these rebuilds. This is
-  // ~12 rebuilds/sec vs a rebuild every frame before.
-  const now = Date.now();
-  if (!state._lastLivePanRender || (now - state._lastLivePanRender) > 80) {
-    state._lastLivePanRender = now;
-    clampToChromosomeBounds();
-    _panLayers().forEach(e => { e.style.transform = ""; });
-    state.livePanOffset = 0;
-    renderAll();
-  }
+  // The transform alone leaves newly-exposed edges empty; a rebuild refills them.
+  // Rebuild when the drag PAUSES (debounced), NOT on a fixed timer: a periodic
+  // rebuild clears+redraws the whole view ~12x/sec, which flickers badly in
+  // fullscreen (a redraw is costly there) and makes static tracks (chromosome,
+  // genes) visibly snap. Pure transform stays 60fps while the pointer moves; the
+  // single refill lands once motion settles.
+  if (state._livePanRebuildTimer) clearTimeout(state._livePanRebuildTimer);
+  state._livePanRebuildTimer = setTimeout(_commitLivePan, 110);
 }
-function endLivePan() {
+function _commitLivePan() {
+  if (state._livePanRebuildTimer) { clearTimeout(state._livePanRebuildTimer); state._livePanRebuildTimer = null; }
   if (!state.livePanOffset) { return; }
   clampToChromosomeBounds();
   _panLayers().forEach(e => { e.style.transform = ""; });
   state.livePanOffset = 0;
-  renderAll();  // re-rasterize at the final position
+  renderAll();
+}
+function endLivePan() {
+  _commitLivePan();  // final refill at the settled position
 }
 
 function anchorBpFromClientX(clientX) {
