@@ -65,7 +65,7 @@ const state = {
   
   // sample selection state
   sampleSelection: {
-    strategy: 'random',
+    strategy: 'best_evidence',
     numSamples: 1,
     combineMode: 'AND', // 'AND' or 'OR'
     candidateSamples: [], // Will be populated when selection changes

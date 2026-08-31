@@ -186,3 +186,8 @@ def test_double_click_coalesces_renders(browser, tmp_path):
     rc = page.evaluate("() => window.__rc")
     assert rc <= 2, f"double-click triggered {rc} renderAll (regression to the render storm)"
     page.close()
+
+# NOTE: allele *selection* is driven by the WebGPU interaction layer, which does
+# not paint (or receive clicks) under swiftshader in headless Chromium, so
+# selection behavior (e.g. double-click-keeps-selection) can't be asserted here.
+# Those fixes are verified by inspection + in a real browser.

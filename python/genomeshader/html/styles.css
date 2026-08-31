@@ -1704,9 +1704,10 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   /* Clear boundary at bottom of track so extent and handle are obvious */
   border-top: 1px solid var(--track-boundary);
 }
-/* Standard tracks: hide resize handle by default, show on hover */
+/* Standard tracks: keep the divider line visible at rest (so track boundaries
+   are findable and resizable); the grab highlight still appears on hover. */
 .track-control-container.standard-track .track-resize-handle {
-  opacity: 0;
+  opacity: 1;
   pointer-events: auto !important; /* Always allow pointer events so hover works */
 }
 .track-control-container.standard-track.track-hovered .track-resize-handle {

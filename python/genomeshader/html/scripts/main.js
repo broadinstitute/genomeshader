@@ -2784,9 +2784,13 @@ function setupCanvasHover() {
             state.selectedAlleles.add(labelKey);
           }
         } else {
-          // Single-select: replace selection with this allele
-          // If clicking on already-selected single allele, deselect it
-          if (state.selectedAlleles.size === 1 && state.selectedAlleles.has(labelKey)) {
+          // Single-select: replace selection with this allele.
+          // Clicking an already-selected single allele deselects it — but NOT
+          // when this is the second click of a double-click (e.detail >= 2),
+          // which would otherwise toggle the allele back off right after the
+          // first click selected it (double-click opens the panels for it).
+          if (state.selectedAlleles.size === 1 && state.selectedAlleles.has(labelKey)
+              && (e.detail || 1) < 2) {
             state.selectedAlleles.clear();
           } else {
             state.selectedAlleles.clear();
@@ -5680,6 +5684,11 @@ function bindInteractions(root, state, main) {
       return;
     }
 
+    // While actively reordering an allele (unlocked drag past the click
+    // threshold), the allele handler owns the gesture — don't also pan the track.
+    if (state.alleleDragState && !state.lockAlleles && state.alleleDragState.isClick === false) {
+      return;
+    }
     if (state.dragging) {
       const isVertical = isVerticalMode();
       const dx = e.clientX - state.lastX;

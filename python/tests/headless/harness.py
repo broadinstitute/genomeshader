@@ -72,7 +72,9 @@ def build_page(config=None, instrument=False):
         "window.GENOMESHADER_JUPYTER_ORIGIN='';"
         "window.__GS_SEND=function(){return Promise.reject(new Error('no comm in harness'));};"
         "window.__GS_ERR=null;"
-        "(async function __runViewer__(){\n" + scripts + "\n})()"
+        "(async function __runViewer__(){\n" + scripts
+        + "\ntry{window.__GS_STATE=(typeof state!=='undefined')?state:null;}catch(e){}\n"
+        "})()"
         ".then(()=>{window.__GS_READY=true;})"
         ".catch(e=>{window.__GS_ERR=String(e&&e.stack||e);console.error(e);});"
         "</script></body></html>"
