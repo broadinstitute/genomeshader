@@ -3202,17 +3202,22 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             config=self._last_config,
             view_id=self._last_view_id or "gswidget",
         )
-        # The progress lines and any warnings pile up as stdout above the widget,
-        # and the output area doesn't scroll down to reveal it. Clear that text
-        # and display the widget ourselves so the viewer renders at the top of the
-        # cell output instead of being buried. clear_output(wait=True) only wipes
+        # Return the widget so callers can keep a handle, and let the notebook
+        # display it EXACTLY ONCE via its result hook. We must NOT also call
+        # display(widget): an unassigned `show()` would then mount the same model
+        # twice (explicit display + auto-display of the returned value), and two
+        # anywidget views both run the viewer over shared globals / first-match
+        # DOM — they collide, causing blank or misaligned tracks and a sluggish,
+        # stuttering UI. clear_output(wait=True) un-buries the progress bar /
+        # piled-up stdout: the wipe is deferred until the widget actually renders,
+        # so nothing flickers. If the caller assigns the result, it isn't
+        # auto-displayed (keep a handle without re-displaying).
         try:
             clear_output(wait=True)
-            display(widget)
-            return widget
         except Exception:
-            # No IPython display context (e.g. plain Python) — just return it.
-            return widget
+            # No IPython display context (e.g. plain Python).
+            pass
+        return widget
 
     def show(
         self,

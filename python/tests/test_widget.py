@@ -85,17 +85,18 @@ def test_show_widget_wires_inlined_config(tmp_path, monkeypatch):
     with patch("genomeshader.widget.GenomeShaderWidget", return_value=fake_widget) as WCls, \
          patch("IPython.display.clear_output") as clr, \
          patch("IPython.display.display") as disp:
-        s.show_widget("Pf3D7_01_v3:1-100")
+        result = s.show_widget("Pf3D7_01_v3:1-100")
 
-    # Widget built from the inlined config, and displayed after clearing the
-    # progress bar/output so it isn't buried below stdout.
+    # Widget built from the inlined config and RETURNED (the notebook displays the
+    # return value once). It must NOT also be display()'d — a second mount would
+    # run a second viewer that collides over shared globals. clear_output(wait=True)
+    # un-buries the progress bar/stdout.
     _, kwargs = WCls.call_args
     assert kwargs["config"] == {"genome_build": "X", "region": "Pf3D7_01_v3:1-100"}
     assert kwargs["view_id"] == "vid123"
     clr.assert_called_once()
-    # display() is called for the progress bar (if ipywidgets is present) and
-    # then for the widget itself; the widget must be among the displayed objects.
-    assert any(c.args and c.args[0] is fake_widget for c in disp.call_args_list)
+    assert result is fake_widget
+    assert not any(c.args and c.args[0] is fake_widget for c in disp.call_args_list)
 
 
 def test_show_delegates_to_widget(tmp_path, monkeypatch):
