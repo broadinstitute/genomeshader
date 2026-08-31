@@ -2587,105 +2587,31 @@ function setupCanvasHover() {
           const marginPercent = 0.1;
           const minMargin = 10;
           const margin = Math.max(minMargin, trackDimension * marginPercent);
+          // Drop position by NEAREST MIDPOINT along the stacking axis (no need to
+          // hover precisely over a node or stay on the variant's column): insert
+          // before the first node whose midpoint is past the pointer.
+          const sizeOf = (j) => (isVertical
+            ? (alleleSizes[getAlleleKey(order[j])] || baseNodeW)
+            : (alleleSizes[getAlleleKey(order[j])] || baseNodeH));
+          let total = 0;
+          for (let j = 0; j < order.length; j++) total += sizeOf(j) + (j < order.length - 1 ? gap : 0);
           if (isVertical) {
-            const left = 70;
-            const W = flowWidthPx();
-            const cy = variantMode === "genomic"
-              ? yGenomeCanonical(v.pos, flowHeightPx())
-              : yColumn(isVertical ? [...win].sort((a, b) => a.pos - b.pos).findIndex(v2 => v2.id === v.id) : win.findIndex(v2 => v2.id === v.id), isVertical ? [...win].sort((a, b) => a.pos - b.pos).length : win.length);
-            
-            // Calculate total width and horizontal offset for centering
-            let totalNodesWidth = 0;
+            const left = 70, W = flowWidthPx();
+            const start = left + Math.max(0, ((W - left - margin) - total) / 2);
+            let cur = start; newIndex = order.length - 1;
             for (let j = 0; j < order.length; j++) {
-              const label = order[j];
-              const alleleKey = getAlleleKey(label);
-              const nodeW = alleleSizes[alleleKey] || baseNodeW;
-              totalNodesWidth += nodeW;
-              if (j < order.length - 1) {
-                totalNodesWidth += gap;
-              }
-            }
-            const availableWidth = W - left - margin;
-            const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
-            
-            // Calculate cumulative positions for variable-width nodes, starting with left + horizontal offset
-            let currentX = left + horizontalOffset;
-            for (let j = 0; j < order.length; j++) {
-              const label = order[j];
-              const alleleKey = getAlleleKey(label);
-              const nodeW = alleleSizes[alleleKey] || baseNodeW;
-              const nodeCenterX = currentX + nodeW / 2;
-              
-              if (Math.abs(x - nodeCenterX) < (nodeW + gap) / 2 && 
-                  Math.abs(y - cy) < baseNodeH / 2) {
-                newIndex = j;
-                break;
-              }
-              currentX += nodeW + gap;
-            }
-            
-            // If no match found, check if mouse is beyond the last node
-            if (newIndex === -1 && Math.abs(y - cy) < baseNodeH / 2) {
-              let lastX = left + horizontalOffset;
-              for (let j = 0; j < order.length; j++) {
-                const label = order[j];
-                const alleleKey = getAlleleKey(label);
-                const nodeW = alleleSizes[alleleKey] || baseNodeW;
-                lastX += nodeW + (j < order.length - 1 ? gap : 0);
-              }
-              if (x > lastX - (baseNodeW + gap) / 2 && x < lastX + baseNodeW + gap) {
-                newIndex = order.length - 1;
-              }
+              const nodeW = sizeOf(j);
+              if (x < cur + nodeW / 2) { newIndex = j; break; }
+              cur += nodeW + gap;
             }
           } else {
-            const cx = variantMode === "genomic"
-              ? xGenomeCanonical(v.pos, flowWidthPx())
-              : xColumn(win.findIndex(v2 => v2.id === v.id), win.length);
-            const top = 20;
-            const H = flowHeightPx();
-            
-            // Calculate total height and vertical offset for centering
-            let totalNodesHeight = 0;
+            const top = 20, H = flowHeightPx();
+            const start = top + Math.max(0, ((H - top - margin) - total) / 2);
+            let cur = start; newIndex = order.length - 1;
             for (let j = 0; j < order.length; j++) {
-              const label = order[j];
-              const alleleKey = getAlleleKey(label);
-              const nodeH = alleleSizes[alleleKey] || baseNodeH;
-              totalNodesHeight += nodeH;
-              if (j < order.length - 1) {
-                totalNodesHeight += gap;
-              }
-            }
-            const availableHeight = H - top - margin;
-            const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
-            
-            // Calculate cumulative positions for variable-height nodes, starting with top + vertical offset
-            let currentY = top + verticalOffset;
-            for (let j = 0; j < order.length; j++) {
-              const label = order[j];
-              const alleleKey = getAlleleKey(label);
-              const nodeH = alleleSizes[alleleKey] || baseNodeH;
-              const nodeCenterY = currentY + nodeH / 2;
-              
-              if (Math.abs(x - cx) < baseNodeW / 2 && 
-                  Math.abs(y - nodeCenterY) < (nodeH + gap) / 2) {
-                newIndex = j;
-                break;
-              }
-              currentY += nodeH + gap;
-            }
-            
-            // If no match found, check if mouse is below the last node
-            if (newIndex === -1 && Math.abs(x - cx) < baseNodeW / 2) {
-              let lastY = top + verticalOffset;
-              for (let j = 0; j < order.length; j++) {
-                const label = order[j];
-                const alleleKey = getAlleleKey(label);
-                const nodeH = alleleSizes[alleleKey] || baseNodeH;
-                lastY += nodeH + (j < order.length - 1 ? gap : 0);
-              }
-              if (y > lastY - (baseNodeH + gap) / 2 && y < lastY + baseNodeH + gap) {
-                newIndex = order.length - 1;
-              }
+              const nodeH = sizeOf(j);
+              if (y < cur + nodeH / 2) { newIndex = j; break; }
+              cur += nodeH + gap;
             }
           }
         }
