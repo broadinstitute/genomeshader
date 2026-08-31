@@ -626,12 +626,16 @@
       let g;
       if (isVertical) {
         const cx = ctx.baseX + 24;
-        g = el("g", { style: "cursor:pointer;" });
+        // pointer-events:auto so the pin is clickable — #tracksSvg is otherwise
+        // click-through (pans pass to the layer below), like the Indel markers.
+        g = el("g", { style: "cursor:pointer; pointer-events: auto;" });
         g.appendChild(el("line", { x1: ctx.baseX, x2: cx, y1: pos, y2: pos, stroke: "var(--blue)", "stroke-width": 1 }));
         g.appendChild(el("circle", { cx: cx, cy: pos, r: 5.5, fill: "var(--blue)", stroke: "var(--panel)", "stroke-width": 1 }));
       } else {
         const cy = ctx.baseY - 24;
-        g = el("g", { style: "cursor:pointer;" });
+        // pointer-events:auto so the pin is clickable — #tracksSvg is otherwise
+        // click-through (pans pass to the layer below), like the Indel markers.
+        g = el("g", { style: "cursor:pointer; pointer-events: auto;" });
         g.appendChild(el("line", { x1: pos, x2: pos, y1: ctx.baseY, y2: cy, stroke: "var(--blue)", "stroke-width": 1 }));
         // speech-bubble-ish marker: a small rounded square
         g.appendChild(el("rect", { x: pos - 5.5, y: cy - 5.5, width: 11, height: 11, rx: 2.5, fill: "var(--blue)", stroke: "var(--panel)", "stroke-width": 1 }));

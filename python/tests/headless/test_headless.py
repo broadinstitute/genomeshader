@@ -248,6 +248,38 @@ def test_allele_reorder_indicator_matches_landing(browser, tmp_path):
     page.close()
 
 
+def test_comment_pin_is_clickable(browser, tmp_path):
+    """A rendered comment pin must opt into pointer events — #tracksSvg is
+    click-through, so without pointer-events:auto the pin can't be clicked to
+    open its comment."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    style = page.evaluate(
+        """() => {
+          const st = window.__GS_STATE;
+          if (!st || !window.__GS_renderCommentPins) return 'NO_HOOK';
+          const mid = Math.floor((st.startBp + st.endBp) / 2);
+          st.comments = [{ id: 'c1', author: 'x', body: 'hi',
+            anchor: { type: 'region', locus: { contig: st.contig, pos: mid } } }];
+          const NS = 'http://www.w3.org/2000/svg';
+          const svg = document.createElementNS(NS, 'svg');
+          const el = (tag, attrs, text) => {
+            const e = document.createElementNS(NS, tag);
+            for (const k in (attrs || {})) e.setAttribute(k, attrs[k]);
+            if (text != null) e.textContent = text;
+            return e;
+          };
+          window.__GS_renderCommentPins({ svg, el, genomePos: () => 100,
+            baseX: 50, baseY: 60, isVertical: false });
+          const g = svg.querySelector('g');
+          return g ? (g.getAttribute('style') || '') : 'NO_PIN';
+        }"""
+    )
+    assert style not in ("NO_HOOK", "NO_PIN"), style
+    assert "pointer-events" in style and "auto" in style, style
+    page.close()
+
+
 def test_indel_toggle_cycle(browser, tmp_path):
     """Mixed ins+del positions cycle off -> ins -> del -> off on click; pure
     ins/del just toggle. Guards the Indel-marker state machine."""
