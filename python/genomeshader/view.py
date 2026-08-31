@@ -3206,11 +3206,10 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         # and the output area doesn't scroll down to reveal it. Clear that text
         # and display the widget ourselves so the viewer renders at the top of the
         # cell output instead of being buried. clear_output(wait=True) only wipes
-        # once the widget actually displays, so nothing flickers on failure.
         try:
             clear_output(wait=True)
             display(widget)
-            return None
+            return widget
         except Exception:
             # No IPython display context (e.g. plain Python) — just return it.
             return widget
