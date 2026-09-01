@@ -146,6 +146,17 @@ class GenomeShader:
         self._gcs_client = None
         self._gcs_client_init_attempted = False
 
+        # Keep GCS credentials fresh automatically for gs:// sessions so tokens
+        # don't lapse mid-session. Opt out with GENOMESHADER_NO_CRED_REFRESH=1;
+        # non-fatal if it can't start.
+        if (str(self.gcs_session_dir).startswith("gs://")
+                and os.environ.get("GENOMESHADER_NO_CRED_REFRESH", "").strip().lower()
+                not in {"1", "true", "yes"}):
+            try:
+                self.start_credential_refresh(verbose=False)
+            except Exception:
+                pass
+
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
             r"^gs://[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]/"  # bucket
