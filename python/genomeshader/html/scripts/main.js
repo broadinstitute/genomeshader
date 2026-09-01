@@ -2809,6 +2809,12 @@ function setupCanvasHover() {
         if (typeof setActiveTab === "function") setActiveTab("variants");
         if (typeof setRightSidebarCollapsed === "function") setRightSidebarCollapsed(false);
       } catch (err) {}
+      // Zoom/center the view on the double-clicked allele's variant.
+      try {
+        const v = (typeof findVariantByTrackAndId === "function")
+          ? findVariantByTrackAndId(hit.trackId, hit.variantId) : null;
+        if (v && typeof v.pos === "number" && typeof centerOnBp === "function") centerOnBp(v.pos);
+      } catch (err) {}
     };
 
     // Attach to flow (when multi-track so overlays bubble) or flowWebGPU (single-track)
@@ -3804,10 +3810,25 @@ function setupCanvasHover() {
     // Enable/disable controls based on selection
     const disabled = !hasSelection;
     if (strategyEl) strategyEl.disabled = disabled;
-    if (sliderEl) sliderEl.disabled = disabled;
-    if (inputEl) inputEl.disabled = disabled;
     if (replaceBtn) replaceBtn.disabled = disabled;
     if (addBtn) addBtn.disabled = disabled;
+
+    // With only one selectable sample, the count slider is meaningless — grey it
+    // out and pin the count at 1. carriers+controls still draws from the whole
+    // cohort, so use the strategy's real pool size to decide.
+    let _pool = (state.sampleSelection.candidateSamples || []).length;
+    if (state.sampleSelection.strategy === 'carriers_controls') {
+      const _all = (state.sampleSelection.allSampleIds || []).length;
+      if (_all > _pool) _pool = _all;
+    }
+    const sliderDisabled = disabled || _pool <= 1;
+    if (sliderEl) sliderEl.disabled = sliderDisabled;
+    if (inputEl) inputEl.disabled = sliderDisabled;
+    if (sliderDisabled && _pool <= 1) {
+      state.sampleSelection.numSamples = 1;
+      if (sliderEl) sliderEl.value = 1;
+      if (inputEl) inputEl.value = 1;
+    }
     
     // Update "Compare branches" option enablement
     if (strategyEl) {
@@ -4788,9 +4809,13 @@ function setupCanvasHover() {
   
   // Function to load a Smart Track for a specific sample
   function loadSmartTrackForSample(sampleId) {
+    // One track per sample: if this sample is already loaded, don't load it again.
+    if (sampleId && (state.smartTracks || []).some(t => t.sampleId === sampleId)) {
+      return;
+    }
     // Use currently selected alleles if any, otherwise use empty set
-    const selectedAlleles = state.selectedAlleles.size > 0 
-      ? Array.from(state.selectedAlleles) 
+    const selectedAlleles = state.selectedAlleles.size > 0
+      ? Array.from(state.selectedAlleles)
       : [];
     
     // Use current strategy, or 'random' as fallback
@@ -4798,7 +4823,8 @@ function setupCanvasHover() {
     
     // Create Smart Track
     const track = createSmartTrack(strategy, selectedAlleles);
-    
+    track.sampleId = sampleId;   // claim the sample now so rapid re-clicks dedupe
+
     // Set sampleType for carriers_controls strategy
     if (strategy === 'carriers_controls') {
       const combineMode = state.sampleSelection.combineMode;
@@ -4929,22 +4955,26 @@ function setupCanvasHover() {
       // strategies pad by cycling/reusing candidates (returning duplicate sample
       // IDs), which would create duplicate tracks and blow past the button count.
       const selectedSamples = Array.from(new Set(selectSamplesForStrategy(strategy, candidates, numSamples))).slice(0, numSamples);
-      
+      // One track per sample: skip any sample that already has a track.
+      const _loaded = new Set((state.smartTracks || []).map(t => t.sampleId).filter(Boolean));
+      const toLoad = selectedSamples.filter(s => !_loaded.has(s));
+
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};
       if (strategy === 'carriers_controls') {
         const carriersSet = new Set(candidates);
-        for (const sampleId of selectedSamples) {
+        for (const sampleId of toLoad) {
           sampleTypes[sampleId] = carriersSet.has(sampleId) ? 'carrier' : 'control';
         }
       }
-      
+
       // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
-      for (let i = 0; i < selectedSamples.length; i++) {
+      for (let i = 0; i < toLoad.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
-        const sampleId = selectedSamples[i];
-        
+        const sampleId = toLoad[i];
+        track.sampleId = sampleId;   // claim the sample now so rapid re-clicks dedupe
+
         // Set sampleType for carriers_controls strategy
         if (strategy === 'carriers_controls' && sampleTypes[sampleId]) {
           track.sampleType = sampleTypes[sampleId];
@@ -4994,22 +5024,26 @@ function setupCanvasHover() {
       // strategies pad by cycling/reusing candidates (returning duplicate sample
       // IDs), which would create duplicate tracks and blow past the button count.
       const selectedSamples = Array.from(new Set(selectSamplesForStrategy(strategy, candidates, numSamples))).slice(0, numSamples);
-      
+      // One track per sample: skip any sample that already has a track.
+      const _loaded = new Set((state.smartTracks || []).map(t => t.sampleId).filter(Boolean));
+      const toLoad = selectedSamples.filter(s => !_loaded.has(s));
+
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};
       if (strategy === 'carriers_controls') {
         const carriersSet = new Set(candidates);
-        for (const sampleId of selectedSamples) {
+        for (const sampleId of toLoad) {
           sampleTypes[sampleId] = carriersSet.has(sampleId) ? 'carrier' : 'control';
         }
       }
-      
+
       // Create Smart tracks based on selected samples (add, don't replace)
       const trackPromises = [];
-      for (let i = 0; i < selectedSamples.length; i++) {
+      for (let i = 0; i < toLoad.length; i++) {
         const track = createSmartTrack(strategy, selectedAlleles);
-        const sampleId = selectedSamples[i];
-        
+        const sampleId = toLoad[i];
+        track.sampleId = sampleId;   // claim the sample now so rapid re-clicks dedupe
+
         // Set sampleType for carriers_controls strategy
         if (strategy === 'carriers_controls' && sampleTypes[sampleId]) {
           track.sampleType = sampleTypes[sampleId];
