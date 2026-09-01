@@ -243,6 +243,34 @@ function nextIndelExpansion(isIns, isDel, curIns, curDel) {
 }
 if (typeof window !== "undefined") window.__gsNextIndelExpansion = nextIndelExpansion;
 
+// Samples to actually load: unique, skipping any already loaded, capped at the
+// requested count. One track per sample; never load a duplicate.
+function gsSelectSamplesToLoad(selected, loadedSampleIds, numSamples) {
+  const loaded = new Set(loadedSampleIds || []);
+  const seen = new Set();
+  const out = [];
+  const cap = Math.max(0, Number(numSamples) || 0);
+  for (const s of (selected || [])) {
+    if (s == null || seen.has(s) || loaded.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+// Sample-count slider state from the selectable pool size: greyed (and pinned to
+// 1) when there's at most one selectable sample, enabled at 2+.
+function gsSampleSliderState(pool) {
+  pool = Number(pool) || 0;
+  return { disabled: pool <= 1, pinToOne: pool === 1 };
+}
+
+if (typeof window !== "undefined") {
+  window.__gsSelectSamplesToLoad = gsSelectSamplesToLoad;
+  window.__gsSampleSliderState = gsSampleSliderState;
+}
+
 // Height (px) of one repeated reference row drawn per expanded deletion.
 const DELETION_ROW_H = 20;
 

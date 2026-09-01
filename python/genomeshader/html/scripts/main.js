@@ -3955,10 +3955,10 @@ function setupCanvasHover() {
     // count at 1 when there's exactly one sample.
     const sliderEl = byId(currentRoot, 'sampleCountSlider');
     const inputEl = byId(currentRoot, 'sampleCountInput');
-    const sliderOff = pool <= 1;
-    if (sliderEl) sliderEl.disabled = sliderOff;
-    if (inputEl) inputEl.disabled = sliderOff;
-    if (pool === 1) {
+    const sl = gsSampleSliderState(pool);
+    if (sliderEl) sliderEl.disabled = sl.disabled;
+    if (inputEl) inputEl.disabled = sl.disabled;
+    if (sl.pinToOne) {
       state.sampleSelection.numSamples = 1;
       if (sliderEl) sliderEl.value = 1;
       if (inputEl) inputEl.value = 1;
@@ -5017,10 +5017,10 @@ function setupCanvasHover() {
       // Load UNIQUE samples only, capped at what the slider/button promised. Some
       // strategies pad by cycling/reusing candidates (returning duplicate sample
       // IDs), which would create duplicate tracks and blow past the button count.
-      const selectedSamples = Array.from(new Set(selectSamplesForStrategy(strategy, candidates, numSamples))).slice(0, numSamples);
-      // One track per sample: skip any sample that already has a track.
-      const _loaded = new Set((state.smartTracks || []).map(t => t.sampleId).filter(Boolean));
-      const toLoad = selectedSamples.filter(s => !_loaded.has(s));
+      // Unique, not-already-loaded, capped at the requested count (one track/sample).
+      const _loadedIds = (state.smartTracks || []).map(t => t.sampleId).filter(Boolean);
+      const toLoad = gsSelectSamplesToLoad(
+        selectSamplesForStrategy(strategy, candidates, numSamples), _loadedIds, numSamples);
 
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};
@@ -5086,10 +5086,10 @@ function setupCanvasHover() {
       // Load UNIQUE samples only, capped at what the slider/button promised. Some
       // strategies pad by cycling/reusing candidates (returning duplicate sample
       // IDs), which would create duplicate tracks and blow past the button count.
-      const selectedSamples = Array.from(new Set(selectSamplesForStrategy(strategy, candidates, numSamples))).slice(0, numSamples);
-      // One track per sample: skip any sample that already has a track.
-      const _loaded = new Set((state.smartTracks || []).map(t => t.sampleId).filter(Boolean));
-      const toLoad = selectedSamples.filter(s => !_loaded.has(s));
+      // Unique, not-already-loaded, capped at the requested count (one track/sample).
+      const _loadedIds = (state.smartTracks || []).map(t => t.sampleId).filter(Boolean);
+      const toLoad = gsSelectSamplesToLoad(
+        selectSamplesForStrategy(strategy, candidates, numSamples), _loadedIds, numSamples);
 
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};

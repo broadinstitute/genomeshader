@@ -327,6 +327,40 @@ def test_comment_pin_is_topmost_and_clickable(browser, tmp_path):
     page.close()
 
 
+def test_sample_load_selection_and_slider(browser, tmp_path):
+    """One-track-per-sample selection (unique, skip already-loaded, cap) and the
+    count-slider enable/pin rule — the pure logic behind those two bugs."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    out = page.evaluate(
+        """() => {
+          const sel = window.__gsSelectSamplesToLoad, sl = window.__gsSampleSliderState;
+          if (!sel || !sl) return null;
+          return {
+            // dedupe within the request
+            dedupe: sel(["a","a","b","c"], [], 5),
+            // skip already-loaded samples
+            skipLoaded: sel(["a","b","c"], ["b"], 5),
+            // cap at numSamples (of the NEW ones)
+            cap: sel(["a","b","c","d"], [], 2),
+            // nothing new to load
+            allLoaded: sel(["a","b"], ["a","b"], 5),
+            slider0: sl(0), slider1: sl(1), slider2: sl(2), slider9: sl(9),
+          };
+        }"""
+    )
+    assert out is not None, "helpers not exposed"
+    assert out["dedupe"] == ["a", "b", "c"]
+    assert out["skipLoaded"] == ["a", "c"]
+    assert out["cap"] == ["a", "b"]
+    assert out["allLoaded"] == []
+    assert out["slider0"] == {"disabled": True, "pinToOne": False}   # nothing selectable
+    assert out["slider1"] == {"disabled": True, "pinToOne": True}    # exactly one -> greyed, pinned
+    assert out["slider2"] == {"disabled": False, "pinToOne": False}  # 2+ -> enabled
+    assert out["slider9"] == {"disabled": False, "pinToOne": False}
+    page.close()
+
+
 def test_indel_toggle_cycle(browser, tmp_path):
     """Mixed ins+del positions cycle off -> ins -> del -> off on click; pure
     ins/del just toggle. Guards the Indel-marker state machine."""

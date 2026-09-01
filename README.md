@@ -143,6 +143,7 @@ Each maps to a fixed regression:
 | `test_zero_carrier_allele_label_is_honest` | 0-carrier alleles say so, not a bare "0 samples" |
 | `test_comment_thread_logic` | unread/participant detection + unread-floats-to-top sort + author/anchor filter |
 | `test_comment_pin_is_topmost_and_clickable` | comment pins render on a top overlay and are the topmost element (clickable) |
+| `test_sample_load_selection_and_slider` | one-track-per-sample selection (unique/skip-loaded/cap) + count-slider enable/pin rule |
 
 #### Adding a test
 
@@ -185,6 +186,12 @@ can seed comm state / stand up a real-GPU runner:
   covered by `test_allele_reorder_indicator_matches_landing`; the drag gesture
   itself is manual.
 - **Vertical sample/read (smart) track**: comm + WebGPU driven.
+- **Read-track scroll + pan sync**: the IGV-style outer scroll of the sample-track
+  stack (`#smartScroll`), the pinned header, per-sample internal read scroll, and
+  reads panning in lockstep with the header during a live drag. WebGPU + comm +
+  real-drag driven — not reachable headless. The *pure* selection/slider logic is
+  covered by `test_sample_load_selection_and_slider`; the geometry/interaction is
+  Lab-only.
 - **Comment threads UI**: reply box, the "NEW" chip + unread left-border, the
   command-strip badge, and the sort/filter selects. The pure logic
   (sort/filter/unread/participant) is unit-tested; the rendered DOM + badge need
