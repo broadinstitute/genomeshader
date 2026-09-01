@@ -509,7 +509,7 @@ function renderSmartTrack(trackId) {
               
               // Draw nucleotide letter only if there's enough space. Use the text
               // overlay (above WebGPU reads) so it isn't hidden by the read body.
-              if (actualBaseHeight >= 8) {
+              if (actualBaseHeight >= 8 && !track.collapsed) {
                 const lctx = tctx || ctx;
                 lctx.save();
                 lctx.fillStyle = 'white';
@@ -819,7 +819,7 @@ function renderSmartTrack(trackId) {
               
               // Draw nucleotide letter only if there's enough space. Use the text
               // overlay (above WebGPU reads) so it isn't hidden by the read body.
-              if (actualBaseWidth >= 8) {
+              if (actualBaseWidth >= 8 && !track.collapsed) {
                 const lctx = tctx || ctx;
                 lctx.fillStyle = 'white';
                 lctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
