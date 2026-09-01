@@ -3942,11 +3942,17 @@ function setupCanvasHover() {
     }
     const samplesToLoad = Math.min(numSamples, pool);
 
+    // Nothing to load when no sample supports the selection (pool 0) — grey the
+    // Load buttons. (carriers+controls still has a pool from the cohort, so it
+    // stays enabled even with zero carriers.)
+    const noLoad = pool === 0;
     if (replaceBtn) {
-      replaceBtn.textContent = (pool === 0) ? 'Load' : `Load (${samplesToLoad} of ${pool})`;
+      replaceBtn.disabled = noLoad;
+      replaceBtn.textContent = noLoad ? 'Load' : `Load (${samplesToLoad} of ${pool})`;
     }
     if (addBtn) {
-      addBtn.textContent = (pool === 0) ? 'Load (add)' : `Load (add ${samplesToLoad} of ${pool})`;
+      addBtn.disabled = noLoad;
+      addBtn.textContent = noLoad ? 'Load (add)' : `Load (add ${samplesToLoad} of ${pool})`;
     }
 
     // Enable the count slider only when 2+ samples are selectable. This runs
