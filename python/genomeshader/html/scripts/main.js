@@ -3874,23 +3874,9 @@ function setupCanvasHover() {
     if (strategyEl) strategyEl.disabled = disabled;
     if (replaceBtn) replaceBtn.disabled = disabled;
     if (addBtn) addBtn.disabled = disabled;
-
-    // With only one selectable sample, the count slider is meaningless — grey it
-    // out and pin the count at 1. carriers+controls still draws from the whole
-    // cohort, so use the strategy's real pool size to decide.
-    let _pool = (state.sampleSelection.candidateSamples || []).length;
-    if (state.sampleSelection.strategy === 'carriers_controls') {
-      const _all = (state.sampleSelection.allSampleIds || []).length;
-      if (_all > _pool) _pool = _all;
-    }
-    const sliderDisabled = disabled || _pool <= 1;
-    if (sliderEl) sliderEl.disabled = sliderDisabled;
-    if (inputEl) inputEl.disabled = sliderDisabled;
-    if (sliderDisabled && _pool <= 1) {
-      state.sampleSelection.numSamples = 1;
-      if (sliderEl) sliderEl.value = 1;
-      if (inputEl) inputEl.value = 1;
-    }
+    // Slider/input enablement is governed by updateLoadButtonText() (below/after
+    // recompute) since it depends on the candidate pool, which is computed
+    // asynchronously — setting it here would use a stale (often empty) pool.
     
     // Update "Compare branches" option enablement
     if (strategyEl) {
@@ -3961,6 +3947,21 @@ function setupCanvasHover() {
     }
     if (addBtn) {
       addBtn.textContent = (pool === 0) ? 'Load (add)' : `Load (add ${samplesToLoad} of ${pool})`;
+    }
+
+    // Enable the count slider only when 2+ samples are selectable. This runs
+    // AFTER recompute (fresh pool), unlike updateSampleStrategySection which sees
+    // a stale/empty pool — so the slider no longer starts stuck-disabled. Pin the
+    // count at 1 when there's exactly one sample.
+    const sliderEl = byId(currentRoot, 'sampleCountSlider');
+    const inputEl = byId(currentRoot, 'sampleCountInput');
+    const sliderOff = pool <= 1;
+    if (sliderEl) sliderEl.disabled = sliderOff;
+    if (inputEl) inputEl.disabled = sliderOff;
+    if (pool === 1) {
+      state.sampleSelection.numSamples = 1;
+      if (sliderEl) sliderEl.value = 1;
+      if (inputEl) inputEl.value = 1;
     }
   }
   
@@ -5335,16 +5336,17 @@ function panByPixels(dxPx, dyPx) {
 // stay the source of truth; the full re-render happens once on drag end. ---
 function _panLayers() {
   const out = [];
-  ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay", "commentPinOverlay"].forEach(id => {
+  // #smartScroll wraps the sample-track stack — translate it as ONE block so the
+  // reads pan in lockstep with the header. (Translating each container inside the
+  // scroll wrapper individually did not move them in step during a live drag,
+  // which made reads drift proportionally to the pan distance.)
+  ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay", "commentPinOverlay", "smartScroll"].forEach(id => {
     const e = (typeof byId === "function" && typeof root !== "undefined" ? byId(root, id) : null)
       || document.getElementById(id);
     if (e) out.push(e);
   });
   const scope = (typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document;
   scope.querySelectorAll(".flow-track canvas, .flow-track svg").forEach(e => out.push(e));
-  if (state.smartTrackRenderers && state.smartTrackRenderers.forEach) {
-    state.smartTrackRenderers.forEach(r => { if (r && r.container) out.push(r.container); });
-  }
   return out;
 }
 // Horizontal only (callers gate on !isVerticalMode).
