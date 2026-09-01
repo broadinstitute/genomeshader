@@ -538,6 +538,100 @@ pub fn extract_reads(
     Ok(df)
 }
 
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use rust_htslib::bam::record::CigarString;
+
+    // Write a tiny single-read BAM (no MD tag) to a temp path, index it, and
+    // return (path, url). Read: pos 100 (0-based) => 1-based 101, CIGAR 2S8M.
+    // Query SEQ = "TT" softclip + "ACATAGGT" aligned. Against reference
+    // "ACGTACGT" @ 101, the aligned run mismatches ref at 103 (G->A) and
+    // 106 (C->G); the 2bp soft-clip must NOT shift those coords.
+    fn write_no_md_bam() -> (std::path::PathBuf, Url) {
+        let mut header = bam::Header::new();
+        let mut sq = bam::header::HeaderRecord::new(b"SQ");
+        sq.push_tag(b"SN", &"testchr");
+        sq.push_tag(b"LN", &1000);
+        header.push_record(&sq);
+
+        let bam_path = std::env::temp_dir().join("gs_refsnp_integration_test.bam");
+        {
+            let mut w = bam::Writer::from_path(&bam_path, &header, bam::Format::Bam).unwrap();
+            let mut rec = bam::Record::new();
+            let cigar = CigarString(vec![Cigar::SoftClip(2), Cigar::Match(8)]);
+            rec.set(b"read1", Some(&cigar), b"TTACATAGGT", &[30u8; 10]);
+            rec.set_tid(0);
+            rec.set_pos(100);
+            rec.set_mapq(60);
+            rec.set_mtid(-1);
+            rec.set_mpos(-1);
+            // Deliberately no MD aux tag.
+            w.write(&rec).unwrap();
+        }
+        bam::index::build(&bam_path, None, bam::index::Type::Bai, 1).unwrap();
+        let url = Url::from_file_path(&bam_path).unwrap();
+        (bam_path, url)
+    }
+
+    // Pull (reference_start, base) for every DIFF (element_type==1) row.
+    fn diffs(df: &DataFrame) -> Vec<(u32, String)> {
+        let et = df.column("element_type").unwrap().u8().unwrap();
+        let rs = df.column("reference_start").unwrap().u32().unwrap();
+        let sq = df.column("sequence").unwrap();
+        let mut out = Vec::new();
+        for i in 0..df.height() {
+            if et.get(i) == Some(1u8) {
+                let base = match sq.get(i).unwrap() {
+                    AnyValue::String(s) => s.to_string(),
+                    AnyValue::StringOwned(s) => s.to_string(),
+                    _ => String::new(),
+                };
+                out.push((rs.get(i).unwrap(), base));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn extract_reads_calls_snps_from_reference_when_no_md() {
+        let (_p, url) = write_no_md_bam();
+        let mut bam = IndexedReader::from_path(url.to_file_path().unwrap()).unwrap();
+        let cohort = String::from("all");
+        let chr = String::from("testchr");
+
+        // Reference window "ACGTACGT" whose first base is 1-based pos 101.
+        let refseq = b"ACGTACGT";
+        let df = extract_reads(&mut bam, &url, &cohort, &chr, &100u64, &110u64, Some(refseq), 101)
+            .unwrap();
+
+        // Exactly the two mismatches, at the right genomic coords with the read base.
+        assert_eq!(diffs(&df), vec![(103u32, "A".to_string()), (106u32, "G".to_string())]);
+
+        // READ element is flagged SNP-displayable (reference was supplied).
+        let et = df.column("element_type").unwrap().u8().unwrap();
+        let hm = df.column("has_md").unwrap().bool().unwrap();
+        for i in 0..df.height() {
+            if et.get(i) == Some(0u8) {
+                assert_eq!(hm.get(i), Some(true), "READ row should be SNP-displayable");
+            }
+        }
+    }
+
+    #[test]
+    fn extract_reads_emits_no_snps_without_md_or_reference() {
+        let (_p, url) = write_no_md_bam();
+        let mut bam = IndexedReader::from_path(url.to_file_path().unwrap()).unwrap();
+        let cohort = String::from("all");
+        let chr = String::from("testchr");
+
+        // No MD tag and no reference => no SNP calls (indels/softclips still emitted).
+        let df = extract_reads(&mut bam, &url, &cohort, &chr, &100u64, &110u64, None, 0).unwrap();
+        assert_eq!(diffs(&df), Vec::<(u32, String)>::new());
+    }
+}
+
 // #[cfg(test)]
 // mod tests {
 //     use crate::storage::gcs_authorize_data_access;
