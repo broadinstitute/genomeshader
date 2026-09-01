@@ -71,6 +71,13 @@ function renderSmartTrack(trackId) {
   // This ensures consistency between inline and overlay modes
   const W = isVertical ? actualContainerHeight : actualContainerWidth;
   let H = isVertical ? actualContainerWidth : actualContainerHeight;
+  // Genome-axis width for mapping read bp -> x. Use the SHARED tracks width (what
+  // the ruler/reference/variant header uses), NOT this container's own width — a
+  // per-track scrollbar makes the container narrower and would desync the read
+  // coordinates from every other track (reads land at the wrong x and pan at a
+  // different rate).
+  const genomeW = isVertical ? W
+    : ((typeof tracksWidthPx === "function" && tracksWidthPx() > 0) ? tracksWidthPx() : W);
   
   // Fallback to layout dimensions if container has no dimensions yet
   if (W <= 0 || isNaN(W)) {
@@ -270,7 +277,7 @@ function renderSmartTrack(trackId) {
       if (pos < state.startBp || pos > state.endBp) return;
       const gapPx = getGapAfterBpPx(pos, state.expandedInsertions);
       if (!(gapPx > 0)) return;
-      const afterBaseX = xGenomeCanonical(pos + 1, W);
+      const afterBaseX = xGenomeCanonical(pos + 1, genomeW);
       expandedInsertionGapSegments.push({
         pos,
         gapStart: afterBaseX - gapPx,
@@ -523,8 +530,8 @@ function renderSmartTrack(trackId) {
         
         if (minStart !== Infinity && maxEnd !== -Infinity) {
           // Use canonical mapping so collapsed pseudo-read aligns with insertion-expanded coordinates.
-          const x1 = xGenomeCanonical(minStart, W);
-          const x2 = xGenomeCanonical(maxEnd, W);
+          const x1 = xGenomeCanonical(minStart, genomeW);
+          const x2 = xGenomeCanonical(maxEnd, genomeW);
           
           const y = top + 0 * rowH + 2;
           const h = rowH - 4;
@@ -572,8 +579,8 @@ function renderSmartTrack(trackId) {
           if (!read.isForward) baseAlpha *= 0.7;
           
           // Use canonical mapping so read spans align with insertion-expanded coordinates.
-          const x1 = xGenomeCanonical(read.start, W);
-          const x2 = xGenomeCanonical(read.end, W);
+          const x1 = xGenomeCanonical(read.start, genomeW);
+          const x2 = xGenomeCanonical(read.end, genomeW);
           
           const y = top + read.row * rowH + 2;
           const h = rowH - 4;
@@ -647,7 +654,7 @@ function renderSmartTrack(trackId) {
         if (read.elements && read.elements.length > 0) {
           for (const elem of read.elements) {
             if (elem.start < state.startBp || elem.start > state.endBp) continue;
-            const ex = xGenomeCanonical(elem.start, W);
+            const ex = xGenomeCanonical(elem.start, genomeW);
             const ey = y;
             const eh = h;
             
@@ -687,13 +694,13 @@ function renderSmartTrack(trackId) {
               ctx.fillStyle = `rgba(200,100,255,${elemAlpha})`;
               ctx.fillRect(ex - 1, ey, 2, eh);
             } else if (elem.type === 3) { // Deletion - black gap
-              const ex2 = xGenomeCanonical(elem.end, W);
+              const ex2 = xGenomeCanonical(elem.end, genomeW);
               ctx.fillStyle = `rgba(0,0,0,${elemAlpha})`;
               ctx.fillRect(ex, ey + eh/4, ex2 - ex, eh/2);
             } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
               // Calculate actual base width
               const nextBp = elem.start + 1;
-              const nextX = nextBp <= state.endBp ? xGenomeCanonical(nextBp, W) : xGenomeCanonical(state.endBp, W);
+              const nextX = nextBp <= state.endBp ? xGenomeCanonical(nextBp, genomeW) : xGenomeCanonical(state.endBp, genomeW);
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
               const actualBaseWidth = Math.max(1, Math.abs(nextX - ex) - gapAfterPx);
               
