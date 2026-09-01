@@ -330,6 +330,7 @@ def stage_reference(
     gff: Optional[str] = None,
     contig_rename: Optional[Union[Dict[str, str], Callable[[str], str]]] = None,
     verbose: bool = True,
+    force: bool = False,
 ) -> Dict[str, int]:
     """Stage any reference's FASTA (+ optional GFF3) into `session`'s cache.
 
@@ -344,6 +345,21 @@ def stage_reference(
     build = session.genome_build
     base = session.gcs_session_dir.rstrip("/")
 
+    # Already staged for this build? The cache blobs + interval index persist in
+    # the session bucket and load on demand, so a new session serves them without
+    # re-staging — re-downloading + re-parsing + re-writing identical data (and the
+    # per-contig log spam) is pure waste. Skip it. Pass force=True to rebuild.
+    if not force:
+        try:
+            existing = session._chrom_sizes()
+        except Exception:
+            existing = None
+        if existing:
+            if verbose:
+                print(f"reference '{build}' already staged ({len(existing)} contigs); "
+                      f"reusing the cache (pass force=True to rebuild).")
+            return dict(existing)
+
     # Download (if remote) + parse inside a temp dir that's always cleaned up;
     # the parsed data lives on after it. Local paths pass through untouched.
     with tempfile.TemporaryDirectory(prefix="genomeshader-ref-") as tmpdir:
@@ -355,6 +371,9 @@ def stage_reference(
 
     # chrom sizes (consumed by _chrom_sizes() -> render config -> frontend clamp)
     session._write_cached_json(f"{base}/cache/ucsc/chrom_sizes/{build}.json", lengths)
+    # Refresh the memo: the skip-check above may have cached an empty dict when
+    # nothing was staged yet, which would otherwise mask what we just wrote.
+    session._chrom_sizes_memo = dict(lengths)
 
     for contig, seq in seqs.items():
         length = lengths[contig]
@@ -403,10 +422,11 @@ def stage_plasmodb(
     gff_path: str,
     contig_rename: Optional[Union[Dict[str, str], Callable[[str], str]]] = None,
     verbose: bool = True,
+    force: bool = False,
 ) -> Dict[str, int]:
     """Back-compat alias for :func:`stage_reference` (FASTA + required GFF)."""
     return stage_reference(session, fasta_path, gff=gff_path,
-                           contig_rename=contig_rename, verbose=verbose)
+                           contig_rename=contig_rename, verbose=verbose, force=force)
 
 
 def demo():

@@ -328,6 +328,32 @@ def test_stage_reference_fasta_only(staged_fasta_only):
     assert s.genes("Pf3D7_01_v3", 0, 100) == []              # no genes without gff
 
 
+def test_stage_reference_skips_when_already_staged(tmp_path, monkeypatch, genome_files):
+    import genomeshader.plasmodb as P
+    monkeypatch.setenv("GENOMESHADER_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("GENOMESHADER_ALLOW_UCSC_API", raising=False)
+    fa, gff = genome_files
+    with patch("genomeshader.view.gs._init", return_value=Mock()):
+        s = GenomeShader(genome_build="PlasmoDB-61_Pfalciparum3D7",
+                         gcs_session_dir="gs://test-bucket/genomeshader")
+        first = stage_reference(s, fa, gff=gff, verbose=False)
+        assert first == {"Pf3D7_01_v3": 100, "Pf3D7_02_v3": 12}
+
+        # A fresh session must reuse the cache, NOT re-parse the FASTA.
+        s2 = GenomeShader(genome_build="PlasmoDB-61_Pfalciparum3D7",
+                          gcs_session_dir="gs://test-bucket/genomeshader")
+        with patch.object(P, "read_fasta", side_effect=AssertionError("re-parsed a cached reference")):
+            again = stage_reference(s2, fa, gff=gff, verbose=False)
+        assert again == first
+
+        # force=True bypasses the cache and re-stages (read_fasta runs).
+        calls = []
+        orig = P.read_fasta
+        with patch.object(P, "read_fasta", side_effect=lambda *a, **k: (calls.append(1), orig(*a, **k))[1]):
+            forced = stage_reference(s2, fa, gff=gff, verbose=False, force=True)
+        assert forced == first and calls
+
+
 def test_stage_plasmodb_delegates(tmp_path, monkeypatch, genome_files):
     monkeypatch.setenv("GENOMESHADER_LOCAL_CACHE_DIR", str(tmp_path / "c"))
     monkeypatch.delenv("GENOMESHADER_ALLOW_UCSC_API", raising=False)
