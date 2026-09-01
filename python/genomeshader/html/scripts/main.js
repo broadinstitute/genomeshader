@@ -5352,7 +5352,10 @@ function _panLayers() {
     if (e) out.push(e);
   });
   const scope = (typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document;
-  scope.querySelectorAll(".flow-track canvas, .flow-track svg").forEach(e => out.push(e));
+  // Translate each multi-track flow container as ONE block (moves its canvas +
+  // overlay + labels together) rather than the canvas/svg children individually —
+  // same fix as the reads stack; translating children alone can drift.
+  scope.querySelectorAll(".flow-track").forEach(e => out.push(e));
   return out;
 }
 // Horizontal only (callers gate on !isVerticalMode).
