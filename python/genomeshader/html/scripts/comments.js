@@ -1000,6 +1000,8 @@
       const icon = document.querySelector('.command-strip-icon[data-tab="comments"]');
       if (icon) icon.click();
     }
+    // Expand the right panel if it's collapsed, so the thread is actually visible.
+    try { if (typeof setRightSidebarCollapsed === "function") setRightSidebarCollapsed(false); } catch (e) {}
     flashId = id;
     load();
     setTimeout(() => {
