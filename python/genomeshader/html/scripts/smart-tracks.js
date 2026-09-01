@@ -296,6 +296,31 @@ function _cacheSmartReads(sampleId, reads, bamUrls) {
   }
 }
 
+// Bottom-bar status for read loads, COUNTED so concurrent loads (e.g. 3 samples
+// at once) keep the bar up until the last one finishes. Without the count, the
+// first sample to return fires "Loaded" + a 2s auto-hide and the bar vanishes
+// while the others are still loading — which reads as "the loading bar doesn't
+// show up", especially in full screen.
+let _readLoadsInFlight = 0;
+function _readStatusStart(sampleId) {
+  _readLoadsInFlight++;
+  if (!window.__GS_STATUS) return;
+  window.__GS_STATUS(_readLoadsInFlight > 1
+    ? ('Loading reads (' + _readLoadsInFlight + ')…')
+    : ('Loading reads' + (sampleId ? ' for ' + sampleId : '') + '…'), { busy: true });
+}
+function _readStatusDone(label, isError) {
+  _readLoadsInFlight = Math.max(0, _readLoadsInFlight - 1);
+  if (!window.__GS_STATUS) return;
+  if (_readLoadsInFlight > 0) {                       // others still loading
+    window.__GS_STATUS('Loading reads (' + _readLoadsInFlight + ')…', { busy: true });
+  } else if (label) {
+    window.__GS_STATUS(label, { autoHide: isError ? 5000 : 2000 });
+  } else {
+    window.__GS_STATUS(false);
+  }
+}
+
 function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) {
@@ -314,15 +339,14 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     track.bamUrls = hit.bamUrls || [];
     updateSmartTrackLabel(track);
     renderAll();
-    if (window.__GS_STATUS) window.__GS_STATUS(false);
+    // Instant cache hit: only clear the bar if nothing else is loading.
+    if (window.__GS_STATUS && _readLoadsInFlight === 0) window.__GS_STATUS(false);
     return Promise.resolve(track.readsLayout);
   }
 
   track.loading = true;
   renderAll();
-  if (window.__GS_STATUS) {
-    window.__GS_STATUS('Loading reads' + (sampleId ? ' for ' + sampleId : '') + '…', { busy: true });
-  }
+  _readStatusStart(sampleId);
 
   // Convert selectedAlleles Set to array
   const allelesArray = Array.from(selectedAlleles);
@@ -335,10 +359,8 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     .then(function(response) {
       track.loading = false;
       if (response.type === 'fetch_reads_response') {
-        if (window.__GS_STATUS) {
-          const sn = sampleId || response.sample_id;
-          window.__GS_STATUS('Loaded reads' + (sn ? ' for ' + sn : ''), { autoHide: 2000 });
-        }
+        const sn = sampleId || response.sample_id;
+        _readStatusDone('Loaded reads' + (sn ? ' for ' + sn : ''), false);
         track.readsData = response.reads;
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
@@ -363,15 +385,15 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
         console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
-        if (window.__GS_STATUS) window.__GS_STATUS('Failed to load reads: ' + (response.error || 'error'), { autoHide: 5000 });
-        throw new Error(response.error);
+        throw new Error(response.error);  // status handled in .catch (single decrement)
       }
+      _readStatusDone(false);            // unknown response: decrement, don't leak
       return null;
     })
     .catch(function(err) {
       track.loading = false;
       console.error(`Failed to fetch reads for Smart track ${trackId}:`, err);
-      if (window.__GS_STATUS) window.__GS_STATUS('Failed to load reads', { autoHide: 5000 });
+      _readStatusDone('Failed to load reads', true);
       renderAll();
       throw err;
     });
