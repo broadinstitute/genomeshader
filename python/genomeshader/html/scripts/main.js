@@ -243,9 +243,10 @@ function renderSmartTrack(trackId) {
       // Check if handlers are already attached to avoid duplicates
       const renderer = state.smartTrackRenderers.get(trackId);
       if (renderer && !renderer.scrollHandlerAttached) {
-        // Add scroll event listener
+        // Add scroll event listener (coalesced — scroll fires many events/sec
+        // and renderSmartTrack forces a synchronous reflow).
         const scrollHandler = () => {
-          renderSmartTrack(trackId);
+          scheduleSmartTrackRender(trackId);
         };
         container.addEventListener("scroll", scrollHandler);
         
@@ -2176,6 +2177,28 @@ function scheduleRender() {
   requestAnimationFrame(() => {
     _renderScheduled = false;
     renderAll();
+  });
+}
+
+// Coalesce per-track re-renders from high-frequency sources (scroll, resize).
+// Each smart track renders at most once per animation frame no matter how many
+// scroll/observer events fire. renderSmartTrack does a synchronous forced reflow,
+// and containers carry multiple scroll listeners — calling it directly per event
+// pegs the main thread (the collapse/expand/scroll "freeze"). renderAll() still
+// calls renderSmartTrack directly (one pass); only the event-driven paths route
+// through here.
+var _smartRenderPending = null;
+var _smartRenderScheduled = false;
+function scheduleSmartTrackRender(trackId) {
+  if (!_smartRenderPending) _smartRenderPending = new Set();
+  _smartRenderPending.add(trackId);
+  if (_smartRenderScheduled) return;
+  _smartRenderScheduled = true;
+  requestAnimationFrame(() => {
+    _smartRenderScheduled = false;
+    const ids = _smartRenderPending;
+    _smartRenderPending = null;
+    if (ids) ids.forEach((id) => { try { renderSmartTrack(id); } catch (e) {} });
   });
 }
 

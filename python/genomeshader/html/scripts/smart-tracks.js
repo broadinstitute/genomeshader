@@ -268,7 +268,7 @@ async function initSmartTrackWebGPU(trackId) {
     // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
     // But we need a basic scroll handler for re-rendering
     container.addEventListener("scroll", () => {
-      renderSmartTrack(trackId);
+      scheduleSmartTrackRender(trackId);
     });
 
     // Render now that the renderer exists. WebGPU init is async and can finish
@@ -295,7 +295,7 @@ async function initSmartTrackWebGPU(trackId) {
     // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
     // But we need a basic scroll handler for re-rendering
     container.addEventListener("scroll", () => {
-      renderSmartTrack(trackId);
+      scheduleSmartTrackRender(trackId);
     });
     // Paint once the (Canvas2D-fallback) renderer exists — see note above.
     requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
