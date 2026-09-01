@@ -15,3 +15,7 @@ genomeshader_runs/
 node_modules/
 package.json
 package-lock.json
+
+# Local research journal — never committed
+JOURNAL.md
+JOURNAL/
