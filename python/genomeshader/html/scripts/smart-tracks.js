@@ -5,35 +5,32 @@
 function processReadsData(rawReads) {
   if (!rawReads || !rawReads.query_name) return null;
   
-  // Convert column-oriented data to row-oriented
+  // Convert column-oriented data to row-oriented.
   const numRows = rawReads.query_name.length;
-  const reads = [];
-  
-  // Group by query_name to get unique reads (element_type 0 = READ)
-  const readMap = new Map();
+
+  // One entry per alignment, grouped by CONTIGUITY not query_name: the Rust
+  // extractor emits each read as a READ row (element_type 0) immediately
+  // followed by that read's own CIGAR element rows. Grouping by query_name was
+  // wrong — paired-end mates share a query_name, so it merged a pair into a
+  // single read and stapled the mate's SNP/indel markers onto it, painting them
+  // outside the (shorter) kept read. Contiguity keeps mates separate and each
+  // read's markers confined to that read.
+  const readArray = [];
+  let current = null;
   for (let i = 0; i < numRows; i++) {
-    if (rawReads.element_type[i] === 0) { // READ element
-      const name = rawReads.query_name[i];
-      if (!readMap.has(name)) {
-        readMap.set(name, {
-          name: name,
-          start: rawReads.reference_start[i],
-          end: rawReads.reference_end[i],
-          isForward: rawReads.is_forward[i],
-          haplotype: rawReads.haplotype[i],
-          sample: rawReads.sample_name[i],
-          elements: []
-        });
-      }
-    }
-  }
-  
-  // Add non-read elements (insertions, deletions, etc.)
-  for (let i = 0; i < numRows; i++) {
-    const name = rawReads.query_name[i];
-    const read = readMap.get(name);
-    if (read && rawReads.element_type[i] !== 0) {
-      read.elements.push({
+    if (rawReads.element_type[i] === 0) { // READ element starts a new alignment
+      current = {
+        name: rawReads.query_name[i],
+        start: rawReads.reference_start[i],
+        end: rawReads.reference_end[i],
+        isForward: rawReads.is_forward[i],
+        haplotype: rawReads.haplotype[i],
+        sample: rawReads.sample_name[i],
+        elements: []
+      };
+      readArray.push(current);
+    } else if (current) {
+      current.elements.push({
         type: rawReads.element_type[i],
         start: rawReads.reference_start[i],
         end: rawReads.reference_end[i],
@@ -41,9 +38,8 @@ function processReadsData(rawReads) {
       });
     }
   }
-  
-  // Convert to array and sort by start position
-  const readArray = Array.from(readMap.values());
+
+  // Sort by start position
   readArray.sort((a, b) => a.start - b.start);
   
   // Improved greedy packing: assign reads to rows, checking if read fits anywhere in each row
@@ -80,6 +76,9 @@ function processReadsData(rawReads) {
   // console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
   return { reads: readArray, rowCount: rows.length };
 }
+// Exposed for the headless harness to regression-test read grouping (paired-end
+// mates share a query_name; markers must stay confined to their own read).
+if (typeof window !== "undefined") window.__GS_processReadsData = processReadsData;
 
 // Create a new Smart track
 function createSmartTrack(strategy, selectedAlleles) {

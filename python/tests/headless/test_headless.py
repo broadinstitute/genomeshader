@@ -422,6 +422,43 @@ def test_comment_time_has_timezone(browser, tmp_path):
     page.close()
 
 
+def test_paired_reads_keep_markers_on_own_read(browser, tmp_path):
+    """Paired-end mates share a query_name. processReadsData must group reads by
+    contiguity (one READ row + its own element rows), NOT by query_name — else a
+    pair merges into one read and the mate's SNP/indel markers paint onto it,
+    outside the kept read's body. Regression for 'alleles painted outside reads'."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    # Two mates, same query_name "readA": mate1 aligned 100-110 with a SNP at 105;
+    # mate2 aligned 200-210 with an insertion at 205. element_type 0=READ,1=DIFF,
+    # 2=INS. Rows are emitted READ-then-elements per mate, in order.
+    payload = {
+        "query_name":      ["readA", "readA", "readA", "readA"],
+        "element_type":    [0,       1,       0,       2],
+        "reference_start": [100,     105,     200,     205],
+        "reference_end":   [110,     106,     210,     206],
+        "is_forward":      [True,    True,    False,   False],
+        "haplotype":       [0,       0,       0,       0],
+        "sample_name":     ["S1",    "S1",    "S1",    "S1"],
+        "sequence":        ["",      "A",     "",      "T"],
+    }
+    out = page.evaluate(
+        "(p) => { const r = window.__GS_processReadsData(p); "
+        "return r && r.reads.map(rd => ({start: rd.start, end: rd.end, "
+        "elems: rd.elements.map(e => ({type: e.type, start: e.start}))})); }",
+        payload,
+    )
+    assert out is not None, "processReadsData not exposed"
+    # Two separate reads, each with only its OWN element.
+    assert len(out) == 2, out
+    a, b = sorted(out, key=lambda r: r["start"])
+    assert a["start"] == 100 and a["end"] == 110
+    assert a["elems"] == [{"type": 1, "start": 105}], a
+    assert b["start"] == 200 and b["end"] == 210
+    assert b["elems"] == [{"type": 2, "start": 205}], b
+    page.close()
+
+
 # NOTE: allele *selection* is driven by the WebGPU interaction layer, which does
 # not paint (or receive clicks) under swiftshader in headless Chromium, so
 # selection behavior (e.g. double-click-keeps-selection) can't be asserted here.
