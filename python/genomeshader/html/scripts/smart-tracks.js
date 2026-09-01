@@ -187,7 +187,10 @@ async function initSmartTrackWebGPU(trackId) {
   
   container.appendChild(canvas);
   container.appendChild(webgpuCanvas);
-  tracksContainer.appendChild(container);
+  // Live in the scrolling reads region (#smartScroll) so the whole sample-track
+  // stack scrolls together below the pinned header.
+  ((typeof ensureSmartScrollWrapper === "function" && ensureSmartScrollWrapper())
+    || tracksContainer).appendChild(container);
 
   // Re-render whenever the container gets/changes size. renderSmartTrack bails
   // when the measured width is 0 (layout not settled — common right after

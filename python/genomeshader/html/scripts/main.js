@@ -2,6 +2,64 @@
 // -----------------------------
 
 // Render a Smart track
+// --- Reads scroll region (IGV-style) -------------------------------------
+// The ruler/reference/variant header stays pinned in #tracksContainer; the stack
+// of sample (smart) tracks lives in #smartScroll and scrolls below it as one
+// unit. Each sample keeps its own bounded height + internal read scroll.
+function ensureSmartScrollWrapper() {
+  if (typeof tracksContainer === "undefined" || !tracksContainer) return null;
+  let w = tracksContainer.querySelector("#smartScroll");
+  if (!w) {
+    w = document.createElement("div");
+    w.id = "smartScroll";
+    w.style.cssText = "position:absolute;left:0;right:0;overflow-y:auto;overflow-x:hidden;"
+      + "z-index:2;scrollbar-gutter:stable;display:none;";
+    // A spacer gives the wrapper its scroll height (the tracks are absolutely
+    // positioned inside it, so they don't contribute to scrollHeight themselves).
+    const spacer = document.createElement("div");
+    spacer.id = "smartScrollSpacer";
+    spacer.style.cssText = "position:relative;width:1px;pointer-events:none;";
+    w.appendChild(spacer);
+    // Wheel over the reads region scrolls the stack (native, with inner->outer
+    // chaining) instead of zooming the genome — stop it reaching the main wheel
+    // handler, but don't preventDefault so native scrolling still happens.
+    w.addEventListener("wheel", (e) => { e.stopPropagation(); }, { passive: true });
+    tracksContainer.appendChild(w);
+  }
+  return w;
+}
+
+function positionSmartScrollWrapper() {
+  const w = ensureSmartScrollWrapper();
+  if (!w) return;
+  const spacer = w.querySelector("#smartScrollSpacer");
+  state._readsHeaderTop = 0;
+  // Vertical mode stacks smart tracks as columns, not a scrolling row-stack — make
+  // the wrapper a full-size transparent passthrough so containers render as before.
+  if (isVerticalMode()) {
+    w.style.display = "block";
+    w.style.top = "0"; w.style.bottom = "0";
+    w.style.overflow = "visible";
+    w.style.background = "transparent";
+    if (spacer) spacer.style.height = "0px";
+    return;
+  }
+  const layout = getTrackLayout();
+  const smart = layout.filter(l => l.track && typeof l.track.id === "string"
+    && l.track.id.indexOf("smart-track-") === 0 && l.track.hidden !== true);
+  if (!smart.length) { w.style.display = "none"; return; }
+  const headerTop = Math.min.apply(null, smart.map(l => l.contentTop));
+  const bottom = Math.max.apply(null, smart.map(l => l.contentTop + l.contentHeight));
+  state._readsHeaderTop = headerTop;
+  w.style.display = "block";
+  w.style.top = headerTop + "px";
+  w.style.bottom = "0";
+  w.style.overflowY = "auto";
+  w.style.overflowX = "hidden";
+  w.style.background = (typeof cssVar === "function" && cssVar("--bg")) || "#0b0d10";
+  if (spacer) spacer.style.height = Math.max(0, bottom - headerTop) + "px";
+}
+
 function renderSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
@@ -49,7 +107,9 @@ function renderSmartTrack(trackId) {
     container.style.top = "0";
     container.style.height = "100%";
   } else {
-    container.style.top = `${trackLayout.contentTop}px`;
+    // Positioned inside #smartScroll, so offset by the pinned-header bottom; the
+    // wrapper scrolls the whole stack together below the header.
+    container.style.top = `${trackLayout.contentTop - (state._readsHeaderTop || 0)}px`;
     container.style.left = "0";
     container.style.width = "100%";
     container.style.height = `${trackLayout.contentHeight}px`;
@@ -2035,6 +2095,8 @@ function renderAll() {
   renderGenesPanel();
   updateFlowAndReadsPosition();
   renderFlowCanvas();
+  // Pin the header + position the scrolling reads region before drawing tracks.
+  positionSmartScrollWrapper();
   // Render all Smart tracks in the order they appear in state.tracks
   const smartTracksInOrder = state.tracks
     .filter(t => t.id.startsWith('smart-track-'))
