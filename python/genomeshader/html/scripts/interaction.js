@@ -1553,7 +1553,19 @@ function renderFlowCanvas() {
       // Account for left offset and right margin to ensure nodes don't extend beyond track boundaries
       const availableWidth = W - left - margin;
       const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
-      
+
+      // Stash the EXACT layout used to draw these nodes so the drag handler
+      // computes the drop index against the same geometry (start/sizes/gap/axis).
+      // Duplicating this math in main.js is what made the drop bar drift from the
+      // landing spot; this is the single source of truth.
+      if (!state.alleleDragLayout) state.alleleDragLayout = new Map();
+      state.alleleDragLayout.set(variantOrderKey, {
+        axis: 'x',
+        start: left + horizontalOffset,
+        gap: gap,
+        sizes: order.map(l => alleleSizes[getAlleleKey(l)] || baseNodeW),
+      });
+
       // Calculate cumulative positions for variable-width nodes, starting with left + horizontal offset
       let currentX = left + horizontalOffset;
       
@@ -1818,6 +1830,15 @@ function renderFlowCanvas() {
       // Account for top offset and bottom margin to ensure nodes don't extend beyond track boundaries
       const availableHeight = H - top - margin;
       const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
+
+      // Single source of truth for the drag handler (see the isVertical branch).
+      if (!state.alleleDragLayout) state.alleleDragLayout = new Map();
+      state.alleleDragLayout.set(variantOrderKey, {
+        axis: 'y',
+        start: top + verticalOffset,
+        gap: gap,
+        sizes: order.map(l => alleleSizes[getAlleleKey(l)] || baseNodeH),
+      });
 
       // Calculate cumulative positions for variable-height nodes, starting with top + vertical offset
       let currentY = top + verticalOffset;

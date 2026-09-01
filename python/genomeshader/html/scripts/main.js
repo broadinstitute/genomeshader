@@ -2701,26 +2701,32 @@ function setupCanvasHover() {
             return ".";
           }
           
-          // Calculate margin (same as in calculateAlleleSizes)
-          const marginPercent = 0.1;
-          const minMargin = 10;
-          const margin = Math.max(minMargin, trackDimension * marginPercent);
-          // Drop position by NEAREST MIDPOINT along the stacking axis (no need to
-          // hover precisely over a node or stay on the variant's column): insert
-          // before the first node whose midpoint is past the pointer.
-          const sizes = order.map((lbl) => (isVertical
-            ? (alleleSizes[getAlleleKey(lbl)] || baseNodeW)
-            : (alleleSizes[getAlleleKey(lbl)] || baseNodeH)));
-          let total = 0;
-          for (let j = 0; j < sizes.length; j++) total += sizes[j] + (j < sizes.length - 1 ? gap : 0);
-          if (isVertical) {
-            const left = 70, W = flowWidthPx();
-            const start = left + Math.max(0, ((W - left - margin) - total) / 2);
-            newIndex = alleleNearestDropIndex(x, start, sizes, gap);
+          // Drop position by NEAREST MIDPOINT along the stacking axis. Use the
+          // layout interaction.js stashed while drawing THIS variant's nodes, so
+          // the index is computed against the exact same start/sizes/gap the bar
+          // and the nodes were drawn with — no duplicated (and drifting) math.
+          const vKey = makeVariantOrderKeyCompat(dragState.trackId, v.id);
+          const L = state.alleleDragLayout && state.alleleDragLayout.get(vKey);
+          if (L && Array.isArray(L.sizes) && L.sizes.length) {
+            newIndex = alleleNearestDropIndex(L.axis === 'x' ? x : y, L.start, L.sizes, L.gap);
           } else {
-            const top = 20, H = flowHeightPx();
-            const start = top + Math.max(0, ((H - top - margin) - total) / 2);
-            newIndex = alleleNearestDropIndex(y, start, sizes, gap);
+            // Fallback (first move before a render stashed the layout). Mirror
+            // interaction.js's origin (left/top = 20) and centering.
+            const margin = Math.max(10, trackDimension * 0.1);
+            const sizes = order.map((lbl) => (isVertical
+              ? (alleleSizes[getAlleleKey(lbl)] || baseNodeW)
+              : (alleleSizes[getAlleleKey(lbl)] || baseNodeH)));
+            let total = 0;
+            for (let j = 0; j < sizes.length; j++) total += sizes[j] + (j < sizes.length - 1 ? gap : 0);
+            if (isVertical) {
+              const left = 20, W = flowWidthPx();
+              const start = left + Math.max(0, ((W - left - margin) - total) / 2);
+              newIndex = alleleNearestDropIndex(x, start, sizes, gap);
+            } else {
+              const top = 20, H = flowHeightPx();
+              const start = top + Math.max(0, ((H - top - margin) - total) / 2);
+              newIndex = alleleNearestDropIndex(y, start, sizes, gap);
+            }
           }
         }
         
