@@ -188,7 +188,25 @@ async function initSmartTrackWebGPU(trackId) {
   container.appendChild(canvas);
   container.appendChild(webgpuCanvas);
   tracksContainer.appendChild(container);
-  
+
+  // Re-render whenever the container gets/changes size. renderSmartTrack bails
+  // when the measured width is 0 (layout not settled — common right after
+  // expanding a sample in full screen / JupyterLab), and used to only recover on
+  // a manual scroll. This paints as soon as the real size lands.
+  let _roDim = 0;
+  try {
+    const ro = new ResizeObserver((entries) => {
+      const w = entries && entries[0] && entries[0].contentRect ? entries[0].contentRect.width : 0;
+      if (w > 0 && w !== _roDim) {
+        _roDim = w;
+        requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+      }
+    });
+    ro.observe(container);
+    // Stash for cleanup even before the renderer record exists.
+    container._gsResizeObserver = ro;
+  } catch (e) {}
+
   try {
     // Wait for canvas to have dimensions
     const checkDimensions = () => {
@@ -268,6 +286,7 @@ function removeSmartTrackWebGPU(trackId) {
     
     // Remove DOM elements
     if (renderer.container) {
+      try { if (renderer.container._gsResizeObserver) renderer.container._gsResizeObserver.disconnect(); } catch (e) {}
       if (renderer.container.parentNode) {
         renderer.container.parentNode.removeChild(renderer.container);
       }
