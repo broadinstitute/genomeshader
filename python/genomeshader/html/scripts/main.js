@@ -314,6 +314,22 @@ function renderSmartTrack(trackId) {
   if (instancedRenderer) {
     instancedRenderer.clear();
   }
+
+  // Draw a CIGAR-marker rect (SNP/ins/del) on the SAME layer as the read bodies.
+  // Read bodies render on the WebGPU canvas which sits ABOVE the 2D canvas, so
+  // markers drawn with ctx.fillRect were hidden behind the reads whenever WebGPU
+  // was active. Route them through the instanced renderer too (added after each
+  // read body => on top of it), falling back to ctx only in Canvas2D mode.
+  const drawMarkerRect = (mx, my, mw, mh, r, g, b, al) => {
+    if (instancedRenderer && webgpuSupported) {
+      instancedRenderer.addRect(mx * dpr, my * dpr, mw * dpr, mh * dpr,
+        [r / 255, g / 255, b / 255, al]);
+    } else {
+      ctx.fillStyle = `rgba(${r},${g},${b},${al})`;
+      ctx.fillRect(mx, my, mw, mh);
+    }
+  };
+  const hexRgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
   
   const colText = cssVar("--muted");
   const grid = cssVar("--grid2");
@@ -439,30 +455,28 @@ function renderSmartTrack(trackId) {
             const ew = w;
             
             if (elem.type === 2) { // Insertion - purple tick
-              ctx.fillStyle = 'rgba(200,100,255,0.9)';
-              ctx.fillRect(ex, ey - 1, ew, 2);
+              drawMarkerRect(ex, ey - 1, ew, 2, 200, 100, 255, 0.9);
             } else if (elem.type === 3) { // Deletion - black gap
               const ey2 = yGenomeCanonical(elem.end, coordHeight);
               const delY = Math.min(ey, ey2);
               const delH = Math.max(2, Math.abs(ey2 - ey));
-              ctx.fillStyle = 'rgba(0,0,0,0.4)';
-              ctx.fillRect(ex + ew/4, delY, ew/2, delH);
+              drawMarkerRect(ex + ew/4, delY, ew/2, delH, 0, 0, 0, 0.4);
             } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
               // Calculate actual base height
               const nextBp = elem.start + 1;
               const nextY = (nextBp <= state.endBp ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(state.endBp, coordHeight));
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
               const actualBaseHeight = Math.max(1, Math.abs(nextY - ey) - gapAfterPx);
-              
+
               // Color based on nucleotide
               const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
               const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
               const bgColor = nucColors[nuc] || '#9C27B0';
-              
+
               // Draw background
               const drawHeight = Math.max(1, actualBaseHeight - BASE_TILE_INSET_PX);
-              ctx.fillStyle = bgColor;
-              ctx.fillRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight);
+              const [dr, dg, db] = hexRgb(bgColor);
+              drawMarkerRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight, dr, dg, db, 1);
               
               // Draw nucleotide letter only if there's enough space
               if (actualBaseHeight >= 8) {
@@ -751,33 +765,26 @@ function renderSmartTrack(trackId) {
             }
             
             if (elem.type === 2) { // Insertion - purple tick
-              ctx.fillStyle = `rgba(200,100,255,${elemAlpha})`;
-              ctx.fillRect(ex - 1, ey, 2, eh);
+              drawMarkerRect(ex - 1, ey, 2, eh, 200, 100, 255, elemAlpha);
             } else if (elem.type === 3) { // Deletion - black gap
               const ex2 = xGenomeCanonical(elem.end, genomeW);
-              ctx.fillStyle = `rgba(0,0,0,${elemAlpha})`;
-              ctx.fillRect(ex, ey + eh/4, ex2 - ex, eh/2);
+              drawMarkerRect(ex, ey + eh/4, ex2 - ex, eh/2, 0, 0, 0, elemAlpha);
             } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
               // Calculate actual base width
               const nextBp = elem.start + 1;
               const nextX = nextBp <= state.endBp ? xGenomeCanonical(nextBp, genomeW) : xGenomeCanonical(state.endBp, genomeW);
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
               const actualBaseWidth = Math.max(1, Math.abs(nextX - ex) - gapAfterPx);
-              
+
               // Color based on nucleotide
               const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
               const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
               const bgColor = nucColors[nuc] || '#9C27B0';
-              
-              // Convert hex color to rgba with alpha
-              const r = parseInt(bgColor.slice(1, 3), 16);
-              const g = parseInt(bgColor.slice(3, 5), 16);
-              const b = parseInt(bgColor.slice(5, 7), 16);
-              
+              const [r, g, b] = hexRgb(bgColor);
+
               // Draw background
               const drawWidth = Math.max(1, actualBaseWidth - BASE_TILE_INSET_PX);
-              ctx.fillStyle = `rgba(${r},${g},${b},${elemAlpha})`;
-              ctx.fillRect(ex, ey + 1, drawWidth, eh - 2);
+              drawMarkerRect(ex, ey + 1, drawWidth, eh - 2, r, g, b, elemAlpha);
               
               // Draw nucleotide letter only if there's enough space
               if (actualBaseWidth >= 8) {
