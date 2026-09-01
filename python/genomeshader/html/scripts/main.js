@@ -5237,7 +5237,7 @@ function panByPixels(dxPx, dyPx) {
 // stay the source of truth; the full re-render happens once on drag end. ---
 function _panLayers() {
   const out = [];
-  ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay"].forEach(id => {
+  ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay", "commentPinOverlay"].forEach(id => {
     const e = (typeof byId === "function" && typeof root !== "undefined" ? byId(root, id) : null)
       || document.getElementById(id);
     if (e) out.push(e);
