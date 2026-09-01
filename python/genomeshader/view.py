@@ -10,6 +10,7 @@ import gzip
 import math
 import subprocess
 import tempfile
+import urllib.parse
 import time
 from typing import Union, List, Optional, Tuple
 from pathlib import Path
@@ -1591,7 +1592,8 @@ class GenomeShader:
             return []
 
         # Define the API endpoint with the contig parameter
-        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track=cytoBandIdeo"
+        _g = urllib.parse.quote(str(self.genome_build), safe="")
+        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={_g};track=cytoBandIdeo"
 
         # Make a GET request to the API endpoint
         response = self._http_get_json(api_endpoint, f"Failed to retrieve ideogram for contig '{contig}'")
@@ -1663,7 +1665,14 @@ class GenomeShader:
             return []
 
         # Define the API endpoint with the track, contig, start, end parameters
-        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
+        # Encode free-form fields so a contig/build with ';'/'&' can't corrupt the query.
+        api_endpoint = (
+            "https://api.genome.ucsc.edu/getData/track?"
+            f"genome={urllib.parse.quote(str(self.genome_build), safe='')}"
+            f";track={urllib.parse.quote(str(track), safe='')}"
+            f";chrom={urllib.parse.quote(str(contig), safe='')}"
+            f";start={int(start)};end={int(end)}"
+        )
 
         # Make a GET request to the API endpoint
         response = self._http_get_json(
@@ -1966,7 +1975,14 @@ class GenomeShader:
             return []
 
         # Define the API endpoint with the track, contig, start, end parameters
-        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
+        # Encode free-form fields so a contig/build with ';'/'&' can't corrupt the query.
+        api_endpoint = (
+            "https://api.genome.ucsc.edu/getData/track?"
+            f"genome={urllib.parse.quote(str(self.genome_build), safe='')}"
+            f";track={urllib.parse.quote(str(track), safe='')}"
+            f";chrom={urllib.parse.quote(str(contig), safe='')}"
+            f";start={int(start)};end={int(end)}"
+        )
 
         # Make a GET request to the API endpoint
         response = self._http_get_json(

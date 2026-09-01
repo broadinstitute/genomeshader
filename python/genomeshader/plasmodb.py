@@ -104,7 +104,7 @@ def _fetch_to_local(session, uri: Optional[str], tmpdir: str) -> Optional[str]:
             # (e.g. gs://broad-malaria-public/...) with no credentials at all, so
             # staging a public reference works even when gcloud is unauthenticated
             # or not installed.
-            https = "https://storage.googleapis.com/" + uri[len("gs://"):]
+            https = "https://storage.googleapis.com/" + urllib.parse.quote(uri[len("gs://"):], safe="/")
             try:
                 _http_download(https, dst)
             except Exception as e:
@@ -146,7 +146,10 @@ def read_fasta(fasta_path: str, rename=lambda c: c) -> Dict[str, str]:
         for line in fh:
             if line.startswith(">"):
                 # Header up to first whitespace is the seqid.
-                cur = rename(line[1:].split()[0])
+                parts = line[1:].split()
+                if not parts:
+                    raise ValueError(f"malformed FASTA: header with no seqid ({line.rstrip()!r})")
+                cur = rename(parts[0])
                 seqs[cur] = []
             elif cur is not None:
                 seqs[cur].append(line.strip())
@@ -341,13 +344,14 @@ def stage_reference(
     build = session.genome_build
     base = session.gcs_session_dir.rstrip("/")
 
-    tmpdir = tempfile.mkdtemp(prefix="genomeshader-ref-")
-    fasta_path = _fetch_to_local(session, fasta, tmpdir)
-    gff_path = _fetch_to_local(session, gff, tmpdir)
-
-    seqs = read_fasta(fasta_path, rename)
+    # Download (if remote) + parse inside a temp dir that's always cleaned up;
+    # the parsed data lives on after it. Local paths pass through untouched.
+    with tempfile.TemporaryDirectory(prefix="genomeshader-ref-") as tmpdir:
+        fasta_path = _fetch_to_local(session, fasta, tmpdir)
+        gff_path = _fetch_to_local(session, gff, tmpdir)
+        seqs = read_fasta(fasta_path, rename)
+        genes_by_contig = parse_gff_genes(gff_path, rename) if gff_path else {}
     lengths = {c: len(s) for c, s in seqs.items()}
-    genes_by_contig = parse_gff_genes(gff_path, rename) if gff_path else {}
 
     # chrom sizes (consumed by _chrom_sizes() -> render config -> frontend clamp)
     session._write_cached_json(f"{base}/cache/ucsc/chrom_sizes/{build}.json", lengths)

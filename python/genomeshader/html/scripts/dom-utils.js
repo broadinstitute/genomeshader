@@ -725,10 +725,17 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     }
 
     if (placeholder && originalParent) {
-      if (originalNextSibling) {
-        originalParent.insertBefore(viewerEl, originalNextSibling);
-      } else {
-        originalParent.appendChild(viewerEl);
+      // insertBefore throws if the reference sibling was removed from the parent
+      // while we were in full screen (external DOM edits) — fall back to append
+      // so exiting full screen never leaves the viewer stranded in the modal.
+      try {
+        if (originalNextSibling && originalNextSibling.parentNode === originalParent) {
+          originalParent.insertBefore(viewerEl, originalNextSibling);
+        } else {
+          originalParent.appendChild(viewerEl);
+        }
+      } catch (e) {
+        try { originalParent.appendChild(viewerEl); } catch (e2) {}
       }
       placeholder.remove();
       placeholder = null;

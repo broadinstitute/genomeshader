@@ -109,6 +109,14 @@ def test_read_fasta_uppercases_and_renames(tmp_path):
     assert seqs == {"chr1": "ACGT"}
 
 
+def test_read_fasta_rejects_empty_header(tmp_path):
+    # A header with no seqid must raise, not crash with IndexError.
+    p = tmp_path / "bad.fa"
+    p.write_text(">   \nACGT\n")
+    with pytest.raises(ValueError):
+        read_fasta(str(p))
+
+
 def test_exon_union_across_transcripts(genome_files):
     _, gff = genome_files
     genes = {g["name"]: g for g in parse_gff_genes(gff)["Pf3D7_01_v3"]}

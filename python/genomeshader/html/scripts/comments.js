@@ -217,15 +217,25 @@
       scheduleSeenWrite();
     }
   }
+  function flushSeenWrite() {
+    if (!_seenWriteTimer) return;                // nothing pending
+    clearTimeout(_seenWriteTimer); _seenWriteTimer = null;
+    if (typeof sendCommMessage === "function") {
+      try { sendCommMessage("comments_read_set", { seen: seenState }); } catch (e) {}
+    }
+  }
   function scheduleSeenWrite() {
     if (_seenWriteTimer) return;                 // one batched write per burst
-    _seenWriteTimer = setTimeout(() => {
-      _seenWriteTimer = null;
-      if (typeof sendCommMessage === "function") {
-        try { sendCommMessage("comments_read_set", { seen: seenState }); } catch (e) {}
-      }
-    }, 3000);
+    _seenWriteTimer = setTimeout(flushSeenWrite, 3000);
   }
+  // Flush a pending debounced write when the tab is hidden/closed so read-state
+  // reaches the bucket even if the 3s timer hasn't fired. (localStorage already
+  // has it; this just avoids deferring the durable write to the next session.)
+  try {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flushSeenWrite();
+    });
+  } catch (e) {}
   function buildSeenMap(list) {
     const m = {}; for (const c of list) m[c.id] = getSeen(c.id); return m;
   }
