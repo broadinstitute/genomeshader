@@ -41,6 +41,25 @@ function processReadsData(rawReads) {
 
   // Sort by start position
   readArray.sort((a, b) => a.start - b.start);
+
+  // Cap rendered reads. Each expanded sample track sizes its canvases to the
+  // FULL read stack (maxRows * rowH) and there are three canvases per track
+  // (2D + WebGPU + text overlay); a deep-coverage locus (thousands of reads,
+  // doubled by paired-end mate splitting) makes those canvases enormous and
+  // stalls the GPU/compositor — the "expand freezes" bug. Downsample evenly
+  // across the locus so coverage stays representative but the stack stays
+  // bounded. ponytail: fixed cap; the real fix is viewport-sized virtualized
+  // canvases (draw only visible rows onto a container-height canvas).
+  const MAX_RENDER_READS = 300;
+  let downsampled = false;
+  if (readArray.length > MAX_RENDER_READS) {
+    const step = readArray.length / MAX_RENDER_READS;
+    const kept = [];
+    for (let i = 0; i < MAX_RENDER_READS; i++) kept.push(readArray[Math.floor(i * step)]);
+    readArray.length = 0;
+    Array.prototype.push.apply(readArray, kept);
+    downsampled = true;
+  }
   
   // Improved greedy packing: assign reads to rows, checking if read fits anywhere in each row
   const rows = [];
@@ -74,7 +93,7 @@ function processReadsData(rawReads) {
   
   // Only log in debug mode or for first few calls to avoid console spam
   // console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
-  return { reads: readArray, rowCount: rows.length };
+  return { reads: readArray, rowCount: rows.length, downsampled: downsampled };
 }
 // Exposed for the headless harness to regression-test read grouping (paired-end
 // mates share a query_name; markers must stay confined to their own read).
