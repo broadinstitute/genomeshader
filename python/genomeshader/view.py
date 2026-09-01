@@ -1098,7 +1098,9 @@ class GenomeShader:
 
     # Bump when the reads payload schema changes so stale caches miss cleanly.
     # v2: reference-diffed SNPs + has_md("snps displayable") column.
-    _READS_CACHE_VERSION = "v2"
+    # v3: flush v2 payloads written before the extension was rebuilt (no has_md
+    #     column / no reference-diffed SNPs) so the widget can't serve them.
+    _READS_CACHE_VERSION = "v3"
 
     def _reads_cache_path(self, locus: str, bam_urls: List[str]) -> Path:
         sig = self._READS_CACHE_VERSION + "|" + str(locus) + "|" + ",".join(sorted(bam_urls))

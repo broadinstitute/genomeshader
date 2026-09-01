@@ -102,3 +102,28 @@ test_plasmodb.py` → 49 passed, incl. new `test_staged_reference_forwarded_to_f
 `maturin develop --release` on the Mac + Lab verification of rendered mismatch
 glyphs (end-to-end path is WebGPU/comm — added to README manual-check list).
 Old reads disk caches auto-invalidated by the v2 key bump.
+
+## 2026-09-01T00:30:00Z  — No SNPs on real data: cache suspected
+
+**Context.** After shipping reference-based SNP calling + integration test
+(commit d5ebcaa), user reports no SNPs in read tracks at
+Pf3D7_01_v3:99002-101999 (sample FP0009-C).
+
+**Evidence.** Diagnostic run: `reference(c,a-1,b)` -> reflen=2998 (matches
+locus span, so reference IS served for this window). Read payload element
+counts: `{4:12420, 0:9987, 3:550, 2:161}` — softclip/read/del/ins present,
+**zero type-1 (SNP)** across ~10k reads over 3kb. Implausible for a locus with
+selected variant alleles => ref_seq never reached the extractor this run.
+
+**Hypothesis (leading).** `_fetch_reads_payload` (view.py:1052) serves a cached
+disk payload before calling Rust. A v2 cache written earlier — when
+`reference()` still returned "" (UCSC/staged cache not yet warm) — is a 0-SNP
+payload that keeps being served even though `reference()` works now. The v2 key
+(locus+bams) doesn't encode whether a reference was applied, so it can't
+distinguish a ref-less payload from a ref-full one.
+
+**Next.** Asked user to re-fetch with GENOMESHADER_NO_READS_CACHE=1 and report
+element counts + has_md. If SNPs appear => make the reads cache key/version
+depend on reference availability (or store ref presence in the payload and
+invalidate). If still zero => extractor bug on real reads; dump one read's
+CIGAR+SEQ to trace.
