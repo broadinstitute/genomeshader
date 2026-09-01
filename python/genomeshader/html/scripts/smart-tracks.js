@@ -220,13 +220,19 @@ async function initSmartTrackWebGPU(trackId) {
       webgpuCanvas,
       container
     });
-    
+
     // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
     // But we need a basic scroll handler for re-rendering
     container.addEventListener("scroll", () => {
       renderSmartTrack(trackId);
     });
-    
+
+    // Render now that the renderer exists. WebGPU init is async and can finish
+    // AFTER the reads-load renderAll already ran (found no renderer) — notably in
+    // full screen, where the canvas takes longer to get dimensions. Without this,
+    // reads don't appear until a scroll triggers renderSmartTrack.
+    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+
     console.log(`Smart track ${trackId}: WebGPU initialized`);
   } catch (error) {
     console.warn(`Smart track ${trackId}: Failed to initialize WebGPU:`, error);
@@ -246,6 +252,8 @@ async function initSmartTrackWebGPU(trackId) {
     container.addEventListener("scroll", () => {
       renderSmartTrack(trackId);
     });
+    // Paint once the (Canvas2D-fallback) renderer exists — see note above.
+    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
   }
 }
 
