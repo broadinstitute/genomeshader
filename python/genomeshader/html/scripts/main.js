@@ -359,6 +359,10 @@ function renderSmartTrack(trackId) {
     }
   };
   const hexRgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  // Collapsed tracks show an aggregate summary; draw point markers (SNP/ins) at
+  // the variant track's node width so they line up with it visually, instead of
+  // the 1-bp genomic width which is sub-pixel when zoomed out.
+  const variantMarkerW = (window._alleleNodeConstants && window._alleleNodeConstants.baseNodeW) || 4;
   
   const colText = cssVar("--muted");
   const grid = cssVar("--grid2");
@@ -484,7 +488,8 @@ function renderSmartTrack(trackId) {
             const ew = w;
             
             if (elem.type === 2) { // Insertion - purple tick
-              drawMarkerRect(ex, ey - 1, ew, 2, 200, 100, 255, 0.9);
+              const insH = track.collapsed ? variantMarkerW : 2;
+              drawMarkerRect(ex, ey - insH/2, ew, insH, 200, 100, 255, 0.9);
             } else if (elem.type === 3) { // Deletion - black gap
               const ey2 = yGenomeCanonical(elem.end, coordHeight);
               const delY = Math.min(ey, ey2);
@@ -502,8 +507,9 @@ function renderSmartTrack(trackId) {
               const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
               const bgColor = nucColors[nuc] || '#9C27B0';
 
-              // Draw background
-              const drawHeight = Math.max(1, actualBaseHeight - BASE_TILE_INSET_PX);
+              // Draw background. Collapsed => fixed variant-track width (along the
+              // genome axis), centered on the base; expanded => true per-base size.
+              const drawHeight = track.collapsed ? variantMarkerW : Math.max(1, actualBaseHeight - BASE_TILE_INSET_PX);
               const [dr, dg, db] = hexRgb(bgColor);
               drawMarkerRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight, dr, dg, db, 1);
               
@@ -796,7 +802,8 @@ function renderSmartTrack(trackId) {
             }
             
             if (elem.type === 2) { // Insertion - purple tick
-              drawMarkerRect(ex - 1, ey, 2, eh, 200, 100, 255, elemAlpha);
+              const insW = track.collapsed ? variantMarkerW : 2;
+              drawMarkerRect(ex - insW/2, ey, insW, eh, 200, 100, 255, elemAlpha);
             } else if (elem.type === 3) { // Deletion - black gap
               const ex2 = xGenomeCanonical(elem.end, genomeW);
               drawMarkerRect(ex, ey + eh/4, ex2 - ex, eh/2, 0, 0, 0, elemAlpha);
@@ -813,9 +820,11 @@ function renderSmartTrack(trackId) {
               const bgColor = nucColors[nuc] || '#9C27B0';
               const [r, g, b] = hexRgb(bgColor);
 
-              // Draw background
-              const drawWidth = Math.max(1, actualBaseWidth - BASE_TILE_INSET_PX);
-              drawMarkerRect(ex, ey + 1, drawWidth, eh - 2, r, g, b, elemAlpha);
+              // Draw background. Collapsed => fixed variant-track width, centered
+              // on the base; expanded => the true per-base width.
+              const drawWidth = track.collapsed ? variantMarkerW : Math.max(1, actualBaseWidth - BASE_TILE_INSET_PX);
+              const drawX = track.collapsed ? (ex + actualBaseWidth/2 - drawWidth/2) : ex;
+              drawMarkerRect(drawX, ey + 1, drawWidth, eh - 2, r, g, b, elemAlpha);
               
               // Draw nucleotide letter only if there's enough space. Use the text
               // overlay (above WebGPU reads) so it isn't hidden by the read body.
