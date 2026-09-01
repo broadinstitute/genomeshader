@@ -28,6 +28,61 @@ impl ElementType {
     }
 }
 
+/// Reference positions (1-based) of single-base mismatches (SNPs) encoded in an
+/// MD tag, walked from `ref_start` (1-based, matching `ref_pos`). In an MD tag a
+/// number = that many matched bases, a letter = one mismatch (the letter is the
+/// REFERENCE base; the read base differs), and `^SEQ` = a deletion of those ref
+/// bases. Insertions/soft-clips don't appear in MD (they don't consume the
+/// reference), so the walk stays aligned with `ref_pos`. This lets us surface
+/// SNPs for ordinary `M`-CIGAR reads, not just the rare `=`/`X` extended CIGAR.
+fn md_mismatch_positions(md: &str, ref_start: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let b = md.as_bytes();
+    let mut refp = ref_start;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c.is_ascii_digit() {
+            let mut n: u32 = 0;
+            while i < b.len() && b[i].is_ascii_digit() {
+                n = n.saturating_mul(10).saturating_add((b[i] - b'0') as u32);
+                i += 1;
+            }
+            refp = refp.saturating_add(n);
+        } else if c == b'^' {
+            i += 1; // deletion: skip the ^ and the deleted ref bases
+            while i < b.len() && b[i].is_ascii_alphabetic() {
+                refp = refp.saturating_add(1);
+                i += 1;
+            }
+        } else if c.is_ascii_alphabetic() {
+            out.push(refp); // a mismatch at this ref position
+            refp = refp.saturating_add(1);
+            i += 1;
+        } else {
+            i += 1; // ignore anything unexpected
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod md_tests {
+    use super::md_mismatch_positions;
+
+    #[test]
+    fn parses_matches_mismatches_and_deletions() {
+        // "10A5" -> mismatch after 10 matches, starting at ref 100 -> pos 110.
+        assert_eq!(md_mismatch_positions("10A5", 100), vec![110]);
+        // Two mismatches: "3C0T4" -> pos 103 (C), then 104 (T, 0 matches between).
+        assert_eq!(md_mismatch_positions("3C0T4", 100), vec![103, 104]);
+        // Deletion consumes ref but is not a mismatch: "5^AC5G3" -> G at 5+2+5=112.
+        assert_eq!(md_mismatch_positions("5^AC5G3", 100), vec![112]);
+        // All match -> none.
+        assert_eq!(md_mismatch_positions("150", 100), Vec::<u32>::new());
+    }
+}
+
 fn get_rg_to_sm_mapping(bam: &IndexedReader) -> HashMap<String, String> {
     let header = bam::Header::from_template(bam.header());
 
@@ -116,6 +171,7 @@ pub fn extract_reads(
     let mut sample_names = Vec::new();
     let mut element_types = Vec::new();
     let mut sequence = Vec::new();
+    let mut has_md = Vec::new();  // per-element: did this read carry an MD tag (=> SNPs computable)?
 
     let mut mask = HashMap::new();
 
@@ -128,6 +184,18 @@ pub fn extract_reads(
         let hap = match record.aux(b"HP") {
             Ok(Aux::I32(val)) => val,
             _ => 0,
+        };
+
+        // Mismatch (SNP) positions from the MD tag, so ordinary M-CIGAR reads show
+        // SNPs (not just =/X extended-CIGAR reads). read_has_md drives the "SNPs
+        // unavailable" warning when a BAM lacks MD.
+        let read_has_md;
+        let md_mm: Vec<u32> = match record.aux(b"MD") {
+            Ok(Aux::String(s)) => {
+                read_has_md = true;
+                md_mismatch_positions(s, (record.reference_start() as u32) + 1)
+            }
+            _ => { read_has_md = false; Vec::new() }
         };
 
         reference_contigs.push(chr.to_owned());
@@ -147,13 +215,40 @@ pub fn extract_reads(
 
         element_types.push(ElementType::READ);
         sequence.push(String::from_utf8_lossy(&[]).into_owned());
+        has_md.push(read_has_md);
 
         let mut ref_pos: u32 = (record.reference_start() as u32) + 1;
         let mut read_pos: u32 = 1;
         for (idx, c) in record.cigar().iter().enumerate() {
             match c {
                 Cigar::Match(len) => {
-                    // Handle Match case (consumes query, ref)
+                    // Handle Match case (consumes query, ref). M merges match+
+                    // mismatch, so emit a DIFF per MD-tag mismatch inside this run.
+                    for &mpos in &md_mm {
+                        if mpos >= ref_pos && mpos < ref_pos + len {
+                            let ridx = (read_pos as usize - 1) + (mpos - ref_pos) as usize;
+                            if ridx < record.seq().len() {
+                                let cigar_seq: &[u8] = &[record.seq()[ridx]];
+                                reference_contigs.push(chr.to_owned());
+                                reference_starts.push(mpos);
+                                reference_ends.push(mpos + 1);
+                                is_forwards.push(!record.is_reverse());
+                                query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
+                                haplotypes.push(hap);
+                                if let Ok(Aux::String(rg)) = record.aux(b"RG") {
+                                    read_groups.push(rg.to_owned());
+                                    sample_names.push(rg_sm_map.get(rg).unwrap().to_owned());
+                                } else {
+                                    read_groups.push("unknown".to_string());
+                                    sample_names.push("unknown".to_string());
+                                }
+                                element_types.push(ElementType::DIFF);
+                                sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
+                                has_md.push(read_has_md);
+                                mask.entry(mpos).and_modify(|e| { *e = std::cmp::max(*e, 1); }).or_insert(1);
+                            }
+                        }
+                    }
                     ref_pos += len;
                     read_pos += len;
                 }
@@ -180,6 +275,7 @@ pub fn extract_reads(
 
                     element_types.push(ElementType::INSERTION);
                     sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
+                    has_md.push(read_has_md);
 
                     mask.entry(ref_pos - 1)
                         .and_modify(|e| {
@@ -208,6 +304,7 @@ pub fn extract_reads(
 
                     element_types.push(ElementType::DELETION);
                     sequence.push(String::from_utf8_lossy(&[]).into_owned());
+                    has_md.push(read_has_md);
 
                     mask.entry(ref_pos)
                         .and_modify(|e| {
@@ -243,6 +340,7 @@ pub fn extract_reads(
 
                     element_types.push(ElementType::DIFF);
                     sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
+                    has_md.push(read_has_md);
 
                     mask.entry(ref_pos)
                         .and_modify(|e| {
@@ -281,6 +379,7 @@ pub fn extract_reads(
 
                         element_types.push(ElementType::SOFTCLIP);
                         sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
+                        has_md.push(read_has_md);
 
                         mask.entry(ref_pos)
                             .and_modify(|e| {
@@ -330,6 +429,7 @@ pub fn extract_reads(
             Series::new("sample_name", sample_names),
             Series::new("element_type", element_types),
             Series::new("sequence", sequence),
+            Series::new("has_md", has_md),
             Series::new("column_width", column_width)
         ]
     ).unwrap();

@@ -391,6 +391,20 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
       if (response.type === 'fetch_reads_response') {
         const sn = sampleId || response.sample_id;
         _readStatusDone('Loaded reads' + (sn ? ' for ' + sn : ''), false);
+        // Warn if the BAM has no MD tag — SNP mismatches can't be computed/shown
+        // (indels still render). has_md is per-element; all-false => no MD anywhere.
+        try {
+          const hm = response.reads && response.reads.has_md;
+          if (Array.isArray(hm) && hm.length && !hm.some(Boolean)) {
+            track.snpsUnavailable = true;
+            if (window.__GS_STATUS) {
+              window.__GS_STATUS('SNPs not shown for ' + (sn || 'this sample')
+                + ' — BAM has no MD tag (run `samtools calmd`)', { autoHide: 6000 });
+            }
+          } else {
+            track.snpsUnavailable = false;
+          }
+        } catch (e) {}
         track.readsData = response.reads;
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
