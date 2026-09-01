@@ -205,19 +205,29 @@ async function initSmartTrackWebGPU(trackId) {
   ((typeof ensureSmartScrollWrapper === "function" && ensureSmartScrollWrapper())
     || tracksContainer).appendChild(container);
 
-  // Re-render whenever the container gets/changes size. renderSmartTrack bails
-  // when the measured width is 0 (layout not settled — common right after
-  // expanding a sample in full screen / JupyterLab), and used to only recover on
-  // a manual scroll. This paints as soon as the real size lands.
+  // Re-render whenever the container gets a REAL size change. renderSmartTrack
+  // bails when the measured width is 0 (layout not settled — common right after
+  // expanding in full screen / JupyterLab); this recovers as soon as the real
+  // size lands, without a manual scroll.
+  //
+  // Hysteresis is critical: collapse/expand changes the reads-stack height,
+  // which toggles the #smartScroll vertical scrollbar, which changes this
+  // container's width by ~15px. Re-rendering on that delta changes the height
+  // again → scrollbar toggles → width changes → RO fires … an infinite loop
+  // that freezes the UI (read x-mapping uses tracksWidthPx(), NOT this width, so
+  // a scrollbar-sized change needs no re-render anyway). Only re-render on the
+  // first real size or a substantial change; absorb small (scrollbar) deltas.
   let _roDim = 0;
   try {
-    const ro = new ResizeObserver((entries) => {
-      const w = entries && entries[0] && entries[0].contentRect ? entries[0].contentRect.width : 0;
-      if (w > 0 && w !== _roDim) {
-        _roDim = w;
+    const ro = new ResizeObserver(debounce(() => {
+      const w = container.getBoundingClientRect().width || 0;
+      if (w <= 0) return;
+      const prev = _roDim;
+      _roDim = w;
+      if (prev === 0 || Math.abs(w - prev) > 24) {
         requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
       }
-    });
+    }, 120));
     ro.observe(container);
     // Stash for cleanup even before the renderer record exists.
     container._gsResizeObserver = ro;
