@@ -1873,3 +1873,10 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   transition: none;
   pointer-events: none;
 }
+
+/* IGV-style reads scroll: the #smartScroll wrapper owns the ONE scrollbar for the
+   sample-track stack. Hide each sample's inner scrollbar (reads still scroll via
+   wheel/drag chaining) so the outer bar isn't lost among a column of inner bars. */
+#smartScroll .smart-track-container { scrollbar-width: none; }
+#smartScroll .smart-track-container::-webkit-scrollbar { width: 0; height: 0; }
+#smartScroll { overflow-y: auto; }
