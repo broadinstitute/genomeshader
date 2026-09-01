@@ -4659,12 +4659,8 @@ function setupCanvasHover() {
       
       return selectedSamples;
     } else {
-      // For other strategies, cycle through candidates (current behavior)
-      const selectedSamples = [];
-      for (let i = 0; i < numSamples; i++) {
-        selectedSamples.push(candidates[i % candidates.length]);
-      }
-      return selectedSamples;
+      // Unknown strategy: up to numSamples UNIQUE candidates (no cycling/dupes).
+      return candidates.slice(0, numSamples);
     }
   }
   
@@ -4922,9 +4918,10 @@ function setupCanvasHover() {
       const numSamples = state.sampleSelection.numSamples || 1;
       
       // Select samples based on strategy (will pick new random samples each time for Random strategy)
-      // Cap defensively: never load more tracks than the slider/button promised,
-      // whatever a strategy returns.
-      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples).slice(0, numSamples);
+      // Load UNIQUE samples only, capped at what the slider/button promised. Some
+      // strategies pad by cycling/reusing candidates (returning duplicate sample
+      // IDs), which would create duplicate tracks and blow past the button count.
+      const selectedSamples = Array.from(new Set(selectSamplesForStrategy(strategy, candidates, numSamples))).slice(0, numSamples);
       
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};
@@ -4986,9 +4983,10 @@ function setupCanvasHover() {
       const numSamples = state.sampleSelection.numSamples || 1;
       
       // Select samples based on strategy
-      // Cap defensively: never load more tracks than the slider/button promised,
-      // whatever a strategy returns.
-      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples).slice(0, numSamples);
+      // Load UNIQUE samples only, capped at what the slider/button promised. Some
+      // strategies pad by cycling/reusing candidates (returning duplicate sample
+      // IDs), which would create duplicate tracks and blow past the button count.
+      const selectedSamples = Array.from(new Set(selectSamplesForStrategy(strategy, candidates, numSamples))).slice(0, numSamples);
       
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};
