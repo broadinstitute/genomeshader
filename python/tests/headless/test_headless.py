@@ -294,35 +294,36 @@ def test_comment_thread_logic(browser, tmp_path):
     page.close()
 
 
-def test_comment_pin_is_clickable(browser, tmp_path):
-    """A rendered comment pin must opt into pointer events — #tracksSvg is
-    click-through, so without pointer-events:auto the pin can't be clicked to
-    open its comment."""
+def test_comment_pin_is_topmost_and_clickable(browser, tmp_path):
+    """The comment pin must be the topmost element at its location — a full-track
+    .track-hover-area (z-index 100) sits above #tracksSvg and used to eat the
+    click, so pins render on a dedicated overlay above it. Seed a comment, force a
+    real render, and elementFromPoint the pin."""
     page, _ = _open(browser, tmp_path, "horizontal")
     _wait_ready(page)
-    style = page.evaluate(
+    page.evaluate(
         """() => {
           const st = window.__GS_STATE;
-          if (!st || !window.__GS_renderCommentPins) return 'NO_HOOK';
           const mid = Math.floor((st.startBp + st.endBp) / 2);
           st.comments = [{ id: 'c1', author: 'x', body: 'hi',
             anchor: { type: 'region', locus: { contig: st.contig, pos: mid } } }];
-          const NS = 'http://www.w3.org/2000/svg';
-          const svg = document.createElementNS(NS, 'svg');
-          const el = (tag, attrs, text) => {
-            const e = document.createElementNS(NS, tag);
-            for (const k in (attrs || {})) e.setAttribute(k, attrs[k]);
-            if (text != null) e.textContent = text;
-            return e;
-          };
-          window.__GS_renderCommentPins({ svg, el, genomePos: () => 100,
-            baseX: 50, baseY: 60, isVertical: false });
-          const g = svg.querySelector('g');
-          return g ? (g.getAttribute('style') || '') : 'NO_PIN';
+          window.dispatchEvent(new Event('resize'));
         }"""
     )
-    assert style not in ("NO_HOOK", "NO_PIN"), style
-    assert "pointer-events" in style and "auto" in style, style
+    page.wait_for_timeout(500)
+    out = page.evaluate(
+        """() => {
+          const pin = document.querySelector('.gs-comment-pin');
+          if (!pin) return { pin: false };
+          const r = pin.getBoundingClientRect();
+          const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return { pin: true, overlay: !!document.getElementById('commentPinOverlay'),
+                   pinIsTop: (top === pin || pin.contains(top)) };
+        }"""
+    )
+    assert out["pin"] is True, "pin did not render"
+    assert out["overlay"] is True, "pin overlay missing"
+    assert out["pinIsTop"] is True, "pin is covered by another element (not clickable)"
     page.close()
 
 

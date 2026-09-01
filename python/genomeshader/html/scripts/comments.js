@@ -476,16 +476,26 @@
     const replies = c.replies || [];
     if (replies.length) {
       const list = document.createElement("div");
-      list.style.cssText = "border-left:2px solid var(--border2);margin:4px 0 6px;padding-left:8px;"
-        + "display:flex;flex-direction:column;gap:6px;";
-      replies.forEach(r => {
+      list.style.cssText = "border-left:2px solid var(--border2);border-top:1px solid var(--border2);"
+        + "margin:6px 0;padding:6px 0 0 8px;";
+      replies.forEach((r, i) => {
         const item = document.createElement("div");
+        // Horizontal rule between entries in the thread.
+        item.style.cssText = (i > 0)
+          ? "border-top:1px solid var(--border2);padding-top:6px;margin-top:6px;" : "";
         const rb = document.createElement("div");
         rb.style.cssText = "font-size:11.5px;color:var(--text);line-height:1.45;word-break:break-word;";
         rb.innerHTML = md(r.body);
         const rm = document.createElement("div");
-        rm.style.cssText = "font-size:9.5px;color:var(--muted);margin-top:2px;";
-        rm.textContent = (r.author || "unknown") + " · " + fmtTime(r.created);
+        rm.style.cssText = "font-size:9.5px;color:var(--muted);margin-top:2px;display:flex;"
+          + "justify-content:space-between;align-items:center;gap:8px;";
+        const rw = document.createElement("span");
+        rw.textContent = (r.author || "unknown") + " · " + fmtTime(r.created);
+        const rdel = linkBtn("Delete");
+        rdel.style.color = "var(--danger, #e5534b)";
+        rdel.style.padding = "1px 7px";
+        rdel.addEventListener("click", () => deleteReply(c.id, r.id));
+        rm.appendChild(rw); rm.appendChild(rdel);
         item.appendChild(rb); item.appendChild(rm);
         list.appendChild(item);
       });
@@ -518,7 +528,11 @@
   function linkBtn(txt) {
     const b = document.createElement("button");
     b.textContent = txt;
-    b.style.cssText = "border:none;background:transparent;color:var(--muted);font-size:10.5px;cursor:pointer;padding:0;";
+    // Look like a real (small) button, not a text link.
+    b.style.cssText = "border:1px solid var(--border2);background:var(--panel);color:var(--text);"
+      + "font-size:10.5px;cursor:pointer;padding:2px 9px;border-radius:5px;line-height:1.5;";
+    b.addEventListener("mouseenter", () => { b.style.borderColor = "var(--blue)"; });
+    b.addEventListener("mouseleave", () => { b.style.borderColor = "var(--border2)"; });
     return b;
   }
 
@@ -842,6 +856,18 @@
     }).catch(() => { composing = false; render(); });
   }
 
+  function deleteReply(commentId, replyId) {
+    if (typeof sendCommMessage !== "function") return;
+    sendCommMessage("comments_reply_delete", { id: commentId, reply_id: replyId }).then(resp => {
+      if (resp && resp.comment) {
+        const i = state.comments.findIndex(c => c.id === commentId);
+        if (i >= 0) state.comments[i] = resp.comment;
+      }
+      render();
+      if (typeof renderAll === "function") renderAll();
+    }).catch(() => {});
+  }
+
   function createReply(id, body) {
     if (typeof sendCommMessage !== "function") return;
     sendCommMessage("comments_reply", { id: id, body: body, author: currentAuthor || null }).then(resp => {
@@ -879,10 +905,36 @@
   // Called from tracks.js while rendering the locus ruler. Draws one small
   // marker per in-view comment; clicking it opens the Comments tab scrolled to
   // that comment.
+  // A dedicated SVG overlay stacked ABOVE the track-control-containers (which
+  // carry a full-track .track-hover-area at z-index 100 that would otherwise eat
+  // pin clicks). The overlay is click-through except the pins themselves.
+  function ensureCommentPinOverlay(refSvg) {
+    const container = document.getElementById("tracksContainer")
+      || (refSvg && refSvg.parentNode);
+    if (!container) return refSvg || null;
+    let ov = container.querySelector("#commentPinOverlay");
+    if (!ov) {
+      ov = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      ov.setAttribute("id", "commentPinOverlay");
+      ov.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;"
+        + "pointer-events:none;z-index:300;";
+      container.appendChild(ov);
+    }
+    // Match tracksSvg's coordinate system (viewBox if any).
+    if (refSvg) {
+      const vb = refSvg.getAttribute("viewBox");
+      if (vb) ov.setAttribute("viewBox", vb); else ov.removeAttribute("viewBox");
+    }
+    return ov;
+  }
+
   window.__GS_renderCommentPins = function (ctx) {
-    if (!ctx || !ctx.svg || !ctx.el || typeof ctx.genomePos !== "function") return;
+    if (!ctx || !ctx.el || typeof ctx.genomePos !== "function") return;
+    const el = ctx.el, isVertical = ctx.isVertical;
+    const svg = ensureCommentPinOverlay(ctx.svg);
+    if (!svg) return;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);   // clear old pins
     if (!state.comments || !state.comments.length) return;
-    const el = ctx.el, svg = ctx.svg, isVertical = ctx.isVertical;
     // Group in-view comments by bp so stacked comments share one pin.
     const byPos = new Map();
     for (const c of state.comments) {
@@ -901,14 +953,16 @@
         const cx = ctx.baseX + 24;
         // pointer-events:auto so the pin is clickable — #tracksSvg is otherwise
         // click-through (pans pass to the layer below), like the Indel markers.
-        g = el("g", { style: "cursor:pointer; pointer-events: auto;" });
+        g = el("g", { "class": "gs-comment-pin", style: "cursor:pointer; pointer-events: auto;" });
+        g.appendChild(el("rect", { x: ctx.baseX - 2, y: pos - 10, width: 38, height: 20, fill: "transparent" }));  // generous hit target
         g.appendChild(el("line", { x1: ctx.baseX, x2: cx, y1: pos, y2: pos, stroke: "var(--blue)", "stroke-width": 1 }));
         g.appendChild(el("circle", { cx: cx, cy: pos, r: 5.5, fill: "var(--blue)", stroke: "var(--panel)", "stroke-width": 1 }));
       } else {
         const cy = ctx.baseY - 24;
         // pointer-events:auto so the pin is clickable — #tracksSvg is otherwise
         // click-through (pans pass to the layer below), like the Indel markers.
-        g = el("g", { style: "cursor:pointer; pointer-events: auto;" });
+        g = el("g", { "class": "gs-comment-pin", style: "cursor:pointer; pointer-events: auto;" });
+        g.appendChild(el("rect", { x: pos - 10, y: cy - 10, width: 20, height: (ctx.baseY - cy) + 12, fill: "transparent" }));  // generous hit target (marker down into the band)
         g.appendChild(el("line", { x1: pos, x2: pos, y1: ctx.baseY, y2: cy, stroke: "var(--blue)", "stroke-width": 1 }));
         // speech-bubble-ish marker: a small rounded square
         g.appendChild(el("rect", { x: pos - 5.5, y: cy - 5.5, width: 11, height: 11, rx: 2.5, fill: "var(--blue)", stroke: "var(--panel)", "stroke-width": 1 }));
@@ -935,7 +989,12 @@
   };
 
   function openToComment(id) {
-    // Switch to the Comments tab (right panel) and flash the target.
+    // Zoom/recenter the view on the comment's feature, then switch to the
+    // Comments tab (right panel) and flash the target.
+    const c = (state.comments || []).find(x => x.id === id);
+    if (c && pinPos(c.anchor || {}) != null && window.__GS_gotoComment) {
+      try { window.__GS_gotoComment(c.anchor); } catch (e) {}
+    }
     if (typeof setActiveTab === "function") setActiveTab("comments");
     else {
       const icon = document.querySelector('.command-strip-icon[data-tab="comments"]');

@@ -180,6 +180,14 @@ def test_comment_replies(tmp_path, monkeypatch):
     # unknown id -> None
     assert s.reply_comment("nope", "x") is None
 
+    # delete one reply
+    rid = r2["replies"][0]["id"]
+    r3 = s.delete_reply(c["id"], rid)
+    assert [x["body"] for x in r3["replies"]] == ["second"]
+    assert s.list_comments()[0]["replies"] == r3["replies"]
+    # deleting a missing reply is a no-op (returns the comment unchanged)
+    assert len(s.delete_reply(c["id"], "gone")["replies"]) == 1
+
 
 def test_widget_comments_reply_comm(tmp_path, monkeypatch):
     s = _shader(tmp_path, monkeypatch)

@@ -2635,6 +2635,25 @@ class GenomeShader:
         self._uri_write_json(uri, c)
         return c
 
+    def delete_reply(self, comment_id: str, reply_id: str, author: Optional[str] = None) -> Optional[dict]:
+        """Remove one reply from a thread and return the updated comment."""
+        uri = f"{self._comments_dir()}/{comment_id}.json"
+        c = self._uri_read_json(uri)
+        if not isinstance(c, dict):
+            return None
+        replies = c.get("replies") or []
+        kept = [r for r in replies if r.get("id") != reply_id]
+        if len(kept) == len(replies):
+            return c  # nothing removed
+        c["replies"] = kept
+        now = self._now_iso()
+        author = author or self._comment_author()
+        c["updated"] = now
+        c["updatedBy"] = author
+        c.setdefault("history", []).append({"action": "reply_deleted", "by": author, "at": now})
+        self._uri_write_json(uri, c)
+        return c
+
     def _read_state_uri(self, user: str) -> str:
         import re
         safe = re.sub(r"[^A-Za-z0-9._@-]", "_", user or "anon")
