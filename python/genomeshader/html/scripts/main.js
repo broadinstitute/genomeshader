@@ -3853,24 +3853,24 @@ function setupCanvasHover() {
     const addBtn = byId(currentRoot, 'loadSamplesAdd');
     const candidates = state.sampleSelection.candidateSamples;
     const numSamples = state.sampleSelection.numSamples || 1;
-    
-    const totalCandidates = candidates.length;
-    const samplesToLoad = Math.min(numSamples, totalCandidates);
-    
-    if (replaceBtn) {
-      if (totalCandidates === 0) {
-        replaceBtn.textContent = 'Load';
-      } else {
-        replaceBtn.textContent = `Load (${samplesToLoad} of ${totalCandidates})`;
-      }
+
+    // The selectable pool depends on the strategy: carriers+controls draws from
+    // the whole cohort (allSampleIds), not just the allele carriers, so the
+    // button must count that pool — otherwise it under-reports and the load looks
+    // like it loaded "more than the button said".
+    const strategy = state.sampleSelection.strategy;
+    let pool = candidates.length;
+    if (strategy === 'carriers_controls') {
+      const allN = (state.sampleSelection.allSampleIds || []).length;
+      if (allN > pool) pool = allN;
     }
-    
+    const samplesToLoad = Math.min(numSamples, pool);
+
+    if (replaceBtn) {
+      replaceBtn.textContent = (pool === 0) ? 'Load' : `Load (${samplesToLoad} of ${pool})`;
+    }
     if (addBtn) {
-      if (totalCandidates === 0) {
-        addBtn.textContent = 'Load (add)';
-      } else {
-        addBtn.textContent = `Load (add ${samplesToLoad} of ${totalCandidates})`;
-      }
+      addBtn.textContent = (pool === 0) ? 'Load (add)' : `Load (add ${samplesToLoad} of ${pool})`;
     }
   }
   
@@ -4316,24 +4316,17 @@ function setupCanvasHover() {
     }
     
     if (strategy === 'random') {
-      // Random strategy: select N random samples from candidates
+      // Random strategy: up to numSamples UNIQUE random samples from candidates.
+      // Never pad with duplicates — loading the same sample twice is pointless and
+      // makes the loaded count exceed what the Load button promises.
       const selectedSamples = [];
       const candidatesCopy = [...candidates]; // Copy to avoid mutating original
-      
-      for (let i = 0; i < numSamples; i++) {
-        if (candidatesCopy.length === 0) {
-          // If we've exhausted unique samples, allow duplicates by resetting
-          candidatesCopy.push(...candidates);
-        }
-        
-        // Pick a random index
+      const target = Math.min(numSamples, candidatesCopy.length);
+      for (let i = 0; i < target; i++) {
         const randomIndex = Math.floor(Math.random() * candidatesCopy.length);
         selectedSamples.push(candidatesCopy[randomIndex]);
-        
-        // Remove the selected sample to avoid duplicates (if possible)
         candidatesCopy.splice(randomIndex, 1);
       }
-      
       return selectedSamples;
     } else if (strategy === 'best_evidence') {
       // Best evidence strategy: select samples with strongest evidence for selected alleles
@@ -4929,7 +4922,9 @@ function setupCanvasHover() {
       const numSamples = state.sampleSelection.numSamples || 1;
       
       // Select samples based on strategy (will pick new random samples each time for Random strategy)
-      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
+      // Cap defensively: never load more tracks than the slider/button promised,
+      // whatever a strategy returns.
+      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples).slice(0, numSamples);
       
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};
@@ -4991,7 +4986,9 @@ function setupCanvasHover() {
       const numSamples = state.sampleSelection.numSamples || 1;
       
       // Select samples based on strategy
-      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples);
+      // Cap defensively: never load more tracks than the slider/button promised,
+      // whatever a strategy returns.
+      const selectedSamples = selectSamplesForStrategy(strategy, candidates, numSamples).slice(0, numSamples);
       
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};
