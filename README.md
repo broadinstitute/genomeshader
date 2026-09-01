@@ -21,6 +21,42 @@ pip install -r dev-requirements.txt
 maturin develop --release      # builds the Rust extension in-place
 ```
 
+## Authentication & GCS access
+
+Data (BAM/CRAM/VCF) and the session dir usually live on Google Cloud Storage.
+Reads go through htslib (which honours `GCS_OAUTH_TOKEN`); listing and the
+comment store shell out to `gcloud`/`gsutil`.
+
+**It's automatic for `gs://` sessions.** Constructing
+`GenomeShader(gcs_session_dir="gs://…")` starts a background credential
+refresher: it mints an ADC access token (via `google-auth`, falling back to the
+`gcloud` CLI), publishes it to `GCS_OAUTH_TOKEN` and `CLOUDSDK_AUTH_ACCESS_TOKEN`,
+and re-mints ~5 min before each expiry so tokens don't lapse mid-session.
+
+- **First-time / after a lapse:** run once in a terminal (or a `!`-cell):
+  `gcloud auth application-default login`. The refresher then keeps it alive.
+- **Reauth-enforced orgs (e.g. Broad):** a hard reauth eventually requires that
+  interactive login again; the refresher logs a one-line hint and auto-resumes
+  after you re-auth. To avoid interactive reauth entirely, use a **service
+  account**: `gcloud auth activate-service-account --key-file=key.json` before
+  launching, or point `GOOGLE_APPLICATION_CREDENTIALS` at the key.
+- **Controls:** `s.start_credential_refresh()` / `s.stop_credential_refresh()`;
+  opt out of auto-start with `GENOMESHADER_NO_CRED_REFRESH=1`.
+- **Public buckets:** `stage_reference(...)` falls back to the anonymous public
+  HTTPS endpoint, so staging a public reference works even without credentials.
+
+## Comments
+
+A per-session commenting layer stored as JSON in the session bucket
+(`comments/`, one file per comment; per-user read-state in `comment_read_state/`).
+Comments anchor to a region/allele/variant/gene/sample/read and show as blue
+pins on the reference track (click to open the thread and zoom to the feature).
+Threads support **replies** (authors can delete their own), an **unread**
+indicator (a NEW chip + a badge on the Comments icon when someone else posts to a
+thread you're in — durable across devices via the bucket), and **sort/filter**
+(recent activity / date / author / position; filter by author or anchor type).
+The current user is taken from the gcloud/Google identity.
+
 ## Testing
 
 Three suites. The Rust and Python suites are the default CI gate; the headless
@@ -106,7 +142,7 @@ Each maps to a fixed regression:
 | `test_indel_toggle_cycle` | Indel marker cycles off→ins→del→off on mixed positions, toggles on pure |
 | `test_zero_carrier_allele_label_is_honest` | 0-carrier alleles say so, not a bare "0 samples" |
 | `test_comment_thread_logic` | unread/participant detection + unread-floats-to-top sort + author/anchor filter |
-| `test_comment_pin_is_clickable` | comment pins opt into pointer events (clickable to open) |
+| `test_comment_pin_is_topmost_and_clickable` | comment pins render on a top overlay and are the topmost element (clickable) |
 
 #### Adding a test
 
