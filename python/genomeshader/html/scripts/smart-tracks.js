@@ -369,8 +369,13 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     track.bamUrls = hit.bamUrls || [];
     updateSmartTrackLabel(track);
     renderAll();
-    // Instant cache hit: only clear the bar if nothing else is loading.
-    if (window.__GS_STATUS && _readLoadsInFlight === 0) window.__GS_STATUS(false);
+    // Instant cache hit: flash a brief confirmation so the user sees something
+    // happened. If other loads are in flight, leave their busy bar alone.
+    if (window.__GS_STATUS && _readLoadsInFlight === 0) {
+      const sn = sampleId || track.sampleId;
+      window.__GS_STATUS('Loaded reads' + (sn ? ' for ' + sn : '') + ' (cached)',
+        { autoHide: 1200 });
+    }
     return Promise.resolve(track.readsLayout);
   }
 
