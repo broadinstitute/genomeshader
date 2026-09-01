@@ -45,7 +45,7 @@ fn stage_data_from_one_file(
     let mut outer_df = DataFrame::default();
 
     for (chr, start, stop) in loci.iter() {
-        let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop)?;
+        let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop, None, 0)?;
         let _ = outer_df.vstack_mut(&df);
     }
 
@@ -196,8 +196,8 @@ pub fn fetch_reads_from_first_bam(
     let _stderr_gag = Gag::stderr().unwrap();
     
     let mut bam = open_bam(reads_url, cache_path)?;
-    let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop)?;
-    
+    let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop, None, 0)?;
+
     Ok(df)
 }
 
@@ -209,7 +209,9 @@ pub fn fetch_reads_from_bam_urls(
     chr: &String,
     start: &u64,
     stop: &u64,
-    cache_path: &PathBuf
+    cache_path: &PathBuf,
+    ref_seq: Option<&[u8]>,   // staged reference bases for [ref_seq_start, ...]
+    ref_seq_start: u32        // 1-based genomic pos of ref_seq[0]
 ) -> Result<DataFrame> {
     let _stderr_gag = Gag::stderr().unwrap();
     
@@ -224,7 +226,7 @@ pub fn fetch_reads_from_bam_urls(
         .filter_map(|(idx, reads_url)| {
             match open_bam(reads_url, cache_path) {
                 Ok(mut bam) => {
-                    match extract_reads(&mut bam, reads_url, cohort, chr, start, stop) {
+                    match extract_reads(&mut bam, reads_url, cohort, chr, start, stop, ref_seq, ref_seq_start) {
                         Ok(df) if df.height() > 0 => Some((idx, df)),
                         Ok(_) => None,
                         Err(e) => {

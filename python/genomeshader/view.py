@@ -1060,7 +1060,22 @@ class GenomeShader:
                 reads_dict = None
         source = "disk" if reads_dict is not None else "fetch"
         if reads_dict is None:
-            reads_df = self._session.fetch_reads_for_locus(locus, bam_urls)
+            # Fetch the staged reference for this window so the Rust extractor can
+            # diff M-run read bases against it and surface SNPs even on BAMs that
+            # ship without MD tags. reference() is 0-based [start,end); _parse_locus
+            # is 1-based, so start-1 makes ref_seq[0] land on 1-based `start`, which
+            # matches Rust's 1-based ref_pos. ref_start is that 1-based position.
+            ref_seq = ""
+            ref_start = 0
+            try:
+                _contig, _lstart, _lend = self._parse_locus(str(locus))
+                ref_seq = self.reference(_contig, _lstart - 1, _lend) or ""
+                ref_start = _lstart
+            except Exception:
+                ref_seq, ref_start = "", 0
+            reads_df = self._session.fetch_reads_for_locus(
+                locus, bam_urls, ref_seq or None, int(ref_start)
+            )
             reads_dict = reads_df.to_dict(as_series=False)
             count = len(reads_df)
             if use_cache:
@@ -1081,8 +1096,12 @@ class GenomeShader:
             "sample_id": sample_id,
         }
 
+    # Bump when the reads payload schema changes so stale caches miss cleanly.
+    # v2: reference-diffed SNPs + has_md("snps displayable") column.
+    _READS_CACHE_VERSION = "v2"
+
     def _reads_cache_path(self, locus: str, bam_urls: List[str]) -> Path:
-        sig = str(locus) + "|" + ",".join(sorted(bam_urls))
+        sig = self._READS_CACHE_VERSION + "|" + str(locus) + "|" + ",".join(sorted(bam_urls))
         gb = str(self.genome_build or "genome").replace("/", "_")
         return self._local_cache_dir / "reads" / gb / (self._cache_id(sig) + ".json")
 

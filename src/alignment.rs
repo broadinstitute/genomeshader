@@ -66,9 +66,43 @@ fn md_mismatch_positions(md: &str, ref_start: u32) -> Vec<u32> {
     out
 }
 
+/// Reference-based SNP calls for one `M` CIGAR run when the read has no MD tag.
+/// Compares read query bases to the staged reference and returns, per mismatch,
+/// `(genomic_pos_1based, read_base_uppercased)`. Coordinates are all 1-based to
+/// match `ref_pos`/`read_pos` in `extract_reads`. Positions whose reference base
+/// isn't covered by `ref_seq`, or where either base is `N`, are skipped.
+///
+/// - `read_bases`: the full query sequence (`record.seq().as_bytes()`), 0-indexed.
+/// - `run_read_start`/`run_ref_start`: 1-based query/genomic pos of the run's 1st base.
+/// - `ref_seq_start`: 1-based genomic pos of `ref_seq[0]`.
+fn ref_mismatches_in_run(
+    read_bases: &[u8],
+    run_read_start: u32,
+    run_ref_start: u32,
+    run_len: u32,
+    ref_seq: &[u8],
+    ref_seq_start: u32,
+) -> Vec<(u32, u8)> {
+    let mut out = Vec::new();
+    for k in 0..run_len {
+        let gpos = run_ref_start + k; // 1-based genomic position
+        let refidx = (gpos as i64) - (ref_seq_start as i64);
+        let ridx = (run_read_start as usize - 1) + k as usize;
+        if refidx < 0 || (refidx as usize) >= ref_seq.len() || ridx >= read_bases.len() {
+            continue;
+        }
+        let read_b = read_bases[ridx].to_ascii_uppercase();
+        let ref_b = ref_seq[refidx as usize].to_ascii_uppercase();
+        if read_b != ref_b && ref_b != b'N' && read_b != b'N' {
+            out.push((gpos, read_b));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod md_tests {
-    use super::md_mismatch_positions;
+    use super::{md_mismatch_positions, ref_mismatches_in_run};
 
     #[test]
     fn parses_matches_mismatches_and_deletions() {
@@ -80,6 +114,37 @@ mod md_tests {
         assert_eq!(md_mismatch_positions("5^AC5G3", 100), vec![112]);
         // All match -> none.
         assert_eq!(md_mismatch_positions("150", 100), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn ref_diff_finds_snps_with_correct_coords() {
+        // Reference "ACGTACGT" starting at genomic pos 100 => pos 100..=107.
+        let refseq = b"ACGTACGT";
+        // Read aligned at genomic 100 (read_pos 1), full 8bp M run, one mismatch:
+        // read[2]='A' vs ref[2]='G' at genomic 102.
+        let read = b"ACATACGT";
+        assert_eq!(
+            ref_mismatches_in_run(read, 1, 100, 8, refseq, 100),
+            vec![(102u32, b'A')]
+        );
+        // Soft-clip offset: run starts at query base 4 (run_read_start=4) and
+        // genomic 100. ridx 3,4,5,6 = A,T,T,G vs ref A,C,G,T => mismatches at
+        // 101(T), 102(T), 103(G); the leading A@100 matches.
+        let read2 = b"NNNATTGT";
+        assert_eq!(
+            ref_mismatches_in_run(read2, 4, 100, 4, refseq, 100),
+            vec![(101u32, b'T'), (102u32, b'T'), (103u32, b'G')]
+        );
+        // N in reference or read is never a SNP.
+        assert_eq!(
+            ref_mismatches_in_run(b"AN", 1, 100, 2, b"AC", 100),
+            Vec::<(u32, u8)>::new()
+        );
+        // Out-of-window positions are skipped (ref shorter than run).
+        assert_eq!(
+            ref_mismatches_in_run(b"TT", 1, 100, 2, b"A", 100),
+            vec![(100u32, b'T')]
+        );
     }
 }
 
@@ -156,7 +221,9 @@ pub fn extract_reads(
     cohort: &String,
     chr: &String,
     start: &u64,
-    stop: &u64
+    stop: &u64,
+    ref_seq: Option<&[u8]>,   // reference bases covering [ref_seq_start, ...], uppercased
+    ref_seq_start: u32        // 1-based genomic position of ref_seq[0]
 ) -> Result<DataFrame> {
     let mut chunks = Vec::new();
     let mut cohorts = Vec::new();
@@ -197,6 +264,9 @@ pub fn extract_reads(
             }
             _ => { read_has_md = false; Vec::new() }
         };
+        // "SNPs displayable" for this read: true if it carries MD, or if a
+        // staged reference was supplied to diff M-run bases against.
+        let snps_displayable = read_has_md || ref_seq.is_some();
 
         reference_contigs.push(chr.to_owned());
         reference_starts.push((record.reference_start() as u32) + 1);
@@ -215,7 +285,7 @@ pub fn extract_reads(
 
         element_types.push(ElementType::READ);
         sequence.push(String::from_utf8_lossy(&[]).into_owned());
-        has_md.push(read_has_md);
+        has_md.push(snps_displayable);
 
         let mut ref_pos: u32 = (record.reference_start() as u32) + 1;
         let mut read_pos: u32 = 1;
@@ -245,6 +315,37 @@ pub fn extract_reads(
                                 element_types.push(ElementType::DIFF);
                                 sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
                                 has_md.push(read_has_md);
+                                mask.entry(mpos).and_modify(|e| { *e = std::cmp::max(*e, 1); }).or_insert(1);
+                            }
+                        }
+                    }
+                    // No MD tag => diff read bases against the staged reference
+                    // to still surface SNPs (many BAMs ship without MD).
+                    if !read_has_md {
+                        if let Some(rseq) = ref_seq {
+                            let read_bytes = record.seq().as_bytes();
+                            for (mpos, read_b) in
+                                ref_mismatches_in_run(&read_bytes, read_pos, ref_pos, *len, rseq, ref_seq_start)
+                            {
+                                let cigar_seq: &[u8] = &[read_b];
+                                reference_contigs.push(chr.to_owned());
+                                reference_starts.push(mpos);
+                                reference_ends.push(mpos + 1);
+                                is_forwards.push(!record.is_reverse());
+                                query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
+                                haplotypes.push(hap);
+                                if let Ok(Aux::String(rg)) = record.aux(b"RG") {
+                                    read_groups.push(rg.to_owned());
+                                    sample_names.push(rg_sm_map.get(rg).unwrap().to_owned());
+                                } else {
+                                    read_groups.push("unknown".to_string());
+                                    sample_names.push("unknown".to_string());
+                                }
+                                element_types.push(ElementType::DIFF);
+                                sequence.push(String::from_utf8_lossy(cigar_seq).into_owned());
+                                // Reference-derived SNP is displayable => mark true so
+                                // the "SNPs unavailable" warning isn't raised.
+                                has_md.push(true);
                                 mask.entry(mpos).and_modify(|e| { *e = std::cmp::max(*e, 1); }).or_insert(1);
                             }
                         }

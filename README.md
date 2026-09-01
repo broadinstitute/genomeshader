@@ -202,3 +202,12 @@ can seed comm state / stand up a real-GPU runner:
   (`nextIndelExpansion`) and filter are unit-testable, but the SVG rows need real
   variant data + a render — the harness ships none and doesn't expose `renderAll`.
   Verify the rows draw, stack, and stay legible by hand.
+- **SNPs in reads (mismatch glyphs)**: SNPs are called two ways — from the read's
+  `MD` tag when present, otherwise by diffing the aligned read bases against the
+  **staged reference** for the locus (so BAMs without `MD` still show SNPs). The
+  index/compare logic is unit-tested in Rust (`ref_mismatches_in_run`) and the
+  Python→Rust reference forwarding in `test_staged_reference_forwarded_to_fetch`,
+  but the end-to-end (real BAM → DIFF elements → rendered mismatch glyph) needs the
+  compiled extension, a real BAM, and WebGPU — verify by hand after
+  `maturin develop --release`. If neither `MD` nor a staged reference is available,
+  a status toast says SNPs aren't shown and indels still render.

@@ -399,6 +399,8 @@ impl Session {
         stop: u64,
         reads_urls: &[Url],
         bam_paths: &[String],
+        ref_seq: Option<&[u8]>,
+        ref_seq_start: u32,
     ) -> PyResult<DataFrame> {
         let cache_path = std::env::temp_dir();
 
@@ -424,6 +426,8 @@ impl Session {
             &start,
             &stop,
             &cache_path,
+            ref_seq,
+            ref_seq_start,
         )
         .map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -599,7 +603,7 @@ impl Session {
             );
         }
 
-        let df = self.get_reads_with_cache(&l_fmt.0, l_fmt.1, l_fmt.2, &reads_urls, &bam_paths)?;
+        let df = self.get_reads_with_cache(&l_fmt.0, l_fmt.1, l_fmt.2, &reads_urls, &bam_paths, None, 0)?;
         Ok(PyDataFrame(df))
     }
 
@@ -726,7 +730,14 @@ impl Session {
     /// Args:
     ///     locus: The genomic locus (e.g., "chr1:1000-2000")
     ///     bam_urls: List of BAM/CRAM file URLs to load from
-    fn fetch_reads_for_locus(&mut self, locus: String, bam_urls: Vec<String>) -> PyResult<PyDataFrame> {
+    #[pyo3(signature = (locus, bam_urls, reference=None, ref_start=0))]
+    fn fetch_reads_for_locus(
+        &mut self,
+        locus: String,
+        bam_urls: Vec<String>,
+        reference: Option<String>,
+        ref_start: u32,
+    ) -> PyResult<PyDataFrame> {
         let l_fmt = self.parse_locus(locus.clone())?;
 
         if bam_urls.is_empty() {
@@ -767,7 +778,10 @@ impl Session {
         }
 
         let bam_paths: Vec<String> = reads_urls.iter().map(|u| u.to_string()).collect();
-        let df = self.get_reads_with_cache(&l_fmt.0, l_fmt.1, l_fmt.2, &reads_urls, &bam_paths)?;
+        let ref_bytes = reference.as_ref().map(|s| s.as_bytes());
+        let df = self.get_reads_with_cache(
+            &l_fmt.0, l_fmt.1, l_fmt.2, &reads_urls, &bam_paths, ref_bytes, ref_start,
+        )?;
         Ok(PyDataFrame(df))
     }
 

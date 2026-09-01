@@ -312,6 +312,7 @@ def test_reads_payload_disk_cache(tmp_path, monkeypatch):
     s = _shader(tmp_path, monkeypatch)
     s._last_locus = "Pf3D7_01_v3:1-100"
     s.set_sample_mapping({"S1": ["gs://b/S1.bam"]})
+    s.reference = Mock(return_value="")  # no staged ref in test => ref_seq passed as None
     s._session.fetch_reads_for_locus = Mock(
         return_value=pl.DataFrame({"sample_name": ["S1"], "reference_start": [7]}))
 
@@ -332,6 +333,7 @@ def test_widget_reads_through_real_payload(tmp_path, monkeypatch):
     s = _shader(tmp_path, monkeypatch)
     s._last_locus = "Pf3D7_01_v3:1-100"
     s.set_sample_mapping({"S1": ["gs://b/S1.bam"]})
+    s.reference = Mock(return_value="")  # no staged ref => ref_seq None, ref_start = locus start
     s._session.fetch_reads_for_locus = Mock(
         return_value=pl.DataFrame({"sample_name": ["S1"], "reference_start": [7]}))
 
@@ -342,4 +344,24 @@ def test_widget_reads_through_real_payload(tmp_path, monkeypatch):
 
     assert sent[0]["type"] == "fetch_reads_response"
     assert sent[0]["bam_urls"] == ["gs://b/S1.bam"] and sent[0]["count"] == 1
-    s._session.fetch_reads_for_locus.assert_called_once_with("Pf3D7_01_v3:1-100", ["gs://b/S1.bam"])
+    s._session.fetch_reads_for_locus.assert_called_once_with(
+        "Pf3D7_01_v3:1-100", ["gs://b/S1.bam"], None, 1)
+
+
+def test_staged_reference_forwarded_to_fetch(tmp_path, monkeypatch):
+    # When a reference is staged for the locus, it's fetched (0-based start-1) and
+    # forwarded to the Rust extractor so it can call SNPs without MD tags.
+    import polars as pl
+    s = _shader(tmp_path, monkeypatch)
+    s._last_locus = "Pf3D7_01_v3:100-200"
+    s.set_sample_mapping({"S1": ["gs://b/S1.bam"]})
+    s.reference = Mock(return_value="ACGTACGT")
+    s._session.fetch_reads_for_locus = Mock(
+        return_value=pl.DataFrame({"sample_name": ["S1"], "reference_start": [100]}))
+
+    s._fetch_reads_payload(sample_id="S1")
+    # reference() called 0-based: start-1 .. end
+    s.reference.assert_called_once_with("Pf3D7_01_v3", 99, 200)
+    # ref_seq forwarded verbatim; ref_start is the 1-based locus start (100).
+    s._session.fetch_reads_for_locus.assert_called_once_with(
+        "Pf3D7_01_v3:100-200", ["gs://b/S1.bam"], "ACGTACGT", 100)

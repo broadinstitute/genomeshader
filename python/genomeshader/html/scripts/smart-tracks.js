@@ -391,15 +391,18 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
       if (response.type === 'fetch_reads_response') {
         const sn = sampleId || response.sample_id;
         _readStatusDone('Loaded reads' + (sn ? ' for ' + sn : ''), false);
-        // Warn if the BAM has no MD tag — SNP mismatches can't be computed/shown
-        // (indels still render). has_md is per-element; all-false => no MD anywhere.
+        // Warn only when SNPs truly can't be shown: has_md is per-element and now
+        // means "SNP-displayable" — true if the read had an MD tag OR the staged
+        // reference was available to diff against. All-false => neither, i.e. no
+        // MD and no reference staged for this locus (indels still render).
         try {
           const hm = response.reads && response.reads.has_md;
           if (Array.isArray(hm) && hm.length && !hm.some(Boolean)) {
             track.snpsUnavailable = true;
             if (window.__GS_STATUS) {
               window.__GS_STATUS('SNPs not shown for ' + (sn || 'this sample')
-                + ' — BAM has no MD tag (run `samtools calmd`)', { autoHide: 6000 });
+                + ' — no reference staged for this locus and BAM has no MD tag',
+                { autoHide: 6000 });
             }
           } else {
             track.snpsUnavailable = false;
