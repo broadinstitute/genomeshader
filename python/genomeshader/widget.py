@@ -189,10 +189,13 @@ def _build_esm() -> str:
         "    container.setAttribute('style', 'width:100%;height:1200px;position:relative;overflow:visible;background:var(--bg,#0b0d10);isolation:isolate;');\n"
         "    container.innerHTML = " + json.dumps(body) + ";\n"
         "    el.appendChild(container);\n"
-        "    __runViewer__().catch(function (e) { console.error('Genomeshader viewer error:', e); });\n"
+        "    __runViewer__(container).catch(function (e) { console.error('Genomeshader viewer error:', e); });\n"
         "  }\n"
         "};\n"
-        "async function __runViewer__() {\n"
+        # rootEl is this instance's container. Scripts scope all DOM lookups to it
+        # (dom-utils `root`) so a 2nd widget in the same notebook doesn't bind to
+        # the 1st widget's container and render blank.
+        "async function __runViewer__(rootEl) {\n"
         + scripts +
         "\n}\n"
     )

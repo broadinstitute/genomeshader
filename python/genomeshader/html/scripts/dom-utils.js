@@ -1,15 +1,22 @@
 // Theme + menu
 // -----------------------------
-// Find root container for scoping event handlers in inline mode
-const root = document.querySelector('[id^="genomeshader-root-"]') ||
+// Find root container for scoping event handlers in inline mode.
+// rootEl is this widget instance's container (passed into __runViewer__). Binding
+// to it — not document.querySelector(...) which returns the FIRST match — is what
+// lets a 2nd widget in the same notebook find its own DOM instead of the 1st's.
+const root = (typeof rootEl !== 'undefined' && rootEl) ||
+              document.querySelector('[id^="genomeshader-root-"]') ||
               (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
               document.body; // Fallback to body if not found
 
 // Dynamic root lookup - finds the current container (overlay modal or original root)
 // This is needed because the viewer moves to an overlay modal in full-screen mode
 function getCurrentRoot() {
-  // Check if we're in overlay mode by looking for the app element in an overlay
-  const appEl = document.querySelector('.app');
+  // Check if we're in overlay mode by looking for the app element in an overlay.
+  // Scope to this instance's root first so a 2nd widget doesn't pick up the 1st's
+  // .app; fall back to document only for the moved-out fullscreen modal case.
+  const appEl = (root && root.querySelector && root.querySelector('.app')) ||
+                document.querySelector('.app');
   if (appEl) {
     // Check if app is inside an overlay modal
     const overlayModal = appEl.closest('[id^="genomeshader-modal-"]');
