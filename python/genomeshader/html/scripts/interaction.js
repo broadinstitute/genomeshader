@@ -36,6 +36,11 @@ function roundRect(ctx, x, y, w, h, r) {
 // Sankey placeholder (Canvas2D)
 // -----------------------------
 function renderFlowCanvas() {
+  // During a live pan the flow is moved by a CSS transform only. If a hover
+  // handler redraws it here mid-drag, it paints at the already-advanced startBp
+  // AND keeps the transform — moving the variant track twice as fast. Skip until
+  // the pan commits (endLivePan clears livePanOffset, then renderAll repaints).
+  if (typeof state !== "undefined" && state && state.livePanOffset) return;
   const variantOrderKeyFor = (trackId, variantId) => (
     window.makeVariantOrderKey
       ? window.makeVariantOrderKey(trackId, variantId)
