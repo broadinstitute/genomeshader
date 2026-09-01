@@ -210,24 +210,23 @@ async function initSmartTrackWebGPU(trackId) {
   // expanding in full screen / JupyterLab); this recovers as soon as the real
   // size lands, without a manual scroll.
   //
-  // Hysteresis is critical: collapse/expand changes the reads-stack height,
-  // which toggles the #smartScroll vertical scrollbar, which changes this
-  // container's width by ~15px. Re-rendering on that delta changes the height
-  // again → scrollbar toggles → width changes → RO fires … an infinite loop
-  // that freezes the UI (read x-mapping uses tracksWidthPx(), NOT this width, so
-  // a scrollbar-sized change needs no re-render anyway). Only re-render on the
-  // first real size or a substantial change; absorb small (scrollbar) deltas.
-  let _roDim = 0;
+  // Fire ONLY on the initial 0 -> real-size transition. Every other re-render
+  // (collapse/expand, pan, zoom, panel resize) is already driven by an explicit
+  // renderAll() or the global tracksSvg ResizeObserver. Re-rendering here on
+  // later width changes is not just redundant — it's a freeze: expand grows the
+  // stack, which makes BOTH this container's internal scrollbar and the outer
+  // #smartScroll scrollbar appear (~30px), re-rendering toggles them, width
+  // changes, RO fires again … an infinite loop. Read x-mapping uses
+  // tracksWidthPx() (not this width) anyway, so later changes need no repaint.
+  let _roPainted = false;
   try {
-    const ro = new ResizeObserver(debounce(() => {
+    const ro = new ResizeObserver(() => {
+      if (_roPainted) return;
       const w = container.getBoundingClientRect().width || 0;
       if (w <= 0) return;
-      const prev = _roDim;
-      _roDim = w;
-      if (prev === 0 || Math.abs(w - prev) > 24) {
-        requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
-      }
-    }, 120));
+      _roPainted = true;
+      requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+    });
     ro.observe(container);
     // Stash for cleanup even before the renderer record exists.
     container._gsResizeObserver = ro;
