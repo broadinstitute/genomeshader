@@ -358,11 +358,14 @@ function renderSmartTrack(trackId) {
       ctx.fillRect(mx, my, mw, mh);
     }
   };
-  const hexRgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
   // Collapsed tracks show an aggregate summary; draw point markers (SNP/ins) at
   // the variant track's node width so they line up with it visually, instead of
   // the 1-bp genomic width which is sub-pixel when zoomed out.
   const variantMarkerW = (window._alleleNodeConstants && window._alleleNodeConstants.baseNodeW) || 4;
+  // Base colors for SNP tiles — the SAME palette the reference track uses
+  // (window.__GS_BASE_COLORS), so read SNPs match the reference/variant bases.
+  const BASE_RGB = (typeof window !== "undefined" && window.__GS_BASE_COLORS) ||
+    { 'A': [0, 200, 0], 'C': [0, 0, 255], 'G': [255, 165, 0], 'T': [255, 0, 0] };
   
   const colText = cssVar("--muted");
   const grid = cssVar("--grid2");
@@ -502,15 +505,13 @@ function renderSmartTrack(trackId) {
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
               const actualBaseHeight = Math.max(1, Math.abs(nextY - ey) - gapAfterPx);
 
-              // Color based on nucleotide
+              // Color based on nucleotide (shared reference palette).
               const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
-              const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
-              const bgColor = nucColors[nuc] || '#9C27B0';
+              const [dr, dg, db] = BASE_RGB[nuc] || [156, 39, 176];
 
               // Draw background. Collapsed => fixed variant-track width (along the
               // genome axis), centered on the base; expanded => true per-base size.
               const drawHeight = track.collapsed ? variantMarkerW : Math.max(1, actualBaseHeight - BASE_TILE_INSET_PX);
-              const [dr, dg, db] = hexRgb(bgColor);
               drawMarkerRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight, dr, dg, db, 1);
               
               // Draw nucleotide letter only if there's enough space. Use the text
@@ -814,17 +815,17 @@ function renderSmartTrack(trackId) {
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
               const actualBaseWidth = Math.max(1, Math.abs(nextX - ex) - gapAfterPx);
 
-              // Color based on nucleotide
+              // Color based on nucleotide (shared reference palette).
               const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
-              const nucColors = { 'A': '#4CAF50', 'T': '#F44336', 'C': '#2196F3', 'G': '#FF9800' };
-              const bgColor = nucColors[nuc] || '#9C27B0';
-              const [r, g, b] = hexRgb(bgColor);
+              const [r, g, b] = BASE_RGB[nuc] || [156, 39, 176];
 
               // Draw background. Collapsed => fixed variant-track width, centered
-              // on the base; expanded => the true per-base width.
+              // on the base; expanded => the true per-base width. SNP tiles use
+              // full opacity so their color matches the reference/variant track
+              // (density is shown by the tile itself, not by muting the hue).
               const drawWidth = track.collapsed ? variantMarkerW : Math.max(1, actualBaseWidth - BASE_TILE_INSET_PX);
               const drawX = track.collapsed ? (ex + actualBaseWidth/2 - drawWidth/2) : ex;
-              drawMarkerRect(drawX, ey + 1, drawWidth, eh - 2, r, g, b, elemAlpha);
+              drawMarkerRect(drawX, ey + 1, drawWidth, eh - 2, r, g, b, 1);
               
               // Draw nucleotide letter only if there's enough space. Use the text
               // overlay (above WebGPU reads) so it isn't hidden by the read body.

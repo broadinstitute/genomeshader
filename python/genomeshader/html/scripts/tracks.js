@@ -1513,11 +1513,18 @@ function renderTracks() {
     const refSeq = refSeqData.sequence;
     const refSeqStartBp = refSeqData.startBp;
 
-    const nucleotideColors = {
-      'A': [0, 200, 0],      // green
-      'C': [0, 0, 255],      // blue
-      'G': [255, 165, 0],    // orange
-      'T': [255, 0, 0]       // red
+    // Single source of truth for base colors, shared with the read-track SNP
+    // tiles (main.js) so the two never drift apart. Publish once.
+    if (typeof window !== "undefined" && !window.__GS_BASE_COLORS) {
+      window.__GS_BASE_COLORS = {
+        'A': [0, 200, 0],      // green
+        'C': [0, 0, 255],      // blue
+        'G': [255, 165, 0],    // orange
+        'T': [255, 0, 0]       // red
+      };
+    }
+    const nucleotideColors = (typeof window !== "undefined" && window.__GS_BASE_COLORS) || {
+      'A': [0, 200, 0], 'C': [0, 0, 255], 'G': [255, 165, 0], 'T': [255, 0, 0]
     };
     const BASE_TILE_MAX_ALPHA = 1.0; // solid color blocks (IGV-style)
     const BASE_MIN_DRAW_PX = 0.03;
