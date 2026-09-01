@@ -3884,12 +3884,40 @@ function setupCanvasHover() {
       contextEl.style.display = 'none';
       return;
     }
-    
-    // Count selected alleles
+
     const alleleCount = state.selectedAlleles.size;
-    
-    // Show allele count directly in the context div
-    contextEl.textContent = `${alleleCount} ${alleleCount === 1 ? 'allele' : 'alleles'} selected`;
+
+    // Header: the count, as before.
+    contextEl.innerHTML = '';
+    const header = document.createElement('div');
+    header.textContent = `${alleleCount} ${alleleCount === 1 ? 'allele' : 'alleles'} selected`;
+    header.style.fontWeight = '600';
+    contextEl.appendChild(header);
+
+    // List the actual allele(s): contig:pos · label. Long ALT sequences are
+    // clipped with an ellipsis but kept in full on hover (title).
+    let infos = [];
+    try { infos = getSelectedAlleleInfo() || []; } catch (e) {}
+    if (infos.length) {
+      const contig = state.contig;
+      const list = document.createElement('div');
+      list.style.marginTop = '4px';
+      list.style.fontSize = '11px';
+      list.style.opacity = '0.85';
+      for (const s of infos) {
+        const v = s.variant || {};
+        const pos = Number(v.pos || 0).toLocaleString();
+        const text = s.label ? `${contig}:${pos} · ${s.label}` : `${contig}:${pos}`;
+        const line = document.createElement('div');
+        line.textContent = text;
+        line.title = text;
+        line.style.whiteSpace = 'nowrap';
+        line.style.overflow = 'hidden';
+        line.style.textOverflow = 'ellipsis';
+        list.appendChild(line);
+      }
+      contextEl.appendChild(list);
+    }
     contextEl.style.display = 'block';
   }
   
