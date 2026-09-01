@@ -87,6 +87,11 @@ function renderSmartTrack(trackId) {
           ctx.clearRect(0, 0, renderer.canvas.width, renderer.canvas.height);
         }
       }
+      // Clear text overlay too, else SNP letters linger over a hidden track.
+      if (renderer.textCanvas) {
+        const tc = renderer.textCanvas.getContext("2d");
+        if (tc) tc.clearRect(0, 0, renderer.textCanvas.width, renderer.textCanvas.height);
+      }
     }
     return;
   }
@@ -97,7 +102,7 @@ function renderSmartTrack(trackId) {
   const renderer = state.smartTrackRenderers.get(trackId);
   if (!renderer) return;
   
-  const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore } = renderer;
+  const { canvas, webgpuCanvas, textCanvas, container, instancedRenderer, webgpuCore } = renderer;
   
   // Position container based on layout
   const isVertical = isVerticalMode();
@@ -186,7 +191,20 @@ function renderSmartTrack(trackId) {
     canvas.style.position = 'static';
     canvas.style.inset = 'auto';
     canvas.width = W * dpr;
-    
+
+    // Text overlay: same size/cell as the 2D canvas, but stacked above WebGPU.
+    if (textCanvas) {
+      textCanvas.height = totalContentHeight * dpr;
+      textCanvas.style.height = totalContentHeight + 'px';
+      textCanvas.style.width = W + 'px';
+      textCanvas.style.gridRow = '1';
+      textCanvas.style.gridColumn = '1';
+      textCanvas.style.position = 'static';
+      textCanvas.style.inset = 'auto';
+      textCanvas.style.zIndex = '2';
+      textCanvas.width = W * dpr;
+    }
+
     // Set WebGPU canvas dimensions to match regular canvas
     // Track previous dimensions BEFORE updating
     const prevWebGpuWidth = webgpuCanvas.width;
@@ -283,6 +301,7 @@ function renderSmartTrack(trackId) {
     canvas.style.gridColumn = '';
     webgpuCanvas.style.gridRow = '';
     webgpuCanvas.style.gridColumn = '';
+    if (textCanvas) { textCanvas.style.gridRow = ''; textCanvas.style.gridColumn = ''; }
     resizeCanvasTo(container, canvas);
     const rect = container.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
@@ -291,6 +310,7 @@ function renderSmartTrack(trackId) {
       // Also set WebGPU canvas dimensions
       webgpuCanvas.width = rect.width * dpr;
       webgpuCanvas.height = rect.height * dpr;
+      if (textCanvas) { textCanvas.width = rect.width * dpr; textCanvas.height = rect.height * dpr; }
       if (webgpuCore) {
         // Defer resize to next frame to ensure layout has settled (prevents flickering in overlay mode)
         requestAnimationFrame(() => {
@@ -308,7 +328,16 @@ function renderSmartTrack(trackId) {
   // Clear canvas - use the actual current dimensions to ensure full clear
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.scale(dpr, dpr);
-  
+
+  // Text-overlay context (transparent canvas stacked above the WebGPU reads).
+  // SNP nucleotide letters draw here so they're not hidden behind read bodies.
+  const tctx = textCanvas ? textCanvas.getContext("2d") : null;
+  if (tctx) {
+    tctx.setTransform(1,0,0,1,0,0);
+    tctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+    tctx.scale(dpr, dpr);
+  }
+
   // Clear WebGPU renderer instances BEFORE drawing new content
   // This is critical when shuffling - old reads must be removed
   if (instancedRenderer) {
@@ -478,18 +507,20 @@ function renderSmartTrack(trackId) {
               const [dr, dg, db] = hexRgb(bgColor);
               drawMarkerRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight, dr, dg, db, 1);
               
-              // Draw nucleotide letter only if there's enough space
+              // Draw nucleotide letter only if there's enough space. Use the text
+              // overlay (above WebGPU reads) so it isn't hidden by the read body.
               if (actualBaseHeight >= 8) {
-                ctx.save();
-                ctx.fillStyle = 'white';
-                ctx.font = `bold ${Math.min(10, ew - 4)}px monospace`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
+                const lctx = tctx || ctx;
+                lctx.save();
+                lctx.fillStyle = 'white';
+                lctx.font = `bold ${Math.min(10, ew - 4)}px monospace`;
+                lctx.textAlign = 'center';
+                lctx.textBaseline = 'middle';
                 // Rotate text -90 degrees for vertical mode
-                ctx.translate(ex + ew/2, ey);
-                ctx.rotate(-Math.PI / 2);
-                ctx.fillText(nuc, 0, 0);
-                ctx.restore();
+                lctx.translate(ex + ew/2, ey);
+                lctx.rotate(-Math.PI / 2);
+                lctx.fillText(nuc, 0, 0);
+                lctx.restore();
               }
             }
           }
@@ -786,13 +817,15 @@ function renderSmartTrack(trackId) {
               const drawWidth = Math.max(1, actualBaseWidth - BASE_TILE_INSET_PX);
               drawMarkerRect(ex, ey + 1, drawWidth, eh - 2, r, g, b, elemAlpha);
               
-              // Draw nucleotide letter only if there's enough space
+              // Draw nucleotide letter only if there's enough space. Use the text
+              // overlay (above WebGPU reads) so it isn't hidden by the read body.
               if (actualBaseWidth >= 8) {
-                ctx.fillStyle = 'white';
-                ctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(nuc, ex + drawWidth/2, ey + eh/2);
+                const lctx = tctx || ctx;
+                lctx.fillStyle = 'white';
+                lctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
+                lctx.textAlign = 'center';
+                lctx.textBaseline = 'middle';
+                lctx.fillText(nuc, ex + drawWidth/2, ey + eh/2);
               }
             }
           }
