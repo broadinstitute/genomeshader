@@ -42,14 +42,13 @@ function processReadsData(rawReads) {
   // Sort by start position
   readArray.sort((a, b) => a.start - b.start);
 
-  // Cap rendered reads. Each expanded sample track sizes its canvases to the
-  // FULL read stack (maxRows * rowH) and there are three canvases per track
-  // (2D + WebGPU + text overlay); a deep-coverage locus (thousands of reads,
-  // doubled by paired-end mate splitting) makes those canvases enormous and
-  // stalls the GPU/compositor — the "expand freezes" bug. Downsample evenly
-  // across the locus so coverage stays representative but the stack stays
-  // bounded. ponytail: fixed cap; the real fix is viewport-sized virtualized
-  // canvases (draw only visible rows onto a container-height canvas).
+  // Cap rendered reads. Each expanded sample track sizes its canvases (2D +
+  // WebGPU) to the FULL read stack (maxRows * rowH); a deep-coverage locus
+  // (thousands of reads, doubled by paired-end mate splitting) makes those
+  // canvases enormous and stalls the GPU/compositor — the "expand freezes" bug.
+  // Downsample evenly across the locus so coverage stays representative but the
+  // stack stays bounded. ponytail: fixed cap; the real fix is viewport-sized
+  // virtualized canvases (draw only visible rows onto a container-height canvas).
   const MAX_RENDER_READS = 300;
   let downsampled = false;
   if (readArray.length > MAX_RENDER_READS) {
@@ -203,22 +202,8 @@ async function initSmartTrackWebGPU(trackId) {
   webgpuCanvas.style.height = '100%';
   webgpuCanvas.style.pointerEvents = 'none';
   
-  // Transparent 2D overlay ABOVE the WebGPU canvas, for text (SNP nucleotide
-  // letters) that WebGPU can't draw. Must sit on top of the read bodies; the
-  // main 2D `canvas` can't (it paints an opaque track background underneath).
-  const textCanvas = document.createElement('canvas');
-  textCanvas.className = 'text-overlay';
-  textCanvas.id = `smart-track-text-${trackId}`;
-  textCanvas.style.position = 'absolute';
-  textCanvas.style.top = '0';
-  textCanvas.style.left = '0';
-  textCanvas.style.width = '100%';
-  textCanvas.style.height = '100%';
-  textCanvas.style.pointerEvents = 'none';
-
   container.appendChild(canvas);
   container.appendChild(webgpuCanvas);
-  container.appendChild(textCanvas);
   // Live in the scrolling reads region (#smartScroll) so the whole sample-track
   // stack scrolls together below the pinned header.
   ((typeof ensureSmartScrollWrapper === "function" && ensureSmartScrollWrapper())
@@ -280,7 +265,6 @@ async function initSmartTrackWebGPU(trackId) {
       instancedRenderer,
       canvas,
       webgpuCanvas,
-      textCanvas,
       container
     });
 
@@ -307,7 +291,6 @@ async function initSmartTrackWebGPU(trackId) {
       instancedRenderer: null,
       canvas,
       webgpuCanvas: null,
-      textCanvas,
       container
     });
     
