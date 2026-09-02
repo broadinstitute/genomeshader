@@ -357,6 +357,156 @@ pub fn extract_variants(
     Ok(df)
 }
 
+/// Aggregate variant extractor for LARGE cohorts (≥100k–1M samples). Emits ONE
+/// row per (variant, alt) with per-allele SAMPLE counts computed during decode —
+/// O(samples) counters, never the O(variants×samples) long-format that OOMs at
+/// 1M. No per-sample genotypes cross the boundary (the browser only needs
+/// aggregates; carriers come from `fetch_carriers`). Counts match the sample-set
+/// semantics of the Python builder: a het 0/1 counts toward BOTH ref and its alt.
+///
+/// Columns: chromosome, position, ref_allele, alt_allele, alt_index, variant_id,
+/// vcf_id, filter_status, info_fields, n_ref, n_alt, n_missing, n_samples.
+pub fn extract_variant_aggregates(
+    bcf_path: &str,
+    index_path: Option<&str>,
+    chr: &String,
+    start: &u64,
+    stop: &u64,
+) -> Result<DataFrame> {
+    let mut reader = open_indexed_bcf(bcf_path, index_path)?;
+    let header = reader.header().clone();
+    let n_samples = header.sample_count() as usize;
+    let info_tags: Vec<String> = header
+        .header_records()
+        .iter()
+        .filter_map(|rec| match rec {
+            HeaderRecord::Info { values, .. } => values.get("ID").cloned(),
+            _ => None,
+        })
+        .collect();
+
+    let mut chromosomes = Vec::new();
+    let mut positions = Vec::new();
+    let mut ref_alleles = Vec::new();
+    let mut alt_alleles = Vec::new();
+    let mut alt_indices = Vec::new();
+    let mut variant_ids = Vec::new();
+    let mut vcf_ids = Vec::new();
+    let mut filter_statuses = Vec::new();
+    let mut info_values = Vec::new();
+    let mut n_refs = Vec::new();
+    let mut n_alts = Vec::new();
+    let mut n_missings = Vec::new();
+    let mut n_sampless = Vec::new();
+
+    let mut variant_map: HashMap<(u64, String, String), u32> = HashMap::new();
+    let mut next_variant_id: u32 = 0;
+
+    if let Ok(rid) = header.name2rid(chr.as_bytes()) {
+        reader.fetch(rid, start.saturating_sub(1), Some(*stop))?;
+        for record_result in reader.records() {
+            let record = record_result?;
+            let pos = record.pos() as u64 + 1;
+            if pos < *start || pos > *stop {
+                continue;
+            }
+            let vcf_id_bytes = record.id();
+            let vcf_id_str = if vcf_id_bytes.is_empty()
+                || (vcf_id_bytes.len() == 1 && vcf_id_bytes[0] == b'.')
+            {
+                None
+            } else {
+                Some(String::from_utf8_lossy(&vcf_id_bytes).to_string())
+            };
+            let filter_value = extract_filter_value(&header, &record);
+            let info_value = extract_info_value(&header, &record, &info_tags);
+
+            let alleles = record.alleles();
+            let ref_allele: String = String::from_utf8_lossy(alleles[0]).to_string();
+            let n_alts_here = alleles.len().saturating_sub(1);
+
+            // One decode of genotypes per record; tally per-allele SAMPLE counts.
+            // present[k] += 1 once per sample that carries allele index k; missing
+            // += 1 for any sample with a missing call.
+            let genotypes_array = record.genotypes()?;
+            let mut present = vec![0u32; n_alts_here + 1]; // index 0..=n_alts
+            let mut missing = 0u32;
+            for sample_idx in 0..n_samples {
+                let gt = genotypes_array.get(sample_idx);
+                let mut seen_ref = false;
+                let mut seen_missing = false;
+                let mut seen_alt = vec![false; n_alts_here + 1];
+                for a in gt.iter() {
+                    match a {
+                        GenotypeAllele::Unphased(idx) | GenotypeAllele::Phased(idx) => {
+                            let k = *idx as usize;
+                            if k == 0 {
+                                seen_ref = true;
+                            } else if k <= n_alts_here {
+                                seen_alt[k] = true;
+                            }
+                        }
+                        GenotypeAllele::UnphasedMissing | GenotypeAllele::PhasedMissing => {
+                            seen_missing = true;
+                        }
+                    }
+                }
+                if seen_ref {
+                    present[0] += 1;
+                }
+                for k in 1..=n_alts_here {
+                    if seen_alt[k] {
+                        present[k] += 1;
+                    }
+                }
+                if seen_missing {
+                    missing += 1;
+                }
+            }
+
+            for (alt_idx, alt_allele) in alleles[1..].iter().enumerate() {
+                let alt_allele_str = String::from_utf8_lossy(alt_allele).to_string();
+                let variant_id = *variant_map
+                    .entry((pos, ref_allele.clone(), alt_allele_str.clone()))
+                    .or_insert_with(|| {
+                        let id = next_variant_id;
+                        next_variant_id += 1;
+                        id
+                    });
+                chromosomes.push(chr.clone());
+                positions.push(pos);
+                ref_alleles.push(ref_allele.clone());
+                alt_alleles.push(alt_allele_str);
+                alt_indices.push((alt_idx + 1) as i32);
+                variant_ids.push(variant_id);
+                vcf_ids.push(vcf_id_str.clone());
+                filter_statuses.push(filter_value.clone());
+                info_values.push(info_value.clone());
+                n_refs.push(present[0]);
+                n_alts.push(present[alt_idx + 1]);
+                n_missings.push(missing);
+                n_sampless.push(n_samples as u32);
+            }
+        }
+    }
+
+    Ok(DataFrame::new(vec![
+        Series::new("chromosome", chromosomes),
+        Series::new("position", positions),
+        Series::new("ref_allele", ref_alleles),
+        Series::new("alt_allele", alt_alleles),
+        Series::new("alt_index", alt_indices),
+        Series::new("variant_id", variant_ids),
+        Series::new("vcf_id", vcf_ids),
+        Series::new("filter_status", filter_statuses),
+        Series::new("info_fields", info_values),
+        Series::new("n_ref", n_refs),
+        Series::new("n_alt", n_alts),
+        Series::new("n_missing", n_missings),
+        Series::new("n_samples", n_sampless),
+    ])?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +520,55 @@ mod tests {
     fn positions(df: &DataFrame) -> Vec<u64> {
         df.column("position").unwrap().u64().unwrap()
             .into_no_null_iter().collect()
+    }
+
+    #[test]
+    fn aggregates_match_longformat_recompute() {
+        // extract_variant_aggregates must produce the same per-allele SAMPLE
+        // counts (ref/alt/missing) that you'd get by tallying the long-format
+        // rows — proving the O(samples)-counter aggregation is correct.
+        let (chr, s, e) = ("chr1".to_string(), 1u64, 1000u64);
+        let long = extract_variants(&fixture(), None, None, &chr, &s, &e).unwrap();
+        let agg = extract_variant_aggregates(&fixture(), None, &chr, &s, &e).unwrap();
+
+        let pos = long.column("position").unwrap().u64().unwrap();
+        let alt = long.column("alt_allele").unwrap().str().unwrap();
+        let gt = long.column("genotype").unwrap().str().unwrap();
+        let ai = long.column("alt_index").unwrap().i32().unwrap();
+        use std::collections::HashMap;
+        let mut nref: HashMap<(u64, String), u32> = HashMap::new();
+        let mut nalt: HashMap<(u64, String), u32> = HashMap::new();
+        let mut nmiss: HashMap<(u64, String), u32> = HashMap::new();
+        for i in 0..long.height() {
+            let key = (pos.get(i).unwrap(), alt.get(i).unwrap().to_string());
+            let g = gt.get(i).unwrap();
+            let this_ai = ai.get(i).unwrap();
+            let (mut r, mut a, mut m) = (false, false, false);
+            for t in g.split(|c| c == '/' || c == '|') {
+                let t = t.trim();
+                if t == "." || t.is_empty() {
+                    m = true;
+                } else if let Ok(k) = t.parse::<i32>() {
+                    if k == 0 { r = true; } else if k == this_ai { a = true; }
+                }
+            }
+            if r { *nref.entry(key.clone()).or_insert(0) += 1; }
+            if a { *nalt.entry(key.clone()).or_insert(0) += 1; }
+            if m { *nmiss.entry(key).or_insert(0) += 1; }
+        }
+
+        let apos = agg.column("position").unwrap().u64().unwrap();
+        let aalt = agg.column("alt_allele").unwrap().str().unwrap();
+        let arefc = agg.column("n_ref").unwrap().u32().unwrap();
+        let aaltc = agg.column("n_alt").unwrap().u32().unwrap();
+        let amissc = agg.column("n_missing").unwrap().u32().unwrap();
+        assert_eq!(agg.height(), 4, "4 biallelic variants in the fixture");
+        for i in 0..agg.height() {
+            let key = (apos.get(i).unwrap(), aalt.get(i).unwrap().to_string());
+            assert_eq!(arefc.get(i).unwrap(), *nref.get(&key).unwrap_or(&0), "n_ref {:?}", key);
+            assert_eq!(aaltc.get(i).unwrap(), *nalt.get(&key).unwrap_or(&0), "n_alt {:?}", key);
+            assert_eq!(amissc.get(i).unwrap(), *nmiss.get(&key).unwrap_or(&0), "n_missing {:?}", key);
+        }
     }
 
     #[test]

@@ -713,6 +713,64 @@ impl Session {
         Ok(PyDataFrame(df))
     }
 
+    /// Aggregate variant extractor for large cohorts (≥100k–1M samples): returns
+    /// per-(variant,alt) rows with per-allele SAMPLE counts (n_ref/n_alt/
+    /// n_missing) instead of the O(variants×samples) long format that OOMs at 1M.
+    /// No parquet caching (aggregates are cheap to recompute); no sample subset
+    /// (cohort-wide counts). Consumed by the Python aggregate payload builder.
+    fn get_locus_variant_aggregates(&mut self, locus: String) -> PyResult<PyDataFrame> {
+        let l_fmt = self.parse_locus(locus.clone())?;
+        if self.variant_file_groups.is_empty() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "No variant files attached. Use attach_variants() first.".to_string(),
+            ));
+        }
+        let mut combined_df: Option<DataFrame> = None;
+        for (group_index, file_list) in self.variant_file_groups.iter().enumerate() {
+            let mut group_df: Option<DataFrame> = None;
+            for (variant_file, index_file) in file_list {
+                match variants::extract_variant_aggregates(
+                    variant_file, index_file.as_deref(), &l_fmt.0, &l_fmt.1, &l_fmt.2,
+                ) {
+                    Ok(df) => {
+                        group_df = Some(match group_df {
+                            Some(existing) => existing.vstack(&df).map_err(|e| {
+                                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                                    format!("Failed to combine aggregate frames: {}", e))
+                            })?,
+                            None => df,
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: aggregate extract failed for {}: {}", variant_file, e);
+                    }
+                }
+            }
+            if let Some(mut df) = group_df {
+                let n = df.height();
+                let track_ids: Vec<u32> = vec![group_index as u32; n];
+                df.with_column(Series::new("variant_track_id", track_ids))
+                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        format!("Failed to add variant_track_id: {}", e)))?;
+                combined_df = Some(match combined_df {
+                    Some(existing) => existing.vstack(&df).map_err(|e| {
+                        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            format!("Failed to combine aggregate frames: {}", e))
+                    })?,
+                    None => df,
+                });
+            }
+        }
+        match combined_df {
+            Some(mut df) => {
+                df.align_chunks();
+                Ok(PyDataFrame(df))
+            }
+            None => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "No variant aggregates for locus '{}'.", locus))),
+        }
+    }
+
     fn reset(&mut self) -> PyResult<()> {
         self.reads_cohort = HashSet::new();
         self.loci = HashSet::new();

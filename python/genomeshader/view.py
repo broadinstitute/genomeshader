@@ -51,6 +51,117 @@ def _apply_persample_scale_gate(variants_data, n_samples, persample_max):
     return True
 
 
+def _format_allele_label(allele):
+    """Module-level mirror of the nested formatter in _build_variants_data_for_track
+    (kept in sync); used by the aggregate builder so both paths format alleles
+    identically."""
+    if not allele or allele == ".":
+        return ". (no-call)"
+    length = len(allele)
+    length_label = "1 bp" if length == 1 else f"{length} bp"
+    display_allele = allele[:50] + "..." if length > 50 else allele
+    return f"{display_allele} ({length_label})"
+
+
+def _classify_variant(ref_allele, alt_alleles):
+    """Return (variant_type, is_insertion, is_deletion, max_insertion_length) —
+    same rules as the long-format builder."""
+    ref_len = len(ref_allele) if ref_allele else 0
+    is_insertion = is_deletion = False
+    max_insertion_length = 0
+    alt_types = set()
+    for alt in (alt_alleles or []):
+        alt_len = len(alt) if alt else 0
+        if alt_len > ref_len:
+            is_insertion = True
+            max_insertion_length = max(max_insertion_length, alt_len - ref_len)
+            alt_types.add("insertion")
+        elif alt_len < ref_len:
+            is_deletion = True
+            alt_types.add("deletion")
+        elif alt_len == 1:
+            alt_types.add("snv")
+        else:
+            alt_types.add("mnp")
+    if not alt_types:
+        variant_type = "snv"
+    elif len(alt_types) == 1:
+        variant_type = next(iter(alt_types))
+    else:
+        variant_type = "complex"
+    return variant_type, is_insertion, is_deletion, max_insertion_length
+
+
+def _build_variants_data_from_aggregates(rows):
+    """Build variants_data from AGGREGATE rows (extract_variant_aggregates output:
+    one row per (variant, alt) with n_ref/n_alt/n_missing) — the scale path that
+    never sees per-sample genotypes. Produces the same dict shape as the
+    long-format builder minus sampleGenotypes/sampleAlleles, with
+    perSampleOmitted=True. ALT order is resorted by descending sample support
+    (matching the long-format builder), and allele keys are assigned a1..aN in
+    that order.
+    """
+    # Group rows by variant (position, ref_allele), preserving alt order + counts.
+    groups = {}
+    order = []
+    for r in rows:
+        key = (r.get("position"), r.get("ref_allele"))
+        if key not in groups:
+            groups[key] = {
+                "alts": [],  # (alt_allele, n_alt, orig_index)
+                "n_ref": int(r.get("n_ref", 0) or 0),
+                "n_missing": int(r.get("n_missing", 0) or 0),
+                "vcf_id": r.get("vcf_id"),
+                "variant_id": r.get("variant_id"),
+                "filter_status": r.get("filter_status", "PASS"),
+                "info_fields": r.get("info_fields", "."),
+            }
+            order.append(key)
+        g = groups[key]
+        g["alts"].append((r.get("alt_allele"), int(r.get("n_alt", 0) or 0), len(g["alts"])))
+
+    variants_data = []
+    for key in order:
+        pos, ref_allele = key
+        g = groups[key]
+        # Resort alts by descending sample support; tie-break by original order.
+        alts_sorted = sorted(g["alts"], key=lambda t: (-t[1], t[2]))
+        alt_alleles = [a for (a, _c, _i) in alts_sorted]
+        allele_sample_counts = {".": g["n_missing"], "ref": g["n_ref"]}
+        for i, (_a, c, _i) in enumerate(alts_sorted):
+            allele_sample_counts[f"a{i+1}"] = c
+        total = sum(allele_sample_counts.values())
+        if total > 0:
+            allele_frequencies = {k: v / total for k, v in allele_sample_counts.items()}
+        else:
+            n_a = len(alt_alleles) + 2
+            allele_frequencies = {k: 1.0 / n_a for k in allele_sample_counts}
+        variant_type, is_insertion, _is_del, max_ins = _classify_variant(ref_allele, alt_alleles)
+        vcf_id = g["vcf_id"]
+        variant_display_id = str(vcf_id) if vcf_id else str(g["variant_id"])
+        variants_data.append({
+            "id": variant_display_id,
+            "vcfId": str(vcf_id) if vcf_id else "",
+            "pos": pos,
+            "refAllele": ref_allele,
+            "altAlleles": alt_alleles,
+            "filterStatus": g["filter_status"] or "PASS",
+            "infoRaw": g["info_fields"],
+            "alleles": ["ref"] + [f"a{i+1}" for i in range(len(alt_alleles))],
+            "alleleFrequencies": allele_frequencies,
+            "alleleSampleCounts": allele_sample_counts,
+            "perSampleOmitted": True,
+            "isInsertion": is_insertion,
+            "maxInsertionLength": max_ins,
+            "variantType": variant_type,
+            "insertionGapPx": max_ins * 8 if is_insertion else 0,
+            "formattedRefAllele": _format_allele_label(ref_allele) if ref_allele else None,
+            "formattedAltAlleles": [_format_allele_label(a) for a in alt_alleles],
+            "displayIds": [variant_display_id],
+        })
+    return variants_data
+
+
 def _carriers_from_variant_rows(rows, ref_allele, allele, n=None, rng_sample=None):
     """From long-format per-sample rows for ONE variant, return the sample names
     carrying `allele` (the ref string, or an ALT string). Mirrors the genotype->
@@ -1352,6 +1463,55 @@ class GenomeShader:
                     "variants_phased": phased,
                 })
         return variant_tracks, insertion_variants_lookup
+
+    def _build_variant_payload_from_aggregates(
+        self, agg_df: pl.DataFrame
+    ) -> Tuple[List[dict], List[dict]]:
+        """Scale path: build variant_tracks from AGGREGATE rows
+        (get_locus_variant_aggregates output) via _build_variants_data_from_aggregates.
+        No per-sample data; bands render from aggregates, carriers via
+        fetch_carriers, ribbons off (variants_phased=False)."""
+        variant_tracks = []
+        insertion_variants_lookup = []
+        if agg_df is None or not isinstance(agg_df, pl.DataFrame) or len(agg_df) == 0:
+            return variant_tracks, insertion_variants_lookup
+        has_tracks = "variant_track_id" in agg_df.columns
+        n_tracks = len(self._variant_datasets) if has_tracks else 1
+        for track_id_val in range(n_tracks):
+            if has_tracks:
+                subset = agg_df.filter(
+                    pl.col("variant_track_id").cast(pl.Int64) == pl.lit(track_id_val))
+            else:
+                subset = agg_df
+            track_name = (
+                self._variant_datasets[track_id_val][0]
+                if track_id_val < len(self._variant_datasets)
+                else f"Variants {track_id_val}"
+            )
+            vdata = _build_variants_data_from_aggregates(list(subset.iter_rows(named=True)))
+            variant_tracks.append({
+                "id": f"flow-{track_id_val}",
+                "label": track_name,
+                "variants_data": vdata,
+                "variants_phased": False,
+            })
+            for v in vdata:
+                if v.get("isInsertion") and v.get("insertionGapPx", 0) > 0:
+                    insertion_variants_lookup.append({
+                        "id": v["id"], "pos": v["pos"],
+                        "maxInsertionLength": v["maxInsertionLength"],
+                        "insertionGapPx": v["insertionGapPx"],
+                    })
+        insertion_variants_lookup.sort(key=lambda v: v["pos"])
+        return variant_tracks, insertion_variants_lookup
+
+    def _variant_sample_count(self) -> int:
+        """Effective attached variant-sample count (max across datasets). Cheap —
+        reads the stored sample lists, not the callset."""
+        try:
+            return max((len(d[1]) for d in self._variant_datasets), default=0)
+        except Exception:
+            return 0
 
     def _build_variants_data_for_track(
         self, variants_df: pl.DataFrame
@@ -2983,17 +3143,37 @@ class GenomeShader:
 
         # Try to get variant data if locus is a string
         variants_df = None
+        variant_agg_mode = False  # scale path: per-variant aggregates, no per-sample
         input_resolve_start = time.perf_counter()
         if isinstance(locus_or_dataframe, str):
             self._progress(f"Fetching variants for {locus_or_dataframe} …", 1, 4)
             try:
-                # Try to get variant data first
-                variants_df = self.get_locus_variants(locus_or_dataframe)
-                if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
-                    samples_df = variants_df.clone()
-                else:
-                    # If no variant data, try reads
-                    samples_df = self.get_locus(locus_or_dataframe)
+                # Scale path: for very large cohorts the per-sample long format
+                # OOMs (variants×samples), so fetch per-variant AGGREGATES and
+                # render bands from them (carriers come from fetch_carriers).
+                # Threshold via GENOMESHADER_VARIANT_AGG_MAX (default 100000);
+                # falls back to the long-format path on any error.
+                try:
+                    _agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "100000"))
+                except (TypeError, ValueError):
+                    _agg_max = 100000
+                if _agg_max >= 0 and self._variant_sample_count() > _agg_max:
+                    try:
+                        agg_df = self._session.get_locus_variant_aggregates(locus_or_dataframe)
+                        if agg_df is not None and isinstance(agg_df, pl.DataFrame) and len(agg_df) > 0:
+                            variants_df = agg_df
+                            samples_df = agg_df.clone()
+                            variant_agg_mode = True
+                    except Exception:
+                        variant_agg_mode = False
+                if not variant_agg_mode:
+                    # Try to get variant data first
+                    variants_df = self.get_locus_variants(locus_or_dataframe)
+                    if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
+                        samples_df = variants_df.clone()
+                    else:
+                        # If no variant data, try reads
+                        samples_df = self.get_locus(locus_or_dataframe)
             except Exception as e:
                 # If variant extraction fails, fall back to reads
                 try:
@@ -3205,7 +3385,10 @@ class GenomeShader:
             variant_tracks = precomputed_variant_payload.get("variant_tracks", [])
             insertion_variants_lookup = precomputed_variant_payload.get("insertion_variants_lookup", [])
         else:
-            variant_tracks, insertion_variants_lookup = self._build_variant_payload(variants_df)
+            if variant_agg_mode:
+                variant_tracks, insertion_variants_lookup = self._build_variant_payload_from_aggregates(variants_df)
+            else:
+                variant_tracks, insertion_variants_lookup = self._build_variant_payload(variants_df)
         timing_debug["variant_payload_ms"] = round((time.perf_counter() - t_variant_payload) * 1000.0, 1)
 
         # Load template HTML
