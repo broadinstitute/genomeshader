@@ -42,24 +42,10 @@ function processReadsData(rawReads) {
   // Sort by start position
   readArray.sort((a, b) => a.start - b.start);
 
-  // Cap rendered reads. Each expanded sample track sizes its canvases (2D +
-  // WebGPU) to the FULL read stack (maxRows * rowH); a deep-coverage locus
-  // (thousands of reads, doubled by paired-end mate splitting) makes those
-  // canvases enormous and stalls the GPU/compositor — the "expand freezes" bug.
-  // Downsample evenly across the locus so coverage stays representative but the
-  // stack stays bounded. ponytail: fixed cap; the real fix is viewport-sized
-  // virtualized canvases (draw only visible rows onto a container-height canvas).
-  const MAX_RENDER_READS = 300;
-  let downsampled = false;
-  if (readArray.length > MAX_RENDER_READS) {
-    const step = readArray.length / MAX_RENDER_READS;
-    const kept = [];
-    for (let i = 0; i < MAX_RENDER_READS; i++) kept.push(readArray[Math.floor(i * step)]);
-    readArray.length = 0;
-    Array.prototype.push.apply(readArray, kept);
-    downsampled = true;
-  }
-  
+  // No read cap: canvases are virtualized (viewport-sized + scroll offset),
+  // so an arbitrarily deep pileup no longer inflates the canvas past the GPU
+  // limit. All reads render.
+
   // Improved greedy packing: assign reads to rows, checking if read fits anywhere in each row
   const rows = [];
   for (const read of readArray) {
@@ -92,7 +78,7 @@ function processReadsData(rawReads) {
   
   // Only log in debug mode or for first few calls to avoid console spam
   // console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
-  return { reads: readArray, rowCount: rows.length, downsampled: downsampled };
+  return { reads: readArray, rowCount: rows.length };
 }
 // Exposed for the headless harness to regression-test read grouping (paired-end
 // mates share a query_name; markers must stay confined to their own read).
@@ -202,8 +188,16 @@ async function initSmartTrackWebGPU(trackId) {
   webgpuCanvas.style.height = '100%';
   webgpuCanvas.style.pointerEvents = 'none';
   
+  // Virtualization spacer: gives the container its scroll height so the
+  // viewport-sized (sticky) canvases can draw only the visible rows — lifts the
+  // full-stack canvas size (the ~16384px GPU wall behind the read cap).
+  const spacer = document.createElement('div');
+  spacer.className = 'smart-track-vspacer';
+  spacer.style.cssText = 'position:relative;width:1px;pointer-events:none;flex:0 0 auto;';
+
   container.appendChild(canvas);
   container.appendChild(webgpuCanvas);
+  container.appendChild(spacer);
   // Live in the scrolling reads region (#smartScroll) so the whole sample-track
   // stack scrolls together below the pinned header.
   ((typeof ensureSmartScrollWrapper === "function" && ensureSmartScrollWrapper())
@@ -265,6 +259,7 @@ async function initSmartTrackWebGPU(trackId) {
       instancedRenderer,
       canvas,
       webgpuCanvas,
+      spacer,
       container
     });
 
@@ -290,7 +285,8 @@ async function initSmartTrackWebGPU(trackId) {
       webgpuCore: null,
       instancedRenderer: null,
       canvas,
-      webgpuCanvas: null,
+      webgpuCanvas,
+      spacer: null,
       container
     });
     

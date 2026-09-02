@@ -98,7 +98,7 @@ function renderSmartTrack(trackId) {
   const renderer = state.smartTrackRenderers.get(trackId);
   if (!renderer) return;
   
-  const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore } = renderer;
+  const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore, spacer } = renderer;
   
   // Position container based on layout
   const isVertical = isVerticalMode();
@@ -176,40 +176,51 @@ function renderSmartTrack(trackId) {
     container.style.overflowX = 'hidden';
     container.style.boxSizing = 'border-box';
     
-    // Set up grid AFTER height is set
-    container.style.display = 'grid';
-    container.style.gridTemplateRows = '1fr';
-    container.style.gridTemplateColumns = '1fr';
+    // Scroll container for the virtualized (sticky) canvases + spacer.
+    container.style.display = 'block';
+    container.style.overflowY = 'auto';
+    container.style.overflowX = 'hidden';
     
-    // Set canvas dimensions - these need to be larger than container for scrolling
-    canvas.height = totalContentHeight * dpr;
-    canvas.style.height = totalContentHeight + 'px';
+    // VIRTUALIZATION: canvases are sized to the VIEWPORT (container height), not
+    // the full read stack. A spacer div provides the scroll height; the canvases
+    // stick to the top of the scroll container and redraw with a scrollTop offset,
+    // so an arbitrarily deep pileup never exceeds the ~16384px canvas limit (this
+    // is what lifts the read cap). H here is the container/viewport height.
+    const viewportH = Math.max(1, Math.min(H, trackLayout.contentHeight));
+    if (spacer) spacer.style.height = totalContentHeight + 'px';
+    canvas.height = viewportH * dpr;
+    canvas.style.height = viewportH + 'px';
     canvas.style.width = W + 'px';
-    canvas.style.gridRow = '1';
-    canvas.style.gridColumn = '1';
-    canvas.style.position = 'static';
-    canvas.style.inset = 'auto';
+    canvas.style.gridRow = '';
+    canvas.style.gridColumn = '';
+    canvas.style.position = 'sticky';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.zIndex = '1';
     canvas.width = W * dpr;
 
-
-    // Set WebGPU canvas dimensions to match regular canvas
-    // Track previous dimensions BEFORE updating
+    // Set WebGPU canvas dimensions to match regular canvas (viewport-sized)
     const prevWebGpuWidth = webgpuCanvas.width;
     const prevWebGpuHeight = webgpuCanvas.height;
-    
+
     webgpuCanvas.width = W * dpr;
-    webgpuCanvas.height = totalContentHeight * dpr;
-    webgpuCanvas.style.height = totalContentHeight + 'px';
+    webgpuCanvas.height = viewportH * dpr;
+    webgpuCanvas.style.height = viewportH + 'px';
     webgpuCanvas.style.width = W + 'px';
-    webgpuCanvas.style.gridRow = '1';
-    webgpuCanvas.style.gridColumn = '1';
-    webgpuCanvas.style.position = 'static';
-    webgpuCanvas.style.inset = 'auto';
+    webgpuCanvas.style.gridRow = '';
+    webgpuCanvas.style.gridColumn = '';
+    webgpuCanvas.style.position = 'sticky';
+    webgpuCanvas.style.top = '0';
+    webgpuCanvas.style.left = '0';
+    webgpuCanvas.style.zIndex = '2';
+    // Pull the WebGPU canvas back over the 2D canvas (sticky siblings stack in
+    // DOM order; margin-top negative keeps them overlapping the same viewport).
+    webgpuCanvas.style.marginTop = (-viewportH) + 'px';
     
     // Notify WebGPU core of resize if dimensions changed
     // Compare against PREVIOUS dimensions, not current (which we just set)
     // Defer to next frame to ensure layout has settled (prevents flickering in overlay mode)
-    if (webgpuCore && (prevWebGpuWidth !== W * dpr || prevWebGpuHeight !== totalContentHeight * dpr)) {
+    if (webgpuCore && (prevWebGpuWidth !== W * dpr || prevWebGpuHeight !== viewportH * dpr)) {
       // Use requestAnimationFrame to ensure container dimensions have settled
       // This is especially important in overlay mode where layout may be changing
       requestAnimationFrame(() => {
@@ -315,6 +326,15 @@ function renderSmartTrack(trackId) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.scale(dpr, dpr);
 
+  // VIRTUALIZATION: canvases are viewport-sized and sticky, so all content is
+  // drawn offset by the container's scrollTop. ctx handles it with a translate
+  // (covers grid/guides/markers/text); WebGPU draws subtract _scrollOffset from
+  // their y (see drawMarkerRect + the addRect/addTriangle sites). Vertical mode
+  // keeps its own coordinate system (no per-track scroll), so offset only when
+  // not vertical.
+  const _scrollOffset = (!isVertical && container && container.scrollTop) ? container.scrollTop : 0;
+  if (_scrollOffset) ctx.translate(0, -_scrollOffset);
+
   // Clear WebGPU renderer instances BEFORE drawing new content
   // This is critical when shuffling - old reads must be removed
   if (instancedRenderer) {
@@ -328,7 +348,7 @@ function renderSmartTrack(trackId) {
   // read body => on top of it), falling back to ctx only in Canvas2D mode.
   const drawMarkerRect = (mx, my, mw, mh, r, g, b, al) => {
     if (instancedRenderer && webgpuSupported) {
-      instancedRenderer.addRect(mx * dpr, my * dpr, mw * dpr, mh * dpr,
+      instancedRenderer.addRect(mx * dpr, (my - _scrollOffset) * dpr, mw * dpr, mh * dpr,
         [r / 255, g / 255, b / 255, al]);
     } else {
       ctx.fillStyle = `rgba(${r},${g},${b},${al})`;
@@ -451,7 +471,7 @@ function renderSmartTrack(trackId) {
         
         if (instancedRenderer && webgpuSupported) {
           instancedRenderer.addRect(
-            x * dpr, y * dpr,
+            x * dpr, (y - _scrollOffset) * dpr,
             w * dpr, h * dpr,
             [color[0]/255, color[1]/255, color[2]/255, alpha]
           );
@@ -624,7 +644,7 @@ function renderSmartTrack(trackId) {
             
             if (instancedRenderer && webgpuSupported) {
               instancedRenderer.addRect(
-                x * dpr, y * dpr,
+                x * dpr, (y - _scrollOffset) * dpr,
                 w * dpr, h * dpr,
                 [color[0]/255, color[1]/255, color[2]/255, alpha]
               );
@@ -672,7 +692,7 @@ function renderSmartTrack(trackId) {
           
           if (instancedRenderer && webgpuSupported) {
             instancedRenderer.addRect(
-              x * dpr, y * dpr,
+              x * dpr, (y - _scrollOffset) * dpr,
               w * dpr, h * dpr,
               [color[0]/255, color[1]/255, color[2]/255, baseAlpha]
             );
@@ -704,7 +724,8 @@ function renderSmartTrack(trackId) {
           }
           if (instancedRenderer && webgpuSupported) {
             instancedRenderer.addTriangle(
-              ax0 * dpr, ay0 * dpr, ax1 * dpr, ay1 * dpr, ax2 * dpr, ay2 * dpr,
+              ax0 * dpr, (ay0 - _scrollOffset) * dpr, ax1 * dpr, (ay1 - _scrollOffset) * dpr,
+              ax2 * dpr, (ay2 - _scrollOffset) * dpr,
               [1, 1, 1], 0.95
             );
           } else {
@@ -852,7 +873,7 @@ function renderSmartTrack(trackId) {
       // Use the dimensions we already calculated and set above
       // For horizontal mode with reads, we already set webgpuCanvas.width and height above
       const width = webgpuCanvas.width || W * dpr;
-      const height = webgpuCanvas.height || (isVertical ? H * dpr : totalContentHeight * dpr);
+      const height = webgpuCanvas.height || (isVertical ? H * dpr : viewportH * dpr);
       
       // Ensure dimensions are valid
       if (width <= 0 || height <= 0 || isNaN(width) || isNaN(height)) {
@@ -906,11 +927,10 @@ function renderSmartTrack(trackId) {
     try {
       // Ensure dimensions are correct before clearing
       const width = webgpuCanvas.clientWidth * dpr;
-      let height = webgpuCanvas.clientHeight * dpr;
-      if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
-        height = totalContentHeight * dpr;
-      }
-      
+      // Viewport-sized canvas (virtualized) — use its own client height, not the
+      // full read stack.
+      const height = webgpuCanvas.clientHeight * dpr;
+
       if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
         webgpuCanvas.width = width;
         webgpuCanvas.height = height;
