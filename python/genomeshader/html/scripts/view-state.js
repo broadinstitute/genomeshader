@@ -625,3 +625,60 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.reference_data) {
 } else {
   console.warn("No reference_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
 }
+
+// ---------------------------------------------------------------------------
+// Scale / render algorithmic cores (pure, headless-tested). Render wiring that
+// consumes these is browser-verified separately (see planning/TODO.md).
+// ---------------------------------------------------------------------------
+
+// Virtualized read-track row window: which read rows are visible for a given
+// scroll offset, so a viewport-sized canvas can draw only those rows (lifts the
+// full-stack canvas size that forced the 300-read cap).
+function computeVirtualRowWindow(scrollTop, viewportH, rowH, totalRows, overscan) {
+  scrollTop = Math.max(0, scrollTop || 0);
+  overscan = Math.max(0, overscan || 0);
+  if (!(rowH > 0) || !(totalRows > 0)) return { startRow: 0, endRow: -1 };
+  const startRow = Math.max(0, Math.floor(scrollTop / rowH) - overscan);
+  const endRow = Math.min(totalRows - 1, Math.floor((scrollTop + viewportH) / rowH) + overscan);
+  return { startRow, endRow };
+}
+
+// Overscan region: pad a viewport bp-range by `factor` so a pan reveals
+// already-drawn content instead of blank edges (pairs with viewport variant
+// loading). Clamps start to >= 1.
+function overscanRegion(startBp, endBp, factor) {
+  startBp = Math.round(startBp); endBp = Math.round(endBp);
+  const span = Math.max(0, endBp - startBp);
+  const pad = Math.round(span * Math.max(0, factor || 0));
+  return { start: Math.max(1, startBp - pad), end: endBp + pad };
+}
+
+// Standard-genetic-code translation of a reference window in a chosen frame.
+// Returns [{index, aa}] where index is the 0-based offset of the codon's first
+// base in `seq`. Codon track MVP core (render is additive, browser-verified).
+const _GS_CODON_TABLE = {
+  TTT:"F",TTC:"F",TTA:"L",TTG:"L",CTT:"L",CTC:"L",CTA:"L",CTG:"L",
+  ATT:"I",ATC:"I",ATA:"I",ATG:"M",GTT:"V",GTC:"V",GTA:"V",GTG:"V",
+  TCT:"S",TCC:"S",TCA:"S",TCG:"S",CCT:"P",CCC:"P",CCA:"P",CCG:"P",
+  ACT:"T",ACC:"T",ACA:"T",ACG:"T",GCT:"A",GCC:"A",GCA:"A",GCG:"A",
+  TAT:"Y",TAC:"Y",TAA:"*",TAG:"*",CAT:"H",CAC:"H",CAA:"Q",CAG:"Q",
+  AAT:"N",AAC:"N",AAA:"K",AAG:"K",GAT:"D",GAC:"D",GAA:"E",GAG:"E",
+  TGT:"C",TGC:"C",TGA:"*",TGG:"W",CGT:"R",CGC:"R",CGA:"R",CGG:"R",
+  AGT:"S",AGC:"S",AGA:"R",AGG:"R",GGT:"G",GGC:"G",GGA:"G",GGG:"G",
+};
+function translateFrame(seq, frame) {
+  if (typeof seq !== "string" || !seq) return [];
+  frame = ((frame || 0) % 3 + 3) % 3;
+  const s = seq.toUpperCase();
+  const out = [];
+  for (let i = frame; i + 3 <= s.length; i += 3) {
+    out.push({ index: i, aa: _GS_CODON_TABLE[s.slice(i, i + 3)] || "X" });
+  }
+  return out;
+}
+
+if (typeof window !== "undefined") {
+  window.__gsComputeVirtualRowWindow = computeVirtualRowWindow;
+  window.__gsOverscanRegion = overscanRegion;
+  window.__gsTranslateFrame = translateFrame;
+}

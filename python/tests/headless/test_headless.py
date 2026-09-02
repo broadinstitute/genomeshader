@@ -459,6 +459,45 @@ def test_paired_reads_keep_markers_on_own_read(browser, tmp_path):
     page.close()
 
 
+def test_virtual_row_window(browser, tmp_path):
+    """Virtualized read-track row window: only the visible rows (+overscan) are
+    selected, so a viewport-sized canvas can replace the full-stack one."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    fn = "(a) => window.__gsComputeVirtualRowWindow.apply(null, a)"
+    # rowH=18, viewport=180 (10 rows), 1000 total rows.
+    assert page.evaluate(fn, [0, 180, 18, 1000, 0]) == {"startRow": 0, "endRow": 10}
+    # scrolled to row 100 (scrollTop 1800), overscan 2.
+    assert page.evaluate(fn, [1800, 180, 18, 1000, 2]) == {"startRow": 98, "endRow": 112}
+    # clamps to totalRows-1 at the bottom.
+    r = page.evaluate(fn, [10 ** 6, 180, 18, 1000, 0])
+    assert r["endRow"] == 999
+    page.close()
+
+
+def test_overscan_region(browser, tmp_path):
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    fn = "(a) => window.__gsOverscanRegion.apply(null, a)"
+    # 1000 bp span, 50% overscan -> pad 500 each side; start clamps to >= 1.
+    assert page.evaluate(fn, [1000, 2000, 0.5]) == {"start": 500, "end": 2500}
+    assert page.evaluate(fn, [100, 200, 1.0])["start"] == 1  # clamp
+    page.close()
+
+
+def test_translate_frame(browser, tmp_path):
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    fn = "(a) => window.__gsTranslateFrame.apply(null, a)"
+    # ATG AAA TGA -> M K * ; frame 0.
+    out = page.evaluate(fn, ["ATGAAATGA", 0])
+    assert [c["aa"] for c in out] == ["M", "K", "*"]
+    assert out[1]["index"] == 3
+    # frame 1 shifts the reading frame; unknown codon -> "X".
+    assert page.evaluate(fn, ["NNN", 0])[0]["aa"] == "X"
+    page.close()
+
+
 # NOTE: allele *selection* is driven by the WebGPU interaction layer, which does
 # not paint (or receive clicks) under swiftshader in headless Chromium, so
 # selection behavior (e.g. double-click-keeps-selection) can't be asserted here.
