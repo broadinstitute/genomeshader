@@ -121,4 +121,54 @@ scroll/jump-loci loading you correctly identified as missing, on infrastructure
 that's already half-built. Phases 3–5 are follow-ons for very wide views and
 very large cohorts.
 
-*Nothing above is implemented — this is for us to prioritize before I build.*
+---
+
+## Chosen direction (2026-09-02) — live producer, no precompute
+
+**Decision.** Build the **live producer** (Phases 1–2) so genomeshader works on
+**any dataset as it loads** — no Hail, no tiled precompute store. Keep the
+aggregate contract (v2 §2) as the interface so a precompute producer (v2 Tier 3)
+is an *additive* backend later, not a rewrite. Precompute is explicitly deferred.
+This handles general callsets well up to the point where live decode of the
+in-view window over all samples stops being interactive (empirically ~100K on a
+region-indexed VCF/BCF); beyond that, the same frontend gets a precompute
+producer behind the same contract.
+
+### P1 build spec (aggregate-only payload) — grounded in current code
+
+Today `extract_variants` (`src/variants.rs:183`) emits a **long-format**
+DataFrame (one row per variant×sample, `genotypes` materialized for every
+sample), and `_build_variants_data_for_track` (`view.py`, appends at `:1558`)
+adds `sampleGenotypes` **and** `sampleAlleles` (`:1573-1574`) — both per-sample.
+JS uses the per-sample maps in exactly two places: `computeTransitions`
+(`interaction.js:2123`, ribbons) and carrier lookup
+(`computeCandidateSamplesForAlleles` / `sampleHasSelectedAllele`). The flow bands
+already run on `alleleFrequencies` + `alleleSampleCounts` (aggregates that ship).
+
+Steps:
+1. **Rust aggregates.** In `extract_variants`, accumulate per-variant AC/AN/AF +
+   per-allele sample counts as it decodes, and per-**adjacent-pair** allele
+   transition counts (carry the previous variant's per-sample allele vector,
+   tally src→dst). Emit **per-variant** aggregate rows (+ a `transitions` column
+   keyed to the next variant), not variant×sample rows.
+2. **Drop per-sample fields** from the payload: remove `sampleGenotypes` and
+   `sampleAlleles`; ship `transitions` instead. Payload becomes ~constant in
+   sample count.
+3. **JS: ribbons from server.** Replace `computeTransitions`'s genotype loop with
+   the server-supplied `transitions`.
+4. **JS: carriers on demand.** New `fetch_carriers(track, contig, pos, ref,
+   allele, strategy, n)` comm handler (Rust region-seek → sampled carrier IDs);
+   `computeCandidateSamplesForAlleles` calls it instead of reading `sampleAlleles`.
+   Mirrors the existing `fetch_reads` path.
+5. **Test** against a synthetic multi-sample VCF: aggregates + transitions match a
+   brute-force count; payload size is flat as sample count grows.
+
+### P2 build spec (viewport loading)
+
+6. `fetch_variants(contig, start, end)` comm handler (P1 producer per window).
+7. Frontend: on pan/zoom, debounce → request visible window ± overscan → merge
+   into a sparse per-region store → evict distant regions. Reuse the
+   region-interval index + subset helpers (`_find_covering_variant_payload_interval`,
+   `_subset_variant_payload`) and the live-pan / reads-disk-cache patterns.
+
+*Nothing above is implemented yet — this is the spec for the build.*
