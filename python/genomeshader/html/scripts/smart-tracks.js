@@ -188,6 +188,18 @@ async function initSmartTrackWebGPU(trackId) {
   webgpuCanvas.style.height = '100%';
   webgpuCanvas.style.pointerEvents = 'none';
   
+  // Transparent 2D text overlay above the WebGPU canvas, for SNP base letters
+  // (WebGPU has no text). Cheap now that canvases are viewport-sized (not the
+  // full stack that caused the earlier GPU stall). Sticky + zIndex above WebGPU.
+  const textCanvas = document.createElement('canvas');
+  textCanvas.className = 'text-overlay';
+  textCanvas.id = `smart-track-text-${trackId}`;
+  textCanvas.style.position = 'sticky';
+  textCanvas.style.top = '0';
+  textCanvas.style.left = '0';
+  textCanvas.style.zIndex = '3';
+  textCanvas.style.pointerEvents = 'none';
+
   // Virtualization spacer: gives the container its scroll height so the
   // viewport-sized (sticky) canvases can draw only the visible rows — lifts the
   // full-stack canvas size (the ~16384px GPU wall behind the read cap).
@@ -197,6 +209,7 @@ async function initSmartTrackWebGPU(trackId) {
 
   container.appendChild(canvas);
   container.appendChild(webgpuCanvas);
+  container.appendChild(textCanvas);
   container.appendChild(spacer);
   // Live in the scrolling reads region (#smartScroll) so the whole sample-track
   // stack scrolls together below the pinned header.
@@ -259,6 +272,7 @@ async function initSmartTrackWebGPU(trackId) {
       instancedRenderer,
       canvas,
       webgpuCanvas,
+      textCanvas,
       spacer,
       container
     });
@@ -286,6 +300,7 @@ async function initSmartTrackWebGPU(trackId) {
       instancedRenderer: null,
       canvas,
       webgpuCanvas,
+      textCanvas,
       spacer: null,
       container
     });

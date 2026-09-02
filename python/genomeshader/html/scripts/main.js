@@ -98,7 +98,7 @@ function renderSmartTrack(trackId) {
   const renderer = state.smartTrackRenderers.get(trackId);
   if (!renderer) return;
   
-  const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore, spacer } = renderer;
+  const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore, spacer, textCanvas } = renderer;
   
   // Position container based on layout
   const isVertical = isVerticalMode();
@@ -216,6 +216,15 @@ function renderSmartTrack(trackId) {
     // Pull the WebGPU canvas back over the 2D canvas (sticky siblings stack in
     // DOM order; margin-top negative keeps them overlapping the same viewport).
     webgpuCanvas.style.marginTop = (-viewportH) + 'px';
+
+    // Text overlay: viewport-sized + sticky, stacked above WebGPU (for SNP letters).
+    if (textCanvas) {
+      textCanvas.width = W * dpr;
+      textCanvas.height = viewportH * dpr;
+      textCanvas.style.width = W + 'px';
+      textCanvas.style.height = viewportH + 'px';
+      textCanvas.style.marginTop = (-viewportH) + 'px';
+    }
     
     // Notify WebGPU core of resize if dimensions changed
     // Compare against PREVIOUS dimensions, not current (which we just set)
@@ -334,6 +343,15 @@ function renderSmartTrack(trackId) {
   // not vertical.
   const _scrollOffset = (!isVertical && container && container.scrollTop) ? container.scrollTop : 0;
   if (_scrollOffset) ctx.translate(0, -_scrollOffset);
+
+  // Text overlay context (SNP letters) — same viewport transform + scroll offset.
+  const tctx = textCanvas ? textCanvas.getContext("2d") : null;
+  if (tctx) {
+    tctx.setTransform(1, 0, 0, 1, 0, 0);
+    tctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+    tctx.scale(dpr, dpr);
+    if (_scrollOffset) tctx.translate(0, -_scrollOffset);
+  }
 
   // Clear WebGPU renderer instances BEFORE drawing new content
   // This is critical when shuffling - old reads must be removed
@@ -512,10 +530,19 @@ function renderSmartTrack(trackId) {
               // genome axis), centered on the base; expanded => true per-base size.
               const drawHeight = track.collapsed ? variantMarkerW : Math.max(1, actualBaseHeight - BASE_TILE_INSET_PX);
               drawMarkerRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight, dr, dg, db, 1);
-              // Nucleotide letter intentionally omitted: WebGPU has no text
-              // primitive, and a separate 2D text layer tripled canvas memory
-              // (GPU stall). The tile color encodes the base. A WebGPU glyph
-              // atlas is the scalable way to bring letters back.
+              // SNP base letter (vertical mode) on the text overlay.
+              if (!track.collapsed && drawHeight >= 8 && (tctx || ctx)) {
+                const lctx = tctx || ctx;
+                lctx.save();
+                lctx.fillStyle = 'white';
+                lctx.font = `bold ${Math.min(10, ew - 4)}px monospace`;
+                lctx.textAlign = 'center';
+                lctx.textBaseline = 'middle';
+                lctx.translate(ex + ew / 2, ey);
+                lctx.rotate(-Math.PI / 2);
+                lctx.fillText(nuc, 0, 0);
+                lctx.restore();
+              }
             }
           }
         }
@@ -814,8 +841,16 @@ function renderSmartTrack(trackId) {
               const drawWidth = track.collapsed ? variantMarkerW : Math.max(1, actualBaseWidth - BASE_TILE_INSET_PX);
               const drawX = track.collapsed ? (ex + actualBaseWidth/2 - drawWidth/2) : ex;
               drawMarkerRect(drawX, ey + 1, drawWidth, eh - 2, r, g, b, 1);
-              // Nucleotide letter omitted (see vertical branch): WebGPU has no
-              // text primitive; the tile color encodes the base.
+              // SNP base letter on the text overlay (above WebGPU), when there's
+              // room and the track is expanded.
+              if (!track.collapsed && drawWidth >= 8 && (tctx || ctx)) {
+                const lctx = tctx || ctx;
+                lctx.fillStyle = 'white';
+                lctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
+                lctx.textAlign = 'center';
+                lctx.textBaseline = 'middle';
+                lctx.fillText(nuc, drawX + drawWidth / 2, ey + eh / 2);
+              }
             }
           }
         }
