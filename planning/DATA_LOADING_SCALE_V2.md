@@ -192,13 +192,43 @@ additive producer + delivery layer, not a rewrite.
 - **P5 — Data-tile delivery + optional dense all-samples track (image tiles).**
   Extreme-scale headroom.
 
-## 13. Open decisions
+## 13. Decisions
 
-1. **Ribbons at Tier 3** — zoom-in-only + on-demand precompute, approximate, or drop? (§8)
-2. **AoU substrate** — Hail VDS precompute we write, or published AF tables we read? (§7b/c)
-3. **Carrier semantics** — always strategy-sampled (never "list all")? (§6) — leaning yes.
-4. **Privacy thresholds** — exact suppression rule + which access tier we target. (§6)
-5. **Per-group aggregates** — does sample-metadata/faceting (feature-gap #1) ride with P1's contract or come later? (§2)
+Resolved with the recommended defaults (2026-09-02); the two flagged **NEEDS
+JONN** are the only ones that gate a build.
+
+**Locked (technical defaults — proceed on these):**
+1. **Ribbons at Tier 3** → **zoom-in-only + on-demand precomputed pairs.** Show
+   ribbons only when few variants are in view (pairs with the density LOD);
+   compute adjacent-pair transitions per window on demand and cache. Never live
+   across 1M. (§8)
+2. **Carrier semantics** → **always strategy-sampled; no "list all".** One
+   `fetch_carriers(site, allele, strategy, n)` handler mirroring `fetch_reads`;
+   full list only implicitly when the sample is smaller than the cap. (§6)
+3. **Per-group aggregates** → **reserve the shape in the contract now, populate
+   later.** `alleleSampleCounts` is designed as `{group -> {alleleKey -> count}}`
+   from day one but is only filled when a sample-metadata table is provided; P1
+   ships single-group. Cheap to reserve, expensive to retrofit. (§2, feature-gap #1/#3)
+4. **Tiling delivery** → **data tiles for the flow** (client-rendered numeric
+   summaries; keeps hit-testing/theme/DPI). Image tiles reserved for a future
+   dense, non-interactive all-samples track only. (§10)
+5. **AoU substrate** → **published AF tables first, Hail precompute as the
+   fallback.** Consume AoU's published per-ancestry AF where it exists (cheapest
+   first Tier-3 view); write the Hail VDS → tiled-store pipeline only where the
+   published tables fall short. Re-confirm against a real AoU interval when Tier 3
+   is actually the target — this is deferred, not on the P1/P2 path. (§7b/c)
+6. **Tier thresholds** → defaults **≤5K / 5K–100K / >100K**, configurable via
+   param/env with a force-a-tier override. (§3, §5)
+
+**NEEDS JONN (gate a build):**
+- **Scope / go signal** — authorize starting **P1 + P2** now (aggregate-only
+  payload + viewport loading on the live rust-htslib backend; unlocks ≤~100K).
+  Recommendation is yes; Tier 3 stays additive/deferred. This is a
+  prioritization call, not a technical one.
+- **Privacy / access tier (§6)** — the exact small-cell suppression rule and
+  which AoU access tier we target (Registered vs Controlled). Compliance, with an
+  **AoU review gate before ship**. Only blocks Tier 3, not P1/P2 — but it's yours,
+  not the doc's.
 
 ---
 
