@@ -79,3 +79,73 @@ GPU-memory stall / "expand freeze"). Follow-ups, in order:
    fallback if needed). Halves per-track canvas memory. Do after #1.
 3. **WebGPU glyph atlas** — restore A/C/G/T letters on SNP tiles via a texture
    atlas + textured quads (GPU-side), only at base-level zoom.
+
+## Implementation-ready specs (autonomous-session handoff, 2026-09-02)
+
+Written during the overnight build. The scale variant-side (P1 gate,
+fetch_carriers, Rust aggregate path, fetch_variants server) is DONE + tested on
+`jts_scaling_updates`. These remain — each render-invasive item needs a browser
+to verify (headless can't paint WebGPU), so they're specced rather than
+blind-shipped. Order by value.
+
+### P2 frontend windowing (#71 client)
+Server `fetch_variants_payload(contig,start,end)` + comm handler exist. Client:
+- On pan/zoom (debounced ~150ms), compute the visible window ± overscan; if not
+  covered by the loaded store, `__GS_SEND("fetch_variants", {contig,start,end})`.
+- Sparse store keyed by region; merge incoming variant_tracks; evict regions
+  beyond a keep-radius of the current center. Pure merge/evict helper → headless
+  test.
+- Wire in view-state.js (loader) + a pan/zoom hook in main.js. Aggregate flag in
+  the response toggles ribbons off.
+
+### Canvas virtualization (#65)  — lifts the read cap
+renderSmartTrack currently sizes canvases to the FULL stack (`totalContentHeight`,
+clamped 16384) so the cap exists. Virtualize:
+- Restructure the container: `overflow-y:auto`; a spacer div height =
+  totalContentHeight for scrollHeight; the 2D + WebGPU canvases sized to the
+  VIEWPORT (container clientHeight), `position:sticky; top:0` so they stay in view.
+- Draw offset: subtract `container.scrollTop` from every y — ctx via
+  `ctx.translate(0,-scrollTop)`; WebGPU by subtracting scrollTop in the addRect/
+  addTriangle/drawMarkerRect calls (or a renderer y-uniform). Pure row-window
+  helper `computeVirtualRowWindow(scrollTop,viewportH,rowH,totalRows,overscan)`
+  → headless test.
+- Remove the MAX_RENDER_READS cap (smart-tracks.js) + the MAX_CANVAS_PX clamp.
+- VERIFY IN BROWSER: a wrong WebGPU y-offset silently misplaces reads.
+
+### One WebGPU canvas (#66)  — after #65
+Fold grid + variant guide lines into the instanced renderer; move "Loading…" to a
+DOM element; drop the 2D canvas (keep a tiny Canvas2D fallback only for
+no-WebGPU). Halves per-track canvas memory.
+
+### WebGPU glyph atlas (#67)  — base letters back at scale
+Pre-render A/C/G/T (+ maybe N) into one small texture atlas; draw textured quads
+per SNP tile via the instanced renderer at base-level zoom (tile width ≥ ~8px).
+Removes the text-overlay canvas need.
+
+### Overscan on pan (#41)
+Pure `overscanRegion(startBp,endBp,factor)` → fetch/draw a margin beyond the
+viewport so pans reveal already-drawn content (pairs with P2 windowing). Headless-
+test the region math; render wiring is browser.
+
+### Codon track (planning/TODO "Codon track")
+Pure `translateFrame(refSeq, frame)` → [{codonStartBp, aa}] (standard codon
+table) — headless-testable. Render an additive row beside the reference at
+base-level zoom. Phase 2 (CDS-aware) needs CDS+phase retained through
+parse_gff_genes.
+
+### UCSC signal tracks (planning/TODO "signal tracks")
+New value-track renderer (line/area/heatmap, value→y, per-pixel binning, value
+gutter). Data path: extend the UCSC fetch to return value-spans for wig/bigWig.
+
+### GCS comment store via client library
+Replace the gcloud/gsutil shell-outs in the comment store with
+`google-cloud-storage` (Python) to cut latency + sidestep CLI reauth. New dep;
+Python-testable with a mocked client.
+
+### Vertical mode (#49)
+Smart/read track renders oddly + hover tooltip stays rotated in vertical
+orientation. WebGPU + comm-driven → browser-only.
+
+### Also: reference()/repeats() should adopt the contig-name candidate retry now
+in genes() (_contig_name_candidates); and the Rust aggregate path could honor
+sample-subsetting (currently cohort-wide) + parquet-cache aggregates.
