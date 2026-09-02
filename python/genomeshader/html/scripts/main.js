@@ -4126,8 +4126,67 @@ function setupCanvasHover() {
     
     // Convert to sorted array
     state.sampleSelection.candidateSamples = Array.from(candidateSamplesSet).sort();
-    
+
+    // Scale mode: when the per-sample map is omitted from the payload (large
+    // cohorts), the sync scan above finds nothing — resolve carriers on demand
+    // via the fetch_carriers comm and fill candidateSamples when they arrive.
+    // Small cohorts (per-sample present) never hit this path.
+    const omitted = selectedAllelePairs.some(p => p.variant && p.variant.perSampleOmitted);
+    if (omitted && candidateSamplesSet.size === 0 && typeof window.__GS_SEND === "function") {
+      _fetchCarriersForSelection(selectedAllelePairs, combineMode)
+        .then((ids) => {
+          state.sampleSelection.candidateSamples = ids;
+          updateSamplePreview();
+          try { if (typeof updateLoadButtonText === "function") updateLoadButtonText(); } catch (e) {}
+        })
+        .catch(() => {});
+    }
+
     updateSamplePreview();
+  }
+
+  // Map a selected allele pair to its actual allele string(s) (ref or ALT), for
+  // the fetch_carriers comm. Keys are "ref" / "aN" against the shipped
+  // (support-resorted) altAlleles order.
+  function _alleleStringsForPair(pair) {
+    const v = pair.variant || {};
+    const keys = (pair.alleleKeys && pair.alleleKeys.length)
+      ? pair.alleleKeys
+      : (pair.alleleIndex != null ? ["a" + pair.alleleIndex] : []);
+    return keys.map((k) => {
+      if (k === "ref") return v.refAllele;
+      const m = /^a(\d+)$/.exec(String(k));
+      if (m && Array.isArray(v.altAlleles)) return v.altAlleles[parseInt(m[1], 10) - 1];
+      return null;
+    }).filter((s) => s != null);
+  }
+
+  async function _fetchCarriersForSelection(pairs, combineMode) {
+    const n = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.carrier_fetch_n) || 500;
+    const perPairSets = [];
+    for (const pair of pairs) {
+      const v = pair.variant || {};
+      const trackId = (v.trackId != null) ? v.trackId : (pair.trackId != null ? pair.trackId : null);
+      const union = new Set();
+      for (const allele of _alleleStringsForPair(pair)) {
+        const resp = await window.__GS_SEND("fetch_carriers", {
+          contig: state.contig, pos: v.pos, ref: v.refAllele, allele: allele,
+          track_id: trackId, strategy: "random", n: n,
+        }, 60000).catch(() => null);
+        if (resp && Array.isArray(resp.carriers)) resp.carriers.forEach((s) => union.add(s));
+      }
+      perPairSets.push(union);
+    }
+    if (perPairSets.length === 0) return [];
+    let result;
+    if (combineMode === "AND") {
+      result = [...perPairSets[0]].filter((s) => perPairSets.every((set) => set.has(s)));
+    } else {
+      const u = new Set();
+      perPairSets.forEach((set) => set.forEach((s) => u.add(s)));
+      result = [...u];
+    }
+    return result.sort();
   }
   
   // Helper: Convert allele index to genotype index

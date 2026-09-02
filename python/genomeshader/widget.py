@@ -232,6 +232,24 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                 self.send({"type": "fetch_reads_response", "request_id": request_id, **payload})
             except Exception as e:  # surfaced to the frontend as a reads error
                 self.send({"type": "fetch_reads_error", "request_id": request_id, "error": str(e)})
+        elif msg_type == "fetch_carriers":
+            # Who carries this allele (on demand — used when the per-sample
+            # variant payload is size-gated at scale).
+            try:
+                carriers = self._shader.fetch_carriers(
+                    contig=content.get("contig"),
+                    pos=content.get("pos"),
+                    ref=content.get("ref"),
+                    allele=content.get("allele"),
+                    track_id=content.get("track_id"),
+                    strategy=content.get("strategy", "random"),
+                    n=int(content.get("n", 200)),
+                )
+                self.send({"type": "fetch_carriers_response", "request_id": request_id,
+                           "carriers": carriers})
+            except Exception as e:
+                self.send({"type": "fetch_carriers_error", "request_id": request_id,
+                           "carriers": [], "error": str(e)})
         elif msg_type == "ucsc_genomes":
             # Assembly picker: all UCSC assemblies + the best match for this build.
             try:

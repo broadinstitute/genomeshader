@@ -1,5 +1,6 @@
 import os
 import re
+import random
 import hashlib
 import warnings
 import threading
@@ -48,6 +49,55 @@ def _apply_persample_scale_gate(variants_data, n_samples, persample_max):
         v.pop("sampleAlleles", None)
         v["perSampleOmitted"] = True
     return True
+
+
+def _carriers_from_variant_rows(rows, ref_allele, allele, n=None, rng_sample=None):
+    """From long-format per-sample rows for ONE variant, return the sample names
+    carrying `allele` (the ref string, or an ALT string). Mirrors the genotype->
+    allele logic in `_build_variants_data_for_track` (a sample carries the allele
+    if any of its rows' genotype includes the allele's index — index 0 for ref,
+    or the row's alt_index for the matching ALT row). Deduped; sampled to <= n.
+
+    This is the pure core of `fetch_carriers` — kept out of the I/O wrapper so it
+    can be unit-tested without a live VCF. `rng_sample(list, n)` is injected for
+    deterministic tests (falls back to a head slice).
+    """
+    is_ref = (allele == ref_allele)
+    carriers = []
+    seen = set()
+    for row in rows:
+        sname = row.get("sample_name")
+        if sname is None or sname in seen:
+            continue  # unknown sample, or already a confirmed carrier
+        gt = str(row.get("genotype", "./.") or "./.")
+        row_alt = row.get("alt_allele")
+        row_alt_idx = row.get("alt_index")
+        try:
+            row_alt_idx_int = int(row_alt_idx) if row_alt_idx is not None else None
+        except (TypeError, ValueError):
+            row_alt_idx_int = None
+        carries = False
+        for tok in gt.replace("|", "/").split("/"):
+            tok = tok.strip()
+            if tok in ("", "."):
+                continue
+            try:
+                idx = int(tok)
+            except ValueError:
+                continue
+            if is_ref:
+                if idx == 0:
+                    carries = True
+                    break
+            elif row_alt == allele and row_alt_idx_int is not None and idx == row_alt_idx_int:
+                carries = True
+                break
+        if carries:
+            seen.add(sname)
+            carriers.append(sname)
+    if n is not None and n >= 0 and len(carriers) > n:
+        carriers = rng_sample(carriers, n) if rng_sample is not None else carriers[:n]
+    return carriers
 
 import genomeshader.genomeshader as gs
 from . import staging
@@ -1232,6 +1282,34 @@ class GenomeShader:
                 - vcf_id: VCF/BCF ID field from the variant record (None if not present)
         """
         return self._session.get_locus_variants(locus)
+
+    def fetch_carriers(self, contig, pos, ref, allele, track_id=None,
+                       strategy="random", n=200):
+        """Sample names carrying `allele` at contig:pos, fetched on demand.
+
+        Used when the per-sample payload is size-gated (large cohorts): the flow
+        ships only aggregates, and "who carries this allele → load their reads"
+        resolves through here instead. Reuses the single-position variant
+        region-seek and filters genotypes; samples the result to `n`. `allele`
+        is the ref or an ALT allele string.
+        """
+        try:
+            df = self.get_locus_variants(f"{contig}:{int(pos)}-{int(pos)}")
+        except Exception:
+            return []
+        if df is None or not isinstance(df, pl.DataFrame) or len(df) == 0:
+            return []
+        try:
+            df = df.filter(pl.col("position") == int(pos))
+            if ref is not None and "ref_allele" in df.columns:
+                df = df.filter(pl.col("ref_allele") == ref)
+            if track_id is not None and "variant_track_id" in df.columns:
+                df = df.filter(pl.col("variant_track_id").cast(pl.Int64) == int(track_id))
+        except Exception:
+            pass
+        rng = (lambda lst, k: random.sample(lst, k)) if strategy == "random" else None
+        return _carriers_from_variant_rows(
+            list(df.iter_rows(named=True)), ref, allele, n=n, rng_sample=rng)
 
     def _variant_dataset_signature(self) -> str:
         serialized = json.dumps(self._variant_datasets, sort_keys=True)

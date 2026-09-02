@@ -365,3 +365,35 @@ def test_staged_reference_forwarded_to_fetch(tmp_path, monkeypatch):
     # ref_seq forwarded verbatim; ref_start is the 1-based locus start (100).
     s._session.fetch_reads_for_locus.assert_called_once_with(
         "Pf3D7_01_v3:100-200", ["gs://b/S1.bam"], "ACGTACGT", 100)
+
+
+def test_fetch_carriers_comm_handler(tmp_path, monkeypatch):
+    # fetch_carriers message -> GenomeShader.fetch_carriers -> carriers response.
+    from unittest.mock import Mock
+    s = _shader(tmp_path, monkeypatch)
+    s.fetch_carriers = Mock(return_value=["FP1", "FP2", "FP3"])
+    w = GenomeShaderWidget(s, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+    w._on_custom_msg(w, {
+        "type": "fetch_carriers", "request_id": "r1",
+        "contig": "Pf3D7_01_v3", "pos": 100315, "ref": "G", "allele": "A",
+        "track_id": 0, "strategy": "random", "n": 50,
+    }, [])
+    assert sent and sent[0]["type"] == "fetch_carriers_response"
+    assert sent[0]["carriers"] == ["FP1", "FP2", "FP3"]
+    s.fetch_carriers.assert_called_once_with(
+        contig="Pf3D7_01_v3", pos=100315, ref="G", allele="A",
+        track_id=0, strategy="random", n=50)
+
+
+def test_fetch_carriers_handler_surfaces_error(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    s = _shader(tmp_path, monkeypatch)
+    s.fetch_carriers = Mock(side_effect=RuntimeError("boom"))
+    w = GenomeShaderWidget(s, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+    w._on_custom_msg(w, {"type": "fetch_carriers", "request_id": "r2",
+                         "contig": "c", "pos": 1, "ref": "A", "allele": "T"}, [])
+    assert sent[0]["type"] == "fetch_carriers_error" and sent[0]["carriers"] == []
