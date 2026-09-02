@@ -397,3 +397,20 @@ def test_fetch_carriers_handler_surfaces_error(tmp_path, monkeypatch):
     w._on_custom_msg(w, {"type": "fetch_carriers", "request_id": "r2",
                          "contig": "c", "pos": 1, "ref": "A", "allele": "T"}, [])
     assert sent[0]["type"] == "fetch_carriers_error" and sent[0]["carriers"] == []
+
+
+def test_fetch_variants_comm_handler(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    s = _shader(tmp_path, monkeypatch)
+    s.fetch_variants_payload = Mock(return_value={
+        "variant_tracks": [{"id": "flow-0", "variants_data": []}],
+        "insertion_variants_lookup": [], "region": {"contig": "c", "start": 1, "end": 9},
+        "aggregate": True})
+    w = GenomeShaderWidget(s, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+    w._on_custom_msg(w, {"type": "fetch_variants", "request_id": "r",
+                         "contig": "c", "start": 1, "end": 9}, [])
+    assert sent[0]["type"] == "fetch_variants_response"
+    assert sent[0]["aggregate"] is True and sent[0]["region"]["end"] == 9
+    s.fetch_variants_payload.assert_called_once_with("c", 1, 9)

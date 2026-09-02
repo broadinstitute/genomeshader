@@ -250,6 +250,15 @@ class GenomeShaderWidget(anywidget.AnyWidget):
             except Exception as e:
                 self.send({"type": "fetch_carriers_error", "request_id": request_id,
                            "carriers": [], "error": str(e)})
+        elif msg_type == "fetch_variants":
+            # Viewport variant load (P2): fetch one window's variant payload on
+            # pan/zoom without a full re-render.
+            try:
+                payload = self._shader.fetch_variants_payload(
+                    content.get("contig"), content.get("start"), content.get("end"))
+                self.send({"type": "fetch_variants_response", "request_id": request_id, **payload})
+            except Exception as e:
+                self.send({"type": "fetch_variants_error", "request_id": request_id, "error": str(e)})
         elif msg_type == "ucsc_genomes":
             # Assembly picker: all UCSC assemblies + the best match for this build.
             try:

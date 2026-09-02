@@ -1422,6 +1422,33 @@ class GenomeShader:
         return _carriers_from_variant_rows(
             list(df.iter_rows(named=True)), ref, allele, n=n, rng_sample=rng)
 
+    def fetch_variants_payload(self, contig, start, end):
+        """Viewport variant fetch (P2): build the variant payload for one window,
+        on demand, so the frontend can load a new region on pan/zoom without a
+        full re-render. Reuses the same aggregate/long-format threshold as render
+        (GENOMESHADER_VARIANT_AGG_MAX). Returns
+        {variant_tracks, insertion_variants_lookup, region, aggregate}.
+        """
+        locus = f"{contig}:{int(start)}-{int(end)}"
+        try:
+            agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "100000"))
+        except (TypeError, ValueError):
+            agg_max = 100000
+        region = {"contig": contig, "start": int(start), "end": int(end)}
+        if agg_max >= 0 and self._variant_sample_count() > agg_max:
+            try:
+                agg_df = self._session.get_locus_variant_aggregates(locus)
+                if agg_df is not None and isinstance(agg_df, pl.DataFrame) and len(agg_df) > 0:
+                    tracks, ins = self._build_variant_payload_from_aggregates(agg_df)
+                    return {"variant_tracks": tracks, "insertion_variants_lookup": ins,
+                            "region": region, "aggregate": True}
+            except Exception:
+                pass
+        df = self.get_locus_variants(locus)
+        tracks, ins = self._build_variant_payload(df)
+        return {"variant_tracks": tracks, "insertion_variants_lookup": ins,
+                "region": region, "aggregate": False}
+
     def _variant_dataset_signature(self) -> str:
         serialized = json.dumps(self._variant_datasets, sort_keys=True)
         return self._cache_id(serialized)
