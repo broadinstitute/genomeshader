@@ -1295,6 +1295,16 @@ function renderFlowCanvas() {
         ? alleleKeys.filter((k, idx, arr) => typeof k === "string" && arr.indexOf(k) === idx)
         : [];
       if (keys.length === 0) return 0;
+      // At scale the per-sample map is omitted; derive the count from the
+      // shipped aggregate. Exact for a single allele key; a small over-count for
+      // a union of keys (a sample carrying two of them counts twice), which is
+      // acceptable for the node's label.
+      if (variant.perSampleOmitted || !variant.sampleAlleles) {
+        const counts = variant.alleleSampleCounts || {};
+        let total = 0;
+        for (const k of keys) total += (counts[k] || 0);
+        if (total > 0 || variant.perSampleOmitted) return total;
+      }
       if (variant.sampleAlleles) {
         let count = 0;
         for (const sampleAlleles of Object.values(variant.sampleAlleles)) {

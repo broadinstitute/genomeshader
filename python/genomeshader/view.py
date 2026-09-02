@@ -32,6 +32,23 @@ except ImportError:
     Comm = None
     COMM_AVAILABLE = False
 
+
+def _apply_persample_scale_gate(variants_data, n_samples, persample_max):
+    """Scale gate: above `persample_max` samples, strip the per-sample maps
+    (sampleGenotypes / sampleAlleles) from each variant and flag it
+    (perSampleOmitted). The aggregate fields (alleleFrequencies /
+    alleleSampleCounts) are preserved so bands still render; carriers move to
+    fetch_carriers on demand and client-side ribbons switch off (no genotypes).
+    Returns True if the payload was gated. `persample_max < 0` disables gating.
+    """
+    if persample_max is None or persample_max < 0 or n_samples <= persample_max:
+        return False
+    for v in variants_data:
+        v.pop("sampleGenotypes", None)
+        v.pop("sampleAlleles", None)
+        v["perSampleOmitted"] = True
+    return True
+
 import genomeshader.genomeshader as gs
 from . import staging
 
@@ -1593,6 +1610,24 @@ class GenomeShader:
             for v in variants_data
             for gt in (v.get("sampleGenotypes") or {}).values()
         )
+        # Scale gate: above a sample-count threshold, don't ship the per-sample
+        # maps (sampleGenotypes/sampleAlleles) — they scale with variants×samples
+        # and are the browser wall at 50k+ samples. Bands still render from the
+        # aggregates (alleleFrequencies/alleleSampleCounts), carriers come from
+        # fetch_carriers on demand, and client-side ribbons naturally switch off
+        # (no genotypes) — matching the "ribbons zoom-in-only / drop at scale"
+        # decision. Small cohorts keep the full per-sample payload unchanged.
+        # Threshold configurable via GENOMESHADER_PERSAMPLE_MAX (default 5000;
+        # set very high to always ship per-sample).
+        try:
+            persample_max = int(os.environ.get("GENOMESHADER_PERSAMPLE_MAX", "5000"))
+        except (TypeError, ValueError):
+            persample_max = 5000
+        n_samples = max(
+            (len(v.get("sampleGenotypes") or {}) for v in variants_data),
+            default=0,
+        )
+        _apply_persample_scale_gate(variants_data, n_samples, persample_max)
         return variants_data, insertion_variants_lookup, variants_phased
 
     def ideogram(self, contig: str) -> pl.DataFrame:
