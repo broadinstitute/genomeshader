@@ -63,3 +63,18 @@ Discovered while iterating on the viewer; not yet done.
 See the README "Deferred / manual-check list" for behaviours the headless
 harness can't reach (comment thread UI, pin placement, drag feel, the vertical
 smart track) that must be checked by hand.
+
+## Sample-track rendering scale — deferred (pinned 2026-09-02)
+
+Current state works via a stopgap: reads capped to 300/track and the SNP base
+letters removed (WebGPU has no text primitive; a 3rd 2D text canvas caused a
+GPU-memory stall / "expand freeze"). Follow-ups, in order:
+
+1. **Virtualize the canvas** — size it to the visible container height, draw only
+   rows in view (offset by scrollTop) with a spacer for scroll height. Lifts the
+   300-read cap; canvas size becomes constant regardless of coverage depth.
+2. **One WebGPU canvas** — fold grid + variant guide lines into the instanced
+   renderer, move "Loading…" to DOM, drop the separate 2D canvas (keep a minimal
+   fallback if needed). Halves per-track canvas memory. Do after #1.
+3. **WebGPU glyph atlas** — restore A/C/G/T letters on SNP tiles via a texture
+   atlas + textured quads (GPU-side), only at base-level zoom.
