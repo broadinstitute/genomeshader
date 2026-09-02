@@ -501,7 +501,7 @@ impl Session {
                 }
             };
 
-            Ok((chr, start - 1000, start + 1000))
+            Ok((chr, start.saturating_sub(1000), start + 1000))
         } else if parts.len() == 3 {
             let start = match parts[1].parse::<u64>() {
                 Ok(val) => val,
@@ -524,6 +524,13 @@ impl Session {
                     );
                 }
             };
+
+            // Single-position loci ("chr1:100-100", or start>=stop generally) must
+            // still be a non-empty half-open interval: the iset interval tree
+            // (find_covering_variant_staged_file) panics on an empty range, and an
+            // empty htslib region returns no records. fetch_carriers builds exactly
+            // "chr:pos-pos", so widen to at least one base.
+            let stop = if stop <= start { start + 1 } else { stop };
 
             Ok((chr, start, stop))
         } else {
