@@ -146,11 +146,19 @@ JS uses the per-sample maps in exactly two places: `computeTransitions`
 already run on `alleleFrequencies` + `alleleSampleCounts` (aggregates that ship).
 
 Steps:
-1. **Rust aggregates.** In `extract_variants`, accumulate per-variant AC/AN/AF +
-   per-allele sample counts as it decodes, and per-**adjacent-pair** allele
-   transition counts (carry the previous variant's per-sample allele vector,
-   tally src→dst). Emit **per-variant** aggregate rows (+ a `transitions` column
-   keyed to the next variant), not variant×sample rows.
+1. **Server-side transitions (match `computeTransitions` exactly).** The current
+   JS (`interaction.js:2123`) counts transitions **per haplotype**, not per
+   sample: for each sample it parses the src/dst GT strings into allele indices,
+   pairs them positionally (`h = 0..min(ploidy)` — a phased assumption), maps each
+   index → allele label via `getAlleleLabelForIndex` **against the
+   support-resorted alt order** (`view.py:1490`), and does
+   `transitions[srcLabel][dstLabel] += 1`. Null/`.` → the "." label. The server
+   port must reproduce this — including the alt relabel — and a test must compare
+   its output to `computeTransitions` on the same synthetic genotypes.
+   Compute per **adjacent in-view pair** and ship a `transitions` field on the
+   src variant (`{srcKey -> {dstKey -> count}}`). Aggregates (AC/AN/AF, per-allele
+   counts) already exist server-side (`allele_frequencies`/`allele_sample_counts`,
+   `view.py:1496-1518`) — no change needed there for P1.
 2. **Drop per-sample fields** from the payload: remove `sampleGenotypes` and
    `sampleAlleles`; ship `transitions` instead. Payload becomes ~constant in
    sample count.
