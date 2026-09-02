@@ -156,3 +156,16 @@ def test_variant_sample_count():
     s = GenomeShader.__new__(GenomeShader)
     s._variant_datasets = [("a", ["x", "y"]), ("b", ["x", "y", "z"])]
     assert s._variant_sample_count() == 3
+
+
+from genomeshader.view import _contig_name_candidates
+
+
+def test_contig_name_candidates():
+    assert _contig_name_candidates("chr1")[:2] == ["chr1", "1"]
+    assert _contig_name_candidates("1")[:2] == ["1", "chr1"]
+    # PlasmoDB-style contig: chr toggle still offered, no crash
+    assert _contig_name_candidates("Pf3D7_01_v3")[:2] == ["Pf3D7_01_v3", "chrPf3D7_01_v3"]
+    # mito aliases included + deduped
+    cands = _contig_name_candidates("chrM")
+    assert "chrMT" in cands and len(cands) == len(set(cands))

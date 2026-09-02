@@ -51,6 +51,32 @@ def _apply_persample_scale_gate(variants_data, n_samples, persample_max):
     return True
 
 
+def _contig_name_candidates(contig):
+    """Candidate contig spellings to try against a UCSC assembly, in priority
+    order: the name as given, then the chr-prefix toggled (chr1<->1), then a few
+    common aliases (chrMT<->chrM). Lets UCSC fetches succeed when the loaded
+    data's contig naming differs from the assembly's (multispecies / plain-number
+    contigs vs hg38's chr-prefixed)."""
+    c = str(contig)
+    out = [c]
+    if c.startswith("chr"):
+        out.append(c[3:])
+    else:
+        out.append("chr" + c)
+    low = c.lower()
+    if low in ("chrmt", "mt", "chrm", "m"):
+        for alias in ("chrM", "chrMT", "MT", "M"):
+            if alias not in out:
+                out.append(alias)
+    seen = set()
+    deduped = []
+    for x in out:
+        if x and x not in seen:
+            seen.add(x)
+            deduped.append(x)
+    return deduped
+
+
 def _format_allele_label(allele):
     """Module-level mirror of the nested formatter in _build_variants_data_for_track
     (kept in sync); used by the aggregate builder so both paths format alleles
@@ -1985,22 +2011,33 @@ class GenomeShader:
         if not self._allow_ucsc_api:
             return []
 
-        # Define the API endpoint with the track, contig, start, end parameters
+        # Try the contig as given, then normalized spellings (chr1<->1, etc.) so
+        # a mismatch between the loaded data's contig names and the assembly's
+        # doesn't silently return nothing. Break on the first candidate that
+        # actually returns data (normally the first == one request).
         # Encode free-form fields so a contig/build with ';'/'&' can't corrupt the query.
-        api_endpoint = (
-            "https://api.genome.ucsc.edu/getData/track?"
-            f"genome={urllib.parse.quote(str(self.genome_build), safe='')}"
-            f";track={urllib.parse.quote(str(track), safe='')}"
-            f";chrom={urllib.parse.quote(str(contig), safe='')}"
-            f";start={int(start)};end={int(end)}"
-        )
-
-        # Make a GET request to the API endpoint
-        response = self._http_get_json(
-            api_endpoint,
-            f"Failed to retrieve gene track '{track}' for locus '{contig}:{start}-{end}'",
-        )
-        if response.status_code == 200:
+        response = None
+        for _cand in _contig_name_candidates(contig):
+            api_endpoint = (
+                "https://api.genome.ucsc.edu/getData/track?"
+                f"genome={urllib.parse.quote(str(self.genome_build), safe='')}"
+                f";track={urllib.parse.quote(str(track), safe='')}"
+                f";chrom={urllib.parse.quote(str(_cand), safe='')}"
+                f";start={int(start)};end={int(end)}"
+            )
+            resp = self._http_get_json(
+                api_endpoint,
+                f"Failed to retrieve gene track '{track}' for locus '{contig}:{start}-{end}'",
+            )
+            response = resp
+            if resp.status_code == 200:
+                _d = resp.json() if resp is not None else None
+                _td = _d.get(track) if isinstance(_d, dict) else None
+                _has = (isinstance(_td, dict) and bool(_td.get(_cand))) or (isinstance(_td, list) and bool(_td))
+                if _has:
+                    contig = _cand  # rest of the parse keys on the working name
+                    break
+        if response is not None and response.status_code == 200:
             self._cache_debug_bump("genes", "api")
             data = response.json()
 
