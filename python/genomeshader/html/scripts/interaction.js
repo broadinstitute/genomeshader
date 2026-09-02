@@ -36,6 +36,11 @@ function roundRect(ctx, x, y, w, h, r) {
 // Sankey placeholder (Canvas2D)
 // -----------------------------
 function renderFlowCanvas() {
+  // During a live pan the flow is moved by a CSS transform only. If a hover
+  // handler redraws it here mid-drag, it paints at the already-advanced startBp
+  // AND keeps the transform — moving the variant track twice as fast. Skip until
+  // the pan commits (endLivePan clears livePanOffset, then renderAll repaints).
+  if (typeof state !== "undefined" && state && state.livePanOffset) return;
   const variantOrderKeyFor = (trackId, variantId) => (
     window.makeVariantOrderKey
       ? window.makeVariantOrderKey(trackId, variantId)
@@ -83,60 +88,18 @@ function renderFlowCanvas() {
   const insertionLookupForFlow = (typeof insertionVariantsLookup !== "undefined" && Array.isArray(insertionVariantsLookup))
     ? insertionVariantsLookup
     : (((window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.insertion_variants_lookup) || []));
-  const getTotalExpandedInsertionGapBpForFlowAll = () => {
-    let totalBp = 0;
-    const countedIds = new Set();
-    if (insertionLookupForFlow && insertionLookupForFlow.length > 0 && typeof getInsertionGapBpForLookupEntry === "function") {
-      for (const entry of insertionLookupForFlow) {
-        const id = String(entry && entry.id);
-        if (!id || countedIds.has(id)) continue;
-        if (!expandedInsertionsForFlow.has(id)) continue;
-        countedIds.add(id);
-        totalBp += getInsertionGapBpForLookupEntry(entry);
-      }
-      return totalBp;
-    }
-    for (const v of variants) {
-      const id = String(v && v.id);
-      if (!id || countedIds.has(id)) continue;
-      if (!expandedInsertionsForFlow.has(id) || !isInsertion(v)) continue;
-      countedIds.add(id);
-      totalBp += (typeof getInsertionGapBpForVariant === "function")
-        ? getInsertionGapBpForVariant(v)
-        : 0;
-    }
-    return totalBp;
-  };
-  const getAccumulatedGapBpForFlowAll = (bp) => {
-    const bpNum = Number(bp);
-    if (!Number.isFinite(bpNum)) return 0;
-    let accumulated = 0;
-    const countedIds = new Set();
-    if (insertionLookupForFlow && insertionLookupForFlow.length > 0 && typeof getInsertionGapBpForLookupEntry === "function") {
-      for (const entry of insertionLookupForFlow) {
-        const pos = Number(entry && entry.pos);
-        if (!Number.isFinite(pos) || !(pos < bpNum)) continue;
-        const id = String(entry && entry.id);
-        if (!id || countedIds.has(id)) continue;
-        if (!expandedInsertionsForFlow.has(id)) continue;
-        countedIds.add(id);
-        accumulated += getInsertionGapBpForLookupEntry(entry);
-      }
-      return accumulated;
-    }
-    for (const v of variants) {
-      const pos = Number(v && v.pos);
-      if (!Number.isFinite(pos) || !(pos < bpNum)) continue;
-      const id = String(v && v.id);
-      if (!id || countedIds.has(id)) continue;
-      if (!expandedInsertionsForFlow.has(id) || !isInsertion(v)) continue;
-      countedIds.add(id);
-      accumulated += (typeof getInsertionGapBpForVariant === "function")
-        ? getInsertionGapBpForVariant(v)
-        : 0;
-    }
-    return accumulated;
-  };
+  // Use the SAME insertion-gap accounting as the ruler/reference/genes tracks
+  // (the global, view-restricted getAccumulatedGapBp/getTotalExpandedInsertionGapBp)
+  // so the flow stays in exact horizontal sync with them. Previously the flow
+  // counted ALL expanded insertions — including ones scrolled off the left edge
+  // — while the ruler dropped those past the view start, so the two drifted
+  // apart when insertions were expanded and you panned.
+  const getTotalExpandedInsertionGapBpForFlowAll = () =>
+    (typeof getTotalExpandedInsertionGapBp === "function")
+      ? getTotalExpandedInsertionGapBp(expandedInsertionsForFlow) : 0;
+  const getAccumulatedGapBpForFlowAll = (bp) =>
+    (typeof getAccumulatedGapBp === "function")
+      ? getAccumulatedGapBp(bp, expandedInsertionsForFlow) : 0;
   const totalExpandedGapBpForFlow = getTotalExpandedInsertionGapBpForFlowAll();
   const flowSpanBp = state.endBp - state.startBp;
   const flowEffectiveSpanBp = flowSpanBp + totalExpandedGapBpForFlow;
@@ -263,9 +226,12 @@ function renderFlowCanvas() {
     } else {
       ctx = flowCanvas.getContext("2d");
       ctx.save();
-      ctx.translate(0, bandOffset);
+      // Vertical: the genome axis is the canvas height (totalFlowH) and bands
+      // tile across X. Horizontal: genome axis is the width (W) and bands tile
+      // down Y. The clip must span the full genome axis, not the band thickness.
+      ctx.translate(isVertical ? bandOffset : 0, isVertical ? 0 : bandOffset);
       ctx.beginPath();
-      ctx.rect(0, 0, W, bandHeight);
+      ctx.rect(0, 0, isVertical ? bandHeight : W, isVertical ? totalFlowH : bandHeight);
       ctx.clip();
     }
 
@@ -457,10 +423,10 @@ function renderFlowCanvas() {
   // Out-of-bounds shading on variant tracks (flow bands), matching tracks pane behavior.
   if (dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
     const dataStartPos = isVertical
-      ? yGenomeCanonical(dataBounds.start, H)
+      ? yGenomeCanonical(dataBounds.start, totalFlowH)
       : xGenomeCanonical(dataBounds.start, W);
     const dataEndPos = isVertical
-      ? yGenomeCanonical(dataBounds.end, H)
+      ? yGenomeCanonical(dataBounds.end, totalFlowH)
       : xGenomeCanonical(dataBounds.end, W);
 
     // Flow bands have a base background wash (0.035), so use a lighter overlay
@@ -513,7 +479,7 @@ function renderFlowCanvas() {
     
     // columns (horizontal lines in vertical mode) - shortened to end near where allele nodes start
     // Calculate where allele nodes start (left + margin + horizontal offset)
-    const left = 70;
+    const left = 20;
     const marginPercent = 0.1;
     const minMargin = 10;
     const trackWidth = flowLayout ? flowLayout.contentWidth : 300;
@@ -533,7 +499,7 @@ function renderFlowCanvas() {
         const alpha = isHovered ? 0.7 : 0.5;
         // Position column based on mode
         const y = variantMode === "genomic" 
-          ? yGenomeCanonical(v.pos, H)
+          ? yGenomeCanonical(v.pos, totalFlowH)
           : yColumn(i, sortedWin.length);
         const yScaled = yBandToFlow(y) * devicePixelRatio;
         flowInstancedRenderer.addLine(
@@ -552,7 +518,7 @@ function renderFlowCanvas() {
         ctx.lineWidth = isHovered ? 2.5 : 1;
         // Position column based on mode
         const y = variantMode === "genomic" 
-          ? yGenomeCanonical(v.pos, H)
+          ? yGenomeCanonical(v.pos, totalFlowH)
           : yColumn(i, sortedWin.length);
         ctx.beginPath();
         ctx.moveTo(junctionX, y);
@@ -599,7 +565,7 @@ function renderFlowCanvas() {
     if (uniquePositions.length > 0) {
       if (variantMode === "genomic") {
         // In genomic mode, check minimum spacing between actual positions
-        const positions = uniquePositions.map(pos => yGenomeCanonical(pos, H)).sort((a, b) => a - b);
+        const positions = uniquePositions.map(pos => yGenomeCanonical(pos, totalFlowH)).sort((a, b) => a - b);
         let minActualSpacing = Infinity;
         for (let i = 1; i < positions.length; i++) {
           const spacing = positions[i] - positions[i - 1];
@@ -630,7 +596,7 @@ function renderFlowCanvas() {
       // For equidistant mode, use the position index (not variant index) so variants at same position overlap
       let y;
       if (variantMode === "genomic") {
-        y = yGenomeCanonical(pos, H);
+        y = yGenomeCanonical(pos, totalFlowH);
       } else {
         // Use position index so all variants at same position get same Y coordinate
         y = yColumn(posIdx, uniquePositions.length);
@@ -648,9 +614,8 @@ function renderFlowCanvas() {
           : variantsAtPos[0].id;
         
         ctx.save();
-        ctx.translate(14, y + 6);
-        ctx.rotate(-Math.PI/2);
-        ctx.fillText(displayText, 0, 0);
+        ctx.textBaseline = "middle";
+        ctx.fillText(displayText, 2, y + 3);   // upright, left of the alleles
         ctx.restore();
       }
       
@@ -687,9 +652,9 @@ function renderFlowCanvas() {
         const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
         const alpha = isHovered ? 0.7 : 0.5;
-        const vy = yGenomeCanonical(v.pos, H); // always use genomic position for ruler connection
+        const vy = yGenomeCanonical(v.pos, totalFlowH); // always use genomic position for ruler connection
         const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
+          ? yGenomeCanonical(v.pos, totalFlowH)
           : yColumn(i, sortedWin.length);
         flowInstancedRenderer.addLine(
           x0 * devicePixelRatio, yBandToFlow(vy) * devicePixelRatio,
@@ -705,9 +670,9 @@ function renderFlowCanvas() {
         ctx.strokeStyle = isHovered ? colBlue : colGray;
         ctx.globalAlpha = isHovered ? 0.7 : 0.5;
         ctx.lineWidth = isHovered ? 2.5 : 1;
-        const vy = yGenomeCanonical(v.pos, H);
+        const vy = yGenomeCanonical(v.pos, totalFlowH);
         const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, H)
+          ? yGenomeCanonical(v.pos, totalFlowH)
           : yColumn(i, sortedWin.length);
         ctx.beginPath();
         ctx.moveTo(x0, vy);
@@ -824,19 +789,21 @@ function renderFlowCanvas() {
       const isPinned = variantsAtPos.some(v => state.pinnedVariantLabels.has(v.id));
       const shouldShow = isHovered || isPinned || hasEnoughSpace;
       
-      if (shouldShow) {
-        // Show first ID (or count if multiple)
-        const displayText = variantsAtPos.length > 1 
-          ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
-          : variantsAtPos[0].id;
+      // Only a real VCF ID is meaningful above a variant; a load-order index is
+      // not, so show nothing when the VCF has no ID at this position.
+      const idVariants = variantsAtPos.filter(v => v.vcfId && String(v.vcfId).length > 0);
+      const displayText = idVariants.length === 0
+        ? ""
+        : (idVariants.length > 1
+            ? `${idVariants[0].vcfId} (+${idVariants.length - 1})`
+            : String(idVariants[0].vcfId));
+
+      if (shouldShow && displayText) {
         ctx.fillText(displayText, x - 10, 14);
       }
-      
+
       // Store position for hit testing (for click-to-pin and tooltip) - one entry per position
       const firstVariantIdx = variants.findIndex(v2 => v2.id === firstVariant.id);
-      const displayText = variantsAtPos.length > 1 
-        ? `${variantsAtPos[0].id} (+${variantsAtPos.length - 1})`
-        : variantsAtPos[0].id;
       const labelWidth = ctx.measureText(displayText).width;
       const labelIds = (firstVariant.displayIds && firstVariant.displayIds.length > 0)
         ? firstVariant.displayIds
@@ -861,6 +828,8 @@ function renderFlowCanvas() {
     if (useWebGPU) {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
+        // Indels are shown on the Indel track; skip their connector line here.
+        if (typeof isIndel === "function" && isIndel(v)) continue;
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         const color = isHovered ? blueHex : grayHex;
@@ -878,6 +847,8 @@ function renderFlowCanvas() {
     } else {
       for (let i=0; i<win.length; i++) {
         const v = win[i];
+        // Indels are shown on the Indel track; skip their connector line here.
+        if (typeof isIndel === "function" && isIndel(v)) continue;
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
         ctx.strokeStyle = isHovered ? colBlue : colGray;
@@ -1136,7 +1107,7 @@ function renderFlowCanvas() {
     if (!Number.isFinite(posNum) || !Number.isFinite(nextBpAtVariant)) return null;
 
     if (isVertical) {
-      const gapEndY = yGenomeCanonical(nextBpAtVariant, H);
+      const gapEndY = yGenomeCanonical(nextBpAtVariant, totalFlowH);
       const gapStartY = gapEndY + gapSize;
       return {
         axis: "y",
@@ -1521,7 +1492,7 @@ function renderFlowCanvas() {
   
   if (isVertical) {
     const sortedWin = [...win].sort((a, b) => a.pos - b.pos);
-    const left = 70;
+    const left = 20;
     
     // Calculate margin for allele nodes (same as in calculateAlleleSizes)
     const marginPercent = 0.1;
@@ -1563,7 +1534,7 @@ function renderFlowCanvas() {
       
       // Position based on variant layout mode
       const cy = variantMode === "genomic"
-        ? yGenomeCanonical(v.pos, H)
+        ? yGenomeCanonical(v.pos, totalFlowH)
         : yColumn(i, sortedWin.length);
       
       // Calculate total width of all nodes plus gaps
@@ -1582,7 +1553,19 @@ function renderFlowCanvas() {
       // Account for left offset and right margin to ensure nodes don't extend beyond track boundaries
       const availableWidth = W - left - margin;
       const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
-      
+
+      // Stash the EXACT layout used to draw these nodes so the drag handler
+      // computes the drop index against the same geometry (start/sizes/gap/axis).
+      // Duplicating this math in main.js is what made the drop bar drift from the
+      // landing spot; this is the single source of truth.
+      if (!state.alleleDragLayout) state.alleleDragLayout = new Map();
+      state.alleleDragLayout.set(variantOrderKey, {
+        axis: 'x',
+        start: left + horizontalOffset,
+        gap: gap,
+        sizes: order.map(l => alleleSizes[getAlleleKey(l)] || baseNodeW),
+      });
+
       // Calculate cumulative positions for variable-width nodes, starting with left + horizontal offset
       let currentX = left + horizontalOffset;
       
@@ -1611,8 +1594,10 @@ function renderFlowCanvas() {
         const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
         const dragOffsetY = isDragging ? state.alleleDragState.offsetY : 0;
         
+        // Reordering slides an allele only along the stacking axis (X here);
+        // its genome-axis position (Y) stays locked to the variant.
         const nodeX = x + dragOffsetX;
-        const nodeY = cy - nodeH/2 + dragOffsetY;
+        const nodeY = cy - nodeH/2;
 
         // Get colors based on allele type (use actual allele from map, not extracted from label)
         const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
@@ -1683,7 +1668,12 @@ function renderFlowCanvas() {
           .filter((k, idx, arr) => arr.indexOf(k) === idx);
         
         if (isHovered || isPinned || isSelected) {
-          const labelText = `${label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
+          let _indelTag = "";
+          if (v && v.refAllele && typeof actualAllele === "string" && actualAllele !== "." && actualAllele.length > 0) {
+            if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
+            else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
+          }
+          const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}`;
           allLabelsToDraw.push({
             label: label,
             text: labelText,
@@ -1747,8 +1737,10 @@ function renderFlowCanvas() {
         const dropIdx = state.alleleDragState.dropIndex;
         const currentIdx = order.indexOf(state.alleleDragState.label);
         
-        // Only show indicator if dropping at a different position
-        if (dropIdx !== currentIdx) {
+        // Only show indicator if dropping at a different position. Inserting
+        // before self (currentIdx) or before the next node (currentIdx+1) both
+        // leave the order unchanged, so hide the bar in those cases too.
+        if (dropIdx !== currentIdx && dropIdx !== currentIdx + 1) {
           // Calculate drop position accounting for variable node widths, margin, and centering
           // Recalculate total width and horizontal offset (same as above)
           let totalNodesWidth = 0;
@@ -1764,20 +1756,9 @@ function renderFlowCanvas() {
           const availableWidth = W - left - margin;
           const horizontalOffset = Math.max(0, (availableWidth - totalNodesWidth) / 2);
           
-          let indicatorX = left + horizontalOffset;
-          for (let k = 0; k < dropIdx; k++) {
-            const label = order[k];
-            const alleleKey = getAlleleKey(label);
-            const nodeW = alleleSizes[alleleKey] || baseNodeW;
-            indicatorX += nodeW + gap;
-          }
-          // For the last position, draw after the last node
-          if (dropIdx === order.length - 1) {
-            const label = order[dropIdx];
-            const alleleKey = getAlleleKey(label);
-            const nodeW = alleleSizes[alleleKey] || baseNodeW;
-            indicatorX += nodeW;
-          }
+          const insertAt = alleleDropInsertAt(dropIdx, currentIdx);
+          const nodeSizes = order.map(l => alleleSizes[getAlleleKey(l)] || baseNodeW);
+          const indicatorX = alleleDropIndicatorPos(left + horizontalOffset, nodeSizes, gap, currentIdx, insertAt);
           ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
           ctx.lineWidth = 2;
           ctx.beginPath();
@@ -1850,6 +1831,15 @@ function renderFlowCanvas() {
       const availableHeight = H - top - margin;
       const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
 
+      // Single source of truth for the drag handler (see the isVertical branch).
+      if (!state.alleleDragLayout) state.alleleDragLayout = new Map();
+      state.alleleDragLayout.set(variantOrderKey, {
+        axis: 'y',
+        start: top + verticalOffset,
+        gap: gap,
+        sizes: order.map(l => alleleSizes[getAlleleKey(l)] || baseNodeH),
+      });
+
       // Calculate cumulative positions for variable-height nodes, starting with top + vertical offset
       let currentY = top + verticalOffset;
 
@@ -1878,7 +1868,9 @@ function renderFlowCanvas() {
         const dragOffsetX = isDragging ? state.alleleDragState.offsetX : 0;
         const dragOffsetY = isDragging ? state.alleleDragState.offsetY : 0;
         
-        const nodeX = cx - nodeW/2 + dragOffsetX;
+        // Reordering slides an allele only along the stacking axis (Y here);
+        // its genome-axis position (X) stays locked to the variant.
+        const nodeX = cx - nodeW/2;
         const nodeY = y + dragOffsetY;
 
         // Get colors based on allele type (use actual allele from map, not extracted from label)
@@ -1950,7 +1942,12 @@ function renderFlowCanvas() {
           .filter((k, idx, arr) => arr.indexOf(k) === idx);
         
         if (isHovered || isPinned || isSelected) {
-          const labelText = `${label} - ${sampleCount} sample${sampleCount === 1 ? '' : 's'}`;
+          let _indelTag = "";
+          if (v && v.refAllele && typeof actualAllele === "string" && actualAllele !== "." && actualAllele.length > 0) {
+            if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
+            else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
+          }
+          const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}`;
           allLabelsToDraw.push({
             label: label,
             text: labelText,
@@ -2014,8 +2011,10 @@ function renderFlowCanvas() {
         const dropIdx = state.alleleDragState.dropIndex;
         const currentIdx = order.indexOf(state.alleleDragState.label);
         
-        // Only show indicator if dropping at a different position
-        if (dropIdx !== currentIdx) {
+        // Only show indicator if dropping at a different position. Inserting
+        // before self (currentIdx) or before the next node (currentIdx+1) both
+        // leave the order unchanged, so hide the bar in those cases too.
+        if (dropIdx !== currentIdx && dropIdx !== currentIdx + 1) {
           // Calculate drop position accounting for variable node heights, margin, and centering
           // Recalculate total height and vertical offset (same as above)
           let totalNodesHeight = 0;
@@ -2031,20 +2030,9 @@ function renderFlowCanvas() {
           const availableHeight = H - top - margin;
           const verticalOffset = Math.max(0, (availableHeight - totalNodesHeight) / 2);
           
-          let indicatorY = top + verticalOffset;
-          for (let k = 0; k < dropIdx; k++) {
-            const label = order[k];
-            const alleleKey = getAlleleKey(label);
-            const nodeH = alleleSizes[alleleKey] || baseNodeH;
-            indicatorY += nodeH + gap;
-          }
-          // For the last position, draw after the last node
-          if (dropIdx === order.length - 1) {
-            const label = order[dropIdx];
-            const alleleKey = getAlleleKey(label);
-            const nodeH = alleleSizes[alleleKey] || baseNodeH;
-            indicatorY += nodeH;
-          }
+          const insertAt = alleleDropInsertAt(dropIdx, currentIdx);
+          const nodeSizes = order.map(l => alleleSizes[getAlleleKey(l)] || baseNodeH);
+          const indicatorY = alleleDropIndicatorPos(top + verticalOffset, nodeSizes, gap, currentIdx, insertAt);
           ctx.strokeStyle = "rgba(120, 180, 255, 0.8)"; // Use accent blue color
           ctx.lineWidth = 2;
           ctx.beginPath();
@@ -2483,20 +2471,33 @@ function renderFlowCanvas() {
     const textHeight = 11; // font size
     
     if (labelInfo.isVertical) {
-      // Vertical mode: rotated text
+      // Vertical mode: rotated text. Screen box is tooltipW wide, tooltipH tall.
       const labelX = labelInfo.nodeX + labelInfo.nodeW/2 - gap - 5 + 12;
-      const labelY = labelInfo.nodeY - 12;
-      
-      // Calculate dimensions for rotated tooltip
-      const tooltipW = textHeight + labelPadding * 2;
-      const tooltipH = textWidth + labelPadding * 2;
-      const tooltipX = labelX - tooltipH / 2;
-      const tooltipY = labelY - tooltipW / 2;
-      
+      const tooltipW = textHeight + labelPadding * 2;   // screen: horizontal thickness
+      const tooltipH = textWidth + labelPadding * 2;    // screen: vertical length (rotated)
+      const canvasH = ctx.canvas.clientHeight || ctx.canvas.height;
+      const nodeTop = labelInfo.nodeY;
+      const nodeH = labelInfo.nodeH;
+      const tipGap = 3;
+      // Same occlusion rule as horizontal: a small allele (< 2x tooltip) stays
+      // fully visible (box entirely off the node); a large one may overlap.
+      const isSmall = nodeH < 2 * tooltipH;
+      let labelY;
+      if (isSmall) {
+        const above = nodeTop - tipGap - tooltipH / 2;       // centre so the box bottom clears the node top
+        const below = nodeTop + nodeH + tipGap + tooltipH / 2;
+        if (above - tooltipH / 2 >= 2) labelY = above;
+        else if (below + tooltipH / 2 <= canvasH - 2) labelY = below;
+        else labelY = above;
+      } else {
+        labelY = nodeTop - 12; // partial overlap OK for large alleles
+      }
+      labelY = Math.max(2 + tooltipH / 2, Math.min(labelY, canvasH - 2 - tooltipH / 2));
+
       ctx.save();
       ctx.translate(labelX, labelY);
       ctx.rotate(-Math.PI/2);
-      
+
       // Draw tooltip background
       ctx.fillStyle = labelBgColor;
       ctx.strokeStyle = labelBorderColor;
@@ -2505,23 +2506,44 @@ function renderFlowCanvas() {
       roundRect(ctx, -tooltipH/2, -tooltipW/2, tooltipH, tooltipW, labelBorderRadius);
       ctx.fill();
       ctx.stroke();
-      
+
       // Draw text
       ctx.fillStyle = labelTextColor;
       ctx.fillText(text, -textWidth/2, textHeight/2 + 2);
-      
+
       ctx.restore();
     } else {
-      // Horizontal mode: normal text
-      const labelX = labelInfo.nodeX + 12;
-      const labelY = labelInfo.nodeY + 13;
-      
-      // Calculate dimensions for tooltip
+      // Horizontal mode: normal text.
       const tooltipW = textWidth + labelPadding * 2;
       const tooltipH = textHeight + labelPadding * 2;
-      const tooltipX = labelX - labelPadding;
-      const tooltipY = labelY - textHeight - labelPadding;
-      
+      const canvasW = ctx.canvas.clientWidth || ctx.canvas.width;
+      const canvasH = ctx.canvas.clientHeight || ctx.canvas.height;
+
+      const nodeTop = labelInfo.nodeY;
+      const nodeH = labelInfo.nodeH;
+      const tipGap = 3;
+      // Occlusion rule: a "small" allele (shorter than 2x the tooltip) must stay
+      // fully visible, so the tooltip sits entirely off the node — above it, or
+      // below when there's no room above. A "large" allele may be partly
+      // overlapped, so anchor the box at its top edge; that still leaves at least
+      // tooltipH (>= half the node) of the allele showing.
+      const isSmall = nodeH < 2 * tooltipH;
+      let tooltipY;
+      if (isSmall) {
+        const above = nodeTop - tooltipH - tipGap;
+        const below = nodeTop + nodeH + tipGap;
+        if (above >= 2) tooltipY = above;
+        else if (below + tooltipH <= canvasH - 2) tooltipY = below;
+        else tooltipY = above; // pathological (tiny canvas); final clamp handles it
+      } else {
+        tooltipY = nodeTop;
+      }
+
+      // Keep the box near the node horizontally, clamped on-screen.
+      let tooltipX = labelInfo.nodeX + 12 - labelPadding;
+      tooltipX = Math.max(2, Math.min(tooltipX, canvasW - tooltipW - 2));
+      tooltipY = Math.max(2, Math.min(tooltipY, canvasH - tooltipH - 2));
+
       // Draw tooltip background
       ctx.fillStyle = labelBgColor;
       ctx.strokeStyle = labelBorderColor;
@@ -2530,10 +2552,10 @@ function renderFlowCanvas() {
       roundRect(ctx, tooltipX, tooltipY, tooltipW, tooltipH, labelBorderRadius);
       ctx.fill();
       ctx.stroke();
-      
-      // Draw text
+
+      // Draw text at the box position.
       ctx.fillStyle = labelTextColor;
-      ctx.fillText(text, labelX, labelY);
+      ctx.fillText(text, tooltipX + labelPadding, tooltipY + textHeight + labelPadding);
     }
     }
 

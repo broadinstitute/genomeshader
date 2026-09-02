@@ -45,7 +45,7 @@ fn stage_data_from_one_file(
     let mut outer_df = DataFrame::default();
 
     for (chr, start, stop) in loci.iter() {
-        let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop)?;
+        let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop, None, 0)?;
         let _ = outer_df.vstack_mut(&df);
     }
 
@@ -196,8 +196,8 @@ pub fn fetch_reads_from_first_bam(
     let _stderr_gag = Gag::stderr().unwrap();
     
     let mut bam = open_bam(reads_url, cache_path)?;
-    let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop)?;
-    
+    let df = extract_reads(&mut bam, reads_url, cohort, chr, start, stop, None, 0)?;
+
     Ok(df)
 }
 
@@ -209,7 +209,9 @@ pub fn fetch_reads_from_bam_urls(
     chr: &String,
     start: &u64,
     stop: &u64,
-    cache_path: &PathBuf
+    cache_path: &PathBuf,
+    ref_seq: Option<&[u8]>,   // staged reference bases for [ref_seq_start, ...]
+    ref_seq_start: u32        // 1-based genomic pos of ref_seq[0]
 ) -> Result<DataFrame> {
     let _stderr_gag = Gag::stderr().unwrap();
     
@@ -224,7 +226,7 @@ pub fn fetch_reads_from_bam_urls(
         .filter_map(|(idx, reads_url)| {
             match open_bam(reads_url, cache_path) {
                 Ok(mut bam) => {
-                    match extract_reads(&mut bam, reads_url, cohort, chr, start, stop) {
+                    match extract_reads(&mut bam, reads_url, cohort, chr, start, stop, ref_seq, ref_seq_start) {
                         Ok(df) if df.height() > 0 => Some((idx, df)),
                         Ok(_) => None,
                         Err(e) => {
@@ -311,6 +313,7 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_open_bam() {
         let reads_url = Url::parse(
             "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam"
@@ -323,6 +326,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_stage_data_from_one_file() {
         let reads_url = Url::parse(
             "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam"
@@ -330,9 +334,8 @@ mod tests {
         let cohort = String::from("test_cohort");
         let loci = HashSet::from([("chr15".to_string(), 23960193, 23963918)]);
         let cache_path = std::env::temp_dir();
-        let use_cache = false;
 
-        let result = stage_data_from_one_file(&reads_url, &cohort, &loci, &cache_path, use_cache);
+        let result = stage_data_from_one_file(&reads_url, &cohort, &loci, &cache_path);
 
         assert!(result.is_ok(), "Failed to stage data from one file");
 
@@ -340,6 +343,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_stage_data() {
         let reads_url = Url::parse(
             "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam"
@@ -358,6 +362,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_stage_multiple_data() {
         let reads_url_1 = Url::parse(
             "gs://fc-8c3900db-633f-477f-96b3-fb31ae265c44/results/PBFlowcell/m84060_230907_210011_s2/reads/ccs/aligned/m84060_230907_210011_s2.bam"
@@ -382,6 +387,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live GCS access"]
     fn test_convert_to_pydataframe() {
         let reads_urls = [
             Url::parse(

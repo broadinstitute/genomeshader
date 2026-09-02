@@ -237,6 +237,12 @@ function renderTracks() {
       return;
     }
 
+    // Left gutter reserved for the contig name so the chromosome band starts
+    // after it (no overlap). Sized to the name length; the name is right-aligned
+    // against the band with a gap.
+    const contigName = String(state.contig || '');
+    const nameGutter = Math.max(70, 16 + Math.ceil(contigName.length * 8) + 14);
+
     // --- Chromosome label
     if (isVertical) {
       // Position chromosome label at the bottom
@@ -246,20 +252,21 @@ function renderTracks() {
         y: labelY,
         class: "svg-chr",
         "text-anchor": "middle",
-        "dominant-baseline": "middle",
-        transform: "rotate(-90 " + (ideogramX + ideogramW/2) + " " + labelY + ")"
+        "dominant-baseline": "middle"
       }, state.contig));
     } else {
+      // Right-align the contig name in the gutter, ending 12px before the band.
       tracksSvg.appendChild(el("text", {
-        x: 16,
+        x: nameGutter - 12,
         y: ideogramY + ideogramH/2 + 1,
         class: "svg-chr",
+        "text-anchor": "end",
         "dominant-baseline": "middle"
       }, state.contig));
     }
 
     // --- Ideogram (p/q arm rounded rects + cytobands clipped inside)
-    const bandX = isVertical ? ideogramX : 70;
+    const bandX = isVertical ? ideogramX : nameGutter;
     const bandY = isVertical ? ideogramY : ideogramY;
     const bandW = isVertical ? ideogramW : Math.max(0, W - bandX - 16);
     // In vertical mode, bandH should use the full available height
@@ -813,9 +820,8 @@ function renderTracks() {
         x: perpPos - 8,
         y: geneNameY,
         class:"svg-geneName",
-        "text-anchor": "start",
-        "dominant-baseline": "text-after-edge",
-        transform: "rotate(-90 " + (perpPos - 8) + " " + geneNameY + ")"
+        "text-anchor": "middle",
+        "dominant-baseline": "middle"
       }, `${gene.name}`));
       // Strand indicator to the right of the gene track (just a bit to the right)
       tracksSvg.appendChild(el("text", {
@@ -1145,8 +1151,7 @@ function renderTracks() {
           y: pos,
           class: "svg-small",
           "text-anchor": "start",
-          "dominant-baseline": "middle",
-          transform: "rotate(-90 " + (baseX + 26) + " " + pos + ")"
+          "dominant-baseline": "middle"
         }, formatBp(Math.round(bp), span));
         tracksSvg.appendChild(textEl);
         majorTickLabelPositions.push(pos);
@@ -1181,15 +1186,13 @@ function renderTracks() {
 
     if (!hasNearbyBottomTick) {
       const textEl = el("text", {
-        x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
-        transform: "rotate(-90 " + (baseX + 26) + " " + bottomEdgeY + ")"
+        x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
       }, formatBp(Math.round(state.startBp), span));
       tracksSvg.appendChild(textEl);
     }
     if (!hasNearbyTopTick) {
       const textEl = el("text", {
-        x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle",
-        transform: "rotate(-90 " + (baseX + 26) + " " + topEdgeY + ")"
+        x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
       }, formatBp(Math.round(state.endBp), span));
       tracksSvg.appendChild(textEl);
     }
@@ -1228,6 +1231,8 @@ function renderTracks() {
     const v = rulerVariants[idx];
     const variantId = String(v.id);
     if (v.pos < state.startBp || v.pos > state.endBp) continue;
+    // Indel track: only positions with an insertion or deletion.
+    if (typeof isIndel === "function" && !isIndel(v)) continue;
     const pos = genomePos(v.pos);
     const isHovered = (state.hoveredVariantId != null && variantId === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
     const strokeWidth = isHovered ? 2.5 : 1.2;
@@ -1266,19 +1271,28 @@ function renderTracks() {
       renderHoverOnly();
     });
     
-    // For insertions, add pointerdown handler to the line itself
-    if (isInsertion(v)) {
+    // Indels are toggleable on the line itself: insertions expand their gap,
+    // deletions repeat the reference for their deleted bases. A position that is
+    // BOTH (an insertion alt and a deletion alt) cycles off -> ins -> del -> off,
+    // so you can look at either without them fighting over one marker.
+    const _isIns = isInsertion(v), _isDel = isDeletion(v);
+    const _isMixed = _isIns && _isDel;
+    const _indelTitle = _isMixed ? "Click to toggle insertion / deletion"
+      : (_isIns ? "Click to expand insertion" : "Click to show deleted bases");
+    const _toggleIndel = () => {
+      const insSet = state.expandedInsertions, delSet = state.expandedDeletions;
+      const nxt = nextIndelExpansion(_isIns, _isDel, insSet.has(variantId), delSet.has(variantId));
+      if (nxt.ins) insSet.add(variantId); else insSet.delete(variantId);
+      if (nxt.del) delSet.add(variantId); else delSet.delete(variantId);
+      renderAll();
+    };
+    if (typeof isIndel === "function" && isIndel(v)) {
       lineEl.style.pointerEvents = "auto";
-      lineEl.setAttribute("title", "Click to expand insertion");
+      lineEl.setAttribute("title", _indelTitle);
       lineEl.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(variantId)) {
-          state.expandedInsertions.delete(variantId);
-        } else {
-          state.expandedInsertions.add(variantId);
-        }
-        renderAll();
+        _toggleIndel();
       });
     }
     tracksSvg.appendChild(lineEl);
@@ -1289,8 +1303,8 @@ function renderTracks() {
     }
     state.locusVariantElements.get(idx).lineEl = lineEl;
     
-    // For insertions, add a larger invisible clickable area AFTER the line (so it's on top)
-    if (isInsertion(v)) {
+    // Larger invisible clickable area for the indel toggle (easier to hit)
+    if (typeof isIndel === "function" && isIndel(v)) {
       // Add an invisible wider rectangle for easier clicking
       let clickArea;
       if (isVertical) {
@@ -1314,7 +1328,7 @@ function renderTracks() {
           "data-variant-id": variantId
         });
       }
-      clickArea.setAttribute("title", "Click to expand insertion");
+      clickArea.setAttribute("title", _indelTitle);
       clickArea.addEventListener("mouseenter", () => {
         state.hoveredVariantIndex = idx;
         state.hoveredVariantId = variantId;
@@ -1328,12 +1342,7 @@ function renderTracks() {
       clickArea.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (state.expandedInsertions.has(variantId)) {
-          state.expandedInsertions.delete(variantId);
-        } else {
-          state.expandedInsertions.add(variantId);
-        }
-        renderAll();
+        _toggleIndel();
       });
       tracksSvg.appendChild(clickArea);
     }
@@ -1504,13 +1513,20 @@ function renderTracks() {
     const refSeq = refSeqData.sequence;
     const refSeqStartBp = refSeqData.startBp;
 
-    const nucleotideColors = {
-      'A': [0, 200, 0],      // green
-      'C': [0, 0, 255],      // blue
-      'G': [255, 165, 0],    // orange
-      'T': [255, 0, 0]       // red
+    // Single source of truth for base colors, shared with the read-track SNP
+    // tiles (main.js) so the two never drift apart. Publish once.
+    if (typeof window !== "undefined" && !window.__GS_BASE_COLORS) {
+      window.__GS_BASE_COLORS = {
+        'A': [0, 200, 0],      // green
+        'C': [0, 0, 255],      // blue
+        'G': [255, 165, 0],    // orange
+        'T': [255, 0, 0]       // red
+      };
+    }
+    const nucleotideColors = (typeof window !== "undefined" && window.__GS_BASE_COLORS) || {
+      'A': [0, 200, 0], 'C': [0, 0, 255], 'G': [255, 165, 0], 'T': [255, 0, 0]
     };
-    const BASE_TILE_MAX_ALPHA = 0.8;
+    const BASE_TILE_MAX_ALPHA = 1.0; // solid color blocks (IGV-style)
     const BASE_MIN_DRAW_PX = 0.03;
     const BASE_FADE_START_PX = 0.08;
     const BASE_FADE_FULL_PX = 1.6;
@@ -1553,6 +1569,11 @@ function renderTracks() {
         clamp01(alpha)
       ];
     }
+
+    // Letter color per base: black or white, whichever contrasts with the solid
+    // block color. Static lookup — no per-letter computation. A(green)/G(orange)
+    // are light -> black; C(blue)/T(red) are dark -> white.
+    const baseLetterColor = { 'A': '#000000', 'C': '#ffffff', 'G': '#000000', 'T': '#ffffff' };
 
     // Render reference bases continuously across zoom levels so tiles naturally
     // shrink/fade instead of hard-switching to a separate zoomed-out style.
@@ -1641,21 +1662,17 @@ function renderTracks() {
           instancedRenderer.addRect(qx, qy, qw, qh, rgba);
         }
         
-        // Draw base letters using SVG (text rendering can stay SVG-based)
-        // Use solid colors for text (more vibrant than the semi-transparent rect colors)
-        const nucleotideTextColors = {
-          'A': '#00a000',  // green
-          'C': '#0000cc',  // blue
-          'G': '#cc8400',  // orange
-          'T': '#cc0000'   // red
-        };
+        // Draw base letters using SVG. IGV-style: solid color block with a
+        // letter whose color is picked for contrast against the block. The dark
+        // blocks (C blue, T red) get white letters; the lighter blocks (A green,
+        // G orange) get black.
         const fragment = document.createDocumentFragment();
         for (const b of basesToRender) {
           if (b.textAlpha > 0) {
             const base = b.base;
             const pos = b.pos;
             const actualSize = b.actualSize;
-            const textColor = nucleotideTextColors[base] || '#666';
+            const textColor = baseLetterColor[base] || '#ffffff';
             const textOpacity = Math.max(0.1, b.textAlpha);
             
             if (isVertical) {
@@ -1664,8 +1681,7 @@ function renderTracks() {
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`,
-                transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             } else {
@@ -1674,7 +1690,7 @@ function renderTracks() {
                 y: referenceY + referenceH / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }
@@ -1683,15 +1699,8 @@ function renderTracks() {
         tracksSvg.appendChild(fragment);
       } else {
         // Fallback to SVG rendering
-        // Use solid colors for text (more vibrant than the semi-transparent rect colors)
-        const svgTextColors = {
-          'A': '#00a000',  // green
-          'C': '#0000cc',  // blue
-          'G': '#cc8400',  // orange
-          'T': '#cc0000'   // red
-        };
         const fragment = document.createDocumentFragment();
-        
+
         for (const b of basesToRender) {
           const pos = b.pos;
           const actualSize = b.actualSize;
@@ -1700,7 +1709,7 @@ function renderTracks() {
           if (!(alpha > 0)) continue;
           const rgb = nucleotideColors[base] || [127, 127, 127];
           const rectColor = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
-          const textColor = svgTextColors[base] || '#666';
+          const textColor = baseLetterColor[base] || '#ffffff';
           
           if (isVertical) {
             fragment.appendChild(el("rect", {
@@ -1719,8 +1728,7 @@ function renderTracks() {
                 y: pos + actualSize / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`,
-                transform: "rotate(-90 " + (referenceX + referenceW / 2) + " " + (pos + actualSize / 2) + ")"
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }
@@ -1741,7 +1749,7 @@ function renderTracks() {
                 y: referenceY + referenceH / 2,
                 "text-anchor": "middle",
                 "dominant-baseline": "middle",
-                style: `fill: ${textColor}; fill-opacity: ${textOpacity}; font-size: 10px; font-weight: bold;`
+                style: `fill: ${textColor}; fill-opacity: 1; font-size: 10px; font-weight: bold;`
               }, base);
               fragment.appendChild(textEl);
             }
@@ -1824,10 +1832,136 @@ function renderTracks() {
         stroke: "rgba(127,127,127,0.12)"
       }));
     }
+
+    // Deletion visualization. A deletion removes reference bases, so an expanded
+    // deletion (click its Indel marker) repeats the reference: horizontal mode
+    // stacks one extra reference row per expanded deletion (the layout grew the
+    // track to fit them), each showing that deletion's deleted bases greyed hard
+    // but still legible — colors + letters survive the wash. Vertical mode keeps
+    // the simpler in-place shading (it's being reworked separately).
+    if (typeof isDeletion === "function") {
+      if (isVertical) {
+        const vcfg = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+        const delVars = vcfg.length ? vcfg.flatMap(t => t.variants_data || [])
+          : ((typeof variants !== "undefined" && Array.isArray(variants)) ? variants : []);
+        const seenDel = new Set();
+        const fill = "rgba(120,120,120,0.5)", edge = "rgba(80,80,80,0.85)";
+        for (const v of delVars) {
+          if (!v || v.pos == null || !isDeletion(v)) continue;
+          if (!(state.expandedDeletions && state.expandedDeletions.has(String(v.id)))) continue;
+          const delLen = (typeof getMaxDeletionLength === "function") ? getMaxDeletionLength(v) : 0;
+          if (!(delLen > 0)) continue;
+          const key = String(v.id); if (seenDel.has(key)) continue; seenDel.add(key);
+          const loBp = Math.max(Number(v.pos) + 1, state.startBp);
+          const hiBp = Math.min(Number(v.pos) + delLen, state.endBp);
+          if (hiBp < loBp) continue;
+          const a = genomePos(loBp), b = genomePos(hiBp + 1);
+          const lo = Math.min(a, b), hi = Math.max(a, b), mid = (lo + hi) / 2;
+          tracksSvg.appendChild(el("rect", { x: referenceX, y: lo, width: referenceW, height: Math.max(1, hi - lo),
+            fill: fill, stroke: edge, "stroke-width": 1 }));
+          tracksSvg.appendChild(el("line", { x1: referenceX, x2: referenceX + referenceW, y1: mid, y2: mid,
+            stroke: edge, "stroke-width": 1 }));
+        }
+      } else {
+        const dels = (typeof getExpandedDeletionsInView === "function") ? getExpandedDeletionsInView() : [];
+        const wash = "rgba(70,70,70,0.62)", edge = "rgba(35,35,35,0.9)";
+        dels.forEach((d, i) => {
+          const rowTop = referenceY + referenceH + 3 + i * DELETION_ROW_H;
+          const rowH = DELETION_ROW_H - 5;
+          const loBp = Math.max(d.loBp, Math.ceil(state.startBp));
+          const hiBp = Math.min(d.hiBp, Math.floor(state.endBp));
+          if (hiBp < loBp) return;
+          for (let bp = loBp; bp <= hiBp; bp++) {
+            // Use the SAME position + base indexing as the main reference row so
+            // the deleted bases line up under it: genomePosCanonical (gap-aware)
+            // and refSeq index bp - refSeqStartBp - 1 (VCF pos is 1-based while
+            // refSeq is 0-based from refSeqStartBp).
+            const xa = genomePosCanonical(bp), xb = genomePosCanonical(bp + 1);
+            const x = Math.min(xa, xb), w = Math.max(1, Math.abs(xb - xa));
+            let base = "";
+            if (refSeq && refSeq.length) {
+              const idx = bp - refSeqStartBp - 1;
+              if (idx >= 0 && idx < refSeq.length) base = String(refSeq[idx]).toUpperCase();
+            }
+            const rgb = nucleotideColors[base] || [127, 127, 127];
+            // color block (kept visible), then a dramatic grey wash, then the
+            // letter on top so it stays crisp under the wash.
+            tracksSvg.appendChild(el("rect", { x: x, y: rowTop, width: w, height: rowH,
+              fill: `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.92)` }));
+            tracksSvg.appendChild(el("rect", { x: x, y: rowTop, width: w, height: rowH, fill: wash }));
+            if (base && w > 5) {
+              tracksSvg.appendChild(el("text", { x: x + w / 2, y: rowTop + rowH / 2,
+                "text-anchor": "middle", "dominant-baseline": "middle",
+                style: `fill:${baseLetterColor[base] || "#ffffff"};font-size:10px;font-weight:bold;` }, base));
+            }
+          }
+          const sx = Math.min(genomePosCanonical(loBp), genomePosCanonical(hiBp + 1));
+          const ex = Math.max(genomePosCanonical(loBp), genomePosCanonical(hiBp + 1));
+          // strike-through + outline: reads as "these ref bases are deleted".
+          tracksSvg.appendChild(el("line", { x1: sx, x2: ex, y1: rowTop + rowH / 2, y2: rowTop + rowH / 2,
+            stroke: edge, "stroke-width": 1.5 }));
+          tracksSvg.appendChild(el("rect", { x: sx, y: rowTop, width: Math.max(1, ex - sx), height: rowH,
+            fill: "none", stroke: edge, "stroke-width": 1 }));
+          tracksSvg.appendChild(el("text", { x: 4, y: rowTop + rowH / 2,
+            "text-anchor": "start", "dominant-baseline": "middle",
+            style: "fill: rgba(229,83,75,0.95); font-size:8px; font-weight:bold; letter-spacing:.04em;" }, "DEL"));
+        });
+      }
+    }
+
+    // Comment pins (defined in comments.js): comments are a baseline annotation,
+    // so their markers ride the reference track rather than the Indel track.
+    if (typeof window.__GS_renderCommentPins === "function") {
+      try {
+        window.__GS_renderCommentPins({
+          svg: tracksSvg, el: el, genomePos: genomePos,
+          baseX: referenceX + referenceW, baseY: referenceY, isVertical: isVertical,
+        });
+      } catch (e) {}
+    }
+  }
+
+  // UCSC interval tracks (added on demand via the UCSC Tracks tab). Boxes go on
+  // the WebGPU instanced renderer when available (fast for many features), with
+  // an SVG-rect fallback; labels stay on SVG (bounded count, text-only).
+  if (Array.isArray(state.ucscTracks) && state.ucscTracks.length) {
+    const useWebGPU = webgpuSupported && instancedRenderer;
+    const dpr = window.devicePixelRatio || 1;
+    const boxColor = [0.169, 0.435, 1.0];   // ~#2b6fff
+    const boxAlpha = 0.55;
+    for (const item of layout) {
+      const t = item.track;
+      if (!t.id || t.id.indexOf("ucsc-") !== 0 || t.collapsed) continue;
+      const entry = state.ucscTracks.find(u => u.id === t.id);
+      if (!entry || !Array.isArray(entry.features)) continue;
+      const h = Math.max(6, (item.contentHeight || 20) - 6);
+      const yTop = item.contentTop + 3;
+      for (const f of entry.features) {
+        if (f.end <= state.startBp || f.start >= state.endBp) continue;
+        const a = genomePos(Math.max(f.start, state.startBp));
+        const b = genomePos(Math.min(f.end, state.endBp));
+        if (isVertical) {
+          const y0 = Math.min(a, b), y1 = Math.max(a, b);
+          const x = item.contentLeft + 4, w = Math.max(6, (item.contentWidth || 20) - 8), hh = Math.max(1, y1 - y0);
+          if (useWebGPU) instancedRenderer.addRect(x * dpr, y0 * dpr, w * dpr, hh * dpr, boxColor, boxAlpha);
+          else tracksSvg.appendChild(el("rect", { x: x, y: y0, width: w, height: hh,
+            rx: 2, fill: "var(--blue,#2b6fff)", "fill-opacity": 0.5, stroke: "var(--blue,#2b6fff)" }));
+        } else {
+          const x0 = Math.min(a, b), w = Math.max(1, Math.abs(b - a));
+          if (useWebGPU) instancedRenderer.addRect(x0 * dpr, yTop * dpr, w * dpr, h * dpr, boxColor, boxAlpha);
+          else tracksSvg.appendChild(el("rect", { x: x0, y: yTop, width: w, height: h,
+            rx: 2, fill: "var(--blue,#2b6fff)", "fill-opacity": 0.5, stroke: "var(--blue,#2b6fff)" }));
+          if (f.name && w > 30) {
+            tracksSvg.appendChild(el("text", { x: x0 + 4, y: yTop + h / 2 + 3,
+              fill: "var(--text)", "font-size": "9px" }, String(f.name).slice(0, 24)));
+          }
+        }
+      }
+    }
   }
 
   // Execute WebGPU render pass for tracks canvas (genes and repeats)
-  const hasTracksInstances = instancedRenderer && 
+  const hasTracksInstances = instancedRenderer &&
       (instancedRenderer.rectInstances.length > 0 || 
        instancedRenderer.triangleInstances.length > 0 || 
        instancedRenderer.lineInstances.length > 0);

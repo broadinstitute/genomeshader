@@ -31,7 +31,10 @@ pub struct Session {
     staged_tree: HashMap<String, IntervalMap<u64, PathBuf>>,
     cache_base_uri: Option<String>,
     /// Each element is a group of variant files (one track). attach_variants adds a new group.
-    variant_file_groups: Vec<Vec<String>>,
+    /// Each file is paired with an optional explicit index path (None = adjacent index).
+    variant_file_groups: Vec<Vec<(String, Option<String>)>>,
+    /// Parallel to variant_file_groups: optional per-track sample subset (None = all).
+    variant_group_samples: Vec<Option<Vec<String>>>,
     variant_df_cache: HashMap<String, DataFrame>,
 }
 
@@ -267,9 +270,11 @@ impl Session {
         let mut hasher = DefaultHasher::new();
         for (group_idx, files) in self.variant_file_groups.iter().enumerate() {
             group_idx.hash(&mut hasher);
-            for file in files {
+            for (file, index) in files {
                 file.hash(&mut hasher);
+                index.hash(&mut hasher);
             }
+            self.variant_group_samples.get(group_idx).hash(&mut hasher);
         }
         hasher.finish()
     }
@@ -295,8 +300,11 @@ impl Session {
 
         for (group_index, file_list) in self.variant_file_groups.iter().enumerate() {
             let mut group_df: Option<DataFrame> = None;
-            for variant_file in file_list {
-                match variants::extract_variants(variant_file, chr, start, stop) {
+            let group_samples = self.variant_group_samples
+                .get(group_index)
+                .and_then(|s| s.as_deref());
+            for (variant_file, index_file) in file_list {
+                match variants::extract_variants(variant_file, index_file.as_deref(), group_samples, chr, start, stop) {
                     Ok(df) => {
                         if let Some(existing) = group_df {
                             group_df = Some(
@@ -391,6 +399,8 @@ impl Session {
         stop: u64,
         reads_urls: &[Url],
         bam_paths: &[String],
+        ref_seq: Option<&[u8]>,
+        ref_seq_start: u32,
     ) -> PyResult<DataFrame> {
         let cache_path = std::env::temp_dir();
 
@@ -416,6 +426,8 @@ impl Session {
             &start,
             &stop,
             &cache_path,
+            ref_seq,
+            ref_seq_start,
         )
         .map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -444,6 +456,7 @@ impl Session {
             staged_tree: HashMap::new(),
             cache_base_uri,
             variant_file_groups: Vec::new(),
+            variant_group_samples: Vec::new(),
             variant_df_cache: HashMap::new(),
         }
     }
@@ -590,12 +603,23 @@ impl Session {
             );
         }
 
-        let df = self.get_reads_with_cache(&l_fmt.0, l_fmt.1, l_fmt.2, &reads_urls, &bam_paths)?;
+        let df = self.get_reads_with_cache(&l_fmt.0, l_fmt.1, l_fmt.2, &reads_urls, &bam_paths, None, 0)?;
         Ok(PyDataFrame(df))
     }
 
     /// Append a new variant track (group of files). Each call adds a separate track.
-    fn attach_variants(&mut self, variant_files: Vec<String>) -> PyResult<()> {
+    /// `index_files` is parallel to `variant_files`; each entry is an explicit
+    /// index path, or None to use the adjacent (default-named) index.
+    #[pyo3(signature = (variant_files, index_files, samples=None))]
+    fn attach_variants(&mut self, variant_files: Vec<String>, index_files: Vec<Option<String>>, samples: Option<Vec<String>>) -> PyResult<()> {
+        if index_files.len() != variant_files.len() {
+            return Err(
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("index_files ({}) must be parallel to variant_files ({})",
+                            index_files.len(), variant_files.len())
+                )
+            );
+        }
         for variant_file in &variant_files {
             if !variant_file.ends_with(".bcf") && !variant_file.ends_with(".vcf") && !variant_file.ends_with(".vcf.gz") {
                 return Err(
@@ -605,7 +629,10 @@ impl Session {
                 );
             }
         }
-        self.variant_file_groups.push(variant_files);
+        self.variant_file_groups.push(
+            variant_files.into_iter().zip(index_files.into_iter()).collect()
+        );
+        self.variant_group_samples.push(samples);
         self.variant_df_cache.clear();
         Ok(())
     }
@@ -691,6 +718,7 @@ impl Session {
         self.loci = HashSet::new();
         self.staged_tree = HashMap::new();
         self.variant_file_groups = Vec::new();
+        self.variant_group_samples = Vec::new();
         self.variant_df_cache = HashMap::new();
 
         Ok(())
@@ -702,7 +730,14 @@ impl Session {
     /// Args:
     ///     locus: The genomic locus (e.g., "chr1:1000-2000")
     ///     bam_urls: List of BAM/CRAM file URLs to load from
-    fn fetch_reads_for_locus(&mut self, locus: String, bam_urls: Vec<String>) -> PyResult<PyDataFrame> {
+    #[pyo3(signature = (locus, bam_urls, reference=None, ref_start=0))]
+    fn fetch_reads_for_locus(
+        &mut self,
+        locus: String,
+        bam_urls: Vec<String>,
+        reference: Option<String>,
+        ref_start: u32,
+    ) -> PyResult<PyDataFrame> {
         let l_fmt = self.parse_locus(locus.clone())?;
 
         if bam_urls.is_empty() {
@@ -743,7 +778,10 @@ impl Session {
         }
 
         let bam_paths: Vec<String> = reads_urls.iter().map(|u| u.to_string()).collect();
-        let df = self.get_reads_with_cache(&l_fmt.0, l_fmt.1, l_fmt.2, &reads_urls, &bam_paths)?;
+        let ref_bytes = reference.as_ref().map(|s| s.as_bytes());
+        let df = self.get_reads_with_cache(
+            &l_fmt.0, l_fmt.1, l_fmt.2, &reads_urls, &bam_paths, ref_bytes, ref_start,
+        )?;
         Ok(PyDataFrame(df))
     }
 
@@ -806,18 +844,31 @@ fn _version() -> PyResult<String> {
 }
 
 #[pyfunction]
+#[pyo3(signature = (bcf_path, chr, start, stop, index_path=None, samples=None))]
 fn _extract_variants(
     bcf_path: String,
     chr: String,
     start: u64,
-    stop: u64
+    stop: u64,
+    index_path: Option<String>,
+    samples: Option<Vec<String>>
 ) -> PyResult<PyDataFrame> {
-    match variants::extract_variants(&bcf_path, &chr, &start, &stop) {
+    match variants::extract_variants(&bcf_path, index_path.as_deref(), samples.as_deref(), &chr, &start, &stop) {
         Ok(df) => Ok(PyDataFrame(df)),
         Err(e) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             format!("Failed to extract variants: {}", e)
         ))
     }
+}
+
+#[pyfunction]
+#[pyo3(signature = (bcf_path, index_path=None))]
+fn _vcf_sample_names(bcf_path: String, index_path: Option<String>) -> PyResult<Vec<String>> {
+    variants::vcf_sample_names(&bcf_path, index_path.as_deref()).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            format!("Failed to read samples from '{}': {}", bcf_path, e)
+        )
+    })
 }
 
 /// A Python module implemented in Rust. The name of this function must match
@@ -830,6 +881,7 @@ fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_init, m)?)?;
     m.add_function(wrap_pyfunction!(_version, m)?)?;
     m.add_function(wrap_pyfunction!(_extract_variants, m)?)?;
+    m.add_function(wrap_pyfunction!(_vcf_sample_names, m)?)?;
 
     Ok(())
 }

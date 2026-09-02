@@ -1,6 +1,28 @@
 <div class="app sidebar-right-collapsed" style="position: relative; display: block;">
   <div class="sidebar-left" id="sidebarLeft" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
-    <div class="sidebarContent">
+    <div class="sidebar-left-content">
+      <div class="sidebar-left-command-strip">
+        <div class="command-strip-main">
+          <button class="command-strip-icon active" data-left-tab="samples" title="Samples" aria-label="Samples">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="9" y1="3" x2="15" y2="3"></line>
+              <path d="M10 3v13a2 2 0 0 0 4 0V3"></path>
+              <line x1="10" y1="12" x2="14" y2="12"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="command-strip-settings">
+          <button class="command-strip-icon" data-left-tab="settings" title="Settings" aria-label="Settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="sidebar-left-tab-content">
+        <div class="sidebarContent">
+          <div class="left-tab-pane active" data-left-tab="samples">
     <div style="display: none;">
       <div class="sidebarHeader">
         <h3>Participant groups</h3>
@@ -19,7 +41,7 @@
     </div>
 
     <div id="sampleSearchSection" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); margin-bottom: 20px;">
-      <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;">
+      <input type="text" id="sampleSearchInput" placeholder="Load sample by ID…" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; box-sizing: border-box;" data-1p-ignore>
       <div id="sampleSearchResults" style="display: none; max-height: 200px; overflow-y: auto; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); opacity: 1;"></div>
     </div>
 
@@ -36,12 +58,12 @@
       <!-- Strategy Dropdown -->
       <div style="margin-bottom: 8px;">
         <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;">Strategy</label>
-        <select id="sampleStrategy" disabled style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px;">
-          <option value="random">Random</option>
+        <select id="sampleStrategy" disabled style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px;" data-1p-ignore>
           <option value="best_evidence">Best evidence</option>
           <option value="most_diverse">Most diverse</option>
           <option value="compare_branches" disabled>Compare branches</option>
           <option value="carriers_controls">Carriers + controls</option>
+          <option value="random">Random</option>
         </select>
       </div>
       
@@ -58,8 +80,8 @@
       <div style="margin-bottom: 8px;">
         <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;"># samples</label>
         <div style="display: flex; gap: 8px; align-items: center;">
-          <input type="range" id="sampleCountSlider" min="1" max="20" value="1" disabled style="flex: 1;">
-          <input type="number" id="sampleCountInput" min="1" max="20" value="1" disabled style="width: 50px; padding: 4px 6px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font-size: 12px; text-align: center;">
+          <input type="range" id="sampleCountSlider" min="1" max="20" value="1" disabled style="flex: 1;" data-1p-ignore>
+          <input type="number" id="sampleCountInput" min="1" max="20" value="1" disabled style="width: 50px; padding: 4px 6px; border: 1px solid var(--border2); border-radius: 4px; background: var(--panel); color: var(--text); font-size: 12px; text-align: center;" data-1p-ignore>
         </div>
       </div>
       
@@ -75,53 +97,51 @@
         <div id="samplePreviewList" style="color: var(--text);"></div>
       </div>
     </div>
-
-    <div class="menu" id="ctxMenu" role="menu" aria-hidden="true">
-      <div class="menuTitle">Display</div>
-      <div class="menuItem" id="themeItem" role="menuitem">
-        <span>Theme<span class="menuHotkey">T</span></span>
-        <span class="menuRight" id="themeLabel">Auto</span>
-      </div>
-
-      <div class="menuItem" id="orientationItem" role="menuitem">
-        <span>Orientation<span class="menuHotkey">O</span></span>
-        <span class="menuRight" id="orientationLabel">Horizontal</span>
-      </div>
-
-      <div class="menuItem" id="variantLayoutModeItem" role="menuitem">
-        <span>Variant Layout<span class="menuHotkey">V</span></span>
-        <span class="menuRight" id="variantLayoutModeLabel">Equidistant</span>
-      </div>
-
-      <div class="menuTitle">Alleles</div>
-      <div class="menuItem" id="aggregateRareAllelesItem" role="menuitem">
-        <span>Aggregate low-frequency</span>
-        <span class="menuRight">
-          <input type="checkbox" id="aggregateRareAllelesToggle" />
-        </span>
-      </div>
-      <div class="menuItem" id="aggregateRareAllelesCutoffItem" role="menuitem">
-        <span>Cutoff</span>
-        <span class="menuRight">
-          <input type="number" id="aggregateRareAllelesCutoffInput" min="0" max="50" step="0.5" value="2.0" />
-          <span>%</span>
-        </span>
-      </div>
-
-      <div class="menuItem" id="fullscreenItem" role="menuitem">
-        <span>Full screen<span class="menuHotkey">F</span></span>
-        <span class="menuRight" id="fullscreenLabel">Enter full screen</span>
-      </div>
-
-      <div class="menuTitle">Grouping</div>
-      <div class="menuItem" role="menuitem">
-        <span>Variable</span>
-        <span class="menuRight">Super-pop</span>
+          </div>
+          <div class="left-tab-pane" data-left-tab="settings">
+            <div class="menu settings-panel" id="ctxMenu" role="menu" aria-hidden="false">
+      <table class="settings-table">
+        <tr class="settings-section"><td colspan="2">Display</td></tr>
+        <tr class="settings-row" id="themeItem" role="menuitem">
+          <td>Theme<span class="menuHotkey">T</span></td>
+          <td class="menuRight" id="themeLabel">Auto</td>
+        </tr>
+        <tr class="settings-row" id="orientationItem" role="menuitem">
+          <td>Orientation<span class="menuHotkey">O</span></td>
+          <td class="menuRight" id="orientationLabel">Horizontal</td>
+        </tr>
+        <tr class="settings-row" id="variantLayoutModeItem" role="menuitem">
+          <td>Variant Layout<span class="menuHotkey">V</span></td>
+          <td class="menuRight" id="variantLayoutModeLabel">Genomic</td>
+        </tr>
+        <tr class="settings-section"><td colspan="2">Alleles</td></tr>
+        <tr class="settings-row" id="lockAllelesItem" role="menuitem">
+          <td>Lock allele positions</td>
+          <td class="menuRight"><input type="checkbox" id="lockAllelesToggle" data-1p-ignore></td>
+        </tr>
+        <tr class="settings-row" id="aggregateRareAllelesItem" role="menuitem">
+          <td>Aggregate low-frequency</td>
+          <td class="menuRight"><input type="checkbox" id="aggregateRareAllelesToggle" data-1p-ignore></td>
+        </tr>
+        <tr class="settings-row" id="aggregateRareAllelesCutoffItem" role="menuitem">
+          <td>Cutoff</td>
+          <td class="menuRight"><input type="number" id="aggregateRareAllelesCutoffInput" min="0" max="50" step="0.5" value="2.0" data-1p-ignore> %</td>
+        </tr>
+        <tr class="settings-row" id="fullscreenItem" role="menuitem">
+          <td>Full screen<span class="menuHotkey">F</span></td>
+          <td class="menuRight" id="fullscreenLabel">Enter full screen</td>
+        </tr>
+        <tr class="settings-section"><td colspan="2">Grouping</td></tr>
+        <tr class="settings-row" role="menuitem">
+          <td>Variable</td>
+          <td class="menuRight">Super-pop</td>
+        </tr>
+      </table>
+    </div>
+          </div>
+        </div>
       </div>
     </div>
-    </div>
-
-    <button class="gearBtn" id="menuBtn" title="Settings" aria-label="Settings">⚙︎</button>
   </div>
 
   <div class="main" id="main" style="position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 1;">
@@ -141,6 +161,11 @@
 
     <div class="hud" id="hud"></div>
     <div class="tooltip" id="tooltip"></div>
+    <!-- Bottom status bar: shows text + a progress bar during background work. -->
+    <div class="status-bar" id="statusBar" role="status" aria-live="polite">
+      <span class="status-text"></span>
+      <span class="status-progress"><span class="status-progress-fill"></span></span>
+    </div>
   </div>
 
   <div class="sidebar-right" id="sidebarRight" style="position: absolute; right: 0; top: 0; bottom: 0; width: 8px; z-index: 100; pointer-events: auto;">
@@ -197,6 +222,132 @@
               <!-- Comments content will be rendered here -->
             </div>
           </div>
+
+          <!-- Help Tab -->
+          <div class="tab-pane" id="tab-help" data-tab="help">
+            <div class="sidebarHeader" style="margin-top: 20px;">
+              <h3>Help</h3>
+            </div>
+            <div id="helpContent" class="help-content" style="font-size: 12px; line-height: 1.5; color: var(--text);">
+
+              <p style="color: var(--muted); margin: 0 0 12px;">
+                Genomeshader is an interactive browser for <strong>population-scale</strong>
+                genetic variation. Instead of paging through one sample at a time, you
+                explore a whole cohort at once — the goal is to see <em>which</em> variants
+                matter and <em>who</em> carries them.
+              </p>
+
+              <div style="background: var(--panel2); border: 1px solid var(--border2); border-radius: 8px; padding: 10px 12px; margin: 0 0 14px;">
+                <div style="font-weight: 700; margin-bottom: 4px;">The core idea</div>
+                You navigate primarily <strong>between variants</strong>. Each variant is
+                shown with its alleles and how frequently they occur across the cohort.
+                When a variant looks interesting, you <strong>deep-dive into the sample
+                cohort</strong> from it — pulling up the reads of the samples that carry a
+                given allele to see the underlying evidence.
+              </div>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Legend</div>
+              <div style="display: grid; grid-template-columns: auto 1fr; gap: 7px 10px; align-items: center; margin: 0 0 12px;">
+
+                <div style="display:flex;gap:2px;">
+                  <span style="width:11px;height:16px;background:rgb(0,200,0);border-radius:2px;"></span>
+                  <span style="width:11px;height:16px;background:rgb(0,0,255);border-radius:2px;"></span>
+                  <span style="width:11px;height:16px;background:rgb(255,165,0);border-radius:2px;"></span>
+                  <span style="width:11px;height:16px;background:rgb(255,0,0);border-radius:2px;"></span>
+                </div>
+                <div><strong>Reference bases</strong> — A green, C blue, G orange, T red (IGV-style, colored blocks with contrast letters at deep zoom).</div>
+
+                <span style="display:inline-block;width:46px;height:12px;background:rgba(127,127,127,0.7);border-radius:6px;"></span>
+                <div><strong>Reference allele</strong> — the ref allele band; width scales with how many samples carry it.</div>
+
+                <span style="display:inline-block;width:46px;height:12px;background:var(--blue);border-radius:6px;"></span>
+                <div><strong>Alternate allele (SNV)</strong> — a single-base variant allele.</div>
+
+                <span style="display:inline-block;width:46px;height:12px;background:#7c4dff;border-radius:6px;"></span>
+                <div><strong>Insertion</strong> — labelled <code>INS</code> in the tooltip. Click its marker on the <strong>Indel</strong> track to expand the inserted bases in place.</div>
+
+                <span style="display:inline-block;width:46px;height:12px;background:#e5534b;border-radius:6px;"></span>
+                <div><strong>Deletion</strong> — labelled <code>DEL</code>. Click its Indel-track marker to grey out the deleted reference bases.</div>
+
+                <span style="display:inline-block;width:46px;height:12px;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(127,127,127,0.5) 3px,rgba(127,127,127,0.5) 6px);border:1px solid var(--border2);border-radius:6px;"></span>
+                <div><strong>No-call</strong> (<code>./.</code>) — genotype missing for that sample.</div>
+
+                <span style="display:inline-block;width:36px;height:14px;background:linear-gradient(90deg,transparent,transparent 45%,rgba(120,120,120,0.5) 45%);border:1px solid var(--border2);border-radius:3px;position:relative;"><span style="position:absolute;left:45%;right:0;top:50%;height:1px;background:rgba(80,80,80,0.9);"></span></span>
+                <div><strong>Deleted span</strong> — greyed, struck-through reference bases when a deletion is expanded.</div>
+
+                <svg width="24" height="16" viewBox="0 0 24 16"><line x1="8" y1="0" x2="8" y2="16" stroke="rgba(127,127,127,0.6)" stroke-width="1.2"/><circle cx="8" cy="3" r="3" fill="none" stroke="rgba(127,127,127,0.7)" stroke-width="1.4"/></svg>
+                <div><strong>Indel-track marker</strong> — a position with an insertion or deletion; click to expand it.</div>
+
+                <svg width="24" height="16" viewBox="0 0 24 16"><line x1="12" y1="2" x2="12" y2="16" stroke="var(--blue)" stroke-width="1"/><rect x="7" y="2" width="10" height="10" rx="2" fill="var(--blue)"/></svg>
+                <div><strong>Comment pin</strong> — a comment anchored to this locus; click to open it in the Comments tab.</div>
+
+              </div>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Typical workflow</div>
+              <ol style="margin: 0 0 12px; padding-left: 18px;">
+                <li style="margin-bottom: 5px;"><strong>Scan variants.</strong> Move along
+                  the genome; the variant track marks each site and the flow ("alleuvial")
+                  display shows each allele as a band sized by its frequency in the cohort.</li>
+                <li style="margin-bottom: 5px;"><strong>Pick an allele.</strong> Click an
+                  allele band to select it, or <strong>double-click</strong> it to open both
+                  side panels at once — samples on the left, the variant's details on the
+                  right (Variants tab). Rare alleles can be folded together (Settings →
+                  Alleles) so common structure stands out.</li>
+                <li style="margin-bottom: 5px;"><strong>Deep-dive the cohort.</strong> Load
+                  samples carrying that allele as read tracks ("Smart Tracks"). A loading
+                  strategy decides which samples to pull first (e.g. a random draw, or the
+                  best-evidence carriers).</li>
+                <li><strong>Inspect the evidence.</strong> Reads render on the GPU with
+                  strand direction and per-base coloring against the reference so you can
+                  confirm the call.</li>
+              </ol>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Moving around</div>
+              <ul style="margin: 0 0 12px; padding-left: 18px;">
+                <li style="margin-bottom: 4px;"><strong>Pan:</strong> drag the main view left/right.</li>
+                <li style="margin-bottom: 4px;"><strong>Zoom:</strong> scroll or pinch.</li>
+                <li style="margin-bottom: 4px;"><strong>Jump:</strong> load a specific sample by
+                  ID from the <em>Sample Search</em> box in the left panel (press ↓ for the list).</li>
+                <li style="margin-bottom: 4px;"><strong>Select / reorder alleles:</strong> click an allele band to select;
+                  drag bands to reorder them.</li>
+                <li style="margin-bottom: 4px;"><strong>Deep-dive a variant:</strong> double-click an allele band to open both
+                  side panels — sample selection on the left, variant details on the right.</li>
+                <li><strong>Inspect indels:</strong> click an insertion/indel marker to expand it in
+                  place and read the inserted bases; click again to collapse it.</li>
+              </ul>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Tracks</div>
+              <ul style="margin: 0 0 12px; padding-left: 18px;">
+                <li style="margin-bottom: 4px;"><strong>Chromosome &amp; ruler</strong> — where you are on the genome.</li>
+                <li style="margin-bottom: 4px;"><strong>Reference</strong> — the reference sequence as IGV-style colored bases.</li>
+                <li style="margin-bottom: 4px;"><strong>Genes</strong> — the union of overlapping transcripts.</li>
+                <li style="margin-bottom: 4px;"><strong>Variants + flow</strong> — variant sites and their allele frequencies across the cohort.</li>
+                <li><strong>Reads</strong> — reads for the samples you've pulled in.</li>
+              </ul>
+              <p style="color: var(--muted); margin: 0 0 12px;">
+                Collapse any track with its <strong>▼ / ▶</strong> button; a minimized track
+                stays as a labeled bar you can click to expand. Either side panel collapses
+                via the protruding tab on its inner edge.
+              </p>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Right panel tabs</div>
+              <ul style="margin: 0 0 12px; padding-left: 18px;">
+                <li style="margin-bottom: 4px;"><strong>Smart Tracks</strong> — the sample read tracks you've loaded from alleles.</li>
+                <li style="margin-bottom: 4px;"><strong>Genes</strong> — descriptions of the genes currently in view.</li>
+                <li style="margin-bottom: 4px;"><strong>Variants</strong> — details for the selected variant; the ◀ ▶ arrows at the top step between variants, and a second pair steps between that variant's alleles (changing the selection).</li>
+                <li><strong>Settings</strong> — display and allele options (also on the ⚙ menu).</li>
+              </ul>
+
+              <div style="font-weight: 700; margin: 14px 0 6px;">Keyboard shortcuts</div>
+              <ul style="margin: 0 0 4px; padding-left: 18px; color: var(--muted);">
+                <li style="margin-bottom: 4px;"><strong>F</strong> — full screen</li>
+                <li style="margin-bottom: 4px;"><strong>T</strong> — cycle theme (auto / light / dark)</li>
+                <li style="margin-bottom: 4px;"><strong>O</strong> — orientation (horizontal / vertical)</li>
+                <li><strong>V</strong> — variant layout (equidistant / to-scale)</li>
+              </ul>
+
+            </div>
+          </div>
         </div>
       </div>
       
@@ -217,11 +368,13 @@
             </svg>
           </button>
           <button class="command-strip-icon" data-tab="genes" title="Genes" aria-label="Genes">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-              <circle cx="9" cy="7" r="4"></circle>
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <!-- DNA double helix: two crossing strands + base-pair rungs -->
+              <path d="M7 3 C 7 8, 17 8, 17 12 C 17 16, 7 16, 7 21"></path>
+              <path d="M17 3 C 17 8, 7 8, 7 12 C 7 16, 17 16, 17 21"></path>
+              <line x1="9" y1="5" x2="15" y2="5"></line>
+              <line x1="8" y1="12" x2="16" y2="12"></line>
+              <line x1="9" y1="19" x2="15" y2="19"></line>
             </svg>
           </button>
           <button class="command-strip-icon" data-tab="variants" title="Variants" aria-label="Variants">
@@ -242,23 +395,11 @@
         </div>
         
         <div class="command-strip-settings">
-          <button class="command-strip-icon" data-tab="settings" title="Settings" aria-label="Settings">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3m15.364 6.364l-4.243-4.243m-4.242 0L5.636 18.364M18.364 5.636l-4.243 4.243m0-4.242L5.636 5.636"></path>
-            </svg>
-          </button>
           <button class="command-strip-icon" data-tab="help" title="Help" aria-label="Help">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"></circle>
               <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
               <line x1="12" y1="17" x2="12.01" y2="17"></line>
-            </svg>
-          </button>
-          <button class="command-strip-icon" data-tab="feedback" title="Feedback" aria-label="Feedback">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-              <line x1="9" y1="10" x2="15" y2="10"></line>
             </svg>
           </button>
         </div>

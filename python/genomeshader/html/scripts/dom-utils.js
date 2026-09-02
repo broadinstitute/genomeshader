@@ -1,15 +1,22 @@
 // Theme + menu
 // -----------------------------
-// Find root container for scoping event handlers in inline mode
-const root = document.querySelector('[id^="genomeshader-root-"]') ||
+// Find root container for scoping event handlers in inline mode.
+// rootEl is this widget instance's container (passed into __runViewer__). Binding
+// to it — not document.querySelector(...) which returns the FIRST match — is what
+// lets a 2nd widget in the same notebook find its own DOM instead of the 1st's.
+const root = (typeof rootEl !== 'undefined' && rootEl) ||
+              document.querySelector('[id^="genomeshader-root-"]') ||
               (document.querySelector('.app')?.closest('[id^="genomeshader-root-"]')) ||
               document.body; // Fallback to body if not found
 
 // Dynamic root lookup - finds the current container (overlay modal or original root)
 // This is needed because the viewer moves to an overlay modal in full-screen mode
 function getCurrentRoot() {
-  // Check if we're in overlay mode by looking for the app element in an overlay
-  const appEl = document.querySelector('.app');
+  // Check if we're in overlay mode by looking for the app element in an overlay.
+  // Scope to this instance's root first so a 2nd widget doesn't pick up the 1st's
+  // .app; fall back to document only for the moved-out fullscreen modal case.
+  const appEl = (root && root.querySelector && root.querySelector('.app')) ||
+                document.querySelector('.app');
   if (appEl) {
     // Check if app is inside an overlay modal
     const overlayModal = appEl.closest('[id^="genomeshader-modal-"]');
@@ -63,6 +70,8 @@ const themeItem = getElementById("themeItem");
 const themeLabel = getElementById("themeLabel");
 const orientationItem = getElementById("orientationItem");
 const orientationLabel = getElementById("orientationLabel");
+const lockAllelesItem = getElementById("lockAllelesItem");
+const lockAllelesToggle = getElementById("lockAllelesToggle");
 const aggregateRareAllelesItem = getElementById("aggregateRareAllelesItem");
 const aggregateRareAllelesToggle = getElementById("aggregateRareAllelesToggle");
 const aggregateRareAllelesCutoffItem = getElementById("aggregateRareAllelesCutoffItem");
@@ -78,10 +87,10 @@ if (hostMode === 'inline' && root && ctxMenu && !root.contains(ctxMenu)) {
 
 // Sidebar collapse/expand
 function getSidebarCollapsed() {
-  return localStorage.getItem("genomeshader.sidebarCollapsed") === "true";
+  return gsLocalStorage.getItem("genomeshader.sidebarCollapsed") === "true";
 }
 function setSidebarCollapsed(collapsed) {
-  localStorage.setItem("genomeshader.sidebarCollapsed", String(collapsed));
+  gsLocalStorage.setItem("genomeshader.sidebarCollapsed", String(collapsed));
   updateSidebarState();
 }
 function updateSidebarState() {
@@ -94,7 +103,12 @@ function updateSidebarState() {
   } else {
     app.classList.remove("sidebar-collapsed");
   }
-  // Let ResizeObserver-driven rendering handle transition layout changes.
+  // Reflow so the tracks resize to the new width instead of waiting on the
+  // debounced ResizeObserver (which still handles the transition tail). Use the
+  // rAF-deduped scheduleRender so opening both panels at once (e.g. double-click
+  // an allele) coalesces to one render instead of a renderAll storm.
+  if (typeof scheduleRender === "function") scheduleRender();
+  else requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (e) {} });
 }
 
 // Make sidebar border clickable - always bind regardless of hostMode
@@ -139,16 +153,19 @@ if (sidebar) {
   
   // Ensure sidebar is clickable
   sidebar.style.pointerEvents = "auto";
+
+  // Collapse is handled by the protruding edge tab (.sidebar-left::after); no
+  // separate close button needed.
 }
 
 updateSidebarState();
 
 function getStoredTheme() {
-  return localStorage.getItem("genomeshader.theme"); // "dark" | "light" | "auto" | null
+  return gsLocalStorage.getItem("genomeshader.theme"); // "dark" | "light" | "auto" | null
 }
 function setTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
-  localStorage.setItem("genomeshader.theme", theme);
+  gsLocalStorage.setItem("genomeshader.theme", theme);
   updateThemeLabel();
 }
 function updateThemeLabel() {
@@ -156,10 +173,10 @@ function updateThemeLabel() {
   themeLabel.textContent = t === "auto" ? "Auto" : (t === "light" ? "Light" : "Dark");
 }
 function getStoredOrientation() {
-  return localStorage.getItem("genomeshader.orientation"); // "horizontal" | "vertical" | null
+  return gsLocalStorage.getItem("genomeshader.orientation"); // "horizontal" | "vertical" | null
 }
 function setOrientation(o) {
-  localStorage.setItem("genomeshader.orientation", o);
+  gsLocalStorage.setItem("genomeshader.orientation", o);
   updateOrientationState();
 }
 function updateOrientationState() {
@@ -172,40 +189,49 @@ function isVerticalMode() {
   return (getStoredOrientation() ?? "horizontal") === "vertical";
 }
 function getStoredVariantLayoutMode() {
-  return localStorage.getItem("genomeshader.variantLayoutMode"); // "equidistant" | "genomic" | null
+  return gsLocalStorage.getItem("genomeshader.variantLayoutMode"); // "equidistant" | "genomic" | null
 }
 function setVariantLayoutMode(mode) {
-  localStorage.setItem("genomeshader.variantLayoutMode", mode);
+  gsLocalStorage.setItem("genomeshader.variantLayoutMode", mode);
   state.variantLayoutMode = mode;
   updateVariantLayoutModeLabel();
 }
 function updateVariantLayoutModeLabel() {
-  const mode = state.variantLayoutMode || "equidistant";
+  const mode = state.variantLayoutMode || "genomic";
   const labelEl = document.getElementById("variantLayoutModeLabel");
   if (labelEl) {
     labelEl.textContent = mode === "equidistant" ? "Equidistant" : "Genomic";
   }
 }
 function getVariantLayoutMode() {
-  return state.variantLayoutMode || "equidistant";
+  return state.variantLayoutMode || "genomic";
+}
+function getStoredLockAlleles() {
+  return gsLocalStorage.getItem("genomeshader.lockAlleles") === "true";
+}
+function setLockAlleles(enabled) {
+  const v = enabled === true;
+  gsLocalStorage.setItem("genomeshader.lockAlleles", v ? "true" : "false");
+  state.lockAlleles = v;
+  if (lockAllelesToggle) lockAllelesToggle.checked = v;
 }
 function getStoredAggregateRareAlleles() {
-  return localStorage.getItem("genomeshader.aggregateRareAlleles") === "true";
+  return gsLocalStorage.getItem("genomeshader.aggregateRareAlleles") === "true";
 }
 function setAggregateRareAlleles(enabled) {
   const v = enabled === true;
-  localStorage.setItem("genomeshader.aggregateRareAlleles", v ? "true" : "false");
+  gsLocalStorage.setItem("genomeshader.aggregateRareAlleles", v ? "true" : "false");
   state.aggregateRareAlleles = v;
   updateAggregateRareAllelesControls();
 }
 function getStoredAggregateRareAllelesCutoff() {
-  const raw = parseFloat(localStorage.getItem("genomeshader.aggregateRareAllelesCutoffPct"));
+  const raw = parseFloat(gsLocalStorage.getItem("genomeshader.aggregateRareAllelesCutoffPct"));
   if (!isFinite(raw)) return 2.0;
   return Math.max(0, Math.min(50, raw));
 }
 function setAggregateRareAllelesCutoff(cutoffPct) {
   const clamped = Math.max(0, Math.min(50, Number(cutoffPct)));
-  localStorage.setItem("genomeshader.aggregateRareAllelesCutoffPct", String(clamped));
+  gsLocalStorage.setItem("genomeshader.aggregateRareAllelesCutoffPct", String(clamped));
   state.aggregateRareAllelesCutoffPct = clamped;
   updateAggregateRareAllelesControls();
 }
@@ -223,92 +249,54 @@ const stored = getStoredTheme();
 document.documentElement.setAttribute("data-theme", stored ?? "auto");
 updateThemeLabel();
 
+// Left panel tabs (samples / settings). Settings now lives inline in its own
+// left tab instead of a floating popup, so openMenu just switches to it.
+function getActiveLeftTab() {
+  return gsLocalStorage.getItem("genomeshader.leftTab") || "samples";
+}
+function updateLeftTab() {
+  const active = getActiveLeftTab();
+  const scope = getCurrentRoot() || root || document;
+  scope.querySelectorAll(".left-tab-pane").forEach(p => {
+    p.classList.toggle("active", p.dataset.leftTab === active);
+  });
+  scope.querySelectorAll(".sidebar-left-command-strip .command-strip-icon").forEach(ic => {
+    ic.classList.toggle("active", ic.dataset.leftTab === active);
+  });
+}
+function setLeftTab(name, openIfCollapsed) {
+  if (!name) return;
+  gsLocalStorage.setItem("genomeshader.leftTab", name);
+  updateLeftTab();
+  if (openIfCollapsed && getSidebarCollapsed()) setSidebarCollapsed(false);
+}
 function openMenu() {
-  // In inline mode, move menu to body so fixed positioning works relative to viewport
-  if (hostMode === 'inline' && ctxMenu.parentElement !== document.body) {
-    document.body.appendChild(ctxMenu);
-  }
-  
-  // Temporarily show menu to measure its actual dimensions
-  ctxMenu.style.position = 'fixed';
-  ctxMenu.style.visibility = 'hidden';
-  ctxMenu.style.display = 'block';
-  ctxMenu.classList.add("open");
-  ctxMenu.setAttribute("aria-hidden", "false");
-  
-  // Get actual menu dimensions
-  const menuRect = ctxMenu.getBoundingClientRect();
-  const menuHeight = menuRect.height;
-  const menuWidth = menuRect.width;
-  
-  // Use fixed positioning so menu appears over everything (including Jupyter UI)
-  const r = menuBtn.getBoundingClientRect();
-  const padding = 8;
-  const viewportHeight = window.innerHeight;
-  const viewportWidth = window.innerWidth;
-  
-  // Calculate positions for above and below the button
-  const spaceAbove = r.top;
-  const spaceBelow = viewportHeight - r.bottom;
-  const topIfAbove = r.top - menuHeight - padding;
-  const topIfBelow = r.bottom + padding;
-  
-  // Determine best position: prefer above, but use below if not enough space above
-  // However, if below would extend off screen, position above even with limited space
-  let top, left = r.left;
-  
-  // Check if positioning below would extend off screen
-  const wouldExtendBelow = (topIfBelow + menuHeight) > (viewportHeight - padding);
-  
-  if (spaceAbove >= menuHeight + padding && !wouldExtendBelow) {
-    // Enough space above, position above
-    top = topIfAbove;
-  } else if (spaceBelow >= menuHeight + padding && !wouldExtendBelow) {
-    // Not enough space above, but enough below, position below
-    top = topIfBelow;
-  } else {
-    // Not enough space in either direction, position above and adjust to fit
-    // This ensures menu never extends below viewport
-    top = Math.max(padding, viewportHeight - menuHeight - padding);
-  }
-  
-  // Ensure menu doesn't go off right edge
-  if (left + menuWidth > viewportWidth - padding) {
-    left = Math.max(padding, viewportWidth - menuWidth - padding);
-  }
-  
-  // Final check: ensure menu never extends below viewport
-  if (top + menuHeight > viewportHeight - padding) {
-    top = Math.max(padding, viewportHeight - menuHeight - padding);
-  }
-  
-  // Apply final positioning
-  ctxMenu.style.left = `${left}px`;
-  ctxMenu.style.top = `${top}px`;
-  ctxMenu.style.zIndex = '2147483647';
-  ctxMenu.style.visibility = 'visible';
-  ctxMenu.style.pointerEvents = 'auto';
-  ctxMenu.style.opacity = '1';
-
-  // Update variant layout mode label when menu opens
+  setLeftTab("settings", true);
   updateVariantLayoutModeLabel();
   updateAggregateRareAllelesControls();
 }
-function closeMenu() {
-  ctxMenu.classList.remove("open");
-  ctxMenu.setAttribute("aria-hidden", "true");
-  ctxMenu.style.display = 'none';
-  ctxMenu.style.visibility = 'hidden';
-  ctxMenu.style.pointerEvents = 'none';
-  
-  // In inline mode, move menu back to root when closed
-  if (hostMode === 'inline' && root && ctxMenu.parentElement === document.body) {
-    root.appendChild(ctxMenu);
-  }
-}
-function toggleMenu() {
-  ctxMenu.classList.contains("open") ? closeMenu() : openMenu();
-}
+function closeMenu() { /* settings is a persistent tab now; nothing to close */ }
+function toggleMenu() { openMenu(); }
+
+// Wire the left command-strip icons (VSCode-style activity bar):
+//  - collapsed: open the panel to the clicked tab.
+//  - open + clicked tab already active: collapse the panel.
+//  - open + a different tab: switch to it.
+(function wireLeftCommandStrip() {
+  const scope = getCurrentRoot() || root || document;
+  scope.querySelectorAll(".sidebar-left-command-strip .command-strip-icon").forEach(ic => {
+    ic.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const name = ic.dataset.leftTab;
+      if (!name) return;
+      if (getSidebarCollapsed()) { setLeftTab(name); setSidebarCollapsed(false); }
+      else if (getActiveLeftTab() === name) { setSidebarCollapsed(true); }
+      else { setLeftTab(name); }
+    });
+  });
+  updateLeftTab();
+})();
 
 if (menuBtn && ctxMenu) {
   // Track if we've already handled this interaction to prevent double-toggle
@@ -408,6 +396,15 @@ if (variantLayoutModeItem) {
   });
 }
 
+if (lockAllelesItem && lockAllelesToggle) {
+  lockAllelesItem.addEventListener("click", (e) => {
+    if (e.target === lockAllelesToggle) return;
+    setLockAlleles(!(state.lockAlleles === true));
+  });
+  lockAllelesToggle.addEventListener("change", () => {
+    setLockAlleles(lockAllelesToggle.checked);
+  });
+}
 if (aggregateRareAllelesItem && aggregateRareAllelesToggle) {
   aggregateRareAllelesItem.addEventListener("click", (e) => {
     if (e.target === aggregateRareAllelesToggle) return;
@@ -497,6 +494,7 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
   let placeholder = null;
   let originalParent = null;
   let originalNextSibling = null;
+  let prevViewerStyle = null;
 
   const overlayId = `genomeshader-overlay-${viewId}`;
   const modalId = `genomeshader-modal-${viewId}`;
@@ -675,6 +673,13 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     }
 
     modalBody.appendChild(viewerEl);
+    // viewerEl is the #genomeshader-root container. Its inline style pins
+    // height:600px for the notebook cell; in fullscreen it must fill the modal
+    // body so the whole scoped subtree — and every container-scoped CSS rule —
+    // renders on the same basis as inline, just larger. Restored on exit.
+    prevViewerStyle = viewerEl.getAttribute('style');
+    viewerEl.style.width = '100%';
+    viewerEl.style.height = '100%';
     document.body.appendChild(overlay);
 
     const originalOverflow = document.body.style.overflow;
@@ -721,11 +726,23 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
       overlay._modalBody.removeEventListener('click', overlay._menuCloseHandler, true);
     }
 
+    if (prevViewerStyle !== null) {
+      viewerEl.setAttribute('style', prevViewerStyle);
+      prevViewerStyle = null;
+    }
+
     if (placeholder && originalParent) {
-      if (originalNextSibling) {
-        originalParent.insertBefore(viewerEl, originalNextSibling);
-      } else {
-        originalParent.appendChild(viewerEl);
+      // insertBefore throws if the reference sibling was removed from the parent
+      // while we were in full screen (external DOM edits) — fall back to append
+      // so exiting full screen never leaves the viewer stranded in the modal.
+      try {
+        if (originalNextSibling && originalNextSibling.parentNode === originalParent) {
+          originalParent.insertBefore(viewerEl, originalNextSibling);
+        } else {
+          originalParent.appendChild(viewerEl);
+        }
+      } catch (e) {
+        try { originalParent.appendChild(viewerEl); } catch (e2) {}
       }
       placeholder.remove();
       placeholder = null;
@@ -790,9 +807,13 @@ let interactionBinding = null;
 
 const viewId = window.GENOMESHADER_VIEW_ID || document.querySelector('[data-view-id]')?.dataset.viewId || 'default';
 let focusModeController = null;
-if (fullscreenItem && app) {
+if (fullscreenItem && root && app) {
   focusModeController = installFocusMode({
-    viewerEl: app,
+    // Move the whole #genomeshader-root container (not just .app) so the
+    // container-scoped CSS from widget.py keeps matching in fullscreen —
+    // otherwise .app leaves its scope and the viewer falls back to unscoped
+    // styles.css, diverging from inline rendering.
+    viewerEl: root,
     toggleEl: fullscreenItem,
     viewId: viewId,
     onEnter: triggerResize,
@@ -848,11 +869,12 @@ const handleSettingsHotkeys = (e) => {
     return;
   }
 
-  // Full screen toggle: 'f'
-  if (key === 'f' && fullscreenItem && focusModeController && !focusModeController.isActive()) {
+  // Full screen toggle: 'f' (enter when off, exit when on)
+  if (key === 'f' && fullscreenItem && focusModeController) {
     e.preventDefault();
     e.stopPropagation();
-    focusModeController.enter();
+    if (focusModeController.isActive()) focusModeController.exit();
+    else focusModeController.enter();
     return;
   }
 
@@ -885,3 +907,117 @@ mq?.addEventListener?.("change", () => {
     renderAll();
   }
 });
+
+// Hint tooltips: show an element's title= text after a short dwell (snappier
+// than the browser's native ~500ms popup and styled like the rest of the UI).
+// Cost is a single timer + delegated mouseover/out — no per-frame or render
+// work, so it never affects pan/zoom responsiveness.
+(function setupHintTooltips() {
+  const host = root || document.body;
+  if (!host || host._hintTipInstalled) return;
+  host._hintTipInstalled = true;
+  const DWELL_MS = 375; // 75% of the ~500ms native default
+  let tip = null, timer = null, current = null;
+  let px = 0, py = 0; // last pointer position, so the hint shows next to the cursor
+
+  function ensureTip() {
+    if (tip && tip.isConnected) return tip;
+    tip = document.createElement("div");
+    tip.className = "hint-tooltip";
+    tip.setAttribute("role", "tooltip");
+    (getCurrentRoot() || root || document.body).appendChild(tip);
+    return tip;
+  }
+  function hide() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (current && current.dataset && current.dataset._hintTitle != null) {
+      current.setAttribute("title", current.dataset._hintTitle);
+      delete current.dataset._hintTitle;
+    }
+    current = null;
+    if (tip) tip.classList.remove("visible");
+  }
+  host.addEventListener("mouseover", (e) => {
+    const el = e.target && e.target.closest ? e.target.closest("[title]") : null;
+    if (!el || el === current) return;
+    hide();
+    const text = el.getAttribute("title");
+    if (!text) return;
+    current = el;
+    px = e.clientX; py = e.clientY;
+    // Suppress the native tooltip while we own this hint.
+    el.dataset._hintTitle = text;
+    el.removeAttribute("title");
+    timer = setTimeout(() => {
+      const t = ensureTip();
+      t.textContent = text;
+      t.classList.add("visible"); // must be displayed to measure size + origin
+      // The tip is position:fixed, but a transformed/contained ancestor (the
+      // widget container) can become its containing block — so clientX/Y (which
+      // are viewport-relative) don't map straight to left/top. Measure the
+      // containing-block origin in viewport space and subtract it.
+      t.style.left = "0px"; t.style.top = "0px";
+      const originRect = t.getBoundingClientRect();
+      const cbX = originRect.left, cbY = originRect.top;
+      const w = t.offsetWidth || 160, h = t.offsetHeight || 24;
+      // Next to the cursor (viewport coords), clamped on-screen.
+      let vx = px + 12, vy = py + 16;
+      if (vx + w > window.innerWidth - 6) vx = Math.max(6, px - w - 12);
+      if (vy + h > window.innerHeight - 6) vy = Math.max(6, py - h - 12);
+      t.style.left = (vx - cbX) + "px";
+      t.style.top = (vy - cbY) + "px";
+      timer = null; // shown — stop tracking the pointer
+    }, DWELL_MS);
+  }, true);
+  // Track the pointer only while a hint is pending, so the tip lands where the
+  // cursor actually is (no cost outside the 375ms dwell).
+  host.addEventListener("mousemove", (e) => {
+    if (timer) { px = e.clientX; py = e.clientY; }
+  }, true);
+  host.addEventListener("mouseout", (e) => {
+    // Can't match on [title] here — we removed it to suppress the native popup.
+    // Hide when the pointer actually leaves `current` (into a node outside it).
+    if (current && (e.target === current || current.contains(e.target))
+        && (!e.relatedTarget || !current.contains(e.relatedTarget))) {
+      hide();
+    }
+  }, true);
+  host.addEventListener("click", hide, true);
+})();
+
+// Bottom status bar controller. Call window.__GS_STATUS(message, opts):
+//   message   string to show, or null/false to hide the bar.
+//   opts.busy      show an indeterminate progress animation.
+//   opts.progress  0..1 for a determinate bar.
+//   opts.autoHide  ms after which the bar hides itself.
+// Available to all later scripts so any long-running action can report status.
+(function setupStatusBar() {
+  const bar = (typeof byId === "function" ? byId(root, "statusBar") : null)
+    || document.getElementById("statusBar");
+  if (!bar) { if (!window.__GS_STATUS) window.__GS_STATUS = function () {}; return; }
+  const textEl = bar.querySelector(".status-text");
+  const fillEl = bar.querySelector(".status-progress-fill");
+  let hideTimer = null;
+  function hide() {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    bar.classList.remove("visible", "has-progress", "indeterminate");
+  }
+  window.__GS_STATUS = function (message, opts) {
+    opts = opts || {};
+    if (message == null || message === false) { hide(); return; }
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (textEl) textEl.textContent = String(message);
+    bar.classList.add("visible");
+    const determinate = typeof opts.progress === "number";
+    bar.classList.toggle("has-progress", determinate || !!opts.busy);
+    if (determinate) {
+      bar.classList.remove("indeterminate");
+      if (fillEl) fillEl.style.width = Math.max(0, Math.min(100, opts.progress * 100)) + "%";
+    } else if (opts.busy) {
+      bar.classList.add("indeterminate");
+    } else {
+      bar.classList.remove("indeterminate");
+    }
+    if (opts.autoHide) hideTimer = setTimeout(hide, opts.autoHide);
+  };
+})();

@@ -5,35 +5,32 @@
 function processReadsData(rawReads) {
   if (!rawReads || !rawReads.query_name) return null;
   
-  // Convert column-oriented data to row-oriented
+  // Convert column-oriented data to row-oriented.
   const numRows = rawReads.query_name.length;
-  const reads = [];
-  
-  // Group by query_name to get unique reads (element_type 0 = READ)
-  const readMap = new Map();
+
+  // One entry per alignment, grouped by CONTIGUITY not query_name: the Rust
+  // extractor emits each read as a READ row (element_type 0) immediately
+  // followed by that read's own CIGAR element rows. Grouping by query_name was
+  // wrong — paired-end mates share a query_name, so it merged a pair into a
+  // single read and stapled the mate's SNP/indel markers onto it, painting them
+  // outside the (shorter) kept read. Contiguity keeps mates separate and each
+  // read's markers confined to that read.
+  const readArray = [];
+  let current = null;
   for (let i = 0; i < numRows; i++) {
-    if (rawReads.element_type[i] === 0) { // READ element
-      const name = rawReads.query_name[i];
-      if (!readMap.has(name)) {
-        readMap.set(name, {
-          name: name,
-          start: rawReads.reference_start[i],
-          end: rawReads.reference_end[i],
-          isForward: rawReads.is_forward[i],
-          haplotype: rawReads.haplotype[i],
-          sample: rawReads.sample_name[i],
-          elements: []
-        });
-      }
-    }
-  }
-  
-  // Add non-read elements (insertions, deletions, etc.)
-  for (let i = 0; i < numRows; i++) {
-    const name = rawReads.query_name[i];
-    const read = readMap.get(name);
-    if (read && rawReads.element_type[i] !== 0) {
-      read.elements.push({
+    if (rawReads.element_type[i] === 0) { // READ element starts a new alignment
+      current = {
+        name: rawReads.query_name[i],
+        start: rawReads.reference_start[i],
+        end: rawReads.reference_end[i],
+        isForward: rawReads.is_forward[i],
+        haplotype: rawReads.haplotype[i],
+        sample: rawReads.sample_name[i],
+        elements: []
+      };
+      readArray.push(current);
+    } else if (current) {
+      current.elements.push({
         type: rawReads.element_type[i],
         start: rawReads.reference_start[i],
         end: rawReads.reference_end[i],
@@ -41,10 +38,27 @@ function processReadsData(rawReads) {
       });
     }
   }
-  
-  // Convert to array and sort by start position
-  const readArray = Array.from(readMap.values());
+
+  // Sort by start position
   readArray.sort((a, b) => a.start - b.start);
+
+  // Cap rendered reads. Each expanded sample track sizes its canvases (2D +
+  // WebGPU) to the FULL read stack (maxRows * rowH); a deep-coverage locus
+  // (thousands of reads, doubled by paired-end mate splitting) makes those
+  // canvases enormous and stalls the GPU/compositor — the "expand freezes" bug.
+  // Downsample evenly across the locus so coverage stays representative but the
+  // stack stays bounded. ponytail: fixed cap; the real fix is viewport-sized
+  // virtualized canvases (draw only visible rows onto a container-height canvas).
+  const MAX_RENDER_READS = 300;
+  let downsampled = false;
+  if (readArray.length > MAX_RENDER_READS) {
+    const step = readArray.length / MAX_RENDER_READS;
+    const kept = [];
+    for (let i = 0; i < MAX_RENDER_READS; i++) kept.push(readArray[Math.floor(i * step)]);
+    readArray.length = 0;
+    Array.prototype.push.apply(readArray, kept);
+    downsampled = true;
+  }
   
   // Improved greedy packing: assign reads to rows, checking if read fits anywhere in each row
   const rows = [];
@@ -78,8 +92,11 @@ function processReadsData(rawReads) {
   
   // Only log in debug mode or for first few calls to avoid console spam
   // console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
-  return { reads: readArray, rowCount: rows.length };
+  return { reads: readArray, rowCount: rows.length, downsampled: downsampled };
 }
+// Exposed for the headless harness to regression-test read grouping (paired-end
+// mates share a query_name; markers must stay confined to their own read).
+if (typeof window !== "undefined") window.__GS_processReadsData = processReadsData;
 
 // Create a new Smart track
 function createSmartTrack(strategy, selectedAlleles) {
@@ -187,8 +204,38 @@ async function initSmartTrackWebGPU(trackId) {
   
   container.appendChild(canvas);
   container.appendChild(webgpuCanvas);
-  tracksContainer.appendChild(container);
-  
+  // Live in the scrolling reads region (#smartScroll) so the whole sample-track
+  // stack scrolls together below the pinned header.
+  ((typeof ensureSmartScrollWrapper === "function" && ensureSmartScrollWrapper())
+    || tracksContainer).appendChild(container);
+
+  // Re-render whenever the container gets a REAL size change. renderSmartTrack
+  // bails when the measured width is 0 (layout not settled — common right after
+  // expanding in full screen / JupyterLab); this recovers as soon as the real
+  // size lands, without a manual scroll.
+  //
+  // Fire ONLY on the initial 0 -> real-size transition. Every other re-render
+  // (collapse/expand, pan, zoom, panel resize) is already driven by an explicit
+  // renderAll() or the global tracksSvg ResizeObserver. Re-rendering here on
+  // later width changes is not just redundant — it's a freeze: expand grows the
+  // stack, which makes BOTH this container's internal scrollbar and the outer
+  // #smartScroll scrollbar appear (~30px), re-rendering toggles them, width
+  // changes, RO fires again … an infinite loop. Read x-mapping uses
+  // tracksWidthPx() (not this width) anyway, so later changes need no repaint.
+  let _roPainted = false;
+  try {
+    const ro = new ResizeObserver(() => {
+      if (_roPainted) return;
+      const w = container.getBoundingClientRect().width || 0;
+      if (w <= 0) return;
+      _roPainted = true;
+      requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+    });
+    ro.observe(container);
+    // Stash for cleanup even before the renderer record exists.
+    container._gsResizeObserver = ro;
+  } catch (e) {}
+
   try {
     // Wait for canvas to have dimensions
     const checkDimensions = () => {
@@ -220,13 +267,19 @@ async function initSmartTrackWebGPU(trackId) {
       webgpuCanvas,
       container
     });
-    
+
     // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
     // But we need a basic scroll handler for re-rendering
     container.addEventListener("scroll", () => {
-      renderSmartTrack(trackId);
+      scheduleSmartTrackRender(trackId);
     });
-    
+
+    // Render now that the renderer exists. WebGPU init is async and can finish
+    // AFTER the reads-load renderAll already ran (found no renderer) — notably in
+    // full screen, where the canvas takes longer to get dimensions. Without this,
+    // reads don't appear until a scroll triggers renderSmartTrack.
+    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+
     console.log(`Smart track ${trackId}: WebGPU initialized`);
   } catch (error) {
     console.warn(`Smart track ${trackId}: Failed to initialize WebGPU:`, error);
@@ -244,8 +297,10 @@ async function initSmartTrackWebGPU(trackId) {
     // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
     // But we need a basic scroll handler for re-rendering
     container.addEventListener("scroll", () => {
-      renderSmartTrack(trackId);
+      scheduleSmartTrackRender(trackId);
     });
+    // Paint once the (Canvas2D-fallback) renderer exists — see note above.
+    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
   }
 }
 
@@ -260,6 +315,7 @@ function removeSmartTrackWebGPU(trackId) {
     
     // Remove DOM elements
     if (renderer.container) {
+      try { if (renderer.container._gsResizeObserver) renderer.container._gsResizeObserver.disconnect(); } catch (e) {}
       if (renderer.container.parentNode) {
         renderer.container.parentNode.removeChild(renderer.container);
       }
@@ -276,19 +332,86 @@ function removeSmartTrackWebGPU(trackId) {
 }
 
 // Fetch reads for a Smart track
+// In-memory reads cache so re-opening a read track (remove + re-add, or any
+// re-fetch) for the same sample at the same locus reappears instantly instead
+// of round-tripping the comm. Keyed by sampleId|locus; capped LRU-ish.
+const _smartReadsCache = new Map();
+const _SMART_READS_CACHE_MAX = 24;
+function _readsLocusSig() {
+  try {
+    return state.contig + ":" + Math.floor(state.startBp) + "-" + Math.ceil(state.endBp);
+  } catch (e) { return ""; }
+}
+function _cacheSmartReads(sampleId, reads, bamUrls) {
+  if (!sampleId) return;
+  const key = sampleId + "|" + _readsLocusSig();
+  _smartReadsCache.delete(key);          // move-to-front
+  _smartReadsCache.set(key, { reads: reads, bamUrls: bamUrls || [] });
+  while (_smartReadsCache.size > _SMART_READS_CACHE_MAX) {
+    _smartReadsCache.delete(_smartReadsCache.keys().next().value);
+  }
+}
+
+// Bottom-bar status for read loads, COUNTED so concurrent loads (e.g. 3 samples
+// at once) keep the bar up until the last one finishes. Without the count, the
+// first sample to return fires "Loaded" + a 2s auto-hide and the bar vanishes
+// while the others are still loading — which reads as "the loading bar doesn't
+// show up", especially in full screen.
+let _readLoadsInFlight = 0;
+function _readStatusStart(sampleId) {
+  _readLoadsInFlight++;
+  if (!window.__GS_STATUS) return;
+  window.__GS_STATUS(_readLoadsInFlight > 1
+    ? ('Loading reads (' + _readLoadsInFlight + ')…')
+    : ('Loading reads' + (sampleId ? ' for ' + sampleId : '') + '…'), { busy: true });
+}
+function _readStatusDone(label, isError) {
+  _readLoadsInFlight = Math.max(0, _readLoadsInFlight - 1);
+  if (!window.__GS_STATUS) return;
+  if (_readLoadsInFlight > 0) {                       // others still loading
+    window.__GS_STATUS('Loading reads (' + _readLoadsInFlight + ')…', { busy: true });
+  } else if (label) {
+    window.__GS_STATUS(label, { autoHide: isError ? 5000 : 2000 });
+  } else {
+    window.__GS_STATUS(false);
+  }
+}
+
 function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) {
     console.error(`Smart track ${trackId} not found`);
     return Promise.reject(new Error('Track not found'));
   }
-  
+
+  // Instant path: a known sample previously loaded at this locus.
+  const cacheKey = sampleId ? (sampleId + "|" + _readsLocusSig()) : null;
+  if (cacheKey && _smartReadsCache.has(cacheKey)) {
+    const hit = _smartReadsCache.get(cacheKey);
+    track.loading = false;
+    track.readsData = hit.reads;
+    track.readsLayout = processReadsData(hit.reads);
+    track.sampleId = sampleId;
+    track.bamUrls = hit.bamUrls || [];
+    updateSmartTrackLabel(track);
+    renderAll();
+    // Instant cache hit: flash a brief confirmation so the user sees something
+    // happened. If other loads are in flight, leave their busy bar alone.
+    if (window.__GS_STATUS && _readLoadsInFlight === 0) {
+      const sn = sampleId || track.sampleId;
+      window.__GS_STATUS('Loaded reads' + (sn ? ' for ' + sn : '') + ' (cached)',
+        { autoHide: 1200 });
+    }
+    return Promise.resolve(track.readsLayout);
+  }
+
   track.loading = true;
   renderAll();
-  
+  _readStatusStart(sampleId);
+
   // Convert selectedAlleles Set to array
   const allelesArray = Array.from(selectedAlleles);
-  
+
   return sendCommMessage('fetch_reads', {
     strategy: strategy,
     selected_alleles: allelesArray,
@@ -297,11 +420,31 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     .then(function(response) {
       track.loading = false;
       if (response.type === 'fetch_reads_response') {
+        const sn = sampleId || response.sample_id;
+        _readStatusDone('Loaded reads' + (sn ? ' for ' + sn : ''), false);
+        // Warn only when SNPs truly can't be shown: has_md is per-element and now
+        // means "SNP-displayable" — true if the read had an MD tag OR the staged
+        // reference was available to diff against. All-false => neither, i.e. no
+        // MD and no reference staged for this locus (indels still render).
+        try {
+          const hm = response.reads && response.reads.has_md;
+          if (Array.isArray(hm) && hm.length && !hm.some(Boolean)) {
+            track.snpsUnavailable = true;
+            if (window.__GS_STATUS) {
+              window.__GS_STATUS('SNPs not shown for ' + (sn || 'this sample')
+                + ' — no reference staged for this locus and BAM has no MD tag',
+                { autoHide: 6000 });
+            }
+          } else {
+            track.snpsUnavailable = false;
+          }
+        } catch (e) {}
         track.readsData = response.reads;
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
         track.bamUrls = response.bam_urls || [];
-        
+        _cacheSmartReads(track.sampleId, response.reads, track.bamUrls);
+
         // Update track label to use sample name
         updateSmartTrackLabel(track);
         
@@ -320,13 +463,15 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
         console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
-        throw new Error(response.error);
+        throw new Error(response.error);  // status handled in .catch (single decrement)
       }
+      _readStatusDone(false);            // unknown response: decrement, don't leak
       return null;
     })
     .catch(function(err) {
       track.loading = false;
       console.error(`Failed to fetch reads for Smart track ${trackId}:`, err);
+      _readStatusDone('Failed to load reads', true);
       renderAll();
       throw err;
     });
@@ -861,7 +1006,7 @@ function getDragAfterElement(container, y) {
 
 // Right sidebar collapse/expand
 function getRightSidebarCollapsed() {
-  const stored = localStorage.getItem("genomeshader.rightSidebarCollapsed");
+  const stored = gsLocalStorage.getItem("genomeshader.rightSidebarCollapsed");
   // Default to collapsed (true) if not set
   if (stored === null) {
     return true;
@@ -869,7 +1014,7 @@ function getRightSidebarCollapsed() {
   return stored === "true";
 }
 function setRightSidebarCollapsed(collapsed) {
-  localStorage.setItem("genomeshader.rightSidebarCollapsed", String(collapsed));
+  gsLocalStorage.setItem("genomeshader.rightSidebarCollapsed", String(collapsed));
   updateRightSidebarState();
 }
 function updateRightSidebarState() {
@@ -883,7 +1028,73 @@ function updateRightSidebarState() {
   } else {
     app.classList.remove("sidebar-right-collapsed");
   }
-  // Let ResizeObserver-driven rendering handle transition layout changes.
+  // Reflow via the rAF-deduped scheduleRender so opening both panels at once
+  // (e.g. double-click an allele) coalesces to one render, not a storm. The
+  // debounced ResizeObserver still handles the transition tail.
+  if (typeof scheduleRender === "function") scheduleRender();
+  else requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (e) {} });
+}
+
+// Right sidebar width (drag-to-resize). Stored in px; applied via the
+// --sidebar-right-w CSS var on the container so the flex-basis rules honor it.
+const RIGHT_SIDEBAR_MIN_W = 200;
+function getRightSidebarWidth() {
+  const v = parseInt(gsLocalStorage.getItem("genomeshader.rightSidebarWidth"), 10);
+  return (isFinite(v) && v >= RIGHT_SIDEBAR_MIN_W) ? v : 240;
+}
+function applyRightSidebarWidth(px) {
+  const rootEl = document.querySelector('[id^="genomeshader-root-"]') || document.documentElement;
+  rootEl.style.setProperty("--sidebar-right-w", px + "px");
+}
+function setupRightSidebarResize(sidebarRight, app) {
+  if (sidebarRight.querySelector(".sidebar-right-resize-handle")) return;
+  applyRightSidebarWidth(getRightSidebarWidth());
+
+  const handle = document.createElement("div");
+  handle.className = "sidebar-right-resize-handle";
+  handle.title = "Drag to resize panel";
+  // Inline the essentials so it works without a styles.css dependency; visual
+  // accent (hover color) lives in styles.css.
+  handle.style.cssText =
+    "position:absolute;left:0;top:0;bottom:0;width:6px;cursor:col-resize;" +
+    "z-index:150;pointer-events:auto;touch-action:none;";
+  sidebarRight.appendChild(handle);
+
+  let startX = 0, startW = 0, dragging = false;
+  const onMove = (e) => {
+    if (!dragging) return;
+    const appW = app.getBoundingClientRect().width || 1200;
+    const maxW = Math.max(RIGHT_SIDEBAR_MIN_W, Math.min(720, appW * 0.6));
+    // Dragging the left edge leftward widens the panel.
+    let w = startW + (startX - e.clientX);
+    w = Math.max(RIGHT_SIDEBAR_MIN_W, Math.min(maxW, w));
+    applyRightSidebarWidth(w);
+    requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (err) {} });
+  };
+  const onUp = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    document.removeEventListener("pointermove", onMove, true);
+    document.removeEventListener("pointerup", onUp, true);
+    try { handle.releasePointerCapture(e.pointerId); } catch (err) {}
+    const cur = getComputedStyle(sidebarRight).width;
+    const px = Math.round(parseFloat(cur));
+    if (isFinite(px)) gsLocalStorage.setItem("genomeshader.rightSidebarWidth", String(px));
+    requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (err) {} });
+  };
+  handle.addEventListener("pointerdown", (e) => {
+    if (getRightSidebarCollapsed()) return;   // nothing to resize while collapsed
+    e.preventDefault(); e.stopPropagation();
+    dragging = true;
+    startX = e.clientX;
+    startW = sidebarRight.getBoundingClientRect().width;
+    try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+    document.addEventListener("pointermove", onMove, true);
+    document.addEventListener("pointerup", onUp, true);
+  }, true);
+  // Swallow the edge-click collapse handler so a resize drag never also toggles.
+  handle.addEventListener("click", (e) => { e.stopPropagation(); }, true);
+  handle.addEventListener("mousedown", (e) => { e.stopPropagation(); }, true);
 }
 
 // Initialize right sidebar (closed by default)
@@ -898,11 +1109,11 @@ if (typeof document !== 'undefined') {
 
 // Tab switching for right sidebar
 function getActiveTab() {
-  const stored = localStorage.getItem("genomeshader.rightSidebarTab");
+  const stored = gsLocalStorage.getItem("genomeshader.rightSidebarTab");
   return stored || "smart-tracks"; // Default to smart-tracks
 }
 function setActiveTab(tabName) {
-  localStorage.setItem("genomeshader.rightSidebarTab", tabName);
+  gsLocalStorage.setItem("genomeshader.rightSidebarTab", tabName);
   updateActiveTab();
 }
 function updateActiveTab() {
@@ -946,7 +1157,7 @@ function initializeRightSidebar() {
     const handleRightSidebarToggle = (e) => {
       // Don't intercept clicks on form elements, command strip icons, or their containers
       const target = e.target;
-      if (target.closest('input, button.command-strip-icon, .smart-track-item, .sidebar-right-command-strip')) {
+      if (target.closest('input, button.command-strip-icon, .smart-track-item, .sidebar-right-command-strip, .sidebar-close-btn, .sidebar-right-resize-handle')) {
         return;
       }
       
@@ -970,22 +1181,35 @@ function initializeRightSidebar() {
     sidebarRight.addEventListener("pointerdown", handleRightSidebarToggle, true);
     sidebarRight.addEventListener("pointerup", handleRightSidebarToggle, true);
     sidebarRight.addEventListener("mousedown", handleRightSidebarToggle, true);
-    
+
     sidebarRight.style.pointerEvents = "auto";
-    
+
+    // Collapse is handled by the protruding edge tab (.sidebar-right::before);
+    // no separate close button needed.
+
+    // Drag-to-resize handle on the panel's inner (left) edge. Width is driven by
+    // the --sidebar-right-w CSS var on the container (the flex-basis rules read
+    // it), so setting the var live resizes the panel and reflows the tracks.
+    setupRightSidebarResize(sidebarRight, app);
+
     // Initialize tab switching
-    const commandStripIcons = document.querySelectorAll('.command-strip-icon');
+    // Scope to the right strip so left-panel icons (data-left-tab) aren't caught.
+    const commandStripIcons = document.querySelectorAll('.sidebar-right-command-strip .command-strip-icon');
     commandStripIcons.forEach(icon => {
       icon.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
         const tabName = icon.dataset.tab;
-        if (tabName) {
+        if (!tabName) return;
+        // Activity-bar behavior (mirrors the left rail): collapsed -> open to the
+        // tab; open + already-active tab -> collapse; open + other tab -> switch.
+        if (getRightSidebarCollapsed()) {
           setActiveTab(tabName);
-          // Expand sidebar if collapsed
-          if (getRightSidebarCollapsed()) {
-            setRightSidebarCollapsed(false);
-          }
+          setRightSidebarCollapsed(false);
+        } else if (getActiveTab() === tabName) {
+          setRightSidebarCollapsed(true);
+        } else {
+          setActiveTab(tabName);
         }
       });
     });

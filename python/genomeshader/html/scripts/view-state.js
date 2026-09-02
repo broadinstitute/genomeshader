@@ -203,6 +203,114 @@ function isInsertion(variant) {
   return variant.altAlleles.some(alt => alt.length > refLen);
 }
 
+function isDeletion(variant) {
+  if (variant.hasOwnProperty('isDeletion')) {
+    return variant.isDeletion === true;
+  }
+  if (!variant.refAllele || !variant.altAlleles) return false;
+  const refLen = variant.refAllele.length;
+  return variant.altAlleles.some(alt => alt.length < refLen);
+}
+
+// An indel = insertion or deletion (anything that changes length vs the ref).
+function isIndel(variant) {
+  return isInsertion(variant) || isDeletion(variant);
+}
+
+// Carrier-count phrase for allele labels/tooltips. The count is over the samples
+// present in the variant data (the loaded/selected cohort), NOT the read tracks
+// you've opened. A zero means none of those samples carry this allele — say so
+// plainly instead of a bare "0 samples", which reads as a failed count.
+function formatAlleleSampleCount(n) {
+  n = Number(n) || 0;
+  if (n === 0) return "no loaded samples carry this allele";
+  return n + " sample" + (n === 1 ? "" : "s");
+}
+if (typeof window !== "undefined") window.__gsFormatAlleleSampleCount = formatAlleleSampleCount;
+
+// Next Indel-marker expansion state on click. A position that is BOTH an
+// insertion and a deletion cycles off -> ins -> del -> off so either can be
+// inspected; pure insertions/deletions just toggle. Returns the target
+// membership for the (expandedInsertions, expandedDeletions) sets.
+function nextIndelExpansion(isIns, isDel, curIns, curDel) {
+  if (isIns && isDel) {
+    if (curIns) return { ins: false, del: true };   // ins -> del
+    if (curDel) return { ins: false, del: false };  // del -> off
+    return { ins: true, del: false };               // off -> ins
+  }
+  if (isIns) return { ins: !curIns, del: false };
+  return { ins: false, del: !curDel };
+}
+if (typeof window !== "undefined") window.__gsNextIndelExpansion = nextIndelExpansion;
+
+// Samples to actually load: unique, skipping any already loaded, capped at the
+// requested count. One track per sample; never load a duplicate.
+function gsSelectSamplesToLoad(selected, loadedSampleIds, numSamples) {
+  const loaded = new Set(loadedSampleIds || []);
+  const seen = new Set();
+  const out = [];
+  const cap = Math.max(0, Number(numSamples) || 0);
+  for (const s of (selected || [])) {
+    if (s == null || seen.has(s) || loaded.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+// Sample-count slider state from the selectable pool size: greyed (and pinned to
+// 1) when there's at most one selectable sample, enabled at 2+.
+function gsSampleSliderState(pool) {
+  pool = Number(pool) || 0;
+  return { disabled: pool <= 1, pinToOne: pool === 1 };
+}
+
+if (typeof window !== "undefined") {
+  window.__gsSelectSamplesToLoad = gsSelectSamplesToLoad;
+  window.__gsSampleSliderState = gsSampleSliderState;
+}
+
+// Height (px) of one repeated reference row drawn per expanded deletion.
+const DELETION_ROW_H = 20;
+
+// Expanded deletions overlapping the current view, sorted by start. Each entry
+// carries the deleted ref span [loBp, hiBp] (1-based genomic, inclusive) so the
+// reference track can repeat itself once per deletion (the vertical analogue of
+// stacking multiple insertion rows in the variants track).
+function getExpandedDeletionsInView() {
+  const out = [];
+  if (!state.expandedDeletions || !state.expandedDeletions.size) return out;
+  if (typeof isDeletion !== "function") return out;
+  const vcfg = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
+  const vars = vcfg.length ? vcfg.flatMap(t => t.variants_data || [])
+    : ((typeof variants !== "undefined" && Array.isArray(variants)) ? variants : []);
+  const seen = new Set();
+  for (const v of vars) {
+    if (!v || v.pos == null || !isDeletion(v)) continue;
+    if (!state.expandedDeletions.has(String(v.id))) continue;
+    const key = String(v.id); if (seen.has(key)) continue; seen.add(key);
+    const delLen = (typeof getMaxDeletionLength === "function") ? getMaxDeletionLength(v) : 0;
+    if (!(delLen > 0)) continue;
+    // Deleted ref bases are the ones after the anchor: [pos+1, pos+delLen].
+    const loBp = Number(v.pos) + 1, hiBp = Number(v.pos) + delLen;
+    if (hiBp < state.startBp || loBp > state.endBp) continue;  // off-view
+    out.push({ v: v, delLen: delLen, loBp: loBp, hiBp: hiBp });
+  }
+  out.sort((a, b) => (a.loBp - b.loBp) || (a.hiBp - b.hiBp));
+  return out;
+}
+
+// Longest deletion span (ref bases removed) for a variant.
+function getMaxDeletionLength(variant) {
+  if (variant.hasOwnProperty('maxDeletionLength')) {
+    return variant.maxDeletionLength || 0;
+  }
+  if (!variant.refAllele || !variant.altAlleles) return 0;
+  const refLen = variant.refAllele.length;
+  return Math.max(0, ...variant.altAlleles.map(alt => Math.max(0, refLen - alt.length)));
+}
+
 // Get the longest insertion allele length for a variant
 // Uses precomputed value from backend if available, otherwise computes it
 function getMaxInsertionLength(variant) {

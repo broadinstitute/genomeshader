@@ -128,6 +128,13 @@ function getTrackLayout() {
   function isStandardTrack(trackId) {
     return standardTracks.includes(trackId) || (typeof trackId === "string" && trackId.startsWith("flow-"));
   }
+  // Annotation tracks now show an always-visible label at the top, so they must
+  // reserve header space for it (content is offset below the label). The flow /
+  // variant area keeps its full height with no reserved header.
+  const labelSpaceTracks = ["ideogram", "genes", "repeats", "reference", "ruler"];
+  function reservesLabelSpace(trackId) {
+    return !isStandardTrack(trackId) || labelSpaceTracks.includes(trackId);
+  }
 
   if (isVertical) {
     // Vertical mode: tracks side-by-side (left/width based)
@@ -147,7 +154,7 @@ function getTrackLayout() {
       
       // For standard tracks, don't reserve space for header (controls overlay on hover)
       // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
-      const usesHeaderSpace = !isStandardTrack(track.id);
+      const usesHeaderSpace = reservesLabelSpace(track.id);
       const isSmartTrack = track.id.startsWith("smart-track-");
       
       let effectiveWidth;
@@ -162,10 +169,12 @@ function getTrackLayout() {
           safeContentWidth = track.closedHeight;
           safeContentLeft = currentX; // Content starts at left, no gap for header
         } else {
-          // Standard track collapsed: minimal width
-          effectiveWidth = usesHeaderSpace ? headerH : collapsedTrackMinWidth;
+          // Standard track collapsed: reserve the full header so the label +
+          // expand button stay visible and clickable (never a sub-header
+          // sliver). collapsedTrackMinWidth kept as the floor if headerH is 0.
+          effectiveWidth = Math.max(headerH, collapsedTrackMinWidth);
           safeContentWidth = 0;
-          safeContentLeft = usesHeaderSpace ? currentX + headerH : currentX;
+          safeContentLeft = currentX + effectiveWidth;
         }
       } else {
         // Open state: full width with header space
@@ -212,7 +221,7 @@ function getTrackLayout() {
       
       // For standard tracks, don't reserve space for header (controls overlay on hover)
       // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
-      const usesHeaderSpace = !isStandardTrack(track.id);
+      const usesHeaderSpace = reservesLabelSpace(track.id);
       const isSmartTrack = track.id.startsWith("smart-track-");
       
       let effectiveHeight;
@@ -227,15 +236,22 @@ function getTrackLayout() {
           safeContentHeight = track.closedHeight;
           safeContentTop = currentY; // Content starts at top, no gap for header
         } else {
-          // Standard track collapsed: minimal height
-          effectiveHeight = usesHeaderSpace ? headerH : collapsedTrackMinHeight;
+          // Standard track collapsed: reserve the full header so the label +
+          // expand button stay visible and clickable (never a sub-header
+          // sliver). collapsedTrackMinHeight kept as the floor if headerH is 0.
+          effectiveHeight = Math.max(headerH, collapsedTrackMinHeight);
           safeContentHeight = 0;
-          safeContentTop = usesHeaderSpace ? currentY + headerH : currentY;
+          safeContentTop = currentY + effectiveHeight;
         }
       } else {
-        // Open state: full height with header space
-        effectiveHeight = usesHeaderSpace ? headerH + (track.height || 0) : (track.height || 0);
-        safeContentHeight = track.height || 0;
+        // Open state: full height with header space. The reference track grows
+        // by one row per expanded deletion in view (repeated-reference rows, the
+        // vertical analogue of stacking multiple insertion rows).
+        const _refExtra = (track.id === "reference" && typeof getExpandedDeletionsInView === "function")
+          ? getExpandedDeletionsInView().length * DELETION_ROW_H : 0;
+        const _openH = (track.height || 0) + _refExtra;
+        effectiveHeight = usesHeaderSpace ? headerH + _openH : _openH;
+        safeContentHeight = _openH;
         safeContentTop = usesHeaderSpace ? currentY + headerH : currentY;
       }
       

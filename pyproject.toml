@@ -7,11 +7,19 @@ name = "genomeshader"
 version = "0.2.0"
 dependencies = [
     "polars",
+    "pyarrow",
     "requests",
     "requests-cache",
     "ipywidgets>=8.0.0",
+    "anywidget>=0.9.0",
     "google-cloud-storage",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+# Headless UI tests (python/tests/headless). Also needs a browser binary:
+#   python -m playwright install chromium
+test-ui = ["pytest", "playwright", "anywidget"]
 
 [tool.maturin]
 python-source = "python"

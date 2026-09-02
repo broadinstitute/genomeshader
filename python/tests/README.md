@@ -60,3 +60,18 @@ The tests verify:
    - Contains GENOMESHADER_MANIFEST_URL
    - Contains GENOMESHADER_CONFIG
 
+
+## Headless UI tests
+
+`tests/headless/` renders the real browser frontend in headless Chromium
+(Playwright) to catch UI regressions the Python/Rust tests can't (blank renders,
+misaligned tracks, render storms, broken orientations). Setup and details are in
+the root [README](../../README.md#headless-ui-tests):
+
+```bash
+pip install playwright anywidget
+python -m playwright install chromium
+pytest tests/headless -q
+```
+
+It skips cleanly if Playwright or the browser isn't installed.

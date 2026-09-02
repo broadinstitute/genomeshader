@@ -1,6 +1,7 @@
 import os
 import re
 import hashlib
+import warnings
 import threading
 import socket
 import copy
@@ -9,6 +10,7 @@ import gzip
 import math
 import subprocess
 import tempfile
+import urllib.parse
 import time
 from typing import Union, List, Optional, Tuple
 from pathlib import Path
@@ -74,11 +76,19 @@ class GenomeShader:
         
         # Store last rendered locus for on-demand loading
         self._last_locus = None
+        # Last assembled render config (consumed by the anywidget host)
+        self._last_config = None
+        # When True, render() prints staged progress (set during show()/show_widget)
+        self._progress_enabled = False
         
         # Sample mapping: VCF sample names -> BAM sample names
         # Format: {"VCF_sample1": ["BAM_sample1"], "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
         # If empty, assumes 1:1 identity mapping (VCF sample name == BAM sample name)
         self._sample_mapping: dict = {}
+        # Union of VCF sample names renderable across attached variant tracks
+        # (after any per-track `samples=` subset). Reads for samples outside this
+        # set won't render, so they're reported by _reconcile_read_samples.
+        self._vcf_sample_universe: set = set()
 
         # One entry per variant track: (track_name, list of paths). Order matches session's variant_file_groups.
         self._variant_datasets: List[Tuple[str, List[str]]] = []
@@ -136,6 +146,17 @@ class GenomeShader:
         # Optional native GCS client; falls back to CLI cp/ls if unavailable.
         self._gcs_client = None
         self._gcs_client_init_attempted = False
+
+        # Keep GCS credentials fresh automatically for gs:// sessions so tokens
+        # don't lapse mid-session. Opt out with GENOMESHADER_NO_CRED_REFRESH=1;
+        # non-fatal if it can't start.
+        if (str(self.gcs_session_dir).startswith("gs://")
+                and os.environ.get("GENOMESHADER_NO_CRED_REFRESH", "").strip().lower()
+                not in {"1", "true", "yes"}):
+            try:
+                self.start_credential_refresh(verbose=False)
+            except Exception:
+                pass
 
     def _validate_gcs_session_dir(self, gcs_session_dir: str):
         gcs_pattern = re.compile(
@@ -228,7 +249,8 @@ class GenomeShader:
             "rendering.js",
             "tracks.js",
             "interaction.js",
-            "main.js"
+            "main.js",
+            "ucsc-tracks.js"
         ]
         source_files = [
             base_dir / "template.html",
@@ -525,6 +547,21 @@ class GenomeShader:
     def _ucsc_index_uri(self, kind: str) -> str:
         return f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/index/{kind}.json"
 
+    def _chrom_sizes(self) -> dict:
+        """Per-contig lengths for this genome build, if staged into the cache.
+
+        Written by non-UCSC ingest (e.g. genomeshader.plasmodb for PlasmoDB
+        genomes). Empty dict when absent — the frontend then falls back to its
+        built-in human map.
+        """
+        cached = getattr(self, "_chrom_sizes_memo", None)
+        if cached is not None:
+            return cached
+        uri = f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/chrom_sizes/{self.genome_build}.json"
+        payload = self._read_cached_json(uri)
+        self._chrom_sizes_memo = payload if isinstance(payload, dict) else {}
+        return self._chrom_sizes_memo
+
     def _variant_payload_index_uri(self, dataset_sig: str) -> str:
         return (
             f"{self.gcs_session_dir.rstrip('/')}/cache/variants/payload/index/"
@@ -776,6 +813,29 @@ class GenomeShader:
                 self._session.attach_reads(bams, cohort)
                 self._session.attach_reads(crams, cohort)
 
+        self._reconcile_read_samples()
+
+    def _reconcile_read_samples(self):
+        """Warn about attached read samples that aren't in the VCF sample
+        universe. Reads only render for samples that exist in the variant
+        layer, so a BAM whose sample isn't in any attached VCF header (or was
+        excluded by a `samples=` subset) is silently never drawn — surface that
+        here. No-op until both variants and reads are attached."""
+        if not self._vcf_sample_universe:
+            return
+        try:
+            bam_samples = set(self.get_bam_sample_names())
+        except Exception:
+            return  # can't read BAM headers (offline / auth) — skip quietly
+        if not bam_samples:
+            return
+        excluded = sorted(bam_samples - self._vcf_sample_universe)
+        if excluded:
+            warnings.warn(
+                f"{len(excluded)} read sample(s) are not in the VCF sample "
+                f"universe and will not be rendered: {', '.join(excluded)}"
+            )
+
     def attach_loci(self, loci: Union[str, List[str]]):
         """
         Attaches loci to the current session from the provided list.
@@ -798,6 +858,8 @@ class GenomeShader:
         self,
         track_name: str,
         variant_files: Union[str, List[str]],
+        index: Optional[Union[str, List[Optional[str]]]] = None,
+        samples: Optional[List[str]] = None,
     ):
         """
         Attaches variant files (BCF/VCF) to the current session as a single
@@ -811,28 +873,82 @@ class GenomeShader:
                 to variant files (str or pathlib.Path / PosixPath). Can be local paths
                 or GCS paths (gs://...). Supported formats: .bcf, .vcf, .vcf.gz.
                 A directory path lists all variant files in that directory.
+            index (Optional[Union[str, List[Optional[str]]]]): Explicit index path(s)
+                for non-adjacent / non-default-named indexes (.tbi/.csi). A single
+                path (for a single variant file), or a list parallel to
+                ``variant_files`` (use None for files whose index is adjacent). Local
+                or gs:// paths are both accepted. Omit to use the adjacent index next
+                to each file. Not supported for directory arguments.
+            samples (Optional[List[str]]): Restrict this track to these VCF samples.
+                Essential for large joint callsets: rendering every sample x variant
+                blows past the browser transport limit. Samples not present in the
+                VCF header are dropped with a warning. Omit to include all samples.
         """
         import genomeshader.genomeshader as gs
 
         if isinstance(variant_files, (str, Path)):
             variant_files = [variant_files]
 
+        # Normalize `index` to a list parallel to variant_files.
+        if index is None:
+            index_list: List[Optional[str]] = [None] * len(variant_files)
+        elif isinstance(index, (str, Path)):
+            if len(variant_files) != 1:
+                raise ValueError("a single index requires a single variant file; "
+                                 "pass a list of indexes parallel to variant_files")
+            index_list = [index]
+        else:
+            index_list = list(index)
+            if len(index_list) != len(variant_files):
+                raise ValueError("index list must be parallel to variant_files")
+
         paths_to_attach: List[str] = []
-        for variant_path in variant_files:
+        indexes_to_attach: List[Optional[str]] = []
+        for variant_path, idx in zip(variant_files, index_list):
             p = os.fspath(variant_path)
             if p.endswith(".bcf") or p.endswith(".vcf") or p.endswith(".vcf.gz"):
                 paths_to_attach.append(p)
+                indexes_to_attach.append(os.fspath(idx) if idx is not None else None)
             else:
+                if idx is not None:
+                    raise ValueError(f"cannot specify an index for directory '{p}'")
                 bcfs = gs._gcs_list_files_of_type(p, ".bcf")
                 vcfs = gs._gcs_list_files_of_type(p, ".vcf")
                 vcf_gzs = gs._gcs_list_files_of_type(p, ".vcf.gz")
-                paths_to_attach.extend(bcfs)
-                paths_to_attach.extend(vcfs)
-                paths_to_attach.extend(vcf_gzs)
+                for found in (*bcfs, *vcfs, *vcf_gzs):
+                    paths_to_attach.append(found)
+                    indexes_to_attach.append(None)
 
-        if paths_to_attach:
-            self._variant_datasets.append((str(track_name), paths_to_attach))
-            self._session.attach_variants(paths_to_attach)
+        if not paths_to_attach:
+            return
+
+        # Reconcile the requested sample subset against the VCF headers, and
+        # grow the session-wide set of renderable (in-header) sample names.
+        header_samples: set = set()
+        for p, idx in zip(paths_to_attach, indexes_to_attach):
+            try:
+                header_samples.update(gs._vcf_sample_names(p, idx))
+            except Exception as e:
+                warnings.warn(f"could not read samples from '{p}': {e}")
+
+        subset: Optional[List[str]] = None
+        if samples is not None:
+            present = [s for s in samples if s in header_samples]
+            absent = [s for s in samples if s not in header_samples]
+            if absent:
+                warnings.warn(
+                    f"attach_variants: {len(absent)} requested sample(s) not in the "
+                    f"VCF header of track '{track_name}' and will not be rendered: "
+                    f"{', '.join(sorted(absent))}"
+                )
+            subset = present
+            self._vcf_sample_universe.update(present)
+        else:
+            self._vcf_sample_universe.update(header_samples)
+
+        self._variant_datasets.append((str(track_name), paths_to_attach))
+        self._session.attach_variants(paths_to_attach, indexes_to_attach, subset)
+        self._reconcile_read_samples()
 
     def set_sample_mapping(self, mapping: dict):
         """
@@ -901,6 +1017,99 @@ class GenomeShader:
             List[str]: Sorted list of unique sample names from BAM headers.
         """
         return self._session.get_bam_sample_names()
+
+    def _fetch_reads_payload(self, sample_id=None, samples=None, locus=None) -> dict:
+        """Resolve reads for a sample selection into a JSON-serializable payload.
+
+        Used by the anywidget host's reads message handler. Mirrors the comm
+        handler's logic: last-rendered locus + sample(s) -> BAM URLs (via the
+        sample mapping) -> fetched reads. Raises ValueError on bad input.
+        """
+        locus = locus or self._last_locus
+        if not locus:
+            raise ValueError("No locus available; render a locus first")
+
+        vcf_samples = list(samples) if samples else ([sample_id] if sample_id else None)
+        if not vcf_samples:
+            raise ValueError("No sample_id or samples provided")
+
+        bam_urls = self.get_bam_samples_for_vcf_samples(vcf_samples)
+        if not bam_urls:
+            raise ValueError(f"No BAM files found for sample(s): {vcf_samples}")
+
+        # Reads for a (locus, bam set) are deterministic (BAM content is
+        # immutable in practice), but fetching them re-parses remote BAMs every
+        # time. Cache the serialized payload on local disk so repeat runs on the
+        # same machine skip the Rust fetch entirely. Local-only: read payloads
+        # are large, so we don't pay a GCS upload on the first (miss) run.
+        # ponytail: keyed on locus+URLs, not BAM etag — if a BAM is replaced in
+        # place, set GENOMESHADER_NO_READS_CACHE=1 to bypass.
+        cache_path = self._reads_cache_path(locus, bam_urls)
+        use_cache = os.environ.get("GENOMESHADER_NO_READS_CACHE") != "1"
+        t0 = time.perf_counter()
+        reads_dict = None
+        count = None
+        if use_cache and cache_path.exists():
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                if isinstance(cached, dict) and "reads" in cached:
+                    reads_dict = cached["reads"]
+                    count = int(cached.get("count", 0))
+            except Exception:
+                reads_dict = None
+        source = "disk" if reads_dict is not None else "fetch"
+        if reads_dict is None:
+            # Fetch the staged reference for this window so the Rust extractor can
+            # diff M-run read bases against it and surface SNPs even on BAMs that
+            # ship without MD tags. reference() is 0-based [start,end); _parse_locus
+            # is 1-based, so start-1 makes ref_seq[0] land on 1-based `start`, which
+            # matches Rust's 1-based ref_pos. ref_start is that 1-based position.
+            ref_seq = ""
+            ref_start = 0
+            try:
+                _contig, _lstart, _lend = self._parse_locus(str(locus))
+                ref_seq = self.reference(_contig, _lstart - 1, _lend) or ""
+                ref_start = _lstart
+            except Exception:
+                ref_seq, ref_start = "", 0
+            reads_df = self._session.fetch_reads_for_locus(
+                locus, bam_urls, ref_seq or None, int(ref_start)
+            )
+            reads_dict = reads_df.to_dict(as_series=False)
+            count = len(reads_df)
+            if use_cache:
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(cache_path, "w", encoding="utf-8") as f:
+                        json.dump({"reads": reads_dict, "count": count}, f)
+                except Exception:
+                    pass
+        if self._timing_enabled():
+            print(f"[timing] reads {locus} x{len(bam_urls)} bam "
+                  f"({source}): {(time.perf_counter() - t0) * 1000:.0f} ms, {count} reads")
+        return {
+            "reads": reads_dict,
+            "count": count,
+            "bam_urls": bam_urls,
+            "vcf_samples": vcf_samples,
+            "sample_id": sample_id,
+        }
+
+    # Bump when the reads payload schema changes so stale caches miss cleanly.
+    # v2: reference-diffed SNPs + has_md("snps displayable") column.
+    # v3: flush v2 payloads written before the extension was rebuilt (no has_md
+    #     column / no reference-diffed SNPs) so the widget can't serve them.
+    _READS_CACHE_VERSION = "v3"
+
+    def _reads_cache_path(self, locus: str, bam_urls: List[str]) -> Path:
+        sig = self._READS_CACHE_VERSION + "|" + str(locus) + "|" + ",".join(sorted(bam_urls))
+        gb = str(self.genome_build or "genome").replace("/", "_")
+        return self._local_cache_dir / "reads" / gb / (self._cache_id(sig) + ".json")
+
+    @staticmethod
+    def _timing_enabled() -> bool:
+        return os.environ.get("GENOMESHADER_TIMING") == "1"
 
     def warm_ucsc_cache(self, loci: Optional[List[str]] = None) -> dict:
         """
@@ -1348,6 +1557,10 @@ class GenomeShader:
             formatted_alt_alleles = [format_allele_label(alt) for alt in alt_alleles] if alt_alleles else []
             variants_data.append({
                 "id": variant_display_id,
+                # The real VCF ID column, if any. The label above a variant only
+                # shows this — a load-order index (variant_id) is meaningless, so
+                # when the VCF has no ID here it stays blank.
+                "vcfId": str(vcf_id) if vcf_id else "",
                 "pos": variant_info["pos"],
                 "refAllele": variant_info["refAllele"],
                 "altAlleles": alt_alleles,
@@ -1400,7 +1613,8 @@ class GenomeShader:
             return []
 
         # Define the API endpoint with the contig parameter
-        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track=cytoBandIdeo"
+        _g = urllib.parse.quote(str(self.genome_build), safe="")
+        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={_g};track=cytoBandIdeo"
 
         # Make a GET request to the API endpoint
         response = self._http_get_json(api_endpoint, f"Failed to retrieve ideogram for contig '{contig}'")
@@ -1472,7 +1686,14 @@ class GenomeShader:
             return []
 
         # Define the API endpoint with the track, contig, start, end parameters
-        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
+        # Encode free-form fields so a contig/build with ';'/'&' can't corrupt the query.
+        api_endpoint = (
+            "https://api.genome.ucsc.edu/getData/track?"
+            f"genome={urllib.parse.quote(str(self.genome_build), safe='')}"
+            f";track={urllib.parse.quote(str(track), safe='')}"
+            f";chrom={urllib.parse.quote(str(contig), safe='')}"
+            f";start={int(start)};end={int(end)}"
+        )
 
         # Make a GET request to the API endpoint
         response = self._http_get_json(
@@ -1775,7 +1996,14 @@ class GenomeShader:
             return []
 
         # Define the API endpoint with the track, contig, start, end parameters
-        api_endpoint = f"https://api.genome.ucsc.edu/getData/track?genome={self.genome_build};track={track};chrom={contig};start={start};end={end}"
+        # Encode free-form fields so a contig/build with ';'/'&' can't corrupt the query.
+        api_endpoint = (
+            "https://api.genome.ucsc.edu/getData/track?"
+            f"genome={urllib.parse.quote(str(self.genome_build), safe='')}"
+            f";track={urllib.parse.quote(str(track), safe='')}"
+            f";chrom={urllib.parse.quote(str(contig), safe='')}"
+            f";start={int(start)};end={int(end)}"
+        )
 
         # Make a GET request to the API endpoint
         response = self._http_get_json(
@@ -2037,6 +2265,471 @@ class GenomeShader:
         else:
             raise ConnectionError(f"Failed to retrieve reference sequence from track {track} for locus '{contig}:{start}-{end}': {response.status_code}")
 
+    def _prewarm_ucsc(self) -> None:
+        """Kick off the UCSC genome + default-track lookup in a background thread
+        so the results are cached before the user opens the UCSC tab. Non-blocking
+        — the initial render doesn't wait on the (network-bound) UCSC API.
+
+        (Kept in Python rather than Rust: the cost is the network round-trip, not
+        parsing, so a daemon thread here gets the same "ready by load" win without
+        a second HTTP stack in the crate.)
+        """
+        if getattr(self, "_ucsc_prewarm_started", False):
+            return
+        self._ucsc_prewarm_started = True
+
+        def _warm():
+            try:
+                info = self.list_ucsc_genomes()
+                default = info.get("default")
+                if default:
+                    self.list_ucsc_tracks(default)
+            except Exception:
+                pass
+
+        try:
+            import threading
+            threading.Thread(target=_warm, daemon=True).start()
+        except Exception:
+            pass
+
+    def list_ucsc_genomes(self) -> dict:
+        """List all UCSC assemblies (for the assembly picker) plus the best
+        match for this genome build. UCSC tracks are an explicit, user-driven
+        feature, so this ignores the auto-render API gate.
+
+        Returns {genomes: [{genome, label, organism}], default: <key or "">}.
+        """
+        cached = getattr(self, "_ucsc_genomes_cache", None)
+        if cached is None:
+            genomes: List[dict] = []
+            try:
+                response = self._http_get_json(
+                    "https://api.genome.ucsc.edu/list/ucscGenomes", "Failed to list UCSC genomes")
+                if response.status_code == 200:
+                    data = response.json().get("ucscGenomes", {})
+                    for key, meta in (data.items() if isinstance(data, dict) else []):
+                        if not isinstance(meta, dict):
+                            continue
+                        org = str(meta.get("organism", ""))
+                        desc = str(meta.get("description", ""))
+                        label = key + (f" — {org}" if org else "") + (f" ({desc})" if desc else "")
+                        genomes.append({"genome": key, "label": label, "organism": org})
+                    genomes.sort(key=lambda g: g["genome"])
+            except Exception:
+                genomes = []
+            cached = genomes
+            self._ucsc_genomes_cache = cached
+        return {"genomes": cached, "default": self._best_ucsc_genome(cached) or ""}
+
+    def _best_ucsc_genome(self, genomes: List[dict]) -> Optional[str]:
+        """Best UCSC assembly match for self.genome_build, or None."""
+        if not genomes:
+            return None
+        gb = str(self.genome_build or "").strip()
+        if not gb:
+            return None
+        keys = [g["genome"] for g in genomes]
+        if gb in keys:
+            return gb
+        low = gb.lower()
+        for k in keys:
+            if k.lower() == low:
+                return k
+        # token/substring (e.g. a build string that embeds "hg38")
+        for k in keys:
+            kl = k.lower()
+            if kl in low or low in kl:
+                return k
+        return None
+
+    def list_ucsc_tracks(self, genome: Optional[str] = None) -> Optional[List[dict]]:
+        """List UCSC interval-type tracks for a UCSC assembly (defaults to the
+        best match for this genome build). Returns {track,label,type} list, or
+        None when no assembly is available/selected. Cached per assembly."""
+        if not genome:
+            genome = self._best_ucsc_genome(self.list_ucsc_genomes()["genomes"])
+        if not genome:
+            return None
+        cache = getattr(self, "_ucsc_track_list_cache", None)
+        if cache is None:
+            cache = self._ucsc_track_list_cache = {}
+        if genome in cache:
+            return cache[genome]
+        url = f"https://api.genome.ucsc.edu/list/tracks?genome={genome}"
+        try:
+            response = self._http_get_json(url, f"Failed to list UCSC tracks for '{genome}'")
+        except Exception:
+            cache[genome] = None
+            return None
+        if response.status_code != 200:
+            cache[genome] = None
+            return None
+        try:
+            data = response.json()
+        except Exception:
+            cache[genome] = None
+            return None
+        genome_tracks = data.get(genome) if isinstance(data, dict) else None
+        if not isinstance(genome_tracks, dict):
+            cache[genome] = None
+            return None
+        interval_types = ("bed", "bigbed", "genepred", "psl", "narrowpeak", "broadpeak")
+        out: List[dict] = []
+        for name, meta in genome_tracks.items():
+            if not isinstance(meta, dict):
+                continue
+            ttype = str(meta.get("type", "")).lower()
+            if any(ttype.startswith(t) for t in interval_types):
+                out.append({"track": name, "label": str(meta.get("shortLabel") or name), "type": ttype})
+        out.sort(key=lambda t: t["label"].lower())
+        cache[genome] = out
+        return out
+
+    def ucsc_interval_track(self, track: str, contig: str, start: int, end: int,
+                            genome: Optional[str] = None) -> List[dict]:
+        """Fetch a UCSC interval track for a region, normalized to
+        {name, start, end, strand} (1-based inclusive start). Empty on failure."""
+        if not genome:
+            genome = self._best_ucsc_genome(self.list_ucsc_genomes()["genomes"])
+        if not genome:
+            return []
+        url = (f"https://api.genome.ucsc.edu/getData/track?genome={genome}"
+               f";track={track};chrom={contig};start={int(start)};end={int(end)}")
+        try:
+            response = self._http_get_json(url, f"Failed to fetch UCSC track '{track}'")
+        except Exception:
+            return []
+        if response.status_code != 200:
+            return []
+        try:
+            data = response.json()
+        except Exception:
+            return []
+        items = data.get(track) if isinstance(data, dict) else None
+        if isinstance(items, dict):
+            items = items.get(contig, [])
+        if not isinstance(items, list):
+            return []
+        out: List[dict] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            s = it.get("chromStart", it.get("txStart", it.get("start")))
+            e = it.get("chromEnd", it.get("txEnd", it.get("end")))
+            if s is None or e is None:
+                continue
+            try:
+                s = int(s); e = int(e)
+            except (TypeError, ValueError):
+                continue
+            strand = it.get("strand", "+")
+            out.append({
+                "name": str(it.get("name2") or it.get("name") or ""),
+                "start": s + 1,   # UCSC is 0-based half-open; match genomeshader 1-based
+                "end": e,
+                "strand": strand if strand in ("+", "-") else "+",
+            })
+        return out
+
+    # -----------------------------
+    # Comments: shared, persistent annotations stored as one JSON file per
+    # comment under {gcs_session_dir}/comments/. Tiny metadata, so this stays in
+    # Python and reuses the GCS JSON helpers (a local dir also works, for tests).
+    # -----------------------------
+    def _comments_dir(self) -> str:
+        base = str(self.gcs_session_dir or "").rstrip("/")
+        return base + "/comments"
+
+    def _comment_author(self) -> str:
+        for env in ("GENOMESHADER_USER", "JUPYTERHUB_USER", "USER_EMAIL"):
+            v = os.environ.get(env)
+            if v:
+                return v
+        acct = self._gcloud_account()
+        if acct:
+            return acct
+        try:
+            import getpass
+            return getpass.getuser()
+        except Exception:
+            return "unknown"
+
+    def _gcloud_account(self) -> Optional[str]:
+        """The active Google account email from gcloud credentials (ADC), or None.
+        Cached — a gcloud shell-out per comment would be wasteful."""
+        cached = getattr(self, "_gcloud_account_cache", "__unset__")
+        if cached != "__unset__":
+            return cached
+        acct = None
+        try:
+            out = subprocess.run(
+                ["gcloud", "config", "get-value", "account"],
+                capture_output=True, text=True, timeout=5, check=False)
+            val = (out.stdout or "").strip()
+            if val and val.lower() not in ("", "(unset)"):
+                acct = val
+        except Exception:
+            acct = None
+        self._gcloud_account_cache = acct
+        return acct
+
+    # ---- background credential refresh ------------------------------------
+    _GCS_TOKEN_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
+
+    def _mint_token_subprocess(self) -> Optional[str]:
+        """Fallback token mint via the gcloud CLI (ADC)."""
+        try:
+            out = subprocess.run(
+                ["gcloud", "auth", "application-default", "print-access-token"],
+                capture_output=True, text=True, timeout=30, check=False)
+            if out.returncode == 0:
+                tok = (out.stdout or "").strip()
+                return tok or None
+        except Exception:
+            pass
+        return None
+
+    def _refresh_gcs_token_once(self, scopes=None):
+        """Mint a fresh ADC access token and publish it to the env vars htslib
+        (GCS_OAUTH_TOKEN) and gcloud (CLOUDSDK_AUTH_ACCESS_TOKEN) read. Returns
+        (seconds_until_next_refresh, ok)."""
+        token, expiry_secs, errs = None, None, []
+        try:  # pythonic path — no CLI, refreshes from the stored refresh token
+            import google.auth
+            from google.auth.transport.requests import Request
+            creds, _ = google.auth.default(scopes=scopes or self._GCS_TOKEN_SCOPES)
+            creds.refresh(Request())
+            token = creds.token
+            if getattr(creds, "expiry", None):
+                import datetime
+                expiry_secs = (creds.expiry - datetime.datetime.utcnow()).total_seconds()
+        except Exception as e:
+            errs.append(f"google-auth: {e}")
+        if not token:  # CLI fallback (same ADC)
+            token = self._mint_token_subprocess()
+            if not token:
+                errs.append("gcloud print-access-token failed")
+
+        prev = getattr(self, "_cred_refresh_last_error", "__init__")
+        if token:
+            os.environ["GCS_OAUTH_TOKEN"] = token
+            os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = token
+            if prev is not None and getattr(self, "_cred_refresh_verbose", False):
+                import sys
+                span = f" (~{int(expiry_secs)}s)" if expiry_secs else ""
+                print(f"[genomeshader] GCS credentials refreshed{span}.", file=sys.stderr)
+            self._cred_refresh_last_error = None
+            delay = (expiry_secs - 300) if expiry_secs else 2700  # ~5 min before expiry
+            return max(60, min(delay, 3600)), True
+
+        msg = "; ".join(errs) or "could not mint an access token"
+        if prev != msg:  # log the reauth hint once per new failure
+            import sys
+            print(f"[genomeshader] credential refresh failed: {msg}\n"
+                  f"  re-run `gcloud auth application-default login` to re-authenticate.",
+                  file=sys.stderr)
+        self._cred_refresh_last_error = msg
+        return 300, False  # back off, keep trying so it resumes after re-login
+
+    def start_credential_refresh(self, interval_seconds=None, scopes=None, verbose=True):
+        """Keep GCS credentials fresh in the background.
+
+        Re-mints the ADC access token shortly before it expires and republishes
+        it to GCS_OAUTH_TOKEN / CLOUDSDK_AUTH_ACCESS_TOKEN (what htslib and gcloud
+        read), on a daemon thread. Call once; idempotent. Returns the thread.
+
+        The refresh uses the stored refresh token (non-interactive), so it holds
+        for the whole org reauth window; when that finally lapses it logs a hint
+        to re-run `gcloud auth application-default login` and keeps retrying so it
+        resumes automatically once you re-authenticate.
+        """
+        existing = getattr(self, "_cred_refresh_thread", None)
+        if existing is not None and existing.is_alive():
+            return existing
+        self._cred_refresh_stop = threading.Event()
+        self._cred_refresh_verbose = verbose
+        self._cred_refresh_last_error = "__init__"
+
+        def _loop():
+            while not self._cred_refresh_stop.is_set():
+                delay, _ok = self._refresh_gcs_token_once(scopes)
+                if interval_seconds:
+                    delay = interval_seconds
+                self._cred_refresh_stop.wait(max(5, delay))
+
+        t = threading.Thread(target=_loop, name="gs-cred-refresh", daemon=True)
+        self._cred_refresh_thread = t
+        t.start()
+        return t
+
+    def stop_credential_refresh(self):
+        """Stop the background credential refresher (if running)."""
+        ev = getattr(self, "_cred_refresh_stop", None)
+        if ev is not None:
+            ev.set()
+
+    @staticmethod
+    def _now_iso() -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def _uri_read_json(self, uri: str):
+        if uri.startswith("gs://"):
+            return self._gcs_read_json(uri)
+        try:
+            with open(uri, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _uri_write_json(self, uri: str, payload) -> bool:
+        if uri.startswith("gs://"):
+            return self._gcs_write_json(uri, payload)
+        try:
+            os.makedirs(os.path.dirname(uri), exist_ok=True)
+            with open(uri, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def _list_comment_uris(self) -> List[str]:
+        d = self._comments_dir()
+        if d.startswith("gs://"):
+            for cmd in (["gcloud", "storage", "ls", d + "/"], ["gsutil", "ls", d + "/"]):
+                try:
+                    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                    if out.returncode == 0:
+                        return [ln.strip() for ln in out.stdout.splitlines()
+                                if ln.strip().endswith(".json")]
+                except FileNotFoundError:
+                    continue
+            return []
+        try:
+            return [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".json")]
+        except Exception:
+            return []
+
+    def list_comments(self) -> List[dict]:
+        """All comments in the session dir, oldest first."""
+        out: List[dict] = []
+        for uri in self._list_comment_uris():
+            c = self._uri_read_json(uri)
+            if isinstance(c, dict) and c.get("id"):
+                out.append(c)
+        out.sort(key=lambda c: str(c.get("created", "")))
+        return out
+
+    def create_comment(self, anchor: dict, body: str, author: Optional[str] = None) -> dict:
+        import uuid
+        now = self._now_iso()
+        author = author or self._comment_author()
+        cid = uuid.uuid4().hex
+        comment = {
+            "id": cid, "author": author, "created": now,
+            "updated": now, "updatedBy": author,
+            "anchor": anchor or {}, "body": str(body or ""),
+            "history": [{"action": "created", "by": author, "at": now}],
+        }
+        self._uri_write_json(f"{self._comments_dir()}/{cid}.json", comment)
+        return comment
+
+    def update_comment(self, comment_id: str, body: Optional[str] = None,
+                       anchor: Optional[dict] = None, author: Optional[str] = None) -> Optional[dict]:
+        uri = f"{self._comments_dir()}/{comment_id}.json"
+        c = self._uri_read_json(uri)
+        if not isinstance(c, dict):
+            return None
+        now = self._now_iso()
+        author = author or self._comment_author()
+        if body is not None:
+            c["body"] = str(body)
+        if anchor is not None:
+            c["anchor"] = anchor
+        c["updated"] = now
+        c["updatedBy"] = author
+        c.setdefault("history", []).append({"action": "edited", "by": author, "at": now})
+        self._uri_write_json(uri, c)
+        return c
+
+    def reply_comment(self, comment_id: str, body: str, author: Optional[str] = None) -> Optional[dict]:
+        """Append a reply to a comment thread and return the updated comment."""
+        import uuid
+        uri = f"{self._comments_dir()}/{comment_id}.json"
+        c = self._uri_read_json(uri)
+        if not isinstance(c, dict):
+            return None
+        now = self._now_iso()
+        author = author or self._comment_author()
+        reply = {"id": uuid.uuid4().hex, "author": author,
+                 "body": str(body or ""), "created": now}
+        c.setdefault("replies", []).append(reply)
+        # Bump the thread's updated stamp so clients can detect new activity.
+        c["updated"] = now
+        c["updatedBy"] = author
+        c.setdefault("history", []).append({"action": "replied", "by": author, "at": now})
+        self._uri_write_json(uri, c)
+        return c
+
+    def delete_reply(self, comment_id: str, reply_id: str, author: Optional[str] = None) -> Optional[dict]:
+        """Remove one reply from a thread and return the updated comment."""
+        uri = f"{self._comments_dir()}/{comment_id}.json"
+        c = self._uri_read_json(uri)
+        if not isinstance(c, dict):
+            return None
+        replies = c.get("replies") or []
+        kept = [r for r in replies if r.get("id") != reply_id]
+        if len(kept) == len(replies):
+            return c  # nothing removed
+        c["replies"] = kept
+        now = self._now_iso()
+        author = author or self._comment_author()
+        c["updated"] = now
+        c["updatedBy"] = author
+        c.setdefault("history", []).append({"action": "reply_deleted", "by": author, "at": now})
+        self._uri_write_json(uri, c)
+        return c
+
+    def _read_state_uri(self, user: str) -> str:
+        import re
+        safe = re.sub(r"[^A-Za-z0-9._@-]", "_", user or "anon")
+        base = str(self.gcs_session_dir or "").rstrip("/")
+        # Sibling of comments/ so it never shows up in the comment listing.
+        return base + "/comment_read_state/" + safe + ".json"
+
+    def get_comment_read_state(self, user: Optional[str] = None) -> dict:
+        """Per-user {comment_id: last_seen_iso} map (one small blob), or {}."""
+        user = user or self._comment_author()
+        data = self._uri_read_json(self._read_state_uri(user))
+        return data if isinstance(data, dict) else {}
+
+    def set_comment_read_state(self, seen: dict, user: Optional[str] = None) -> bool:
+        """Overwrite the caller's read-state blob. Per-user file => no cross-user
+        contention; last-write-wins is fine for a single user's own state."""
+        user = user or self._comment_author()
+        if not isinstance(seen, dict):
+            seen = {}
+        return self._uri_write_json(self._read_state_uri(user), seen)
+
+    def delete_comment(self, comment_id: str, author: Optional[str] = None) -> bool:
+        uri = f"{self._comments_dir()}/{comment_id}.json"
+        if uri.startswith("gs://"):
+            for cmd in (["gcloud", "storage", "rm", uri], ["gsutil", "rm", uri]):
+                try:
+                    rc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, check=False).returncode
+                    if rc == 0:
+                        return True
+                except FileNotFoundError:
+                    continue
+            return False
+        try:
+            os.remove(uri)
+            return True
+        except OSError:
+            return False
+
     def _start_localhost_server(self, serve_dir: Path) -> int:
         """
         Starts a localhost HTTP server to serve files from the given directory.
@@ -2093,6 +2786,34 @@ class GenomeShader:
         
         return port
     
+    def _progress(self, msg: str, step: Optional[int] = None, total: Optional[int] = None):
+        """Report staging progress during render (enabled by show/show_widget).
+
+        Drives a graphical ipywidgets progress bar when show_widget set one up;
+        otherwise falls back to a printed line (plain Python / no bar)."""
+        if not getattr(self, "_progress_enabled", False):
+            return
+        bar = getattr(self, "_progress_bar", None)
+        label = getattr(self, "_progress_label", None)
+        if bar is not None and label is not None:
+            try:
+                if total:
+                    bar.max = total
+                if step is not None:
+                    bar.value = step
+                pct = int(round(100 * (step or 0) / (total or 1)))
+                label.value = (
+                    "<div style='font:600 13px/1.5 -apple-system,system-ui,sans-serif;"
+                    "color:#111'>🧬 " + msg + "</div>"
+                    "<div style='font:400 11px/1.4 -apple-system,system-ui,sans-serif;"
+                    "color:#666'>" + (f"Step {step} of {total} · {pct}%" if step and total else "") + "</div>"
+                )
+                return
+            except Exception:
+                pass  # fall through to print if the widget update fails
+        prefix = f"[{step}/{total}] " if step and total else ""
+        print(f"🧬 {prefix}{msg}", flush=True)
+
     def _get_manifest_url(self, manifest_path: Path) -> str:
         """
         Gets the URL for accessing the manifest file.
@@ -2127,6 +2848,7 @@ class GenomeShader:
         locus_or_dataframe: Union[str, pl.DataFrame],
         precomputed_variant_payload: Optional[dict] = None,
         show_timing: Optional[dict] = None,
+        inline_payload: bool = False,
     ) -> str:
         """
         Visualizes genomic data by rendering a graphical representation of a genomic locus.
@@ -2150,6 +2872,7 @@ class GenomeShader:
         variants_df = None
         input_resolve_start = time.perf_counter()
         if isinstance(locus_or_dataframe, str):
+            self._progress(f"Fetching variants for {locus_or_dataframe} …", 1, 4)
             try:
                 # Try to get variant data first
                 variants_df = self.get_locus_variants(locus_or_dataframe)
@@ -2340,6 +3063,7 @@ class GenomeShader:
             results_by_name.get("reference", ("reference", "", TimeoutError("reference load missing"), 0.0)),
         ]
 
+        self._progress("Loading annotation tracks (reference, genes, ideogram) …", 2, 4)
         ideogram_data = []
         transcripts_data = []
         repeats_data = []
@@ -2362,6 +3086,7 @@ class GenomeShader:
                     print(f"Warning: Failed to load reference sequence data: {err}")
 
         # Build variant_tracks: one entry per attached variant dataset (each with its own track)
+        self._progress("Assembling variant data …", 3, 4)
         t_variant_payload = time.perf_counter()
         if precomputed_variant_payload is not None:
             variant_tracks = precomputed_variant_payload.get("variant_tracks", [])
@@ -2371,6 +3096,7 @@ class GenomeShader:
         timing_debug["variant_payload_ms"] = round((time.perf_counter() - t_variant_payload) * 1000.0, 1)
 
         # Load template HTML
+        self._progress("Building the viewer …", 4, 4)
         t_template = time.perf_counter()
         template_html = self._load_template_html()
         timing_debug["template_ms"] = round((time.perf_counter() - t_template) * 1000.0, 1)
@@ -2382,10 +3108,13 @@ class GenomeShader:
         comm_available = COMM_AVAILABLE
 
         # Prefer Jupyter comms for variant payload transport (works in Terra).
-        use_payload_comm = bool(comm_available and precomputed_variant_payload is not None)
+        # inline_payload forces the full variant data straight into the config
+        # (no comm, no URL) — used by the anywidget host, which carries the
+        # config over the ipywidgets model and can't reach a localhost URL.
+        use_payload_comm = bool(comm_available and precomputed_variant_payload is not None) and not inline_payload
         variant_payload_url = None
         use_payload_url = False
-        if not use_payload_comm:
+        if not use_payload_comm and not inline_payload:
             # Fallback: write payload to a local URL when comms are unavailable.
             try:
                 payload = {
@@ -2410,6 +3139,7 @@ class GenomeShader:
             'region': f"{ref_chr}:{ref_start}-{ref_end}",
             'region_formatted': region_str_formatted,  # Formatted with commas for display
             'genome_build': self.genome_build,
+            'chrom_lengths': self._chrom_sizes(),  # non-empty for staged non-UCSC genomes (e.g. PlasmoDB)
             'ideogram_data': ideogram_data,
             'transcripts_data': transcripts_data,
             'repeats_data': repeats_data,
@@ -2432,6 +3162,10 @@ class GenomeShader:
             timing_debug.update(show_timing)
         timing_debug["render_total_ms"] = round((time.perf_counter() - render_start) * 1000.0, 1)
         config['timing_debug'] = timing_debug
+
+        # Stash the assembled config so the anywidget host can pick it up after a
+        # render(..., inline_payload=True) call without re-deriving it.
+        self._last_config = config
 
         # Get Jupyter origin for constructing absolute URLs
         # Try to get it from environment or use a default
@@ -2620,6 +3354,95 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         return inline_html
 
 
+    def show_widget(self, locus: str):
+        """Display the interactive view as an ipywidget.
+
+        This is the cross-environment render path: the config (with variant data
+        inlined) and on-demand reads ride the ipywidgets comm, so it works in
+        classic Notebook, JupyterLab, Notebook 7, VS Code, Colab, and through the
+        Terra / AoU proxy — one code path, no localhost assumptions.
+
+        Returns the widget; Jupyter renders it when it's the cell's last
+        expression (ipywidgets convention). Assign it to keep a handle without
+        re-displaying.
+        """
+        from IPython.display import clear_output, display
+        from .widget import GenomeShaderWidget
+
+        # Warm the UCSC assembly/track lookup in the background so it's ready by
+        # the time the user opens the UCSC tab (no round-trip then).
+        self._prewarm_ucsc()
+
+        # Build the config with variants inlined (no comm/URL needed); this also
+        # sets self._last_locus / _last_view_id used by the reads message handler.
+        # A graphical progress bar keeps the user informed during the ~1s variant
+        # fetch + annotation load, then gets cleared with the rest of the output.
+        self._progress_enabled = True
+        self._progress_bar = None
+        self._progress_label = None
+        try:
+            import ipywidgets as _W
+            self._progress_label = _W.HTML(
+                "<div style='font:600 13px/1.5 -apple-system,system-ui,sans-serif;"
+                "color:#111'>🧬 Preparing viewer…</div>"
+            )
+            self._progress_bar = _W.IntProgress(
+                value=0, min=0, max=4, bar_style="info",
+                layout=_W.Layout(width="340px", height="18px"),
+            )
+            display(_W.VBox(
+                [self._progress_label, self._progress_bar],
+                layout=_W.Layout(padding="10px 4px"),
+            ))
+        except Exception:
+            self._progress_bar = None
+            self._progress_label = None
+
+        timing = self._timing_enabled()
+        t_render = time.perf_counter()
+        cache_before = self._cache_debug_snapshot() if timing else None
+        try:
+            self.render(locus, inline_payload=True)
+        finally:
+            self._progress_enabled = False
+            self._progress_bar = None
+            self._progress_label = None
+        if timing:
+            dt = (time.perf_counter() - t_render) * 1000
+            delta = self._cache_debug_delta(cache_before)
+            # Per artifact kind, show where each read came from: mem / disk-or-gcs
+            # / api. A healthy repeat run should be all mem/disk, no api.
+            parts = []
+            for kind, sources in sorted(delta.items()):
+                nz = {s: n for s, n in sources.items() if n}
+                if nz:
+                    parts.append(f"{kind}=" + ",".join(f"{s}:{n}" for s, n in sorted(nz.items())))
+            print(f"[timing] render {locus}: {dt:.0f} ms | " + ("; ".join(parts) or "no cache activity"))
+            print("[timing] 'api' = live UCSC fetch (slow); 'gcs' = network cache; "
+                  "'mem'/'gcs_write' local. Reads timing prints on sample load.")
+
+        widget = GenomeShaderWidget(
+            self,
+            config=self._last_config,
+            view_id=self._last_view_id or "gswidget",
+        )
+        # Return the widget so callers can keep a handle, and let the notebook
+        # display it EXACTLY ONCE via its result hook. We must NOT also call
+        # display(widget): an unassigned `show()` would then mount the same model
+        # twice (explicit display + auto-display of the returned value), and two
+        # anywidget views both run the viewer over shared globals / first-match
+        # DOM — they collide, causing blank or misaligned tracks and a sluggish,
+        # stuttering UI. clear_output(wait=True) un-buries the progress bar /
+        # piled-up stdout: the wipe is deferred until the widget actually renders,
+        # so nothing flickers. If the caller assigns the result, it isn't
+        # auto-displayed (keep a handle without re-displaying).
+        try:
+            clear_output(wait=True)
+        except Exception:
+            # No IPython display context (e.g. plain Python).
+            pass
+        return widget
+
     def show(
         self,
         locus: str,
@@ -2636,355 +3459,8 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         Returns:
             None: Displays the visualization in the notebook.
         """
-        show_start = time.perf_counter()
-
-        # Fetch variant data for the locus
-        t_get_variants = time.perf_counter()
-        variants_df = self.get_locus_variants(locus)
-        get_variants_ms = round((time.perf_counter() - t_get_variants) * 1000.0, 1)
-
-        dataset_sig = self._variant_dataset_signature()
-        payload_cache_key = (self.genome_build, dataset_sig, locus)
-        locus_contig, locus_start, locus_end = self._parse_locus(locus)
-        t_variant_payload = time.perf_counter()
-        if payload_cache_key in self._variant_payload_cache:
-            self._cache_debug_bump("variant_payload", "mem")
-            precomputed_payload = self._variant_payload_cache[payload_cache_key]
-        else:
-            precomputed_payload = None
-            cached_entry = self._find_covering_variant_payload_interval(
-                dataset_sig, locus_contig, int(locus_start), int(locus_end)
-            )
-            if cached_entry is not None:
-                cached_payload = self._read_cached_json(cached_entry["uri"])
-                if isinstance(cached_payload, dict):
-                    precomputed_payload = self._subset_variant_payload(
-                        cached_payload, int(locus_start), int(locus_end)
-                    )
-                    self._cache_debug_bump("variant_payload", "gcs")
-
-            if precomputed_payload is None:
-                pre_tracks, pre_insertion = self._build_variant_payload(variants_df)
-                precomputed_payload = {
-                    "variant_tracks": pre_tracks,
-                    "insertion_variants_lookup": pre_insertion,
-                }
-                self._cache_debug_bump("variant_payload", "build")
-
-                uri = self._variant_payload_cache_uri(
-                    dataset_sig, locus_contig, int(locus_start), int(locus_end)
-                )
-                payload_to_store = {
-                    "genome_build": self.genome_build,
-                    "contig": locus_contig,
-                    "start": int(locus_start),
-                    "end": int(locus_end),
-                    "variant_tracks": pre_tracks,
-                    "insertion_variants_lookup": pre_insertion,
-                }
-                if self._write_cached_json(uri, payload_to_store):
-                    self._cache_debug_bump("variant_payload", "gcs_write")
-                    self._record_variant_payload_interval(
-                        dataset_sig,
-                        {
-                            "genome_build": self.genome_build,
-                            "contig": locus_contig,
-                            "start": int(locus_start),
-                            "end": int(locus_end),
-                            "uri": uri,
-                        },
-                    )
-
-            self._variant_payload_cache[payload_cache_key] = precomputed_payload
-            self._prune_variant_payload_state()
-        variant_payload_cache_ms = round((time.perf_counter() - t_variant_payload) * 1000.0, 1)
-
-        t_render = time.perf_counter()
-        html_script = self.render(
-            variants_df,
-            precomputed_variant_payload=precomputed_payload,
-            show_timing={
-                "show_get_variants_ms": get_variants_ms,
-                "show_variant_payload_cache_ms": variant_payload_cache_ms,
-            },
-        )
-        render_ms = round((time.perf_counter() - t_render) * 1000.0, 1)
-        # view_id available via self._last_view_id if needed
-        if hasattr(self, "_last_view_id") and self._last_view_id:
-            self._variant_payload_by_view[self._last_view_id] = precomputed_payload
-            self._prune_variant_payload_state()
-
-        # Register comm target for JavaScript to connect to
-        if COMM_AVAILABLE:
-            try:
-                from IPython import get_ipython
-                ip = get_ipython()
-                if ip is not None and hasattr(ip, 'kernel') and ip.kernel is not None:
-                    gs_instance = self
-                    
-                    def handle_comm_open(comm, msg):
-                        """Handle comm open from JavaScript."""
-                        print(f"Genomeshader: Comm opened, id: {comm.comm_id}")
-                        
-                        @comm.on_msg
-                        def _recv(msg):
-                            data = msg['content']['data']
-                            msg_type = data.get('type')
-                            request_id = data.get('request_id')
-                            
-                            if msg_type == 'test':
-                                comm.send({
-                                    'type': 'test_response',
-                                    'request_id': request_id,
-                                    'message': f'Hello from Python! Got: {data.get("message", "")}',
-                                })
-
-                            elif msg_type == 'fetch_variant_payload_init':
-                                try:
-                                    requested_view_id = data.get('view_id')
-                                    payload = None
-                                    if requested_view_id:
-                                        payload = gs_instance._variant_payload_by_view.get(requested_view_id)
-                                    if payload is None and hasattr(gs_instance, "_last_view_id"):
-                                        payload = gs_instance._variant_payload_by_view.get(gs_instance._last_view_id)
-                                    if payload is None:
-                                        comm.send({
-                                            'type': 'fetch_variant_payload_error',
-                                            'request_id': request_id,
-                                            'error': 'Variant payload not available for this view',
-                                        })
-                                    else:
-                                        chunk_chars = data.get(
-                                            'chunk_chars',
-                                            gs_instance._variant_payload_comm_chunk_chars_default,
-                                        )
-                                        accept_compression = bool(data.get('accept_compression', False))
-                                        init_meta = gs_instance._build_comm_payload_buffer(
-                                            requested_view_id or getattr(gs_instance, "_last_view_id", ""),
-                                            payload,
-                                            accept_compression=accept_compression,
-                                            chunk_chars=chunk_chars,
-                                        )
-                                        print(
-                                            "Genomeshader: variant payload init "
-                                            f"(json={init_meta['payload_json_bytes']/1024/1024:.2f} MB, "
-                                            f"transfer={init_meta['payload_transfer_bytes']/1024/1024:.2f} MB, "
-                                            f"chunks={init_meta['total_chunks']}, "
-                                            f"compression={init_meta['compression']})"
-                                        )
-                                        comm.send({
-                                            'type': 'fetch_variant_payload_init_response',
-                                            'request_id': request_id,
-                                            'view_id': requested_view_id or getattr(gs_instance, "_last_view_id", None),
-                                            **init_meta,
-                                        })
-                                except Exception as e:
-                                    comm.send({
-                                        'type': 'fetch_variant_payload_error',
-                                        'request_id': request_id,
-                                        'error': str(e),
-                                    })
-
-                            elif msg_type == 'fetch_variant_payload_chunk':
-                                try:
-                                    payload_token = data.get('payload_token')
-                                    chunk_index = int(data.get('chunk_index', -1))
-                                    if not payload_token:
-                                        raise ValueError("Missing payload_token")
-                                    buffer_state = gs_instance._variant_payload_comm_buffers.get(payload_token)
-                                    if buffer_state is None:
-                                        raise ValueError("Unknown or expired payload_token")
-                                    total_chunks = int(buffer_state['total_chunks'])
-                                    if chunk_index < 0 or chunk_index >= total_chunks:
-                                        raise ValueError(
-                                            f"Invalid chunk_index {chunk_index}; expected 0..{total_chunks - 1}"
-                                        )
-
-                                    chunk_chars = int(buffer_state['chunk_chars'])
-                                    start = chunk_index * chunk_chars
-                                    end = min(start + chunk_chars, len(buffer_state['encoded']))
-                                    chunk_payload = buffer_state['encoded'][start:end]
-                                    comm.send({
-                                        'type': 'fetch_variant_payload_chunk_response',
-                                        'request_id': request_id,
-                                        'payload_token': payload_token,
-                                        'chunk_index': chunk_index,
-                                        'total_chunks': total_chunks,
-                                        'chunk': chunk_payload,
-                                    })
-                                except Exception as e:
-                                    comm.send({
-                                        'type': 'fetch_variant_payload_error',
-                                        'request_id': request_id,
-                                        'error': str(e),
-                                    })
-
-                            elif msg_type == 'fetch_variant_payload':
-                                try:
-                                    requested_view_id = data.get('view_id')
-                                    payload = None
-                                    if requested_view_id:
-                                        payload = gs_instance._variant_payload_by_view.get(requested_view_id)
-                                    if payload is None and hasattr(gs_instance, "_last_view_id"):
-                                        payload = gs_instance._variant_payload_by_view.get(gs_instance._last_view_id)
-                                    if payload is None:
-                                        comm.send({
-                                            'type': 'fetch_variant_payload_error',
-                                            'request_id': request_id,
-                                            'error': 'Variant payload not available for this view',
-                                        })
-                                    else:
-                                        try:
-                                            payload_json_bytes = len(
-                                                json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-                                            )
-                                        except Exception:
-                                            payload_json_bytes = -1
-                                        if payload_json_bytes > gs_instance._variant_payload_comm_hard_limit_bytes:
-                                            comm.send({
-                                                'type': 'fetch_variant_payload_error',
-                                                'request_id': request_id,
-                                                'error': (
-                                                    "Variant payload too large for legacy single-message comm transfer. "
-                                                    "Use chunked payload protocol."
-                                                ),
-                                            })
-                                            return
-                                        comm.send({
-                                            'type': 'fetch_variant_payload_response',
-                                            'request_id': request_id,
-                                            'view_id': requested_view_id or getattr(gs_instance, "_last_view_id", None),
-                                            'payload': payload,
-                                        })
-                                except Exception as e:
-                                    comm.send({
-                                        'type': 'fetch_variant_payload_error',
-                                        'request_id': request_id,
-                                        'error': str(e),
-                                    })
-                            
-                            elif msg_type == 'fetch_reads':
-                                # Fetch reads for the current locus from attached BAM files
-                                try:
-                                    locus = gs_instance._last_locus
-                                    if locus is None:
-                                        comm.send({
-                                            'type': 'fetch_reads_error',
-                                            'request_id': request_id,
-                                            'error': 'No locus available',
-                                        })
-                                        return
-                                    
-                                    # Get Smart track parameters (optional)
-                                    strategy = data.get('strategy', None)
-                                    selected_alleles = data.get('selected_alleles', None)
-                                    sample_id = data.get('sample_id', None)
-                                    
-                                    # Get sample filter from message (optional)
-                                    # For Smart tracks, sample_id takes precedence over samples array
-                                    vcf_samples = data.get('samples', None)
-                                    if sample_id and not vcf_samples:
-                                        # Use sample_id if provided
-                                        vcf_samples = [sample_id]
-                                    
-                                    # Get BAM file URLs from sample mapping
-                                    bam_urls = []
-                                    if vcf_samples:
-                                        # Use sample mapping to get BAM file paths
-                                        mapped = gs_instance.get_bam_samples_for_vcf_samples(vcf_samples)
-                                        
-                                        if mapped:
-                                            # Mapped values should always be BAM file paths/URLs
-                                            bam_urls = mapped
-                                        else:
-                                            error_msg = f'No BAM files found in mapping for sample(s): {vcf_samples}. Please check your sample mapping.'
-                                            comm.send({
-                                                'type': 'fetch_reads_error',
-                                                'request_id': request_id,
-                                                'error': error_msg,
-                                            })
-                                            return
-                                    else:
-                                        # No sample specified - this shouldn't happen for Smart tracks, but handle gracefully
-                                        error_msg = 'No sample_id or samples provided. Cannot determine which BAM files to load.'
-                                        comm.send({
-                                            'type': 'fetch_reads_error',
-                                            'request_id': request_id,
-                                            'error': error_msg,
-                                        })
-                                        return
-                                    
-                                    if not bam_urls:
-                                        error_msg = f'No BAM files found for sample(s): {vcf_samples}. Please check your sample mapping.'
-                                        comm.send({
-                                            'type': 'fetch_reads_error',
-                                            'request_id': request_id,
-                                            'error': error_msg,
-                                        })
-                                        return
-                                    
-                                    # Use the Rust-based fetch with specified BAM URLs
-                                    try:
-                                        reads_df = gs_instance._session.fetch_reads_for_locus(locus, bam_urls)
-                                    except Exception as e:
-                                        import traceback
-                                        traceback.print_exc()
-                                        comm.send({
-                                            'type': 'fetch_reads_error',
-                                            'request_id': request_id,
-                                            'error': f'Failed to fetch reads: {str(e)}',
-                                        })
-                                        return
-                                    
-                                    # NOTE: We're NOT filtering by sample_id here because:
-                                    # 1. The BAM files were already selected based on the sample mapping
-                                    # 2. The sample_name in the BAM file (from @RG SM tag) might be different from the VCF sample_id
-                                    # 3. Since we're loading from the correct BAM files, all reads should be for the correct sample
-                                    
-                                    # TODO: Filter reads based on selected_alleles if provided
-                                    # This would require matching reads to specific alleles
-                                    
-                                    # Convert to JSON-serializable format
-                                    reads_data = reads_df.to_dict(as_series=False)
-                                    
-                                    comm.send({
-                                        'type': 'fetch_reads_response',
-                                        'request_id': request_id,
-                                        'locus': locus,
-                                        'reads': reads_data,
-                                        'count': len(reads_df),
-                                        'bam_urls': bam_urls,  # Include which BAM files were loaded from
-                                        'vcf_samples': vcf_samples,  # Include which VCF samples were requested
-                                        'sample_id': sample_id,  # Include sample_id if provided
-                                        'strategy': strategy,  # Include strategy if provided
-                                    })
-                                except Exception as e:
-                                    print(f"Genomeshader: Error in fetch_reads: {e}")
-                                    import traceback
-                                    traceback.print_exc()
-                                    comm.send({
-                                        'type': 'fetch_reads_error',
-                                        'request_id': request_id,
-                                        'error': str(e),
-                                    })
-                        
-                        gs_instance._comm = comm
-                    
-                    ip.kernel.comm_manager.register_target('genomeshader', handle_comm_open)
-            except Exception as e:
-                print(f"Genomeshader: Failed to register comm target: {e}")
-        
-        show_elapsed_ms = (time.perf_counter() - show_start) * 1000.0
-        timing_script = (
-            "<script type=\"text/javascript\">"
-            f"console.info('Genomeshader show() timing: {show_elapsed_ms:.1f} ms');"
-            f"console.info('Genomeshader show() phases', {{get_variants_ms: {get_variants_ms:.1f}, variant_payload_cache_ms: {variant_payload_cache_ms:.1f}, render_ms: {render_ms:.1f}}});"
-            "</script>"
-        )
-
-        # Display the HTML plus timing log script.
-        display(HTML(html_script + timing_script))
-
+        # The ipywidget path is the portable transport (Notebook + Lab + Terra).
+        return self.show_widget(locus)
 
     def save(
         self,

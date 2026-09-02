@@ -7,6 +7,15 @@
 *.bai
 .ipynb_checkpoints/
 python/genomeshader/__pycache__/
+__pycache__/
 *.so
 *.ipynb
 genomeshader_runs/
+# Stray node tooling — the headless tests use the Python playwright package.
+node_modules/
+package.json
+package-lock.json
+
+# Local research journal — never committed
+JOURNAL.md
+JOURNAL/

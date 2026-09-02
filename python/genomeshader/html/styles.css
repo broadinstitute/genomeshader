@@ -34,6 +34,13 @@
   --hudBg: rgba(0,0,0,0.35);
 }
 
+/* Tell the browser the active colour scheme so native controls (number-input
+   spinner arrows, checkboxes, scrollbars) match the selected theme. */
+html[data-theme="dark"]  { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
+@media (prefers-color-scheme: light) { html[data-theme="auto"] { color-scheme: light; } }
+@media (prefers-color-scheme: dark)  { html[data-theme="auto"] { color-scheme: dark; } }
+
 html[data-theme="light"] {
   --bg: #f7f8fb;
   --panel: #ffffff;
@@ -166,21 +173,39 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   padding: 12px;
   padding-bottom: 12px;
 }
+/* Left panel handle: a large protruding tab at 75% height. It sticks 50px out
+   from the panel's inner edge into the view and shows arrows toward the middle
+   to pull the panel out. Clicking it toggles the panel. */
 .sidebar-left::after {
-  content: "";
+  content: "\00AB";              /* « : collapse (panel currently expanded) */
   position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
+  top: 75%;
+  transform: translateY(-50%);
+  left: 100%;                    /* protrude past the panel's inner edge */
+  width: 40px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--text);
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-left: none;
+  border-radius: 0 10px 10px 0;
+  box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.30);
   cursor: pointer;
-  transition: background-color 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
-  z-index: 10;
+  pointer-events: auto;
+  opacity: 1 !important;
+  z-index: 250;
+  transition: background 0.15s ease, width 0.15s ease;
 }
 .sidebar-left:hover::after {
-  background: var(--blue);
-  width: 6px;
-  box-shadow: 0 0 8px rgba(120, 180, 255, 0.4);
+  width: 46px;
+  background: var(--panel);
+  color: var(--blue);
 }
 .app.sidebar-collapsed .sidebar-left {
   padding: 0;
@@ -194,20 +219,50 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   opacity: 0;
   pointer-events: none;
 }
+/* Collapsed: arrows point toward the middle (»») to pull the panel out. */
 .app.sidebar-collapsed .sidebar-left::after {
-  pointer-events: auto;
-  opacity: 1 !important;
-  right: 0;
-  width: 8px;
-  background: rgba(127, 127, 127, 0.08);
-  border-right: 1px solid var(--border2);
+  content: "\00BB";             /* » : expand */
 }
-.app.sidebar-collapsed .sidebar-left:hover::after {
-  width: 10px;
+
+/* Right panel drag-to-resize handle (inner/left edge). Behavior in
+   smart-tracks.js; this is just the visual accent. Hidden while collapsed. */
+.sidebar-right-resize-handle {
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.sidebar-right-resize-handle:hover {
   background: var(--blue);
-  border-right: none;
-  box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
+  opacity: 0.5;
 }
+.app.sidebar-right-collapsed .sidebar-right-resize-handle {
+  display: none;
+}
+
+/* Large, obvious Close button pinned to the bottom of an open panel. */
+.sidebar-close-btn {
+  /* A real footer OUTSIDE the scroll region (flex item that never shrinks), so
+     panel content scrolls above it and it stays put. Opaque background so
+     nothing can ever show through it. */
+  flex: 0 0 auto;
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  margin-top: 0;
+  border: none;
+  border-top: 1px solid var(--border2);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  z-index: 5;
+}
+.sidebar-close-btn:hover { background: var(--panel); color: var(--blue); }
+/* No close button while the panel is collapsed. */
+.app.sidebar-collapsed .sidebar-left .sidebar-close-btn,
+.app.sidebar-right-collapsed .sidebar-right .sidebar-close-btn { display: none; }
 
 /* Right sidebar styles - always overlays on top of main panel */
 .sidebar-right {
@@ -247,22 +302,38 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   padding: 12px;
   padding-bottom: 12px;
 }
+/* Right panel handle: mirror of the left — a large protruding tab at 75%
+   height that sticks 50px out into the view, arrows pointing toward the middle. */
 .sidebar-right::before {
-  content: "";
+  content: "\00BB";              /* » : collapse (panel currently expanded) */
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
+  top: 75%;
+  transform: translateY(-50%);
+  right: 100%;                   /* protrude left into the view */
+  width: 40px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--text);
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-right: none;
+  border-radius: 10px 0 0 10px;
+  box-shadow: -2px 2px 10px rgba(0, 0, 0, 0.30);
   cursor: pointer;
-  transition: background-color 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
-  z-index: 10;
   pointer-events: auto;
+  opacity: 1 !important;
+  z-index: 250;
+  transition: background 0.15s ease, width 0.15s ease;
 }
 .sidebar-right:hover::before {
-  background: var(--blue);
-  width: 4px;
-  box-shadow: 0 0 8px rgba(120, 180, 255, 0.4);
+  width: 46px;
+  background: var(--panel);
+  color: var(--blue);
 }
 /* Ensure command strip doesn't interfere with toggle */
 .sidebar-right-command-strip {
@@ -272,32 +343,18 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .app.sidebar-right-collapsed .sidebar-right {
   padding: 0;
   overflow: visible;
-  width: 8px !important;
-  min-width: 8px;
+  width: 48px !important;
+  min-width: 48px;
   border-radius: 0;
 }
-.app.sidebar-right-collapsed .sidebar-right > * {
-  opacity: 0;
-  pointer-events: none;
+/* Collapsed: show only the command-strip rail; hide the tab content so the rail
+   icons stay visible and clickable (mirrors the left panel). */
+.app.sidebar-right-collapsed .sidebar-right .sidebar-right-tab-content {
+  display: none;
 }
-.app.sidebar-right-collapsed .sidebar-right .sidebarContent,
-.app.sidebar-right-collapsed .sidebar-right .sidebar-right-content {
-  opacity: 0;
-  pointer-events: none;
-}
+/* Collapsed: arrows point toward the middle («) to pull the panel out. */
 .app.sidebar-right-collapsed .sidebar-right::before {
-  pointer-events: auto;
-  opacity: 1 !important;
-  left: 0;
-  width: 8px;
-  background: rgba(127, 127, 127, 0.08);
-  border-left: 1px solid var(--border2);
-}
-.app.sidebar-right-collapsed .sidebar-right:hover::before {
-  width: 10px;
-  background: var(--blue);
-  border-left: none;
-  box-shadow: 0 0 12px rgba(120, 180, 255, 0.5);
+  content: "\00AB";             /* « : expand */
 }
 /* Right sidebar expanded state */
 .app:not(.sidebar-right-collapsed) .sidebar-right {
@@ -623,7 +680,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   position: absolute !important;
   left: 12px !important;
   bottom: 12px !important;
-  z-index: 10 !important;
+  z-index: 300 !important;
   border: 1px solid var(--border2);
   background: var(--panel2);
   color: var(--text);
@@ -636,6 +693,13 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   place-items: center;
   font-size: 18px;
   line-height: 1;
+}
+/* Settings button stays in the bottom-left corner even when the left panel is
+   collapsed (never faded out with the panel body). */
+.app.sidebar-collapsed .sidebar-left > .gearBtn,
+.app.sidebar-collapsed .gearBtn {
+  opacity: 1 !important;
+  pointer-events: auto !important;
 }
 .gearBtn:hover { filter: brightness(1.06); }
 .gearBtn:active { transform: translateY(1px); }
@@ -702,27 +766,29 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 
 /* Selection controls in sidebar */
 .selectionBtn {
-  padding: 9px 10px;
-  border-radius: 10px;
-  background: var(--panel2);
-  border: 1px solid var(--border2);
-  color: var(--text);
-  font-size: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--blue);
+  border: 1px solid var(--blue);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
   cursor: pointer;
   user-select: none;
-  transition: all 0.2s ease;
-  text-align: left;
+  transition: filter 0.15s ease, transform 0.1s ease;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 .selectionBtn:hover {
-  background: var(--panel);
-  border-color: var(--border);
+  filter: brightness(1.12);
 }
 .selectionBtn:active {
   transform: scale(0.98);
 }
 .selectionBtn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
+  filter: none;
 }
 
 /* Combine toggle (AND/OR) */
@@ -737,29 +803,48 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   overflow: visible;
   z-index: 5000;
 }
+/* Solid field so the sample IDs don't bleed into the panel behind it. */
+#sampleSearchInput {
+  background: var(--panel) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border2) !important;
+  border-radius: 6px;
+}
+#sampleSearchInput::placeholder { color: var(--muted); }
 #sampleSearchResults {
-  font-size: 11px;
+  font-size: 12px;
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
   right: 0;
   z-index: 5001;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  background: var(--panel) !important;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  /* Opaque. Fallback color if --panel doesn't resolve in this host. */
+  background: var(--panel, #14181f) !important;
   opacity: 1 !important;
   mix-blend-mode: normal;
   isolation: isolate;
 }
+/* Each row carries its own opaque background so nothing behind the floating
+   dropdown can ever show through, independent of the container. */
 .sampleSearchResult {
-  padding: 6px 8px;
+  padding: 7px 9px;
   cursor: pointer;
+  color: var(--text);
+  background: var(--panel, #14181f) !important;
   border-bottom: 1px solid var(--border2);
 }
 .sampleSearchResult:last-child {
   border-bottom: none;
 }
-.sampleSearchResult:hover {
-  background: var(--panel2);
+.sampleSearchResult:hover,
+.sampleSearchResult.active {
+  background: var(--blue, #2b6fff) !important;
+  color: #fff;
 }
 
 /* Ensure all form elements in sidebar are clickable and interactive */
@@ -815,9 +900,12 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   position: relative !important;
   z-index: 200 !important;
 }
+/* Must stay above the Strategy/Selection section (z-index:200) so the
+   sample-search dropdown floats over it. Also holds in fullscreen, where the
+   container-scoped override is gone and only these unscoped rules apply. */
 #sampleSearchSection {
   position: relative !important;
-  z-index: 200 !important;
+  z-index: 5000 !important;
 }
 /* Ensure sidebar content is above any potential overlays */
 .sidebar-left .sidebarHeader,
@@ -953,6 +1041,14 @@ svg.overlay {
   pointer-events: none;
 }
 
+/* SVG letter/vector layer must paint ABOVE the WebGPU base-color blocks.
+   Both are position:absolute; without explicit z-index the later-in-DOM
+   canvas (tracksWebGPU) would win and hide the reference letters. These
+   unscoped rules also govern fullscreen, where the container override
+   (widget.py) no longer applies because .app is moved out of its container. */
+#tracksSvg { z-index: 3; }
+#tracksWebGPU { z-index: 1; }
+
 /* Single-track legacy flow canvas also sits above WebGPU */
 .flow > canvas.canvas {
   z-index: 2;
@@ -962,7 +1058,9 @@ svg.overlay {
 /* Locus indicator lower-right */
 .hud {
   position: absolute;
-  right: 10px;
+  /* Clear the collapsed right panel and its protruding tab (~40px into the
+     view) so the position readout isn't covered. */
+  right: 54px;
   bottom: 10px;
   padding: 8px 10px;
   border-radius: 10px;
@@ -1006,6 +1104,222 @@ svg.overlay {
   display: block;
 }
 
+/* Left panel: an icon rail (command strip) + tab content, mirroring the right
+   panel. The rail stays visible when the panel is collapsed so its icons can
+   open the panel to a tab (e.g. Settings). */
+.sidebar-left-content {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+.sidebar-left-command-strip {
+  width: 48px;
+  min-width: 48px;
+  background: var(--panel2);
+  border-right: 1px solid var(--border2);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 16px 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  pointer-events: auto;
+  z-index: 20;
+}
+.sidebar-left-tab-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.left-tab-pane { display: none; }
+.left-tab-pane.active { display: block; }
+/* Collapsed: show only the icon rail, hide the tab content. */
+.app.sidebar-collapsed .sidebar-left-tab-content { display: none; }
+
+/* The settings menu renders inline inside the Settings tab (not a floating
+   popup). Override the .menu popup styling for this instance. */
+#ctxMenu.settings-panel {
+  position: static !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+  border: none !important;
+  background: transparent !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  left: auto !important;
+  top: auto !important;
+  right: auto !important;
+  z-index: auto !important;
+  pointer-events: auto !important;
+  padding: 4px 0 !important;
+}
+/* Warning box (e.g. UCSC no-match). Amber reads as a warning in both themes. */
+.ucsc-warn {
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  background: rgba(240, 180, 41, 0.12);
+  border: 1px solid rgba(240, 180, 41, 0.40);
+}
+.ucsc-warn strong { color: #f0b429; }
+html[data-theme="light"] .ucsc-warn {
+  background: rgba(180, 83, 9, 0.10);
+  border-color: rgba(180, 83, 9, 0.35);
+}
+html[data-theme="light"] .ucsc-warn strong { color: #b45309; }
+@media (prefers-color-scheme: light) {
+  html[data-theme="auto"] .ucsc-warn {
+    background: rgba(180, 83, 9, 0.10);
+    border-color: rgba(180, 83, 9, 0.35);
+  }
+  html[data-theme="auto"] .ucsc-warn strong { color: #b45309; }
+}
+
+/* Settings as a 2-column table so labels and values/controls line up. Fixed
+   layout + wrapping so nothing overruns the narrow panel and gets hidden. */
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.settings-table td {
+  padding: 6px 6px;
+  font-size: 12px;
+  color: var(--text);
+  vertical-align: middle;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.settings-table td:first-child { width: 54%; }
+.settings-table td.menuRight {
+  text-align: right;
+  color: var(--muted);
+  white-space: normal;
+}
+.settings-table tr.settings-row { cursor: pointer; }
+.settings-table tr.settings-row:hover td { background: var(--panel2); }
+.settings-table tr.settings-section td {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 700;
+  padding-top: 14px;
+  padding-bottom: 2px;
+  cursor: default;
+}
+.settings-table .menuHotkey { margin-left: 6px; }
+.settings-table .menuRight input[type="number"] { width: 46px; text-align: right; }
+
+/* Bottom status bar: background-processing text + progress. Hidden until a
+   message is set via window.__GS_STATUS(). */
+.status-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 26px;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel);
+  border-top: 1px solid var(--border2);
+  z-index: 400;
+  pointer-events: none;
+}
+.status-bar.visible { display: flex; }
+.status-bar .status-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  max-width: 70%;
+}
+.status-bar .status-progress {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel2);
+  overflow: hidden;
+  display: none;
+}
+.status-bar.has-progress .status-progress { display: block; }
+.status-bar .status-progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--blue, #2b6fff);
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+.status-bar.indeterminate .status-progress-fill {
+  width: 30% !important;
+  transition: none;
+  animation: gs-status-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes gs-status-indeterminate {
+  0%   { margin-left: -30%; }
+  100% { margin-left: 100%; }
+}
+
+/* Hint tooltips (element title= text, shown after a short dwell). Own element
+   so it never contends with the data .tooltip above. */
+.hint-tooltip {
+  position: fixed;
+  z-index: 2147483000;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.3;
+  pointer-events: none;
+  box-shadow: var(--shadow);
+  max-width: 240px;
+  white-space: pre-line;
+  display: none;
+}
+.hint-tooltip.visible {
+  display: block;
+}
+
+/* Genes panel: a card + tables per gene. Class names are gene-panel specific,
+   so these unscoped rules are safe (and apply in fullscreen too). */
+.gs-gene-card { padding: 12px 2px 16px; border-bottom: 1px solid var(--border2); }
+.gs-gene-card:last-child { border-bottom: none; }
+.gs-gene-name { font-size: 14px; font-weight: 800; margin-bottom: 5px; word-break: break-word; }
+.gs-gene-name .gs-strand { color: var(--muted); font-weight: 500; font-size: 12px; }
+.gs-gene-desc { font-size: 11px; color: var(--text); margin-bottom: 8px; line-height: 1.4; }
+.gs-kv { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 10px; }
+.gs-kv td { padding: 4px 7px; border: 1px solid var(--border2); vertical-align: top; }
+.gs-kv td.k { color: var(--muted); width: 42%; white-space: nowrap; background: var(--panel2); font-weight: 600; }
+.gs-kv td.v { font-variant-numeric: tabular-nums; word-break: break-word; }
+.gs-sub { font-size: 12px; font-weight: 700; margin: 10px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.gs-tx { margin-bottom: 8px; border: 1px solid var(--border2); border-radius: 6px; overflow: hidden; }
+.gs-tx-h { font-size: 11px; font-weight: 700; padding: 5px 8px; background: var(--panel2); display: flex; justify-content: space-between; gap: 8px; }
+.gs-tx-h .gs-tx-span { color: var(--muted); font-weight: 400; white-space: nowrap; }
+.gs-ex { width: 100%; border-collapse: collapse; font-size: 10px; }
+.gs-ex th { text-align: right; color: var(--muted); font-weight: 600; padding: 3px 8px; border-top: 1px solid var(--border2); }
+.gs-ex th:first-child { text-align: left; }
+.gs-ex td { text-align: right; padding: 3px 8px; border-top: 1px solid var(--border2); font-variant-numeric: tabular-nums; }
+.gs-ex td:first-child { text-align: left; color: var(--muted); }
+
 /* SVG text classes */
 .svg-label { fill: var(--muted); font-size: 12px; font-weight: 600; }
 .svg-small { fill: var(--muted2); font-size: 10px; }
@@ -1044,9 +1358,10 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .track-control-container.standard-track .track-controls {
   transition: none; /* Instant show/hide, no fade */
 }
-/* Standard tracks: hide controls by default, show on hover */
+/* Standard tracks: keep the label pillbox visible (track names must always be
+   readable); it just doesn't intercept canvas events until hovered. */
 .track-control-container.standard-track .track-controls {
-  opacity: 0;
+  opacity: 1;
   pointer-events: none;
 }
 .track-control-container.standard-track.track-hovered .track-controls {
@@ -1054,16 +1369,19 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   pointer-events: auto;
   background: var(--panel); /* Ensure opaque background when visible */
 }
-/* Collapsed tracks: always hide controls, don't show on hover */
-.track-control-container.track-collapsed .track-controls {
-  opacity: 0 !important;
-  pointer-events: none !important;
-  display: none !important;
-}
-/* Prevent hover effects from showing controls on collapsed tracks */
+/* Collapsed tracks: SHOW the control bar (label + expand ▶) so a minimized
+   track stays an obvious, clickable header instead of a near-invisible line.
+   The whole container is click-to-expand (bound in renderTrackControls), and
+   the ▶ button toggles it back. Opaque bg so it reads as a solid bar. */
+.track-control-container.track-collapsed .track-controls,
 .track-control-container.track-collapsed.track-hovered .track-controls {
-  opacity: 0 !important;
-  pointer-events: none !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  display: flex !important;
+  background: var(--panel) !important;
+}
+/* The faint 8px indicator line is redundant now the labeled bar shows. */
+.track-collapsed-indicator {
   display: none !important;
 }
 /* Smart track controls should allow button clicks */
@@ -1150,32 +1468,33 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   color: var(--text);
 }
 
-/* Vertical mode: track controls at bottom, vertically oriented */
+/* Vertical mode: track name + menu chip at the TOP-LEFT of each track column
+   (mirrors horizontal, where each track label sits at its top-left), upright. */
 .main.vertical .track-control-container {
   position: absolute;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: flex-start;
 }
 .main.vertical .track-controls {
   width: auto;
   height: auto;
   min-height: 24px;
-  flex-direction: column;
-  padding: 6px 4px;
+  flex-direction: row;
+  padding: 4px 6px;
   border: 1px solid var(--border2);
-  border-radius: 12px;
+  border-radius: 10px;
   position: relative;
   left: 0;
-  top: auto;
-  bottom: 0;
+  top: 0;
+  bottom: auto;
   right: auto;
   transform: none;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 6px;
-  margin-bottom: 0;
+  margin: 2px 0 0 2px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 .main.vertical .track-label {
@@ -1387,15 +1706,17 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   height: 6px;
   cursor: ns-resize;
   z-index: 15;
-  background: transparent;
+  /* The divider is the full-height band at rest — the same width/thickness as
+     the highlight shown on hover — so boundaries are consistently visible and
+     grabbable. Hover/active just tint the same band with the accent colour. */
+  background: var(--track-boundary);
   pointer-events: auto;
-  transition: opacity 0.2s ease;
-  /* Clear boundary at bottom of track so extent and handle are obvious */
-  border-top: 1px solid var(--track-boundary);
+  transition: background 0.15s ease, opacity 0.2s ease;
 }
-/* Standard tracks: hide resize handle by default, show on hover */
+/* Standard tracks: keep the divider line visible at rest (so track boundaries
+   are findable and resizable); the grab highlight still appears on hover. */
 .track-control-container.standard-track .track-resize-handle {
-  opacity: 0;
+  opacity: 1;
   pointer-events: auto !important; /* Always allow pointer events so hover works */
 }
 .track-control-container.standard-track.track-hovered .track-resize-handle {
@@ -1457,6 +1778,12 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .track-control-container.standard-track:not(.track-hovered) *:not(.track-hover-area) {
   /* Children (controls) should not block when hidden, except hover area */
   pointer-events: none;
+}
+/* Flow (variant/alluvial) tracks: the top strip IS the interactive variant
+   area. Its hover strip must NOT intercept clicks meant for selecting or
+   deselecting variants — let them fall through to #flowOverlay beneath. */
+.track-control-container[data-track-id^="flow"] .track-hover-area {
+  pointer-events: none !important;
 }
 /* When hovered, controls should capture pointer events */
 .track-control-container.standard-track.track-hovered .track-controls {
@@ -1546,3 +1873,10 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   transition: none;
   pointer-events: none;
 }
+
+/* IGV-style reads scroll: the #smartScroll wrapper owns the ONE scrollbar for the
+   sample-track stack. Hide each sample's inner scrollbar (reads still scroll via
+   wheel/drag chaining) so the outer bar isn't lost among a column of inner bars. */
+#smartScroll .smart-track-container { scrollbar-width: none; }
+#smartScroll .smart-track-container::-webkit-scrollbar { width: 0; height: 0; }
+#smartScroll { overflow-y: auto; }

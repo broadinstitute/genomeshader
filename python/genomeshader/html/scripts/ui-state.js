@@ -11,6 +11,7 @@ const state = {
   hoveredVariantIndex: null, // index of hovered variant, or null
   hoveredVariantId: null,    // id of hovered variant (for multi-track ruler/flow), or null
   expandedInsertions: new Set(), // Set of variant IDs that have expanded insertions
+  expandedDeletions: new Set(),  // Set of deletion variant IDs whose deleted ref bases are shown (shaded)
   hoveredRepeatTooltip: null, // { text, x, y } or null
   hoveredVariantLabelTooltip: null, // { text, x, y } or null
   locusVariantElements: new Map(), // Map of variant index -> { lineEl, circleEl } for Locus track
@@ -32,8 +33,8 @@ const state = {
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
     { id: "repeats", label: "RepeatMasker", collapsed: false, height: 40, minHeight: 30 },
     { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
-    { id: "ruler", label: "Locus", collapsed: false, height: 68, minHeight: 40 },
-    { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 130, minHeight: 100 }
+    { id: "ruler", label: "Indel", collapsed: false, height: 68, minHeight: 40 },
+    { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 110 }
   ],
   trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
   trackResizeState: null, // { trackId, startX, startY, startHeight }
@@ -65,7 +66,7 @@ const state = {
   
   // sample selection state
   sampleSelection: {
-    strategy: 'random',
+    strategy: 'best_evidence',
     numSamples: 1,
     combineMode: 'AND', // 'AND' or 'OR'
     candidateSamples: [], // Will be populated when selection changes
@@ -82,7 +83,13 @@ const state = {
 
 // Initialize variant layout mode
 const storedVariantMode = getStoredVariantLayoutMode();
-state.variantLayoutMode = storedVariantMode ?? "equidistant";
+state.variantLayoutMode = storedVariantMode ?? "genomic";
+if (typeof getStoredLockAlleles === "function") {
+  state.lockAlleles = getStoredLockAlleles();
+  if (typeof lockAllelesToggle !== "undefined" && lockAllelesToggle) {
+    lockAllelesToggle.checked = state.lockAlleles === true;
+  }
+}
 if (typeof getStoredAggregateRareAlleles === "function") {
   state.aggregateRareAlleles = getStoredAggregateRareAlleles();
 }
@@ -125,9 +132,17 @@ const chrLengths = {
   "chrY": 57_227_415
 };
 
+// Overlay genome-specific contig lengths from the render config (e.g. PlasmoDB
+// Pf3D7). Absent for UCSC genomes, which keep the human defaults above.
+if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.chrom_lengths) {
+  Object.assign(chrLengths, window.GENOMESHADER_CONFIG.chrom_lengths);
+}
+
 // Helper function to get chromosome length for current contig
 function getChromosomeLength() {
-  return chrLengths[state.contig] || 248_956_422;
+  return chrLengths[state.contig]
+    || chrLengths[window.GENOMESHADER_CONFIG?.region?.split(":")[0]]
+    || 248_956_422;
 }
 
 // Helper function to clamp startBp and endBp to chromosome boundaries
@@ -188,7 +203,7 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && w
       id: t.id,
       label: t.label,
       collapsed: false,
-      height: 130,
+      height: 150,
       minHeight: 100
     });
   });
@@ -387,7 +402,17 @@ function tracksWidthPx() {
   const w = tracksSvg.getBoundingClientRect().width;
   return isNaN(w) || w <= 0 ? 0 : w;
 }
-function flowWidthPx()   { return rectW(flow); }
+function flowWidthPx() {
+  // The flow shares the horizontal genome axis with every other track, so it
+  // must map bp -> x using the SAME width as the ruler/reference/genes
+  // (tracksWidthPx). Reading the flow element's own width instead lets any DOM
+  // width difference — e.g. a scrollbar in JupyterLab or fullscreen — desync the
+  // flow from the Indel track. In vertical mode the flow width is the cross
+  // (allele) axis, so keep the element's own width there.
+  if (typeof isVerticalMode === "function" && isVerticalMode()) return rectW(flow);
+  const tw = (typeof tracksWidthPx === "function") ? tracksWidthPx() : 0;
+  return tw > 0 ? tw : rectW(flow);
+}
 function flowHeightPx()  { return rectH(flow); }
 
 function cssVar(name) {
