@@ -502,3 +502,23 @@ def test_translate_frame(browser, tmp_path):
 # not paint (or receive clicks) under swiftshader in headless Chromium, so
 # selection behavior (e.g. double-click-keeps-selection) can't be asserted here.
 # Those fixes are verified by inspection + in a real browser.
+
+
+def test_window_store_update_and_coverage(browser, tmp_path):
+    """P2 sparse variant-window store: merge new windows, evict distant ones,
+    and test coverage to decide whether to fetch."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    up = "(a) => window.__gsWindowStoreUpdate.apply(null, a)"
+    cov = "(a) => window.__gsRegionCovered.apply(null, a)"
+    regions = [{"contig": "c", "start": 0, "end": 100},
+               {"contig": "c", "start": 100000, "end": 100100}]
+    new = {"contig": "c", "start": 200, "end": 300}
+    # center near 250, keepSpan 5000 -> the far (100k) region evicts.
+    out = page.evaluate(up, [regions, new, 250, 5000])
+    kept = sorted(r["start"] for r in out["regions"])
+    assert kept == [0, 200] and out["evicted"][0]["start"] == 100000
+    # coverage: [220,280] covered by [200,300]; [400,500] not.
+    assert page.evaluate(cov, [out["regions"], "c", 220, 280]) is True
+    assert page.evaluate(cov, [out["regions"], "c", 400, 500]) is False
+    page.close()

@@ -682,3 +682,35 @@ if (typeof window !== "undefined") {
   window.__gsOverscanRegion = overscanRegion;
   window.__gsTranslateFrame = translateFrame;
 }
+
+// Viewport variant loading (P2) store core: keep a sparse set of loaded windows,
+// evict ones far from the current center, and test coverage to decide whether a
+// fetch is needed. Pure; the pan/zoom trigger + comm fetch are browser-wired.
+function _gsRegionKey(r) { return `${r.contig}:${r.start}-${r.end}`; }
+
+function gsWindowStoreUpdate(regions, newRegion, centerBp, keepSpan) {
+  regions = Array.isArray(regions) ? regions.slice() : [];
+  const nk = _gsRegionKey(newRegion);
+  regions = regions.filter((r) => _gsRegionKey(r) !== nk);
+  regions.push(newRegion);
+  const kept = [], evicted = [];
+  for (const r of regions) {
+    const mid = (Number(r.start) + Number(r.end)) / 2;
+    if (_gsRegionKey(r) !== nk && Math.abs(mid - centerBp) > keepSpan) evicted.push(r);
+    else kept.push(r);
+  }
+  return { regions: kept, evicted };
+}
+
+// Is [start,end] on `contig` fully covered by a single loaded region? (If not,
+// the caller fetches the window ± overscan.)
+function gsRegionCovered(regions, contig, start, end) {
+  if (!Array.isArray(regions)) return false;
+  return regions.some((r) => r.contig === contig
+    && Number(r.start) <= start && Number(r.end) >= end);
+}
+
+if (typeof window !== "undefined") {
+  window.__gsWindowStoreUpdate = gsWindowStoreUpdate;
+  window.__gsRegionCovered = gsRegionCovered;
+}
