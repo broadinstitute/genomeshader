@@ -50,11 +50,12 @@ Discovered while iterating on the viewer; not yet done.
   orientation still renders the smart track oddly and the hover tooltip stays
   rotated. WebGPU + comm-driven, so not reproducible headless — needs real-browser
   work. On-track text and track-name chips are already fixed.
-- **Multi-instance safety.** A second widget in the same notebook can render
-  blank (shared/global state keyed by view id). Audit for cross-instance leakage.
 - **Scale plan (30K → 1M / All-of-Us).** Design captured in
   `DATA_LOADING_SCALE.md` (v1, near-term) and `DATA_LOADING_SCALE_V2.md` (v2,
-  tiered high-scale). Awaiting branch merge + go/no-go on the tiers.
+  tiered high-scale). Multispecies PR merged to `main` (2026-09-02); awaiting a
+  go/no-go on the tiers before building. This is **variant-payload** scaling
+  (aggregate-only contract, viewport loading) — distinct from the read-pileup
+  canvas work under "Sample-track rendering scale" below.
 - **GCS comment store via the client library.** The comment store + listing
   shell out to `gcloud`/`gsutil`. Moving to `google-cloud-storage` (Python) would
   cut latency and sidestep the CLI reauth path entirely (see the auth notes in
