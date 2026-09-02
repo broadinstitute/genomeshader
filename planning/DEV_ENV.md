@@ -39,12 +39,44 @@ maturin develop --release               # builds python/genomeshader/genomeshade
      (regression guard for the zero-width-locus panic; see below).
    Skips (not fails) if the extension isn't built or bgzip/tabix are absent.
 3. **Headless DOM** (`tests/headless/`) — pure-JS + jsdom cores via Playwright.
-   ⚠️ **WebGPU pixels do NOT paint headless** under SwiftShader, so the smart-track
-   canvas render (#65) and SNP letters (#67) still can't be pixel-verified here —
-   only their pure-JS layout cores (`__gsComputeVirtualRowWindow`,
-   `__gsTranslateFrame`, etc.) are tested. Those two need a real browser
-   (see planning/MANUAL_TESTS.md §5–6). Probing a Dawn/flag path to paint WebGPU
-   headless is the one remaining gap to fully close the loop.
+   ⚠️ **WebGPU pixels cannot be rendered in this container** (see the full probe
+   below), so the smart-track canvas render (#65) and SNP letters (#67) still
+   can't be pixel-verified here — only their pure-JS layout cores
+   (`__gsComputeVirtualRowWindow`, `__gsTranslateFrame`, etc.) are tested. Those
+   two need a real browser (see planning/MANUAL_TESTS.md §5–6).
+
+### WebGPU headless probe — CHARACTERIZED, not achievable (2026-09-02)
+
+Spent a full pass trying to paint+read back a WebGPU frame so #65/#67 could
+self-test. Findings, so nobody re-treads them:
+
+- **Playwright's bundled Chromium** (`chromium-1234`, even the full build, not just
+  `chromium_headless_shell`): `navigator.gpu` is **undefined** — the WebGPU JS
+  binding is compiled out. No flag brings it back.
+- **Real Google Chrome** (`playwright install chrome` → Chrome 152) is required.
+  Then `navigator.gpu` appears, but ONLY with BOTH:
+  - `ignore_default_args=["--disable-gpu"]` — Playwright injects `--disable-gpu`,
+    which hides WebGPU; and
+  - a **real secure origin** — `page.set_content()` (opaque about:blank) hides
+    `navigator.gpu`; serving over `http://127.0.0.1:<port>` (localhost is secure)
+    exposes it.
+- Even then, **no config yields a working adapter+device+pixel**:
+  - `headless=True` (+swiftshader OR lavapipe): `requestAdapter()` throws
+    `OperationError: A valid external Instance reference no longer exists` — Chrome
+    headless tears down the WebGPU instance immediately.
+  - `headless=False` under **Xvfb** + `--use-angle=swiftshader`: device request
+    hangs indefinitely.
+  - `headless=False` under **Xvfb** + Mesa **lavapipe** (`apt install
+    mesa-vulkan-drivers`; `VK_ICD_FILENAMES=…/lvp_icd.x86_64.json`;
+    `--use-angle=vulkan`): `vulkaninfo` sees the `llvmpipe` device fine, but
+    Chrome's `requestAdapter()` never resolves (still timing out at 40s).
+
+Net: WebGPU can be *enabled* but not *driven* here. A working path would need
+debugging Dawn↔Vulkan↔lavapipe (a Dawn instance/toggle flag, or a newer lavapipe)
+— disproportionate vs. verifying #65/#67 in the user's browser. Real Chrome +
+lavapipe are now installed in this (ephemeral) container; NOT added to
+setup_test_env.sh since they don't yield working WebGPU. Resume from this exact
+stopping point if the payoff ever justifies it.
 
 Run everything:
 ```bash
