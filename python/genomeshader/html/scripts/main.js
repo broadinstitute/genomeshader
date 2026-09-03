@@ -392,8 +392,6 @@ function renderSmartTrack(trackId) {
   // canvases. smartTrackBg is still used to cut reads at expanded-insertion gaps.
   const smartTrackBg = cssVar("--smart-track-bg");
   const GAP_VISUAL_PAD_PX = 1.5;
-  // Keep Reads-track variant guides aligned with ruler/multi-track ordering.
-  const rulerVariants = getRulerVariants();
   const expandedInsertionGapSegments = [];
   if (!isVertical && state.expandedInsertions && state.expandedInsertions.size > 0) {
     const seenExpandedIds = new Set();
@@ -559,21 +557,7 @@ function renderSmartTrack(trackId) {
       ctx.fillText("Loading...", W/2, H/2);
     }
     
-    // Draw variant markers
-    for (let idx = 0; idx < rulerVariants.length; idx++) {
-      const v = rulerVariants[idx];
-      if (v.pos < state.startBp || v.pos > state.endBp) continue;
-      const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
-      ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
-      ctx.globalAlpha = isHovered ? 0.7 : 0.3;
-      ctx.lineWidth = isHovered ? 2.5 : 1;
-      const y = yGenomeCanonical(v.pos, coordHeight);
-      ctx.beginPath();
-      ctx.moveTo(left, y);
-      ctx.lineTo(H-10, y);  // guide spans the track's cross-axis width, not the genomic length
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1.0;
+    // (variant->read guide lines removed by request)
   } else {
     // Horizontal mode
     // When collapsed (closed state), use minimal padding; otherwise use normal padding
@@ -889,21 +873,7 @@ function renderSmartTrack(trackId) {
       ctx.fillText("Loading...", W/2, H/2);
     }
     
-    // Draw variant markers
-    for (let idx = 0; idx < rulerVariants.length; idx++) {
-      const v = rulerVariants[idx];
-      if (v.pos < state.startBp || v.pos > state.endBp) continue;
-      const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
-      ctx.strokeStyle = isHovered ? cssVar("--blue") : "rgba(127,127,127,0.3)";
-      ctx.globalAlpha = isHovered ? 0.7 : 0.3;
-      ctx.lineWidth = isHovered ? 2.5 : 1;
-      const x = xGenomeCanonical(v.pos, W);
-      ctx.beginPath();
-      ctx.moveTo(x, top);
-      ctx.lineTo(x, totalContentHeight || H-10);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1.0;
+    // (variant->read guide lines removed by request)
   }
   
   // Execute WebGPU render pass
