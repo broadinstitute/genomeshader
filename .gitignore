@@ -19,3 +19,6 @@ package-lock.json
 # Local research journal — never committed
 JOURNAL.md
 JOURNAL/
+
+# Downloaded real datasets (Pf7 etc.) — never commit
+fiss_downloads/
