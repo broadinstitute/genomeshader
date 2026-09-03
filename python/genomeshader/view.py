@@ -1502,9 +1502,9 @@ class GenomeShader:
                     "region": region, "aggregate": hit["aggregate"], "cached": True}
 
         try:
-            agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "100000"))
+            agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "5000"))
         except (TypeError, ValueError):
-            agg_max = 100000
+            agg_max = 5000
         payload, aggregate = None, False
         if agg_max >= 0 and self._variant_sample_count() > agg_max:
             try:
@@ -3266,12 +3266,16 @@ class GenomeShader:
                 # Scale path: for very large cohorts the per-sample long format
                 # OOMs (variants×samples), so fetch per-variant AGGREGATES and
                 # render bands from them (carriers come from fetch_carriers).
-                # Threshold via GENOMESHADER_VARIANT_AGG_MAX (default 100000);
-                # falls back to the long-format path on any error.
+                # Threshold via GENOMESHADER_VARIANT_AGG_MAX (default 5000, the
+                # Tier-2 start per DATA_LOADING_SCALE_V2 §13.6): above it, render
+                # from aggregates. Long-format at 20k samples is ~60M rows / 100s+
+                # (measured on Pf7), so aggregate-first must be the default at
+                # cohort scale, not only above 100k. Falls back to long-format on
+                # any error.
                 try:
-                    _agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "100000"))
+                    _agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "5000"))
                 except (TypeError, ValueError):
-                    _agg_max = 100000
+                    _agg_max = 5000
                 if _agg_max >= 0 and self._variant_sample_count() > _agg_max:
                     try:
                         agg_df = self._session.get_locus_variant_aggregates(locus_or_dataframe)
