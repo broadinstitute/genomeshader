@@ -1,0 +1,65 @@
+name: WebGPU pixels (GPU)
+
+# The WebGPU pixel suite (python/tests/headless/test_webgpu_pixels.py) renders
+# the real viewer on a real GPU and asserts on painted pixels. GitHub-hosted
+# runners have no GPU, so it can only run on a SELF-HOSTED runner that has an
+# NVIDIA GPU. Register one with the labels [self-hosted, gpu] (see
+# planning/WEBGPU_TESTING.md for the host setup).
+#
+# Triggers: manual (workflow_dispatch), or add the `webgpu` label to a PR. It is
+# deliberately NOT part of the default CI gate — the standard CI job already
+# collects these tests and skips them cleanly (ci.yml).
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  webgpu-pixels:
+    name: webgpu-pixels
+    # Only on a self-hosted GPU runner; on PRs only when labeled `webgpu`.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'webgpu'
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create virtual environment
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install -U pip maturin
+          pip install -r dev-requirements.txt
+          pip install playwright anywidget pillow pytest
+
+      - name: Build & install (maturin develop)
+        run: |
+          source .venv/bin/activate
+          maturin develop --release
+
+      - name: Install real Chrome (bundled Chromium has WebGPU compiled out)
+        run: |
+          source .venv/bin/activate
+          python -m playwright install chrome
+
+      # Stands up the virtual display + Vulkan loader/ICD the NVIDIA GPU stack
+      # needs, and verifies the GPU is reachable. On a bare-metal runner with a
+      # display most of this is a no-op; it is idempotent either way.
+      - name: Set up WebGPU env
+        run: |
+          source .venv/bin/activate
+          source scripts/setup_gpu_webgpu.sh
+
+      - name: Run WebGPU pixel suite
+        working-directory: python
+        run: |
+          source ../.venv/bin/activate
+          # DISPLAY / VK_* are exported by setup_gpu_webgpu.sh above; re-source so
+          # they're present in this step's shell.
+          source ../scripts/setup_gpu_webgpu.sh >/dev/null
+          pytest tests/headless/test_webgpu_pixels.py -v

@@ -36,6 +36,10 @@ jobs:
           source .venv/bin/activate
           maturin develop --release
 
+      # Rust unit + aggregate-equivalence tests (were not in CI before).
+      - name: Run Rust tests
+        run: cargo test --lib
+
       - name: Run tests
         working-directory: python
         run: |
@@ -45,13 +49,16 @@ jobs:
       # Headless UI regression tests: render the real frontend in headless
       # Chromium and assert on layout/coordinates/interactions. Reuses the
       # maturin build above (importing genomeshader pulls the Rust ext).
+      # This also collects the WebGPU pixel suite (test_webgpu_pixels.py), which
+      # SKIPS cleanly here — a hosted runner has no GPU / no real-Chrome channel.
+      # Those run for real on the self-hosted GPU workflow (webgpu.yml).
       - name: Install Playwright + Chromium (headless UI)
         run: |
           source .venv/bin/activate
-          pip install playwright anywidget
+          pip install playwright anywidget pillow
           python -m playwright install --with-deps chromium
 
-      - name: Run headless UI tests
+      - name: Run headless UI + WebGPU pixel tests (pixels skip w/o GPU)
         working-directory: python
         run: |
           source ../.venv/bin/activate
