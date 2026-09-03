@@ -95,6 +95,28 @@ def test_read_haplotype_colors(gpu_browser):
         assert hg.frac_matching(px, _reddish) < 0.005
 
 
+def _base_green(p):  # SNP 'A' tile uses the base palette green [0,200,0], opaque
+    r, g, b = p
+    return g > 150 and g - r > 60 and g - b > 60
+
+
+def test_reads_show_snp_markers(gpu_browser):
+    """Per-read SNP markers paint on the sample track. Guards against the
+    individual SNP tiles silently vanishing from the read pileup. (SNP *detection*
+    — MD tag or reference fallback — is covered by the Rust alignment tests; this
+    guards the render end of the pipe: a read carrying a Diff element paints a
+    base-colored tile distinct from the haplotype-colored body.)"""
+    with hg.open_viewer(gpu_browser) as (page, errors):
+        hg.set_span(page, 60)  # zoom in so per-base SNP tiles are wide
+        res = hg.seed_reads(page, n=10, haplotype=1, snp=True, snp_base="A")
+        assert res["hasWebGPU"] is True
+        page.wait_for_timeout(400)
+        _img, px = hg.region_pixels(page, hg.canvas_box(page))
+        assert hg.frac_matching(px, _base_green) > 0.002, \
+            "no base-colored SNP tiles painted on the reads (SNP markers vanished?)"
+        assert errors == [], errors
+
+
 def test_virtualization_lifts_read_cap(gpu_browser):
     """#65: a deep pileup (well past the old 300-read cap) renders on WebGPU
     without crashing — all reads kept, packed into many rows."""
