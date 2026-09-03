@@ -7,11 +7,16 @@ verify in a real browser — see planning/MANUAL_TESTS.md.
 
 ## Open
 
-- [ ] **#36** Scale plan: v1 (30K live) + v2 (1M/AoU tiered) — DESIGN, awaiting merge + decisions
 - [ ] **#49** Vertical mode: upright text, track names/menus top-left, fix sample track. `translateFrame` core tested; render not wired. LOW PRIORITY (UI polish, off the scale path)
+
+### Deferred / decision-gated future work (not blocking)
+- **Tier 3 (Population / AoU, >~100K)** — build when an AoU-scale callset is the real target. Default producer = on-demand windowed aggregation over the native store + lazy per-window cache (NOT a precompute pipeline); precompute→tiled store is an optional accelerator. Gated on Jonn's privacy/small-cell + access-tier (Registered vs Controlled) decision + an AoU review. See DATA_LOADING_SCALE_V2.md §7/§13.
+- **P3 density LOD** — binned AF track for wide windows; the lever that keeps live Tier-3 aggregation bounded. Orthogonal, deferrable.
+- **Per-group aggregates** — retrofit `{group→{allele→count}}` when per-ancestry/case-control views (feature-gap #1/#3) are built (decided: defer, don't pre-reserve).
 
 ## Done
 
+- [x] **#36** Scale plan v1/v2 — DESIGN FINALIZED + decisions recorded. Near-term (Tiers 1–2) is BUILT: P1 (#68/#69/#70) + P2 (#71). Decisions locked: per-group defer+retrofit; tier-switch deferred (one-armed today); Tier 3 = on-demand windowed aggregation + lazy cache default, precompute optional accelerator. Docs reconciled (both DATA_LOADING_SCALE*.md). Remaining Tier-3 privacy decision tracked as deferred/decision-gated above
 - [x] **#35** Multi-instance: 2nd widget in a notebook renders blank
 - [x] **#37** Fullscreen/live-pan stutter: debounce mid-drag rebuild
 - [x] **#38** Double-click allele freezes briefly + sluggish after

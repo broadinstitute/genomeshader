@@ -1,5 +1,12 @@
 # Data loading at scale — v1 (near-term, 30K-sample plan)
 
+> **STATUS (2026-09-03): this plan is BUILT.** P1 (aggregate-only payload +
+> `fetch_carriers`, #68/#69/#70) and P2 (viewport-driven windowed loading +
+> overscan, #71) are implemented and tested. The "Verdict" and "bottlenecks"
+> below describe the *pre-build* state and are kept as the record of why; the
+> "Proposed design" / "build spec" sections are the spec that was executed. See
+> `DATA_LOADING_SCALE_V2.md` §13 for the shipped status and the Tier-3 decisions.
+
 > **Read as a pair with [`DATA_LOADING_SCALE_V2.md`](DATA_LOADING_SCALE_V2.md).**
 > This doc (v1) is the *near-term* plan: make a 30K-sample VCF behave on the live
 > rust-htslib backend (aggregate-only payload + viewport loading). **v2 is the
@@ -179,4 +186,5 @@ Steps:
    region-interval index + subset helpers (`_find_covering_variant_payload_interval`,
    `_subset_variant_payload`) and the live-pan / reads-disk-cache patterns.
 
-*Nothing above is implemented yet — this is the spec for the build.*
+*Implemented 2026-09-03: P1 (#68/#69/#70) and P2 (#71) shipped per this spec, all
+tested. Tier 3 (AoU/Population) remains deferred — see V2 §7/§13.*
