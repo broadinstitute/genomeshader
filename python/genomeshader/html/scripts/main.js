@@ -1413,28 +1413,15 @@ function renderTrackControls() {
         container.appendChild(controls);
       }
     } else {
-      // In vertical mode, reverse order: label on top, button on bottom
+      // In vertical mode, reverse order: label on top, button on bottom.
+      // #49: the label stays UPRIGHT (the CSS `.main.vertical .track-label`
+      // already sets `transform:none; writing-mode:horizontal-tb`). Earlier code
+      // set an inline `rotate(-90deg)` here, which beat the CSS and produced the
+      // sideways, clipped headers.
       if (isVertical) {
         controls.appendChild(label);
         controls.appendChild(collapseBtn);
         container.appendChild(controls);
-        // After appending, measure the label's width and adjust transform
-        // With transform-origin: left center, the first character stays at bottom
-        // We need to translate right by half width to center it horizontally
-        setTimeout(() => {
-          try {
-            const width = label.offsetWidth || label.getBoundingClientRect().width;
-            if (width > 0) {
-              // After -90deg rotation:
-              // - translateX moves vertically (negative = up, positive = down)
-              // - translateY moves horizontally (negative = left, positive = right)
-              // Use translateX(12px) to position vertically and translateY(0.0px) for horizontal
-              label.style.transform = `rotate(-90deg) translateX(12px) translateY(0.0px)`;
-            }
-          } catch (e) {
-            console.error('Error adjusting label transform:', e);
-          }
-        }, 10);
       } else {
         controls.appendChild(collapseBtn);
         controls.appendChild(label);
