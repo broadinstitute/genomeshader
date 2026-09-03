@@ -35,7 +35,34 @@ pub struct Session {
     variant_file_groups: Vec<Vec<(String, Option<String>)>>,
     /// Parallel to variant_file_groups: optional per-track sample subset (None = all).
     variant_group_samples: Vec<Option<Vec<String>>>,
+    /// Parallel to variant_file_groups: per-contig routing so a locus query opens
+    /// only the file(s) that actually contain the contig (callsets split one VCF
+    /// per contig otherwise pay N index/header opens per window).
+    variant_group_contigs: Vec<ContigRouting>,
     variant_df_cache: HashMap<String, DataFrame>,
+}
+
+/// Which files in a variant group hold which contigs, from each file's tabix
+/// index. `by_contig[chr]` = indices into the group's file list that contain
+/// `chr`; `always` = files whose contigs couldn't be indexed (no tabix /
+/// explicit index / error), which are queried for every locus so routing never
+/// drops data.
+#[derive(Default)]
+struct ContigRouting {
+    by_contig: HashMap<String, Vec<usize>>,
+    always: Vec<usize>,
+}
+
+impl ContigRouting {
+    /// File indices to query for `chr`: those whose index lists `chr`, plus the
+    /// always-query files. Sorted+deduped. Empty => `chr` is in no indexed file.
+    fn indices_for(&self, chr: &str) -> Vec<usize> {
+        let mut idxs = self.by_contig.get(chr).cloned().unwrap_or_default();
+        idxs.extend(self.always.iter().copied());
+        idxs.sort_unstable();
+        idxs.dedup();
+        idxs
+    }
 }
 
 impl Session {
@@ -303,7 +330,8 @@ impl Session {
             let group_samples = self.variant_group_samples
                 .get(group_index)
                 .and_then(|s| s.as_deref());
-            for (variant_file, index_file) in file_list {
+            for fi in self.routed_indices(group_index, chr) {
+                let (variant_file, index_file) = &file_list[fi];
                 match variants::extract_variants(variant_file, index_file.as_deref(), group_samples, chr, start, stop) {
                     Ok(df) => {
                         if let Some(existing) = group_df {
@@ -457,7 +485,28 @@ impl Session {
             cache_base_uri,
             variant_file_groups: Vec::new(),
             variant_group_samples: Vec::new(),
+            variant_group_contigs: Vec::new(),
             variant_df_cache: HashMap::new(),
+        }
+    }
+
+    /// Files in group `group_index` to query for `chr`: those whose tabix index
+    /// lists `chr`, plus any always-query files. Empty => the contig is absent
+    /// from every indexed file (a genuine empty result). Missing routing (should
+    /// not happen) falls back to querying all files.
+    fn routed_indices(&self, group_index: usize, chr: &str) -> Vec<usize> {
+        let group_len = self.variant_file_groups[group_index].len();
+        let idxs = match self.variant_group_contigs.get(group_index) {
+            Some(r) => r.indices_for(chr),
+            None => (0..group_len).collect(),
+        };
+        // Absent contig (in no indexed file): query one file anyway so the group
+        // still yields an empty, correctly-typed frame — preserving the
+        // pre-routing empty-result-not-error behavior the viewer relies on.
+        if idxs.is_empty() && group_len > 0 {
+            vec![0]
+        } else {
+            idxs
         }
     }
 
@@ -640,6 +689,25 @@ impl Session {
             variant_files.into_iter().zip(index_files.into_iter()).collect()
         );
         self.variant_group_samples.push(samples);
+
+        // Build the contig -> file routing for this group from each file's tabix
+        // index (one open per file, once, at attach — vs opening every file on
+        // every window query). Files without a readable tabix index are always
+        // queried so nothing is dropped.
+        let group = self.variant_file_groups.last().unwrap();
+        let mut routing = ContigRouting::default();
+        for (i, (file, idx)) in group.iter().enumerate() {
+            match variants::vcf_index_contigs(file, idx.as_deref()) {
+                Ok(contigs) => {
+                    for c in contigs {
+                        routing.by_contig.entry(c).or_default().push(i);
+                    }
+                }
+                Err(_) => routing.always.push(i),
+            }
+        }
+        self.variant_group_contigs.push(routing);
+
         self.variant_df_cache.clear();
         Ok(())
     }
@@ -735,7 +803,8 @@ impl Session {
         let mut combined_df: Option<DataFrame> = None;
         for (group_index, file_list) in self.variant_file_groups.iter().enumerate() {
             let mut group_df: Option<DataFrame> = None;
-            for (variant_file, index_file) in file_list {
+            for fi in self.routed_indices(group_index, &l_fmt.0) {
+                let (variant_file, index_file) = &file_list[fi];
                 match variants::extract_variant_aggregates(
                     variant_file, index_file.as_deref(), &l_fmt.0, &l_fmt.1, &l_fmt.2,
                 ) {
@@ -784,6 +853,7 @@ impl Session {
         self.staged_tree = HashMap::new();
         self.variant_file_groups = Vec::new();
         self.variant_group_samples = Vec::new();
+        self.variant_group_contigs = Vec::new();
         self.variant_df_cache = HashMap::new();
 
         Ok(())
@@ -949,4 +1019,37 @@ fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_vcf_sample_names, m)?)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::ContigRouting;
+    use std::collections::HashMap;
+
+    #[test]
+    fn routes_to_files_holding_the_contig() {
+        // group of 3 files: file0 has chr1, file1 has chr2, file2 unindexed
+        // (always-queried).
+        let mut by_contig = HashMap::new();
+        by_contig.insert("chr1".to_string(), vec![0usize]);
+        by_contig.insert("chr2".to_string(), vec![1usize]);
+        let r = ContigRouting { by_contig, always: vec![2] };
+
+        // chr1 -> file0 + the always file; chr2 -> file1 + always.
+        assert_eq!(r.indices_for("chr1"), vec![0, 2]);
+        assert_eq!(r.indices_for("chr2"), vec![1, 2]);
+        // A contig in no indexed file still hits the always-queried file only.
+        assert_eq!(r.indices_for("chrX"), vec![2]);
+    }
+
+    #[test]
+    fn absent_contig_with_no_always_files_queries_nothing() {
+        let mut by_contig = HashMap::new();
+        by_contig.insert("chr1".to_string(), vec![0usize]);
+        let r = ContigRouting { by_contig, always: vec![] };
+        // chr1 present, chr2 genuinely absent -> empty (a real empty result, not
+        // a scan of every file).
+        assert_eq!(r.indices_for("chr1"), vec![0]);
+        assert!(r.indices_for("chr2").is_empty());
+    }
 }

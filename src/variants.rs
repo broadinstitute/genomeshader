@@ -10,8 +10,49 @@ use rust_htslib::bcf::{
     IndexedReader,
     Read,
 };
+use rust_htslib::tbx;
 
 use crate::env::{ gcs_authorize_data_access, local_guess_curl_ca_bundle };
+
+/// Open a tabix (.tbi) index by URL with the same GCS-auth / CA-bundle retry
+/// ladder as `open_url_with_fallbacks`.
+fn open_tbx_with_fallbacks(url: &Url) -> Result<tbx::Reader> {
+    match tbx::Reader::from_url(url) {
+        Ok(r) => Ok(r),
+        Err(_) => {
+            gcs_authorize_data_access();
+            match tbx::Reader::from_url(url) {
+                Ok(r) => Ok(r),
+                Err(_) => {
+                    local_guess_curl_ca_bundle();
+                    Ok(tbx::Reader::from_url(url)?)
+                }
+            }
+        }
+    }
+}
+
+/// Contigs that actually carry records in this variant file, read from its
+/// tabix (.tbi) index. Cheap — reads the index, not the (potentially
+/// 20k-sample) VCF header — and, unlike the header's `##contig` lines, lists
+/// only sequences that have data. Powers per-contig query routing so a locus
+/// opens only the file(s) that contain the contig, instead of every file in a
+/// one-VCF-per-contig callset. Errs for files without a readable tabix index
+/// (e.g. `.bcf`/`.csi`, or an explicit-index open); the caller then
+/// always-queries those, so routing never drops data.
+pub fn vcf_index_contigs(bcf_path: &str, index_path: Option<&str>) -> Result<Vec<String>> {
+    // Explicit-index opens use htslib's `data##idx##index` composite, which the
+    // tabix reader doesn't accept — let the caller always-query those.
+    if index_path.is_some() {
+        anyhow::bail!("explicit index: contig routing not derived via tabix");
+    }
+    let reader = if bcf_path.contains("://") {
+        open_tbx_with_fallbacks(&Url::parse(bcf_path)?)?
+    } else {
+        tbx::Reader::from_path(bcf_path)?
+    };
+    Ok(reader.seqnames())
+}
 
 /// Open a URL with the same GCS-auth / CA-bundle retry ladder as the reads
 /// path (see stage::open_bam).
@@ -611,6 +652,17 @@ mod tests {
         let df = extract_variants(&fixture(), None, None, &"chrZ".to_string(), &1, &1000).unwrap();
         assert_eq!(df.height(), 0);
         assert_eq!(df.get_column_names().len(), 11);
+    }
+
+    #[test]
+    fn index_contigs_lists_data_sequences() {
+        // Contig routing reads the sequences that actually have records from the
+        // tabix index (not the header's ##contig lines). The fixture holds chr1.
+        let contigs = vcf_index_contigs(&fixture(), None).unwrap();
+        assert!(contigs.contains(&"chr1".to_string()), "got {contigs:?}");
+        // An explicit index isn't derivable via the tabix reader -> Err, so the
+        // caller always-queries that file.
+        assert!(vcf_index_contigs(&fixture(), Some("x.tbi")).is_err());
     }
 
     #[test]
