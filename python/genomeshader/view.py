@@ -332,6 +332,16 @@ class GenomeShader:
         self._attached_loci: set = set()
         self._last_ucsc_warm_stats: dict = {}
 
+        # Small bounded host-side cache of computed viewport variant payloads
+        # (#77). The expensive step is reading/parsing the window from the VCF
+        # (at 20k+ samples each record line is ~500KB — the wall is the read,
+        # not the tally), so amortize it: a re-visited or covered window is
+        # served from RAM without re-parsing. Companion to the frontend window
+        # store (#71). Bounded + LRU — the cache holds only small window
+        # payloads (aggregates), never whole files.
+        self._agg_region_cache: list = []
+        self._agg_region_cache_max = 12
+
         # Payload transport controls for Jupyter comms stability.
         self._variant_payload_cache_max_entries = 5
         self._variant_payload_view_max_entries = 5
@@ -904,6 +914,28 @@ class GenomeShader:
             "insertion_variants_lookup": subset_insertion,
         }
 
+    def _agg_region_cache_get(self, sig: str, contig: str, start: int, end: int):
+        """Smallest cached region (same dataset+contig) that fully covers
+        [start,end], or None. LRU-touch on hit."""
+        best = None
+        for r in self._agg_region_cache:
+            if (r["sig"] == sig and r["contig"] == contig
+                    and r["start"] <= start and r["end"] >= end):
+                if best is None or (r["end"] - r["start"]) < (best["end"] - best["start"]):
+                    best = r
+        if best is not None:
+            self._agg_region_cache.remove(best)
+            self._agg_region_cache.append(best)  # most-recently-used at the end
+        return best
+
+    def _agg_region_cache_put(self, sig, contig, start, end, payload, aggregate):
+        self._agg_region_cache.append({
+            "sig": sig, "contig": contig, "start": int(start), "end": int(end),
+            "payload": payload, "aggregate": bool(aggregate),
+        })
+        while len(self._agg_region_cache) > self._agg_region_cache_max:
+            self._agg_region_cache.pop(0)  # evict least-recently-used
+
     def _prune_oldest_entries(self, mapping: dict, max_entries: int):
         while len(mapping) > max_entries:
             oldest_key = next(iter(mapping))
@@ -1455,25 +1487,44 @@ class GenomeShader:
         (GENOMESHADER_VARIANT_AGG_MAX). Returns
         {variant_tracks, insertion_variants_lookup, region, aggregate}.
         """
-        locus = f"{contig}:{int(start)}-{int(end)}"
+        start, end = int(start), int(end)
+        locus = f"{contig}:{start}-{end}"
+        region = {"contig": contig, "start": start, "end": end}
+
+        # Host cache (#77): serve a re-visited / covered window from RAM instead
+        # of re-reading+parsing it from the VCF (the measured wall). Bounded+LRU.
+        sig = self._variant_dataset_signature()
+        hit = self._agg_region_cache_get(sig, contig, start, end)
+        if hit is not None:
+            sub = self._subset_variant_payload(hit["payload"], start, end)
+            return {"variant_tracks": sub["variant_tracks"],
+                    "insertion_variants_lookup": sub["insertion_variants_lookup"],
+                    "region": region, "aggregate": hit["aggregate"], "cached": True}
+
         try:
             agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "100000"))
         except (TypeError, ValueError):
             agg_max = 100000
-        region = {"contig": contig, "start": int(start), "end": int(end)}
+        payload, aggregate = None, False
         if agg_max >= 0 and self._variant_sample_count() > agg_max:
             try:
                 agg_df = self._session.get_locus_variant_aggregates(locus)
                 if agg_df is not None and isinstance(agg_df, pl.DataFrame) and len(agg_df) > 0:
                     tracks, ins = self._build_variant_payload_from_aggregates(agg_df)
-                    return {"variant_tracks": tracks, "insertion_variants_lookup": ins,
-                            "region": region, "aggregate": True}
+                    payload, aggregate = {"variant_tracks": tracks,
+                                          "insertion_variants_lookup": ins}, True
             except Exception:
                 pass
-        df = self.get_locus_variants(locus)
-        tracks, ins = self._build_variant_payload(df)
-        return {"variant_tracks": tracks, "insertion_variants_lookup": ins,
-                "region": region, "aggregate": False}
+        if payload is None:
+            df = self.get_locus_variants(locus)
+            tracks, ins = self._build_variant_payload(df)
+            payload, aggregate = {"variant_tracks": tracks,
+                                  "insertion_variants_lookup": ins}, False
+
+        self._agg_region_cache_put(sig, contig, start, end, payload, aggregate)
+        return {"variant_tracks": payload["variant_tracks"],
+                "insertion_variants_lookup": payload["insertion_variants_lookup"],
+                "region": region, "aggregate": aggregate}
 
     def _variant_dataset_signature(self) -> str:
         serialized = json.dumps(self._variant_datasets, sort_keys=True)
