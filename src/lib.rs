@@ -1,3 +1,9 @@
+// The #[pymethods]/#[pyfunction] macros (pyo3 0.20) expand into `impl` blocks
+// nested inside a generated function, which newer rustc flags as
+// `non_local_definitions`. It's a macro-internal artifact, not our code; silence
+// it crate-wide (removable once pyo3 is upgraded past the fix).
+#![allow(non_local_definitions)]
+
 pub mod alignment;
 pub mod env;
 pub mod stage;

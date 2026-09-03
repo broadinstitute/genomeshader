@@ -162,59 +162,6 @@ pub fn get_rg_to_sm_mapping(bam: &IndexedReader) -> HashMap<String, String> {
     rg_sm_map
 }
 
-fn layout(df_in: &DataFrame) -> HashMap<u32, usize> {
-    let df = df_in.sort(&["sample_name", "query_name", "reference_start"], false, true).unwrap();
-
-    let sample_names = df.column("sample_name").unwrap().str().unwrap();
-    let reference_starts = df.column("reference_start").unwrap().u32().unwrap();
-    let reference_ends = df.column("reference_end").unwrap().u32().unwrap();
-    let element_types = df.column("element_type").unwrap().u8().unwrap();
-    let sequence = df.column("sequence").unwrap().str().unwrap();
-
-    let mut cur_sample_name = "";
-    let mut cur_sample_index: i32 = -1;
-    let mut mask = HashMap::new();
-
-    for i in 0..reference_starts.len() {
-        let sample_name = sample_names.get(i).unwrap();
-        if cur_sample_name != sample_name {
-            cur_sample_name = sample_name;
-            cur_sample_index += 1;
-
-            let cur_sample_name_series = Series::new("", vec![cur_sample_name; df.height()]);
-            let mask = df
-                .filter(&df["sample_name"].equal(&cur_sample_name_series).unwrap())
-                .unwrap();
-        }
-
-        if cur_sample_index >= 0 {
-            let reference_start = reference_starts.get(i).unwrap();
-            let reference_end = reference_ends.get(i).unwrap();
-            let element_type = element_types.get(i).unwrap();
-            let sequence = sequence.get(i).unwrap();
-            let sequence_length = if element_type == 3 {
-                (reference_end - reference_start) as usize
-            } else {
-                sequence.len()
-            };
-
-            if element_type > 0 {
-                mask.entry(reference_start)
-                    .and_modify(|e| {
-                        *e = std::cmp::max(*e, sequence_length);
-                    })
-                    .or_insert(sequence_length);
-            }
-        }
-    }
-
-    for (key, value) in &mask {
-        println!("{}: {}", key, value);
-    }
-
-    mask
-}
-
 pub fn extract_reads(
     bam: &mut IndexedReader,
     reads_url: &Url,
