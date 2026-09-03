@@ -731,6 +731,7 @@ let _gsVpRegions = [];           // [{contig,start,end}] currently-loaded window
 const _gsVpData = new Map();     // regionKey -> variant_tracks[] for that window
 let _gsVpInFlight = null;        // request key currently being fetched (dedupe)
 let _gsVpTimer = null;
+let _gsVpStatusInFlight = 0;     // # overlapping loads showing the busy status bar
 
 function _gsVpKeepSpan() {
   // Keep windows whose center is within ~3 viewport spans of the current center.
@@ -767,6 +768,17 @@ async function gsLoadVariantsForViewport(force) {
   const reqKey = `${contig}:${win.start}-${win.end}`;
   if (_gsVpInFlight === reqKey) return;                                // already fetching
   _gsVpInFlight = reqKey;
+  // Progress feedback: a cold window is read-bound (htslib decompress+parse of
+  // the in-range VCF lines) and can take seconds at cohort scale (#78 measured
+  // ~13s remote), so tell the user what's happening. Indeterminate — the server
+  // doesn't stream progress. Counter so overlapping loads don't hide the bar
+  // early (mirrors smart-tracks read-load status).
+  _gsVpStatusInFlight++;
+  if (window.__GS_STATUS) {
+    window.__GS_STATUS(
+      `Loading variants for ${contig}:${win.start.toLocaleString()}–${win.end.toLocaleString()}…`,
+      { busy: true });
+  }
   try {
     const resp = await sendCommMessage("fetch_variants",
       { contig, start: win.start, end: win.end }, 30000);
@@ -781,11 +793,26 @@ async function gsLoadVariantsForViewport(force) {
       }
       _gsVpRebuildTracks();
       if (typeof renderAll === "function") renderAll();
+      if (window.__GS_STATUS && _gsVpStatusInFlight <= 1) {
+        const nv = resp.variant_tracks.reduce(
+          (a, t) => a + (t.variants_data ? t.variants_data.length : 0), 0);
+        window.__GS_STATUS(`Loaded ${nv.toLocaleString()} variants`, { autoHide: 1800 });
+      }
     }
   } catch (e) {
     console.warn("viewport variant load failed:", e);
+    if (window.__GS_STATUS) {
+      window.__GS_STATUS("Variant load failed", { autoHide: 5000 });
+    }
   } finally {
     if (_gsVpInFlight === reqKey) _gsVpInFlight = null;
+    _gsVpStatusInFlight = Math.max(0, _gsVpStatusInFlight - 1);
+    // Only clear the busy bar when the last overlapping load settles; a
+    // success/failure message above (autoHide) supersedes it when shown.
+    if (_gsVpStatusInFlight === 0 && window.__GS_STATUS) {
+      const bar = document.getElementById("statusBar");
+      if (bar && bar.classList.contains("indeterminate")) window.__GS_STATUS(false);
+    }
   }
 }
 

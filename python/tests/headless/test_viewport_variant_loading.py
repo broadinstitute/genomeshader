@@ -137,6 +137,31 @@ def test_pan_beyond_window_fetches_again(browser):
     page.close()
 
 
+def test_load_reports_progress_status(browser):
+    # #79: a cold window fetch is multi-second at scale, so the loader must
+    # surface a descriptive busy status and then clear/settle it.
+    page = _open(browser)
+    page.evaluate(
+        """() => { window.__GS_STATUS_LOG = [];
+            const real = window.__GS_STATUS;
+            window.__GS_STATUS = function (msg, opts) {
+              window.__GS_STATUS_LOG.push({ msg: msg, opts: opts || {} });
+              return real ? real(msg, opts) : undefined;
+            }; }""")
+    view = page.evaluate("() => ({s: window.__GS_STATE.startBp, e: window.__GS_STATE.endBp})")
+    page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")
+    log = page.evaluate("() => window.__GS_STATUS_LOG")
+    # a descriptive, indeterminate 'Loading variants for <contig>:<win>' up front
+    busy = [e for e in log if isinstance(e["msg"], str)
+            and e["msg"].startswith("Loading variants for") and e["opts"].get("busy")]
+    assert busy, f"no descriptive busy status emitted: {log}"
+    # and a settle: either a 'Loaded N variants' summary or an explicit hide
+    settled = [e for e in log if (isinstance(e["msg"], str)
+               and e["msg"].startswith("Loaded")) or e["msg"] in (False, None)]
+    assert settled, f"busy status never settled: {log}"
+    page.close()
+
+
 def test_far_ranging_evicts_distant_windows(browser):
     page = _open(browser)
     page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")
