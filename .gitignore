@@ -22,3 +22,6 @@ JOURNAL/
 
 # Downloaded real datasets (Pf7 etc.) — never commit
 fiss_downloads/
+
+# htslib remote-index caches (dropped in cwd when region-seeking remote VCFs)
+*.pf7.vcf.gz.tbi
