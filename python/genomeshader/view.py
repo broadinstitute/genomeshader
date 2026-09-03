@@ -1043,9 +1043,19 @@ class GenomeShader:
             if gcs_path.endswith(".bam") or gcs_path.endswith(".cram"):
                 self._session.attach_reads([gcs_path], cohort)
             else:
+                # Listing a directory enumerates every object under the prefix —
+                # for a per-sample cohort that's tens of thousands of BAMs and
+                # can take a while. If you already know the sample->BAM paths,
+                # set_sample_mapping({sample: [url]}) resolves reads on demand and
+                # skips this listing entirely.
+                print(f"GenomeShader: attach_reads listing '{gcs_path}' "
+                      f"(large read dirs can be slow; set_sample_mapping avoids this)…",
+                      flush=True)
+                _t = time.perf_counter()
                 bams = gs._gcs_list_files_of_type(gcs_path, ".bam")
                 crams = gs._gcs_list_files_of_type(gcs_path, ".cram")
-
+                print(f"GenomeShader:   {len(bams):,} BAM + {len(crams):,} CRAM "
+                      f"({time.perf_counter() - _t:.1f}s)", flush=True)
                 self._session.attach_reads(bams, cohort)
                 self._session.attach_reads(crams, cohort)
 
@@ -1160,12 +1170,20 @@ class GenomeShader:
 
         # Reconcile the requested sample subset against the VCF headers, and
         # grow the session-wide set of renderable (in-header) sample names.
+        # This reads each file's header (all sample names) over the network, so
+        # a big cohort split per contig is a handful of multi-100KB fetches —
+        # report progress so the setup isn't a silent wait.
+        print(f"GenomeShader: attach_variants '{track_name}': reading headers of "
+              f"{len(paths_to_attach)} file(s)…", flush=True)
+        _t_hdr = time.perf_counter()
         header_samples: set = set()
         for p, idx in zip(paths_to_attach, indexes_to_attach):
             try:
                 header_samples.update(gs._vcf_sample_names(p, idx))
             except Exception as e:
                 warnings.warn(f"could not read samples from '{p}': {e}")
+        print(f"GenomeShader:   {len(header_samples):,} sample(s) across header(s) "
+              f"({time.perf_counter() - _t_hdr:.1f}s)", flush=True)
 
         subset: Optional[List[str]] = None
         if samples is not None:
@@ -1183,7 +1201,10 @@ class GenomeShader:
             self._vcf_sample_universe.update(header_samples)
 
         self._variant_datasets.append((str(track_name), paths_to_attach))
+        _t_idx = time.perf_counter()
         self._session.attach_variants(paths_to_attach, indexes_to_attach, subset)
+        print(f"GenomeShader:   indexed {len(paths_to_attach)} file(s) for contig routing "
+              f"({time.perf_counter() - _t_idx:.1f}s)", flush=True)
         self._reconcile_read_samples()
 
     def set_sample_mapping(self, mapping: dict):
@@ -1229,15 +1250,39 @@ class GenomeShader:
             List[str]: List of unique BAM sample names corresponding to the
                 given VCF samples.
         """
+        attached_by_stem = None  # lazily built {basename-stem: url} of attached reads
         bam_samples = set()
         for vcf_sample in vcf_samples:
             if self._sample_mapping and vcf_sample in self._sample_mapping:
-                # Use mapping
+                # Explicit mapping wins.
                 bam_samples.update(self._sample_mapping[vcf_sample])
-            else:
-                # Identity mapping (VCF name == BAM name)
-                bam_samples.add(vcf_sample)
+                continue
+            # No explicit mapping: resolve the sample to an ATTACHED read whose
+            # filename stem matches (e.g. sample "X" -> ".../X.bam"), so
+            # attach_reads(dir) works without a hand-built mapping. The old code
+            # returned the bare sample name here, which is not a URL — the read
+            # fetch then failed to parse it and the smart track hung on
+            # "loading…". Fall back to the bare name only when nothing matches.
+            if attached_by_stem is None:
+                attached_by_stem = self._attached_reads_by_stem()
+            bam_samples.add(attached_by_stem.get(vcf_sample, vcf_sample))
         return list(bam_samples)
+
+    def _attached_reads_by_stem(self) -> dict:
+        """{basename-stem -> url} for every attached BAM/CRAM, so a VCF sample
+        name resolves to its read file by filename (sample "X" -> ".../X.bam")
+        when no explicit sample mapping is set."""
+        out: dict = {}
+        try:
+            for url in self._session.get_attached_reads():
+                base = str(url).rsplit("/", 1)[-1]
+                for ext in (".bam", ".cram"):
+                    if base.endswith(ext):
+                        out[base[: -len(ext)]] = url
+                        break
+        except Exception:
+            pass
+        return out
     
     def get_bam_sample_names(self) -> List[str]:
         """
@@ -3908,7 +3953,14 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             None: Displays the visualization in the notebook.
         """
         # The ipywidget path is the portable transport (Notebook + Lab + Terra).
-        return self.show_widget(locus)
+        # First render decodes the window's variants over all samples (the cold
+        # ~seconds-scale read at cohort scale) + assembles reference/genes; report
+        # so it isn't a silent wait.
+        print(f"GenomeShader: rendering {locus}…", flush=True)
+        _t = time.perf_counter()
+        out = self.show_widget(locus)
+        print(f"GenomeShader:   rendered {locus} ({time.perf_counter() - _t:.1f}s)", flush=True)
+        return out
 
     def save(
         self,

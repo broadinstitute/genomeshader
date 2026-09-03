@@ -187,6 +187,12 @@ impl Session {
 
     fn write_parquet_uri(&self, uri: &str, df: DataFrame) -> PyResult<()> {
         df.lazy()
+            // sink_parquet streams; combined with the default common-subplan
+            // elimination polars prints "Cannot combine 'streaming' with
+            // 'comm_subplan_elim'. CSE will be turned off." CSE has nothing to
+            // optimize on a fresh single-frame write, so disable it up front to
+            // silence the (harmless) warning.
+            .with_comm_subplan_elim(false)
             .sink_parquet_cloud(uri.to_string(), None, ParquetWriteOptions::default())
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(
