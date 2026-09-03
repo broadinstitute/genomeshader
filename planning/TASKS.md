@@ -8,7 +8,8 @@ verify in a real browser — see planning/MANUAL_TESTS.md.
 ## Open
 
 - [ ] **#79** Progress bar for any extensive load. Any place with a multi-second load (cold window decode — #78 measured 13s remote first-visit; carrier fetch; staging a reference) must show a progress indicator with a plain-language "what's happening behind the scenes" (e.g. "reading variants for chr1:100k-104k…"). Requested by Jonn. Directly motivated by #78's cold-load numbers — the right UX answer to first-visit latency (better than shaving 13s→10s)
-- [ ] **#49** Vertical mode: upright text, track names/menus top-left, fix sample track. `translateFrame` core tested; render not wired. LOW PRIORITY (UI polish, off the scale path)
+- [ ] **#49** Vertical mode. PARTIAL: upright track-name headers SHIPPED (dropped an inline `rotate(-90deg)` that beat the CSS; guard `test_vertical_mode.py`). Remaining → #80. LOW PRIORITY (UI polish, off the scale path)
+- [ ] **#80** Vertical mode remainder (split from #49): render the sample (smart/read) track as a vertical pileup — WebGPU canvas has no vertical layout yet, so the seeded read track doesn't appear as a column; also fix axis-tick-label overlap ("100…0 kb" garble) and leftmost-header edge clip. GPU-gated verify (real Chrome + WebGPU). LOW PRIORITY
 
 ### Deferred / decision-gated future work (not blocking)
 - **Tier 3 (Population / AoU, >~100K)** — build when an AoU-scale callset is the real target. Default producer = on-demand windowed aggregation over the native store + lazy per-window cache (NOT a precompute pipeline); precompute→tiled store is an optional accelerator. Gated on Jonn's privacy/small-cell + access-tier (Registered vs Controlled) decision + an AoU review. See DATA_LOADING_SCALE_V2.md §7/§13.
