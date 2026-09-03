@@ -1227,8 +1227,53 @@ function initializeRightSidebar() {
     
     // Initialize active tab
     updateActiveTab();
-    
+
     // Initial render
     renderSmartTracksSidebar();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Test seam: seed a Smart track with canned reads and paint it WITHOUT the
+// ipywidgets comm (which the headless / real-GPU harness can't provide). Mirrors
+// the exact path fetchReadsForSmartTrack takes on a real load — createSmartTrack,
+// then set readsData / readsLayout / sampleId and renderSmartTrack — so a WebGPU
+// pixel test exercises the real read + SNP draw. Same window.__GS_* seam pattern
+// as window.__GS_processReadsData above; no production code calls it.
+if (typeof window !== "undefined") {
+  window.__GS_TEST_seedSmartTrack = async function (sampleId, rawReads, opts) {
+    opts = opts || {};
+    const track = createSmartTrack(opts.strategy || "best", opts.selectedAlleles || []);
+    track.sampleId = sampleId;
+    track.label = sampleId;
+    track.collapsed = opts.collapsed === true; // default expanded (rows visible)
+    track.readsData = rawReads;
+    track.readsLayout = processReadsData(rawReads);
+    // initSmartTrackWebGPU (started by createSmartTrack) is async; wait for the
+    // per-track renderer to come up before we paint.
+    for (let i = 0; i < 80 && !state.smartTrackRenderers.has(track.id); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    updateTracksHeight();
+    renderAll();
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    try { renderSmartTrack(track.id); } catch (e) {}
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    const rec = state.smartTrackRenderers.get(track.id) || {};
+    return {
+      trackId: track.id,
+      rowCount: track.readsLayout ? track.readsLayout.rowCount : 0,
+      readCount: track.readsLayout ? track.readsLayout.reads.length : 0,
+      hasWebGPU: !!rec.webgpuCore,
+    };
+  };
+
+  // Test seam: narrow the visible locus to `spanBp` bases (keeping startBp) and
+  // re-render, so a pixel test can zoom in far enough that per-base SNP tiles
+  // are wide enough to draw their base letter (#67). Returns the new window.
+  window.__GS_TEST_setSpan = function (spanBp) {
+    state.endBp = state.startBp + spanBp;
+    renderAll();
+    return { startBp: state.startBp, endBp: state.endBp };
+  };
 }

@@ -38,17 +38,43 @@ maturin develop --release               # builds python/genomeshader/genomeshade
    - view.py `fetch_carriers` resolves the right sample names end-to-end
      (regression guard for the zero-width-locus panic; see below).
    Skips (not fails) if the extension isn't built or bgzip/tabix are absent.
-3. **Headless DOM** (`tests/headless/`) — pure-JS + jsdom cores via Playwright.
-   ⚠️ **WebGPU pixels cannot be rendered in this container** (see the full probe
-   below), so the smart-track canvas render (#65) and SNP letters (#67) still
-   can't be pixel-verified here — only their pure-JS layout cores
-   (`__gsComputeVirtualRowWindow`, `__gsTranslateFrame`, etc.) are tested. Those
-   two need a real browser (see planning/MANUAL_TESTS.md §5–6).
+3. **Headless DOM** (`tests/headless/test_headless.py`) — the real viewer in
+   headless Chromium (software GL) via Playwright; asserts on SVG/DOM/interaction
+   (WebGPU doesn't paint under software GL, so pixels are covered by layer 4).
+4. **WebGPU pixels** (`tests/headless/test_webgpu_pixels.py`) — the real viewer on
+   a real GPU (real Chrome, headed under Xvfb). Asserts painted pixels: reads on
+   the smart-track WebGPU canvas, haplotype colors, #65 virtualization (500-read
+   pileup lifts the 300 cap; scroll repaints), #67 SNP glyph letters. Skips
+   cleanly with no GPU. Requires the setup in the next section; guide in
+   planning/WEBGPU_TESTING.md. (This layer caught a real bug: `requestAdapter()`
+   had no retry, so the first read track after load intermittently dropped to
+   Canvas2D — fixed in webgpu-core.js.)
 
-### WebGPU headless probe — CHARACTERIZED, not achievable (2026-09-02)
+### WebGPU on the real GPU — NOW WORKING (2026-09-03)
+
+**Reversed the 2026-09-02 dead end.** WebGPU paint+readback works on the Quadro
+RTX 8000. The developer-facing guide is
+[planning/WEBGPU_TESTING.md](WEBGPU_TESTING.md) (setup, writing pixel tests,
+troubleshooting); `scripts/setup_gpu_webgpu.sh` is the idempotent rebuild and the
+executable source of truth. Quick check:
+
+```bash
+source scripts/setup_gpu_webgpu.sh    # loader+ICD+Xvfb+Chrome, checks the GPU
+python scripts/webgpu_smoke.py        # PASS: pixel [64,128,192,255] exact on nvidia/turing
+```
+
+Agent-recreation notes specific to this container: only the operator-side
+`--device /dev/nvidia-modeset` (needed, else Vulkan `INITIALIZATION_FAILED`)
+persists across relaunch; the loader, ICD json, device perms, and Xvfb all reset
+— re-run the setup script. The load-bearing non-obvious bit (see the guide): the
+NVIDIA Vulkan ICD links libX11 and won't init without a live X display, so Xvfb
+is mandatory even for "headless".
+
+--- historical probe log (2026-09-02), kept for context ---
 
 Spent a full pass trying to paint+read back a WebGPU frame so #65/#67 could
-self-test. Findings, so nobody re-treads them:
+self-test. Findings below were the pre-GPU-passthrough state (headless, no
+`--device nvidia-modeset`, no real GPU). Superseded by the section above:
 
 - **Playwright's bundled Chromium** (`chromium-1234`, even the full build, not just
   `chromium_headless_shell`): `navigator.gpu` is **undefined** — the WebGPU JS

@@ -17,7 +17,16 @@ class WebGPUCore {
     }
 
     this.canvas = canvas;
-    const adapter = await navigator.gpu.requestAdapter();
+    // requestAdapter() can transiently return null right after page load (GPU
+    // process / other canvases' init still settling) — a single null then
+    // silently drops this canvas to the Canvas2D fallback. Every canvas (main
+    // tracks, flow, each smart track) routes through here, so retry once-a-frame
+    // a few times before giving up.
+    let adapter = null;
+    for (let attempt = 0; attempt < 5 && !adapter; attempt++) {
+      adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) await new Promise((r) => setTimeout(r, 100));
+    }
     if (!adapter) {
       throw new Error('Failed to get WebGPU adapter');
     }
