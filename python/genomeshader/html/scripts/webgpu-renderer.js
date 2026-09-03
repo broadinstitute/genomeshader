@@ -451,6 +451,15 @@ class InstancedRenderer {
 
   // Render all instances
   render(encoder, renderPass) {
+    // Keep the projection matched to the CURRENT canvas size every frame. The
+    // canvas can be resized between init and now (first paint before layout
+    // settled, orientation swap); previously the projection was only updated at
+    // init / on window-resize, so a stale projection drew all geometry offscreen
+    // until a manual resize (#81 — vertical read bodies not painting on load).
+    if (this.core && this.core.setViewport && this.core.canvas) {
+      this.core.setViewport(this.core.canvas.width, this.core.canvas.height);
+    }
+
     // Create uniform bind group (same layout for all pipelines)
     const uniformBindGroupLayout = this.rectPipeline.getBindGroupLayout(0);
     const uniformBindGroup = this.device.createBindGroup({
