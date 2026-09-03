@@ -109,6 +109,55 @@ def test_virtualization_lifts_read_cap(gpu_browser):
         assert errors == [], errors
 
 
+def test_vertical_reads_span_genomic_axis(gpu_browser):
+    """#80: in vertical mode the read pileup must span the full genomic (Y) axis,
+    not cram into the top. The bug passed the cross-axis length (container width,
+    ~H) as the genomic-axis length to yGenomeCanonical, squashing every read into
+    the top ~H/W of the canvas.
+
+    Asserts the geometry the renderer emits (the read-body rect instances span
+    most of the canvas height), not painted pixels — the vertical smart track has
+    a separate first-frame paint quirk (alpha-blended bodies appear only after a
+    context reconfigure) that makes pixel readback flaky; the coordinate mapping
+    this test guards is deterministic."""
+    with hg.open_viewer(gpu_browser, orientation="vertical") as (page, errors):
+        hg.set_span(page, 900)
+        # Record every rect instance the smart-track renderers emit.
+        page.evaluate("""() => {
+          window.__RECTS = [];
+          const S = window.__GS_STATE;
+          const patch = () => {
+            for (const [tid, r] of (S.smartTrackRenderers || new Map())) {
+              const ir = r.instancedRenderer;
+              if (!ir || ir.__spy) continue; ir.__spy = 1;
+              const o = ir.addRect.bind(ir);
+              ir.addRect = (x, y, w, h, c, a) => {
+                window.__RECTS.push({ y, h, alpha: (c && c.length > 3) ? c[3] : 1 });
+                return o(x, y, w, h, c, a);
+              };
+            }
+          };
+          window.__spyPoll = setInterval(patch, 8); patch();
+        }""")
+        res = hg.seed_reads(page, n=14, haplotype=1, snp=True)
+        assert res["hasWebGPU"] is True, "vertical smart track fell back to Canvas2D"
+        page.wait_for_timeout(500)
+        geom = page.evaluate("""() => {
+          const c = document.querySelector('[id^="smart-track-webgpu-"]');
+          const bodies = (window.__RECTS || []).filter(r => r.alpha < 0.7); // read bodies (a=.5)
+          if (!bodies.length) return { n: 0 };
+          const top = Math.min(...bodies.map(r => r.y));
+          const bot = Math.max(...bodies.map(r => r.y + r.h));
+          return { n: bodies.length, top, bot, canvasH: c ? c.height : 0 };
+        }""")
+        assert geom["n"] >= 14, f"read bodies not emitted in vertical mode: {geom}"
+        span = (geom["bot"] - geom["top"]) / geom["canvasH"]
+        assert span > 0.6, (
+            f"vertical read bodies span only {span:.0%} of the genomic axis "
+            f"({geom}) — crammed, not a full pileup")
+        assert errors == [], errors
+
+
 def test_virtualization_scroll_repaints(gpu_browser):
     """#65: scrolling the virtualized canvas repaints a different row window —
     the painted pixels must change (viewport-sized canvas + scroll offset)."""

@@ -442,25 +442,30 @@ function renderSmartTrack(trackId) {
   }
   
   if (isVertical) {
-    const coordHeight = H;
+    // Vertical mode: the GENOMIC axis runs down the screen (length W =
+    // container height) and reads stack in COLUMNS across the cross axis
+    // (length H = container width). Everything genomic (read y1/y2, markers,
+    // variant guides) maps over W; everything column-wise (count, grid-line x)
+    // uses H. Mixing these crammed the reads + grid into the top H px (#80).
+    const coordHeight = W;             // genomic-axis length for yGenomeCanonical
     const left = 8;
     const colW = 18;
-    const cols = Math.floor((W - left - 12) / colW);
-    
-    // Draw column lines
+    const cols = Math.floor((H - left - 12) / colW);  // columns fit across the cross axis
+
+    // Draw column lines (down the genomic axis, one per read column)
     ctx.strokeStyle = grid;
     ctx.lineWidth = 1;
     for (let i=0; i<cols; i++) {
       const x = left + i*colW + colW/2;
       ctx.beginPath();
       ctx.moveTo(x, 16);
-      ctx.lineTo(x, H-16);
+      ctx.lineTo(x, W-16);
       ctx.stroke();
     }
     
     // Draw reads if available
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
-      const maxCols = Math.floor((W - left - 12) / colW);
+      const maxCols = Math.floor((H - left - 12) / colW);
       for (const read of track.readsLayout.reads) {
         // When collapsed (closed state), only show first row/column
         if (track.collapsed && read.row !== 0) continue;
@@ -565,7 +570,7 @@ function renderSmartTrack(trackId) {
       const y = yGenomeCanonical(v.pos, coordHeight);
       ctx.beginPath();
       ctx.moveTo(left, y);
-      ctx.lineTo(W-10, y);
+      ctx.lineTo(H-10, y);  // guide spans the track's cross-axis width, not the genomic length
       ctx.stroke();
     }
     ctx.globalAlpha = 1.0;
