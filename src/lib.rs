@@ -1012,6 +1012,33 @@ fn _vcf_sample_names(bcf_path: String, index_path: Option<String>) -> PyResult<V
     })
 }
 
+#[pyfunction]
+fn _bam_sample_names(py: Python, bam_urls: Vec<String>) -> PyResult<Vec<(String, Vec<String>)>> {
+    // The @RG SM sample names in each BAM/CRAM header — the authoritative sample
+    // identity when filenames don't carry the sample name. Returns (url, [SM…])
+    // per file; a file that can't be opened yields an empty list. Network I/O, so
+    // release the GIL (runs on the background read-index thread).
+    py.allow_threads(|| {
+        let cache = std::env::temp_dir();
+        let mut out = Vec::with_capacity(bam_urls.len());
+        for u in bam_urls {
+            let sms = Url::parse(&u)
+                .ok()
+                .and_then(|url| stage::open_bam(&url, &cache).ok())
+                .map(|bam| {
+                    let mut v: Vec<String> =
+                        alignment::get_rg_to_sm_mapping(&bam).into_values().collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                })
+                .unwrap_or_default();
+            out.push((u, sms));
+        }
+        Ok(out)
+    })
+}
+
 /// A Python module implemented in Rust. The name of this function must match
 /// the `lib.name` setting in the `Cargo.toml`, else Python will not be able to
 /// import the module.
@@ -1023,6 +1050,7 @@ fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_version, m)?)?;
     m.add_function(wrap_pyfunction!(_extract_variants, m)?)?;
     m.add_function(wrap_pyfunction!(_vcf_sample_names, m)?)?;
+    m.add_function(wrap_pyfunction!(_bam_sample_names, m)?)?;
 
     Ok(())
 }

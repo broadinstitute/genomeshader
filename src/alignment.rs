@@ -148,7 +148,7 @@ mod md_tests {
     }
 }
 
-fn get_rg_to_sm_mapping(bam: &IndexedReader) -> HashMap<String, String> {
+pub fn get_rg_to_sm_mapping(bam: &IndexedReader) -> HashMap<String, String> {
     let header = bam::Header::from_template(bam.header());
 
     let rg_sm_map: HashMap<String, String> = header

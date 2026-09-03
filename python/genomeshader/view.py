@@ -294,6 +294,17 @@ class GenomeShader:
         # set won't render, so they're reported by _reconcile_read_samples.
         self._vcf_sample_universe: set = set()
 
+        # Background VCF-sample -> [read URL] index, built once both variants and
+        # reads are attached (see _maybe_start_read_index). Matches by filename
+        # first (a guess — filenames aren't guaranteed to be sample names), then
+        # reads @RG SM headers for the leftovers (authoritative). Kept separate
+        # from the user's explicit _sample_mapping, which always wins.
+        self._read_index: dict = {}
+        self._pending_read_dirs: List[str] = []   # dirs to list in the background
+        self._read_index_thread = None
+        self._read_index_done = threading.Event()
+        self._read_index_lock = threading.Lock()
+
         # One entry per variant track: (track_name, list of paths). Order matches session's variant_file_groups.
         self._variant_datasets: List[Tuple[str, List[str]]] = []
         
@@ -1043,44 +1054,20 @@ class GenomeShader:
             if gcs_path.endswith(".bam") or gcs_path.endswith(".cram"):
                 self._session.attach_reads([gcs_path], cohort)
             else:
-                # Listing a directory enumerates every object under the prefix —
-                # for a per-sample cohort that's tens of thousands of BAMs and
-                # can take a while. If you already know the sample->BAM paths,
-                # set_sample_mapping({sample: [url]}) resolves reads on demand and
-                # skips this listing entirely.
-                print(f"GenomeShader: attach_reads listing '{gcs_path}' "
-                      f"(large read dirs can be slow; set_sample_mapping avoids this)…",
-                      flush=True)
-                _t = time.perf_counter()
-                bams = gs._gcs_list_files_of_type(gcs_path, ".bam")
-                crams = gs._gcs_list_files_of_type(gcs_path, ".cram")
-                print(f"GenomeShader:   {len(bams):,} BAM + {len(crams):,} CRAM "
-                      f"({time.perf_counter() - _t:.1f}s)", flush=True)
-                self._session.attach_reads(bams, cohort)
-                self._session.attach_reads(crams, cohort)
+                # Defer the (potentially tens-of-thousands-of-objects) directory
+                # listing to the background read-index thread so it never blocks
+                # attach/show. The index lists + maps sample->file there, once
+                # variants are also attached (see _build_read_index).
+                self._pending_read_dirs.append((gcs_path, cohort))
 
         self._reconcile_read_samples()
 
     def _reconcile_read_samples(self):
-        """Warn about attached read samples that aren't in the VCF sample
-        universe. Reads only render for samples that exist in the variant
-        layer, so a BAM whose sample isn't in any attached VCF header (or was
-        excluded by a `samples=` subset) is silently never drawn — surface that
-        here. No-op until both variants and reads are attached."""
-        if not self._vcf_sample_universe:
-            return
-        try:
-            bam_samples = set(self.get_bam_sample_names())
-        except Exception:
-            return  # can't read BAM headers (offline / auth) — skip quietly
-        if not bam_samples:
-            return
-        excluded = sorted(bam_samples - self._vcf_sample_universe)
-        if excluded:
-            warnings.warn(
-                f"{len(excluded)} read sample(s) are not in the VCF sample "
-                f"universe and will not be rendered: {', '.join(excluded)}"
-            )
+        """Kick off the background VCF-sample -> read-file index once BOTH
+        variants (sample universe) and reads (attached files or pending dirs)
+        are present. Called at the end of attach_variants and attach_reads, so
+        it fires after whichever of the two is called second."""
+        self._maybe_start_read_index()
 
     def attach_loci(self, loci: Union[str, List[str]]):
         """
@@ -1250,23 +1237,111 @@ class GenomeShader:
             List[str]: List of unique BAM sample names corresponding to the
                 given VCF samples.
         """
+        # If the background read index is still building, let it finish — a read
+        # fetch is on-demand (the user just picked a sample), so a bounded wait is
+        # fine and avoids a spurious "no read file" before the index is ready.
+        if self._read_index_thread is not None and not self._read_index_done.is_set():
+            self._read_index_done.wait(timeout=120)
+
         attached_by_stem = None  # lazily built {basename-stem: url} of attached reads
         bam_samples = set()
         for vcf_sample in vcf_samples:
             if self._sample_mapping and vcf_sample in self._sample_mapping:
-                # Explicit mapping wins.
-                bam_samples.update(self._sample_mapping[vcf_sample])
+                bam_samples.update(self._sample_mapping[vcf_sample])  # explicit wins
                 continue
-            # No explicit mapping: resolve the sample to an ATTACHED read whose
-            # filename stem matches (e.g. sample "X" -> ".../X.bam"), so
-            # attach_reads(dir) works without a hand-built mapping. The old code
-            # returned the bare sample name here, which is not a URL — the read
-            # fetch then failed to parse it and the smart track hung on
-            # "loading…". Fall back to the bare name only when nothing matches.
+            with self._read_index_lock:
+                hit = list(self._read_index.get(vcf_sample, []))
+            if hit:
+                bam_samples.update(hit)
+                continue
+            # Not in the index: an explicit .bam attach matched by filename stem,
+            # or the value is already a locator. Otherwise omit, so the caller
+            # reports a clean "no read file for sample" instead of trying to parse
+            # a bare sample name as a URL (the old behavior that hung "loading…").
             if attached_by_stem is None:
                 attached_by_stem = self._attached_reads_by_stem()
-            bam_samples.add(attached_by_stem.get(vcf_sample, vcf_sample))
+            if vcf_sample in attached_by_stem:
+                bam_samples.add(attached_by_stem[vcf_sample])
+            elif "://" in vcf_sample or vcf_sample.startswith("/"):
+                bam_samples.add(vcf_sample)
         return list(bam_samples)
+
+    @staticmethod
+    def _read_stem(url) -> str:
+        """Filename stem of a read URL: '.../HG1.bam' -> 'HG1'."""
+        base = str(url).rsplit("/", 1)[-1]
+        for ext in (".bam", ".cram"):
+            if base.endswith(ext):
+                return base[: -len(ext)]
+        return base
+
+    def _maybe_start_read_index(self):
+        """Start the background VCF-sample -> read-URL index once BOTH variants
+        (sample universe) and reads (attached files or pending dirs) are present.
+        Idempotent; called from _reconcile_read_samples after each attach."""
+        if self._read_index_thread is not None:
+            return
+        if not self._vcf_sample_universe:
+            return
+        has_reads = bool(self._pending_read_dirs)
+        if not has_reads:
+            try:
+                has_reads = bool(self._session.get_attached_reads())
+            except Exception:
+                has_reads = False
+        if not has_reads:
+            return
+        self._read_index_thread = threading.Thread(
+            target=self._build_read_index, name="gs-read-index", daemon=True)
+        self._read_index_thread.start()
+
+    def _build_read_index(self):
+        """Background: map each VCF sample to its read file(s). Filenames aren't
+        guaranteed to be sample names, so match by filename stem first (a guess)
+        and read @RG SM headers for the leftovers (authoritative)."""
+        import genomeshader.genomeshader as gs
+        t0 = time.perf_counter()
+        try:
+            urls = []
+            try:
+                urls.extend(self._session.get_attached_reads())
+            except Exception:
+                pass
+            for path, _cohort in list(self._pending_read_dirs):
+                try:
+                    urls.extend(gs._gcs_list_files_of_type(path, ".bam"))
+                    urls.extend(gs._gcs_list_files_of_type(path, ".cram"))
+                except Exception as e:
+                    warnings.warn(f"read-index: could not list '{path}': {e}")
+            urls = list(dict.fromkeys(str(u) for u in urls))  # de-dup, keep order
+            samples = set(self._vcf_sample_universe)
+
+            index: dict = {}
+            unmatched = []
+            for u in urls:                                   # fast pass: by filename
+                stem = self._read_stem(u)
+                if stem in samples:
+                    index.setdefault(stem, []).append(u)
+                else:
+                    unmatched.append(u)
+            print(f"GenomeShader: read-index: {len(urls):,} file(s); "
+                  f"{len(index):,} matched by name, reading @RG SM for "
+                  f"{len(unmatched):,}…", flush=True)
+            if unmatched:                                    # authoritative: by SM
+                try:
+                    for u, sms in gs._bam_sample_names(unmatched):
+                        for sm in sms:
+                            if sm in samples:
+                                index.setdefault(sm, []).append(u)
+                except Exception as e:
+                    warnings.warn(f"read-index: header read failed: {e}")
+
+            with self._read_index_lock:
+                self._read_index = index
+            print(f"GenomeShader: read-index ready: {len(index):,}/{len(samples):,} "
+                  f"sample(s) mapped ({time.perf_counter() - t0:.1f}s)", flush=True)
+        finally:
+            self._read_index_done.set()
 
     def _attached_reads_by_stem(self) -> dict:
         """{basename-stem -> url} for every attached BAM/CRAM, so a VCF sample
