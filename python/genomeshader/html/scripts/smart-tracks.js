@@ -199,6 +199,11 @@ async function initSmartTrackWebGPU(trackId) {
   textCanvas.style.left = '0';
   textCanvas.style.zIndex = '3';
   textCanvas.style.pointerEvents = 'none';
+  // A canvas is inline by default; as a later inline sibling of the WebGPU
+  // canvas it inherits a line-box/baseline gap (~font descent) and sits a few px
+  // LOW, so the SNP letters landed below their tiles. Block-level removes the
+  // inline gap so the overlay aligns exactly with the WebGPU canvas.
+  textCanvas.style.display = 'block';
 
   // Virtualization spacer: gives the container its scroll height so the
   // viewport-sized (sticky) canvases can draw only the visible rows — lifts the

@@ -117,6 +117,31 @@ def test_reads_show_snp_markers(gpu_browser):
         assert errors == [], errors
 
 
+def test_snp_letter_sits_on_tile(gpu_browser):
+    """The SNP base letter (2D text overlay) must land ON its colored tile
+    (WebGPU), not below it. The text canvas is inline by default, so as a later
+    sibling of the WebGPU canvas it picked up a line-box gap and sat ~a font
+    descent too low — the white letter then drew on the white background below
+    the tile (invisible). Assert white glyph pixels fall inside the tile's box."""
+    with hg.open_viewer(gpu_browser) as (page, errors):
+        hg.set_span(page, 20)  # wide per-base tiles so the letter renders
+        hg.seed_reads(page, n=1, haplotype=1, snp=True, snp_base="A")
+        page.wait_for_timeout(400)
+        img, px = hg.region_pixels(page, hg.canvas_box(page))
+        W, _H = img.size
+        green = [(i % W, i // W) for i, p in enumerate(px) if _base_green(p)]
+        assert green, "no SNP tile painted"
+        gx0, gx1 = min(x for x, _ in green), max(x for x, _ in green)
+        gy0, gy1 = min(y for _, y in green), max(y for _, y in green)
+        white_in_tile = [
+            (i % W, i // W) for i, p in enumerate(px)
+            if gx0 <= i % W <= gx1 and gy0 <= i // W <= gy1
+            and p[0] > 235 and p[1] > 235 and p[2] > 235
+        ]
+        assert white_in_tile, "no white letter pixels inside the SNP tile (letter offset off the box)"
+        assert errors == [], errors
+
+
 def test_virtualization_lifts_read_cap(gpu_browser):
     """#65: a deep pileup (well past the old 300-read cap) renders on WebGPU
     without crashing — all reads kept, packed into many rows."""
