@@ -714,3 +714,94 @@ if (typeof window !== "undefined") {
   window.__gsWindowStoreUpdate = gsWindowStoreUpdate;
   window.__gsRegionCovered = gsRegionCovered;
 }
+
+// ---------------------------------------------------------------------------
+// Viewport-driven variant loading (#71) + overscan (#41). Enabled by
+// GENOMESHADER_CONFIG.viewport_variant_loading. On each pan/zoom settle we fetch
+// variants for the visible window padded by an overscan margin (so a pan into
+// the margin already has data — no blank edges), keep a bounded set of recently
+// viewed windows, and evict far ones. This lets the browser page through a
+// cohort far larger than fits in memory: everything renders from per-variant
+// aggregates for the current window, independent of sample count. Variants
+// render from GENOMESHADER_CONFIG.variant_tracks; we rebuild that from the kept
+// windows (union, deduped by variant id). Uses the pure store cores above
+// (overscanRegion / gsRegionCovered / gsWindowStoreUpdate).
+const GS_VP_OVERSCAN = 0.5;      // fetch viewport ± 50% on each side
+let _gsVpRegions = [];           // [{contig,start,end}] currently-loaded windows
+const _gsVpData = new Map();     // regionKey -> variant_tracks[] for that window
+let _gsVpInFlight = null;        // request key currently being fetched (dedupe)
+let _gsVpTimer = null;
+
+function _gsVpKeepSpan() {
+  // Keep windows whose center is within ~3 viewport spans of the current center.
+  return Math.max(1, state.endBp - state.startBp) * 3;
+}
+
+function _gsVpRebuildTracks() {
+  // Union the kept windows' variant_tracks into config, deduped by variant id
+  // (overscan-overlapping windows share edge variants).
+  const byTrack = new Map();
+  for (const r of _gsVpRegions) {
+    for (const t of (_gsVpData.get(_gsRegionKey(r)) || [])) {
+      const key = t.name || t.id || "default";
+      if (!byTrack.has(key)) byTrack.set(key, { meta: t, vs: new Map() });
+      const slot = byTrack.get(key).vs;
+      for (const v of (t.variants_data || [])) slot.set(String(v.id), v);
+    }
+  }
+  const merged = [];
+  for (const { meta, vs } of byTrack.values()) {
+    merged.push({ ...meta, variants_data: [...vs.values()] });
+  }
+  window.GENOMESHADER_CONFIG.variant_tracks = merged;
+}
+
+async function gsLoadVariantsForViewport(force) {
+  const cfg = window.GENOMESHADER_CONFIG;
+  if (!cfg || !cfg.viewport_variant_loading) return;
+  const contig = state.contig;
+  const vs = Math.floor(state.startBp), ve = Math.ceil(state.endBp);
+  if (!contig || !(ve > vs)) return;
+  if (!force && gsRegionCovered(_gsVpRegions, contig, vs, ve)) return; // coverage skip
+  const win = overscanRegion(vs, ve, GS_VP_OVERSCAN);
+  const reqKey = `${contig}:${win.start}-${win.end}`;
+  if (_gsVpInFlight === reqKey) return;                                // already fetching
+  _gsVpInFlight = reqKey;
+  try {
+    const resp = await sendCommMessage("fetch_variants",
+      { contig, start: win.start, end: win.end }, 30000);
+    if (resp && Array.isArray(resp.variant_tracks)) {
+      const region = { contig, start: win.start, end: win.end };
+      _gsVpData.set(_gsRegionKey(region), resp.variant_tracks);
+      const upd = gsWindowStoreUpdate(_gsVpRegions, region, (vs + ve) / 2, _gsVpKeepSpan());
+      _gsVpRegions = upd.regions;
+      for (const ev of upd.evicted) _gsVpData.delete(_gsRegionKey(ev));
+      if (Array.isArray(resp.insertion_variants_lookup)) {
+        cfg.insertion_variants_lookup = resp.insertion_variants_lookup;
+      }
+      _gsVpRebuildTracks();
+      if (typeof renderAll === "function") renderAll();
+    }
+  } catch (e) {
+    console.warn("viewport variant load failed:", e);
+  } finally {
+    if (_gsVpInFlight === reqKey) _gsVpInFlight = null;
+  }
+}
+
+// Debounced trigger — called from the pan/zoom settle points.
+function gsScheduleViewportVariantLoad(delay) {
+  if (_gsVpTimer) clearTimeout(_gsVpTimer);
+  _gsVpTimer = setTimeout(() => { _gsVpTimer = null; gsLoadVariantsForViewport(false); },
+    delay == null ? 150 : delay);
+}
+
+if (typeof window !== "undefined") {
+  window.gsLoadVariantsForViewport = gsLoadVariantsForViewport;
+  window.gsScheduleViewportVariantLoad = gsScheduleViewportVariantLoad;
+  // Test introspection: which windows are loaded right now.
+  window.__gsVpState = () => ({
+    regions: _gsVpRegions.map((r) => ({ ...r })),
+    windowKeys: [..._gsVpData.keys()],
+  });
+}

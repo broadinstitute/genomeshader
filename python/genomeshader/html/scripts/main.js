@@ -5454,6 +5454,7 @@ function zoomByFactor(factor, anchorBp) {
   clampToChromosomeBounds();
 
   scheduleRender();
+  if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
 }
 
 // Center the view on a genomic position (keeps the current span).
@@ -5464,6 +5465,7 @@ function centerOnBp(pos) {
   state.endBp = state.startBp + span;
   clampToChromosomeBounds();
   scheduleRender();
+  if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
 }
 
 // Slide the view the minimum amount to bring a position into view (does NOT
@@ -5561,6 +5563,9 @@ function _commitLivePan() {
   _panLayers().forEach(e => { e.style.transform = ""; });
   state.livePanOffset = 0;
   renderAll();
+  // Viewport-driven variant loading (#71): fetch the new window ± overscan if it
+  // isn't already covered by a loaded window. No-op unless enabled in config.
+  if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
 }
 function endLivePan() {
   _commitLivePan();  // final refill at the settled position

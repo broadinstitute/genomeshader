@@ -350,6 +350,11 @@ function scheduleInitialWebGPURender() {
     if (typeof window.renderAll === "function") {
       // Render once now and once on the next frame to handle first-layout settle.
       window.renderAll();
+      // Viewport-driven variant loading (#71): fetch the opening window ± overscan
+      // (forced — nothing loaded yet). No-op unless enabled in config.
+      if (typeof window.gsLoadVariantsForViewport === "function") {
+        window.gsLoadVariantsForViewport(true);
+      }
       requestAnimationFrame(() => {
         if (typeof window.renderAll === "function") {
           window.renderAll();
