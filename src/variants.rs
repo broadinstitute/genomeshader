@@ -428,27 +428,39 @@ pub fn extract_variant_aggregates(
             // One decode of genotypes per record; tally per-allele SAMPLE counts.
             // present[k] += 1 once per sample that carries allele index k; missing
             // += 1 for any sample with a missing call.
-            let genotypes_array = record.genotypes()?;
+            // Tally per-allele SAMPLE counts by scanning the RAW GT integer
+            // buffer, not the Genotype API. `record.genotypes()` + `.get(i)`
+            // constructs a `Genotype(Vec<GenotypeAllele>)` PER SAMPLE — a heap
+            // allocation per sample per variant, the dominant decode cost at
+            // 20k+ samples. `format(b"GT").integer()` gives one shared buffer of
+            // per-sample i32 slices; we decode htslib's GT encoding inline:
+            //   allele index = (v >> 1) - 1   (-1 => missing);
+            //   v == i32::MIN (bcf_int32_vector_end) pads shorter ploidy -> stop.
+            // Output is bit-identical to the Genotype-API loop (guarded by
+            // aggregates_match_longformat_recompute).
+            let gt_fmt = record.format(b"GT");
+            let gts = gt_fmt.integer()?;
             let mut present = vec![0u32; n_alts_here + 1]; // index 0..=n_alts
             let mut missing = 0u32;
+            let mut seen_alt = vec![false; n_alts_here + 1]; // scratch, hoisted
             for sample_idx in 0..n_samples {
-                let gt = genotypes_array.get(sample_idx);
+                let slice = gts[sample_idx];
                 let mut seen_ref = false;
                 let mut seen_missing = false;
-                let mut seen_alt = vec![false; n_alts_here + 1];
-                for a in gt.iter() {
-                    match a {
-                        GenotypeAllele::Unphased(idx) | GenotypeAllele::Phased(idx) => {
-                            let k = *idx as usize;
-                            if k == 0 {
-                                seen_ref = true;
-                            } else if k <= n_alts_here {
-                                seen_alt[k] = true;
-                            }
-                        }
-                        GenotypeAllele::UnphasedMissing | GenotypeAllele::PhasedMissing => {
-                            seen_missing = true;
-                        }
+                for s in seen_alt.iter_mut() {
+                    *s = false;
+                }
+                for &v in slice {
+                    if v == i32::MIN {
+                        break; // vector end: rest of this sample's slot is padding
+                    }
+                    let a = (v >> 1) - 1;
+                    if a < 0 {
+                        seen_missing = true;
+                    } else if a == 0 {
+                        seen_ref = true;
+                    } else if (a as usize) <= n_alts_here {
+                        seen_alt[a as usize] = true;
                     }
                 }
                 if seen_ref {
