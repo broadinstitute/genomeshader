@@ -832,3 +832,135 @@ if (typeof window !== "undefined") {
     windowKeys: [..._gsVpData.keys()],
   });
 }
+
+// ---------------------------------------------------------------------------
+// Contig switcher (sidebar "Region" dropdown). Reference / genes / ideogram /
+// repeats are per-window and baked into the initial config, so jumping to a
+// contig needs the host: gsSwitchContig moves the view and asks for the new
+// region's payload (`navigate` comm), then applies it. Without a comm it still
+// moves the view and reloads variants via the viewport loader.
+// ---------------------------------------------------------------------------
+function gsContigList() {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const lens = cfg.chrom_lengths && Object.keys(cfg.chrom_lengths).length
+    ? cfg.chrom_lengths
+    : (typeof chrLengths !== "undefined" ? chrLengths : {});
+  return Object.keys(lens);
+}
+
+function gsPopulateContigSelect() {
+  const sel = document.getElementById("contigSelect");
+  if (!sel) return;
+  const contigs = gsContigList();
+  sel.innerHTML = "";
+  for (const c of contigs) {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c;
+    if (c === state.contig) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  if (!sel.__gsWired) {
+    sel.__gsWired = true;
+    sel.addEventListener("change", () => gsSwitchContig(sel.value));
+  }
+}
+
+// Drop the previous contig's per-region data so it doesn't flash before the new
+// region's payload arrives.
+function gsResetRegionData() {
+  const cfg = window.GENOMESHADER_CONFIG || (window.GENOMESHADER_CONFIG = {});
+  referenceSequence = "";
+  transcripts = [];
+  repeats = [];
+  cfg.reference_data = "";
+  cfg.transcripts_data = [];
+  cfg.repeats_data = [];
+  _gsVpRegions = [];
+  _gsVpData.clear();
+  _gsVpRebuildTracks();
+}
+
+function gsSwitchContig(contig) {
+  if (!contig || contig === state.contig) return;
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const len = Number((cfg.chrom_lengths || {})[contig])
+    || (typeof chrLengths !== "undefined" ? Number(chrLengths[contig]) : 0) || 0;
+  const curSpan = Math.max(1, Math.floor(state.endBp - state.startBp)) || 1000;
+  const span = len ? Math.min(curSpan, len) : curSpan;
+  state.contig = contig;
+  state.startBp = 1;
+  state.endBp = 1 + span;
+  if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+  gsResetRegionData();
+  if (typeof updateDocumentTitle === "function") updateDocumentTitle();
+  if (typeof renderAll === "function") renderAll();
+  gsRequestNavigate(state.contig, Math.floor(state.startBp), Math.ceil(state.endBp));
+}
+
+async function gsRequestNavigate(contig, start, end) {
+  if (typeof sendCommMessage !== "function") {
+    if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad(0);
+    return;
+  }
+  if (window.__GS_STATUS) {
+    window.__GS_STATUS(
+      `Loading ${contig}:${start.toLocaleString()}–${end.toLocaleString()}…`, { busy: true });
+  }
+  try {
+    const resp = await sendCommMessage("navigate", { contig, start, end }, 30000);
+    if (resp) gsApplyNavigatePayload(resp);
+    if (window.__GS_STATUS) window.__GS_STATUS(false);
+  } catch (e) {
+    console.warn("navigate failed:", e);
+    if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad(0);
+    if (window.__GS_STATUS) window.__GS_STATUS("Region load failed", { autoHide: 4000 });
+  }
+}
+
+// Apply a host `navigate` response: reference / genes / repeats / ideogram /
+// variants for the new window. Reassigns the module render inputs (same closure)
+// + config, then re-renders.
+function gsApplyNavigatePayload(p) {
+  if (!p) return;
+  const cfg = window.GENOMESHADER_CONFIG || (window.GENOMESHADER_CONFIG = {});
+  if (typeof p.contig === "string") state.contig = p.contig;
+  if (typeof p.start === "number") state.startBp = p.start;
+  if (typeof p.end === "number") state.endBp = p.end;
+  if (typeof p.reference_data === "string") {
+    cfg.reference_data = p.reference_data;
+    referenceSequence = p.reference_data;
+  }
+  if (Array.isArray(p.transcripts_data)) {
+    cfg.transcripts_data = p.transcripts_data;
+    transcripts = p.transcripts_data;
+  }
+  if (Array.isArray(p.repeats_data)) {
+    cfg.repeats_data = p.repeats_data;
+    repeats = p.repeats_data;
+  }
+  if (Array.isArray(p.ideogram_data)) cfg.ideogram_data = p.ideogram_data;
+  if (typeof p.start === "number" && typeof p.end === "number") {
+    cfg.data_bounds = { start: p.start, end: p.end };
+    dataBounds = { start: p.start, end: p.end };
+  }
+  if (Array.isArray(p.insertion_variants_lookup)) {
+    cfg.insertion_variants_lookup = p.insertion_variants_lookup;
+  }
+  if (Array.isArray(p.variant_tracks)) {
+    // Seed the viewport store with the new window so later pans union/evict off it.
+    const region = { contig: state.contig, start: Math.floor(state.startBp), end: Math.ceil(state.endBp) };
+    _gsVpRegions = [region];
+    _gsVpData.clear();
+    _gsVpData.set(_gsRegionKey(region), p.variant_tracks);
+    _gsVpRebuildTracks();
+  }
+  if (typeof updateDocumentTitle === "function") updateDocumentTitle();
+  if (typeof renderAll === "function") renderAll();
+}
+
+if (typeof window !== "undefined") {
+  window.gsSwitchContig = gsSwitchContig;
+  window.gsPopulateContigSelect = gsPopulateContigSelect;
+  window.gsApplyNavigatePayload = gsApplyNavigatePayload;
+}

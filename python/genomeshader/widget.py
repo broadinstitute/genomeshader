@@ -259,6 +259,16 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                 self.send({"type": "fetch_variants_response", "request_id": request_id, **payload})
             except Exception as e:
                 self.send({"type": "fetch_variants_error", "request_id": request_id, "error": str(e)})
+        elif msg_type == "navigate":
+            # Contig/region switch: the full per-window payload (reference, genes,
+            # ideogram, repeats, variants) for a new locus, since those are
+            # per-window and static in the initial config.
+            try:
+                payload = self._shader.navigate_payload(
+                    content.get("contig"), content.get("start"), content.get("end"))
+                self.send({"type": "navigate_response", "request_id": request_id, **payload})
+            except Exception as e:
+                self.send({"type": "navigate_error", "request_id": request_id, "error": str(e)})
         elif msg_type == "ucsc_genomes":
             # Assembly picker: all UCSC assemblies + the best match for this build.
             try:

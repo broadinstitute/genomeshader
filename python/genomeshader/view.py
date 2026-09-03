@@ -1480,6 +1480,39 @@ class GenomeShader:
         return _carriers_from_variant_rows(
             list(df.iter_rows(named=True)), ref, allele, n=n, rng_sample=rng)
 
+    def navigate_payload(self, contig, start, end):
+        """Full per-window render payload for jumping to a new contig/region:
+        reference sequence, genes, ideogram, repeats, and variants. The frontend
+        contig switcher applies it in place (reference/genes/etc. are per-window
+        and otherwise static in the initial config). Reuses the same per-region
+        builders as `render` so the result matches a fresh render at that locus.
+        Each piece is fetched defensively — a missing track yields an empty
+        default rather than failing the whole jump.
+        """
+        start, end = int(start), int(end)
+
+        def _safe(fn, *args, default):
+            try:
+                out = fn(*args)
+                return out if out is not None else default
+            except Exception:
+                return default
+
+        vp = self.fetch_variants_payload(contig, start, end)
+        return {
+            "contig": contig,
+            "start": start,
+            "end": end,
+            "region": f"{contig}:{start}-{end}",
+            # reference() is 1-based [start, end] like render()'s reference track.
+            "reference_data": _safe(self.reference, contig, start, end, default=""),
+            "ideogram_data": _safe(self.ideogram, contig, default=[]),
+            "transcripts_data": _safe(self.genes, contig, start, end, default=[]),
+            "repeats_data": _safe(self.repeats, contig, start, end, default=[]),
+            "variant_tracks": vp.get("variant_tracks", []),
+            "insertion_variants_lookup": vp.get("insertion_variants_lookup", []),
+        }
+
     def fetch_variants_payload(self, contig, start, end):
         """Viewport variant fetch (P2): build the variant payload for one window,
         on demand, so the frontend can load a new region on pan/zoom without a

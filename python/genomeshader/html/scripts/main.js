@@ -5276,7 +5276,10 @@ function setupCanvasHover() {
   
   // Setup search
   setupSampleSearch();
-  
+
+  // Populate the Region/contig switcher from the genome's contigs.
+  if (typeof gsPopulateContigSelect === "function") gsPopulateContigSelect();
+
   // Initial update
   updateSelectionDisplay();
   
