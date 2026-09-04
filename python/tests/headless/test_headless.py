@@ -543,3 +543,29 @@ def test_repeats_track_dropped_without_data_still_renders(browser, tmp_path):
     assert page2.evaluate(_SVG_COUNT) > 0
     assert page2.evaluate(has) is True
     page2.close()
+
+
+def test_read_load_failure_removes_track_and_shows_modal(browser, tmp_path):
+    """A failed read fetch removes the (empty) smart track and surfaces a
+    centered OK modal instead of a transient status."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    page.evaluate("""() => { window.__GS_SEND = (type) =>
+        type === 'fetch_reads'
+          ? Promise.resolve({ type: 'fetch_reads_error', error: 'auth denied' })
+          : Promise.resolve({}); }""")
+    page.evaluate("() => window.__GS_TEST_loadReads('SAMPLE', 'best_evidence')")
+    page.wait_for_function("() => !!document.querySelector('.gs-modal-backdrop')", timeout=5000)
+    info = page.evaluate(
+        "() => { const b=document.querySelector('.gs-modal-backdrop');"
+        " const ok=b&&b.querySelector('.gs-modal-ok');"
+        " return { ok: ok&&ok.textContent, title:(b.querySelector('.gs-modal-title')||{}).textContent,"
+        " ntracks:(window.__GS_STATE.smartTracks||[]).length }; }")
+    assert info["ok"] == "OK", info
+    assert "Failed to load reads" in (info["title"] or "")
+    assert info["ntracks"] == 0, "failed read track was not removed"
+    # OK dismisses the modal
+    page.evaluate("() => document.querySelector('.gs-modal-ok').click()")
+    page.wait_for_timeout(100)
+    assert page.evaluate("() => !document.querySelector('.gs-modal-backdrop')")
+    page.close()

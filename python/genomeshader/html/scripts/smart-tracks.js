@@ -486,9 +486,18 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     })
     .catch(function(err) {
       track.loading = false;
+      const who = sampleId || track.sampleId;
       console.error(`Failed to fetch reads for Smart track ${trackId}:`, err);
-      _readStatusDone('Failed to load reads', true);
-      renderAll();
+      _readStatusDone(false);       // clear the busy bar; the modal carries the message
+      // A read track that failed to load shouldn't linger empty — remove it.
+      removeSmartTrack(trackId);    // also re-renders + refreshes the sidebar
+      if (window.__GS_MODAL) {
+        window.__GS_MODAL(
+          'Failed to load reads' + (who ? ' for ' + who : '') + '.\n\n'
+            + (err && err.message ? err.message : 'The read fetch failed.')
+            + '\n\nCheck that you are authenticated and can access the BAM/CRAM files.',
+          { title: 'Failed to load reads' });
+      }
       throw err;
     });
 }
@@ -1280,5 +1289,15 @@ if (typeof window !== "undefined") {
     state.endBp = state.startBp + spanBp;
     renderAll();
     return { startBp: state.startBp, endBp: state.endBp };
+  };
+
+  // Test seam: run the REAL read-fetch path for a fresh track, so a test can mock
+  // __GS_SEND to fail and assert the error handling (track removed + modal shown).
+  // Resolves to the trackId whether the fetch succeeds or fails.
+  window.__GS_TEST_loadReads = function (sampleId, strategy, selectedAlleles) {
+    const s = strategy || "best_evidence";
+    const track = createSmartTrack(s, selectedAlleles || new Set());
+    return fetchReadsForSmartTrack(track.id, s, selectedAlleles || new Set(), sampleId)
+      .then(() => track.id, () => track.id);
   };
 }

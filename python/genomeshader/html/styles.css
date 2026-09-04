@@ -1880,3 +1880,27 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 #smartScroll .smart-track-container { scrollbar-width: none; }
 #smartScroll .smart-track-container::-webkit-scrollbar { width: 0; height: 0; }
 #smartScroll { overflow-y: auto; }
+
+/* Centered blocking modal dialog (window.__GS_MODAL) */
+.gs-modal-backdrop {
+  position: absolute; inset: 0; z-index: 10000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.45);
+}
+.gs-modal {
+  min-width: 260px; max-width: 440px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border2); border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  padding: 18px 20px;
+  font: 400 13px/1.5 ui-sans-serif, system-ui, sans-serif;
+}
+.gs-modal-title { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+.gs-modal-msg { white-space: pre-wrap; opacity: 0.92; }
+.gs-modal-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+.gs-modal-ok {
+  padding: 6px 18px; border-radius: 8px; cursor: pointer; border: none;
+  background: var(--blue, #2f81f7); color: #fff;
+  font: 600 13px/1 ui-sans-serif, system-ui, sans-serif;
+}
+.gs-modal-ok:hover { filter: brightness(1.08); }

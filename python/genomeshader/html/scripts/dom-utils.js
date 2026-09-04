@@ -1021,3 +1021,52 @@ mq?.addEventListener?.("change", () => {
     if (opts.autoHide) hideTimer = setTimeout(hide, opts.autoHide);
   };
 })();
+
+// Centered blocking modal with an OK button. window.__GS_MODAL(message, opts):
+//   opts.title    heading text; opts.okLabel button label (default "OK");
+//   opts.onClose  called after dismiss. Dismiss via OK / Enter / Esc / backdrop.
+// Overlays the widget root so it centers on the viewer, not the whole page.
+(function setupModal() {
+  window.__GS_MODAL = function (message, opts) {
+    opts = opts || {};
+    const host = (typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document.body;
+    const backdrop = document.createElement("div");
+    backdrop.className = "gs-modal-backdrop";
+    const box = document.createElement("div");
+    box.className = "gs-modal";
+    box.setAttribute("role", "alertdialog");
+    if (opts.title) {
+      const h = document.createElement("div");
+      h.className = "gs-modal-title";
+      h.textContent = String(opts.title);
+      box.appendChild(h);
+    }
+    const msg = document.createElement("div");
+    msg.className = "gs-modal-msg";
+    msg.textContent = String(message == null ? "" : message);
+    box.appendChild(msg);
+    const actions = document.createElement("div");
+    actions.className = "gs-modal-actions";
+    const ok = document.createElement("button");
+    ok.className = "gs-modal-ok";
+    ok.textContent = opts.okLabel || "OK";
+    actions.appendChild(ok);
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    host.appendChild(backdrop);
+
+    function close() {
+      try { backdrop.remove(); } catch (e) {}
+      document.removeEventListener("keydown", onKey, true);
+      if (typeof opts.onClose === "function") { try { opts.onClose(); } catch (e) {} }
+    }
+    function onKey(e) {
+      if (e.key === "Escape" || e.key === "Enter") { e.preventDefault(); e.stopPropagation(); close(); }
+    }
+    ok.addEventListener("click", close);
+    backdrop.addEventListener("mousedown", function (e) { if (e.target === backdrop) close(); });
+    document.addEventListener("keydown", onKey, true);
+    setTimeout(function () { try { ok.focus(); } catch (e) {} }, 0);
+    return close;
+  };
+})();
