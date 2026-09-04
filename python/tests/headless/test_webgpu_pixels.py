@@ -366,25 +366,37 @@ def test_indel_lollipop_click_expands_not_selects(gpu_browser):
         })""")
         assert zc["indel"] > zc["flow"], f"lollipop overlay not above the flow: {zc}"
 
-        box = page.evaluate("""() => {
-            const l = document.querySelector('#flowIndelOverlay line[data-variant-id]');
-            const r = l.getBoundingClientRect();
-            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        pts = page.evaluate("""() => {
+            const head = document.querySelector('#flowIndelOverlay circle[style*="pointer-events: all"]');
+            const stem = document.querySelector('#flowIndelOverlay line[data-variant-id]');
+            const hr = head.getBoundingClientRect(), sr = stem.getBoundingClientRect();
+            return {
+                head: { x: hr.x + hr.width / 2, y: hr.y + hr.height / 2 },
+                // near the bottom of the stem — should be click-through (below the head)
+                stem: { x: sr.x + sr.width / 2, y: sr.y + sr.height * 0.85 },
+            };
         }""")
-        # The topmost element at the lollipop must be a lollipop hit target (not a
+        # The head hit-disc must be the topmost element at its own point (not a
         # variant hoverRect from the flow layer below).
         topvid = page.evaluate(
-            "(b) => { const e = document.elementFromPoint(b.x, b.y); return e && e.getAttribute && e.getAttribute('data-variant-id'); }",
-            box)
-        assert topvid == "i1", f"lollipop not on top at its own point (got {topvid})"
+            "(p) => { const e = document.elementFromPoint(p.head.x, p.head.y); return e && e.getAttribute && e.getAttribute('data-variant-id'); }",
+            pts)
+        assert topvid == "i1", f"lollipop head not on top at its own point (got {topvid})"
 
-        # click a few px off the 1px stem's exact center — must still land on the
-        # widened hit-area and expand (not fall through to the select layer).
-        page.mouse.click(box["x"] + 6, box["y"])
+        # Clicking the HEAD expands the indel, without leaking to variant select.
+        page.mouse.click(pts["head"]["x"], pts["head"]["y"])
         page.wait_for_timeout(200)
         st = page.evaluate("""() => ({
             exp: [...(window.__GS_STATE.expandedInsertions || [])],
             sel: window.__GS_STATE.selectedAlleles ? [...window.__GS_STATE.selectedAlleles] : [],
         })""")
-        assert st["exp"] == ["i1"], f"lollipop click did not expand the indel: {st}"
-        assert st["sel"] == [], f"lollipop click leaked to variant select: {st}"
+        assert st["exp"] == ["i1"], f"lollipop head click did not expand the indel: {st}"
+        assert st["sel"] == [], f"lollipop head click leaked to variant select: {st}"
+
+        # Clicking the STEM (not the head) must NOT expand — only the head toggles;
+        # the stem/strip stays click-through so the alleles underneath are usable.
+        page.evaluate("() => { window.__GS_STATE.expandedInsertions.clear(); }")
+        page.mouse.click(pts["stem"]["x"], pts["stem"]["y"])
+        page.wait_for_timeout(150)
+        exp2 = page.evaluate("() => [...(window.__GS_STATE.expandedInsertions || [])]")
+        assert exp2 == [], f"clicking the stem expanded the indel (should be head-only): {exp2}"

@@ -1281,21 +1281,14 @@ function renderTracks() {
         "data-variant-id": variantId
       });
     }
-    lineEl.addEventListener("mouseenter", () => {
-      state.hoveredVariantIndex = idx;
-      state.hoveredVariantId = variantId;
-      renderHoverOnly();
-    });
-    lineEl.addEventListener("mouseleave", () => {
-      state.hoveredVariantIndex = null;
-      state.hoveredVariantId = null;
-      renderHoverOnly();
-    });
-    
-    // Indels are toggleable on the line itself: insertions expand their gap,
-    // deletions repeat the reference for their deleted bases. A position that is
-    // BOTH (an insertion alt and a deletion alt) cycles off -> ins -> del -> off,
-    // so you can look at either without them fighting over one marker.
+    // The stem is drawn but NOT interactive — only the lollipop head (circle)
+    // toggles the indel, so the stem and the strip below it stay click-through
+    // to the ref/alt allele nodes underneath.
+    lineEl.style.pointerEvents = "none";
+
+    // Indel toggle action (used by the circle head below): insertions expand
+    // their gap, deletions repeat the deleted ref bases; a position that is BOTH
+    // cycles off -> ins -> del -> off.
     const _isIns = isInsertion(v), _isDel = isDeletion(v);
     const _isMixed = _isIns && _isDel;
     const _indelTitle = _isMixed ? "Click to toggle insertion / deletion"
@@ -1307,15 +1300,6 @@ function renderTracks() {
       if (nxt.del) delSet.add(variantId); else delSet.delete(variantId);
       renderAll();
     };
-    if (typeof isIndel === "function" && isIndel(v)) {
-      lineEl.style.pointerEvents = "auto";
-      lineEl.setAttribute("title", _indelTitle);
-      lineEl.addEventListener("pointerdown", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        _toggleIndel();
-      });
-    }
     flowIndelOverlay.appendChild(lineEl);
     
     // Store reference to variant elements for hover updates
@@ -1324,54 +1308,7 @@ function renderTracks() {
     }
     state.locusVariantElements.get(idx).lineEl = lineEl;
     
-    // Larger invisible clickable area for the indel toggle (easier to hit)
-    if (typeof isIndel === "function" && isIndel(v)) {
-      // Add an invisible wider rectangle for easier clicking
-      let clickArea;
-      if (isVertical) {
-        clickArea = el("rect", {
-          x: baseX - 20,
-          y: pos - 5,
-          width: 40,
-          height: 10,
-          fill: "transparent",
-          style: "cursor: pointer; pointer-events: auto;",
-          "data-variant-id": variantId
-        });
-      } else {
-        clickArea = el("rect", {
-          x: pos - 11,
-          y: baseY - 26,
-          width: 22,
-          height: 42,
-          fill: "transparent",
-          style: "cursor: pointer; pointer-events: auto;",
-          "data-variant-id": variantId
-        });
-      }
-      clickArea.setAttribute("title", _indelTitle);
-      clickArea.addEventListener("mouseenter", () => {
-        state.hoveredVariantIndex = idx;
-        state.hoveredVariantId = variantId;
-        renderHoverOnly();
-      });
-      clickArea.addEventListener("mouseleave", () => {
-        state.hoveredVariantIndex = null;
-        state.hoveredVariantId = null;
-        renderHoverOnly();
-      });
-      // Swallow the WHOLE gesture, not just pointerdown: the flow's variant
-      // select fires on `mousedown` (main.js alleleMouseDownHandler) and the
-      // per-variant hoverRect selects on `click`. If any of those reach the
-      // layer below, the click both expands AND selects (or just selects). Stop
-      // them all here so clicking the lollipop only toggles the indel.
-      const _swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
-      clickArea.addEventListener("pointerdown", (e) => { _swallow(e); _toggleIndel(); });
-      clickArea.addEventListener("mousedown", _swallow);
-      clickArea.addEventListener("mouseup", _swallow);
-      clickArea.addEventListener("click", _swallow);
-      flowIndelOverlay.appendChild(clickArea);
-    }
+    // No wide click target: only the lollipop head (circle) toggles the indel
 
     let circleEl;
     const circleStrokeColor = isHovered ? "var(--blue)" : "rgba(127,127,127,0.5)";
@@ -1394,27 +1331,34 @@ function renderTracks() {
         "data-variant-id": variantId
       });
     }
-    circleEl.addEventListener("mouseenter", () => {
-      state.hoveredVariantIndex = idx;
-      state.hoveredVariantId = variantId;
-      renderHoverOnly();
-    });
-    circleEl.addEventListener("mouseleave", () => {
-      state.hoveredVariantIndex = null;
-      state.hoveredVariantId = null;
-      renderHoverOnly();
-    });
-    // Clicking the lollipop head expands the indel (ins OR del) — same action as
-    // the stem. It must NOT fall through to the flow's variant-select underneath,
-    // so it grabs pointer events and stops the whole gesture (down/up/click).
+    // Only the lollipop HEAD toggles the indel. The visible ring is fill:none
+    // (hollow) and an SVG hollow circle only hit-tests on its painted stroke, so
+    // a click on the centre would fall through. Carry the interaction on a small
+    // TRANSPARENT hit-disc over the head (pointer-events:all = whole disc, not
+    // just the rim), sized to stay in the blank strip ABOVE the allele nodes so
+    // it never covers the ref/alt alleles. The visible ring is non-interactive.
+    circleEl.style.pointerEvents = "none";
     if (typeof isIndel === "function" && isIndel(v)) {
-      circleEl.style.pointerEvents = "auto";
-      circleEl.setAttribute("title", _indelTitle);
+      const hcx = isVertical ? (baseX - 18) : pos;
+      const hcy = isVertical ? pos : (baseY - 18);
+      const head = el("circle", {
+        cx: hcx, cy: hcy, r: 8, fill: "transparent",
+        style: "cursor: pointer; pointer-events: all;",
+        "data-variant-id": variantId,
+      });
+      head.setAttribute("title", _indelTitle);
       const _swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
-      circleEl.addEventListener("pointerdown", (e) => { _swallow(e); _toggleIndel(); });
-      circleEl.addEventListener("mousedown", _swallow);
-      circleEl.addEventListener("pointerup", _swallow);
-      circleEl.addEventListener("click", _swallow);
+      head.addEventListener("mouseenter", () => {
+        state.hoveredVariantIndex = idx; state.hoveredVariantId = variantId; renderHoverOnly();
+      });
+      head.addEventListener("mouseleave", () => {
+        state.hoveredVariantIndex = null; state.hoveredVariantId = null; renderHoverOnly();
+      });
+      head.addEventListener("pointerdown", (e) => { _swallow(e); _toggleIndel(); });
+      head.addEventListener("mousedown", _swallow);
+      head.addEventListener("pointerup", _swallow);
+      head.addEventListener("click", _swallow);
+      flowIndelOverlay.appendChild(head);
     }
     flowIndelOverlay.appendChild(circleEl);
     
