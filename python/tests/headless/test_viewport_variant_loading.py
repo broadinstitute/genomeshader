@@ -203,6 +203,32 @@ def test_hung_fetch_does_not_block_other_windows(browser):
     page.close()
 
 
+def test_load_failure_shows_blocking_modal(browser):
+    """A serious load failure (comm rejects — kernel drop / 30s timeout) must pop
+    a centered blocking modal the user acknowledges, not a status flash. Guarded
+    single-instance so repeated failures don't stack dialogs."""
+    page = _open(browser)
+    page.evaluate(r"""() => {
+        window.__GS_SEND = function (type) {
+            if (type === "fetch_variants") return Promise.reject(new Error("Request timeout"));
+            return Promise.resolve({});
+        };
+    }""")
+    page.evaluate("async () => { try { await window.gsLoadVariantsForViewport(true); } catch (e) {} }")
+    page.wait_for_function(
+        "() => !!document.querySelector('.gs-modal-backdrop')", timeout=5000)
+    title = page.evaluate(
+        "() => (document.querySelector('.gs-modal-title')||{}).textContent")
+    assert title == "Variant load failed", title
+    # A second failure while the modal is open must NOT stack another dialog.
+    page.evaluate("async () => { try { await window.gsLoadVariantsForViewport(true); } catch (e) {} }")
+    n = page.evaluate("() => document.querySelectorAll('.gs-modal-backdrop').length")
+    assert n == 1, f"failure modal stacked ({n})"
+    page.evaluate("() => document.querySelector('.gs-modal-ok').click()")
+    assert page.evaluate("() => !document.querySelector('.gs-modal-backdrop')")
+    page.close()
+
+
 def test_far_ranging_evicts_distant_windows(browser):
     page = _open(browser)
     page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")

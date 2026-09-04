@@ -733,6 +733,20 @@ const _gsVpData = new Map();     // regionKey -> variant_tracks[] for that windo
 let _gsVpInFlight = null;        // request key currently being fetched (dedupe)
 let _gsVpTimer = null;
 let _gsVpStatusInFlight = 0;     // # overlapping loads showing the busy status bar
+let _gsFailureModalOpen = false; // one blocking failure modal at a time (no stacking)
+
+// Serious load failures (variant/region fetch rejected — kernel dropped or 30s
+// comm timeout) must be surfaced with a centered, blocking modal the user has to
+// acknowledge, not a status flash that scrolls away. Single-instance so rapid
+// panning that times out several windows doesn't stack a wall of dialogs.
+function gsSeriousFailureModal(message, title) {
+  if (_gsFailureModalOpen || typeof window.__GS_MODAL !== "function") return;
+  _gsFailureModalOpen = true;
+  window.__GS_MODAL(message, {
+    title: title || "Load failed",
+    onClose: function () { _gsFailureModalOpen = false; },
+  });
+}
 
 function _gsVpKeepSpan() {
   // Keep windows whose center is within ~3 viewport spans of the current center.
@@ -838,9 +852,10 @@ async function gsLoadVariantsForViewport(force) {
     }
   } catch (e) {
     console.warn("viewport variant load failed:", e);
-    if (window.__GS_STATUS) {
-      window.__GS_STATUS("Variant load failed", { autoHide: 5000 });
-    }
+    gsSeriousFailureModal(
+      "Failed to load variants for this region. The connection to the kernel may "
+      + "have dropped or the request timed out. Try again, or re-run the cell.",
+      "Variant load failed");
   } finally {
     if (_gsVpInFlight === reqKey) _gsVpInFlight = null;
     _gsVpStatusInFlight = Math.max(0, _gsVpStatusInFlight - 1);
@@ -973,7 +988,10 @@ async function gsRequestNavigate(contig, start, end) {
   } catch (e) {
     console.warn("navigate failed:", e);
     if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad(0);
-    if (window.__GS_STATUS) window.__GS_STATUS("Region load failed", { autoHide: 4000 });
+    gsSeriousFailureModal(
+      "Failed to load this region. The connection to the kernel may have dropped "
+      + "or the request timed out. Try again, or re-run the cell.",
+      "Region load failed");
   }
 }
 
