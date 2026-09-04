@@ -522,3 +522,24 @@ def test_window_store_update_and_coverage(browser, tmp_path):
     assert page.evaluate(cov, [out["regions"], "c", 220, 280]) is True
     assert page.evaluate(cov, [out["regions"], "c", 400, 500]) is False
     page.close()
+
+
+def test_repeats_track_dropped_without_data_still_renders(browser, tmp_path):
+    """No repeats_data -> the RepeatMasker track is dropped, but the rest of the
+    tracks still render. Guards the regression where removing a track tripped the
+    required-layouts guard and blanked the whole SVG."""
+    page, _ = _open(browser, tmp_path, "horizontal", config={"region": "chr1:100-200"})
+    _wait_ready(page)
+    assert page.evaluate(_SVG_COUNT) > 0, "tracks did not render with repeats absent"
+    has = "() => (window.__GS_STATE.tracks||[]).some(t => t.id === 'repeats')"
+    assert page.evaluate(has) is False
+    page.close()
+
+    page2, _ = _open(browser, tmp_path, "horizontal", config={
+        "region": "chr1:100-200",
+        "repeats_data": [{"start": 120, "end": 150, "cls": "LINE"}],
+    })
+    _wait_ready(page2)
+    assert page2.evaluate(_SVG_COUNT) > 0
+    assert page2.evaluate(has) is True
+    page2.close()

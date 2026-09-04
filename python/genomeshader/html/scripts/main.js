@@ -122,7 +122,21 @@ function renderSmartTrack(trackId) {
   container.style.background = cssVar("--smart-track-bg");
 
   if (!canvas || !webgpuCanvas) return;
-  
+
+  // One-time sticky-position kick. The sticky text-overlay canvas can lay out at
+  // its normal-flow position (a font-descent too low) until the scroll container
+  // is first scrolled — so on the INITIAL view the SNP letters sit a row below
+  // their tiles, then snap into place once you scroll. A no-op scrollTop nudge on
+  // the next frame engages sticky so it's correct from the first paint.
+  if (renderer && !renderer._stickyKicked) {
+    renderer._stickyKicked = true;
+    requestAnimationFrame(() => {
+      const sc = (typeof byId === "function" && typeof root !== "undefined"
+        ? byId(root, "smartScroll") : null) || document.getElementById("smartScroll") || container;
+      if (sc) { const t = sc.scrollTop; sc.scrollTop = t + 1; sc.scrollTop = t; }
+    });
+  }
+
   const dpr = window.devicePixelRatio || 1;
   
   // Get the actual rendered width of the container (not the layout width)

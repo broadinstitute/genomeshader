@@ -202,7 +202,8 @@ function renderTracks() {
     }
   }
 
-  if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout) return;
+  // repeats is optional (dropped when no repeats_data) — don't require it here.
+  if (!ideogramLayout || !genesLayout || !rulerLayout || !referenceLayout || !flowLayout) return;
 
   // Ideogram layout
   if (!ideogramLayout.track.collapsed) {
@@ -848,8 +849,8 @@ function renderTracks() {
   }
   }
 
-  // --- RepeatMasker track
-  if (!repeatsLayout.track.collapsed) {
+  // --- RepeatMasker track (skipped entirely when the track was dropped)
+  if (repeatsLayout && !repeatsLayout.track.collapsed) {
     let repeatsX, repeatsY, repeatsW, repeatsH;
     if (isVertical) {
       repeatsX = repeatsLayout.contentLeft + 8;
