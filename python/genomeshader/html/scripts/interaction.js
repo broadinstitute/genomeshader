@@ -1579,6 +1579,12 @@ function renderFlowCanvas() {
         // Get colors based on allele type (use actual allele from map, not extracted from label)
         const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
         const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
+        // The reference allele is already the Reference track above; drawing it
+        // again as a full-height bar per variant is the "vertical line" clutter
+        // the user asked to remove. Skip the ref node entirely (no draw / no
+        // space / no hit-test). Alt alleles keep their order.indexOf() indices,
+        // so selection + reorder are unaffected.
+        if (actualAllele && v.refAllele && actualAllele === v.refAllele) continue;
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
@@ -1853,6 +1859,12 @@ function renderFlowCanvas() {
         // Get colors based on allele type (use actual allele from map, not extracted from label)
         const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
         const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
+        // The reference allele is already the Reference track above; drawing it
+        // again as a full-height bar per variant is the "vertical line" clutter
+        // the user asked to remove. Skip the ref node entirely (no draw / no
+        // space / no hit-test). Alt alleles keep their order.indexOf() indices,
+        // so selection + reorder are unaffected.
+        if (actualAllele && v.refAllele && actualAllele === v.refAllele) continue;
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
