@@ -13,6 +13,9 @@ import subprocess
 import tempfile
 import urllib.parse
 import time
+import sys
+import logging
+from datetime import datetime, timezone
 from typing import Union, List, Optional, Tuple
 from pathlib import Path
 import importlib.resources
@@ -245,7 +248,17 @@ class GenomeShader:
         self,
         genome_build: str = 'hg38',
         gcs_session_dir: str = None,
+        debug: bool = False,
     ):
+        # Debug logging: off by default. When on, timing/sizing + an event log
+        # (server + frontend) are written to a per-session log file, and data
+        # fetch failures are printed under the cell. Also enabled via env
+        # GENOMESHADER_DEBUG=1 so it can be turned on without editing code.
+        self._debug = bool(debug) or os.environ.get("GENOMESHADER_DEBUG", "").strip().lower() in {"1", "true", "yes"}
+        self._debug_logger = None
+        self._debug_log_path = None
+        self._setup_debug_logging()
+
         # Network/render safety defaults must be available before validation calls.
         self._http_timeout = (10, 30)  # connect timeout, read timeout (seconds)
         self._track_load_timeout_s = 45
@@ -1503,6 +1516,79 @@ class GenomeShader:
     #     column / no reference-diffed SNPs) so the widget can't serve them.
     _READS_CACHE_VERSION = "v3"
 
+    # ----------------------------------------------------------------- debug
+    def _setup_debug_logging(self):
+        """Stand up the per-session debug log file when debug is on. One file
+        per GenomeShader instance, under the cwd so the operator finds it. No-op
+        (and no file) when debug is off — debug defaults to off."""
+        if not getattr(self, "_debug", False):
+            return
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self._debug_log_path = os.path.abspath(f"genomeshader_debug_{stamp}.log")
+        logger = logging.getLogger(f"genomeshader.debug.{id(self)}")
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        handler = logging.FileHandler(self._debug_log_path)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        logger.addHandler(handler)
+        self._debug_logger = logger
+        self._debug_log("session_start", genome_build=self.genome_build,
+                        gcs_session_dir=self.gcs_session_dir)
+        print(f"GenomeShader: debug logging -> {self._debug_log_path}", flush=True)
+
+    def _debug_log(self, event: str, **fields):
+        """Append one structured event to the debug log (JSON tail after the
+        event name). No-op when debug is off. Never raises."""
+        if not getattr(self, "_debug_logger", None):
+            return
+        try:
+            payload = json.dumps(fields, default=str, sort_keys=True)
+        except Exception:
+            payload = str(fields)
+        try:
+            self._debug_logger.info(f"{event} {payload}")
+        except Exception:
+            pass
+
+    def _report_fetch_failure(self, kind: str, error, **context):
+        """A data-fetch failure (variants/reads/region/navigate). Always log it
+        (debug file, if on) AND print an error under the cell with a suggested
+        fix, so a silent kernel-side failure isn't invisible. Returns a short
+        remediation hint the frontend can show in its modal."""
+        msg = str(error)
+        hint = self._fetch_failure_hint(kind, msg)
+        self._debug_log("fetch_failure", kind=kind, error=msg, hint=hint, **context)
+        where = context.get("locus") or context.get("region") or ""
+        line = f"GenomeShader ERROR: failed to load {kind}"
+        if where:
+            line += f" for {where}"
+        line += f": {msg}\n  -> {hint}"
+        try:
+            print(line, file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        return hint
+
+    @staticmethod
+    def _fetch_failure_hint(kind: str, msg: str) -> str:
+        """Map a failure to a plain-language workaround based on the error text."""
+        low = (msg or "").lower()
+        if "timeout" in low or "timed out" in low:
+            return ("The request exceeded the 30s kernel timeout — usually a cold, "
+                    "large-cohort window. Zoom to a smaller region, or re-run once the "
+                    "first read has warmed the cache.")
+        if "credential" in low or "denied" in low or "403" in low or "401" in low or "token" in low:
+            return ("Looks like a GCS auth problem. Re-run `gcloud auth application-default "
+                    "login` (or refresh your token) and try again.")
+        if "not found" in low or "404" in low or "no such file" in low:
+            return ("The file/index couldn't be found. Check the path and that the .tbi/.csi "
+                    "index sits next to the data file.")
+        if "connection" in low or "transport" in low or "comm" in low:
+            return ("The widget lost its connection to the kernel. Re-run the cell to remount "
+                    "the widget.")
+        return ("Re-run the cell; if it persists, enable debug=True and check the "
+                "genomeshader_debug log for the full traceback.")
+
     def _reads_cache_path(self, locus: str, bam_urls: List[str]) -> Path:
         sig = self._READS_CACHE_VERSION + "|" + str(locus) + "|" + ",".join(sorted(bam_urls))
         gb = str(self.genome_build or "genome").replace("/", "_")
@@ -1688,6 +1774,15 @@ class GenomeShader:
         start, end = int(start), int(end)
         locus = f"{contig}:{start}-{end}"
         region = {"contig": contig, "start": start, "end": end}
+        _t0 = time.perf_counter()
+
+        def _log_result(n, aggregate, cached):
+            self._debug_log("fetch_variants", locus=locus, span_bp=end - start,
+                            n_variants=n, aggregate=aggregate, cached=cached,
+                            ms=round((time.perf_counter() - _t0) * 1000, 1))
+
+        def _count(pl_tracks):
+            return sum(len(t.get("variants_data", [])) for t in pl_tracks)
 
         # Reference + data_bounds for this window, so the viewport pager keeps the
         # reference track and the out-of-data grey overlay in sync as you pan
@@ -1705,6 +1800,7 @@ class GenomeShader:
         hit = self._agg_region_cache_get(sig, contig, start, end)
         if hit is not None:
             sub = self._subset_variant_payload(hit["payload"], start, end)
+            _log_result(_count(sub["variant_tracks"]), hit["aggregate"], True)
             return {"variant_tracks": sub["variant_tracks"],
                     "insertion_variants_lookup": sub["insertion_variants_lookup"],
                     "region": region, "aggregate": hit["aggregate"], "cached": True,
@@ -1731,6 +1827,7 @@ class GenomeShader:
                                   "insertion_variants_lookup": ins}, False
 
         self._agg_region_cache_put(sig, contig, start, end, payload, aggregate)
+        _log_result(_count(payload["variant_tracks"]), aggregate, False)
         return {"variant_tracks": payload["variant_tracks"],
                 "insertion_variants_lookup": payload["insertion_variants_lookup"],
                 "region": region, "aggregate": aggregate, **meta}
@@ -3845,7 +3942,8 @@ class GenomeShader:
             'viewport_variant_loading': bool(comm_available),
             # Zoom gate: above this span, skip loading individual variants (too
             # many/dense to draw); tune per callset density.
-            'variant_max_span_bp': int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "200000")),
+            'variant_max_span_bp': int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "1000000")),
+            'debug': bool(getattr(self, "_debug", False)),  # frontend event logging -> debug_log comm
             'sample_mapping': self._sample_mapping,  # Sample mapping: VCF sample names -> BAM sample names
             'cache_debug': self._cache_debug_delta(cache_debug_start),
             'ucsc_warm_debug': self._last_ucsc_warm_stats,

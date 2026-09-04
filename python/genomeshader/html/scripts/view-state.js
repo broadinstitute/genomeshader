@@ -727,13 +727,30 @@ if (typeof window !== "undefined") {
 // windows (union, deduped by variant id). Uses the pure store cores above
 // (overscanRegion / gsRegionCovered / gsWindowStoreUpdate).
 const GS_VP_OVERSCAN = 0.5;      // fetch viewport ± 50% on each side
-const GS_VP_MAX_SPAN_BP = 200000; // above this span, skip loading individual variants (zoom gate)
+const GS_VP_MAX_SPAN_BP = 1000000; // above this span, skip loading individual variants (zoom gate)
 let _gsVpRegions = [];           // [{contig,start,end}] currently-loaded windows
 const _gsVpData = new Map();     // regionKey -> variant_tracks[] for that window
 let _gsVpInFlight = null;        // request key currently being fetched (dedupe)
 let _gsVpTimer = null;
 let _gsVpStatusInFlight = 0;     // # overlapping loads showing the busy status bar
 let _gsFailureModalOpen = false; // one blocking failure modal at a time (no stacking)
+
+// Frontend debug event log -> server debug file (via the debug_log comm), so the
+// loader's decisions (why a scroll did/didn't fetch, timings, sizes) are visible
+// when the user runs with debug=True. No-op unless config.debug. Also mirrors to
+// the browser console for live inspection. Fire-and-forget; never throws.
+function __GS_DEBUG(event, fields) {
+  const cfg = window.GENOMESHADER_CONFIG;
+  if (!cfg || !cfg.debug) return;
+  try { console.debug("[gs]", event, fields || {}); } catch (e) {}
+  try {
+    if (typeof sendCommMessage === "function") {
+      sendCommMessage("debug_log", { event: event, fields: fields || {} }, 5000)
+        .catch(function () {});
+    }
+  } catch (e) {}
+}
+if (typeof window !== "undefined") window.__GS_DEBUG = __GS_DEBUG;
 
 // Serious load failures (variant/region fetch rejected — kernel dropped or 30s
 // comm timeout) must be surfaced with a centered, blocking modal the user has to
@@ -774,19 +791,33 @@ function _gsVpRebuildTracks() {
 
 async function gsLoadVariantsForViewport(force) {
   const cfg = window.GENOMESHADER_CONFIG;
-  if (!cfg || !cfg.viewport_variant_loading) return;
+  __GS_DEBUG("vp_load_enter", { force: !!force,
+    start: Math.floor(state.startBp), end: Math.ceil(state.endBp), contig: state.contig });
+  if (!cfg || !cfg.viewport_variant_loading) {
+    __GS_DEBUG("vp_skip", { reason: "disabled" });
+    return;
+  }
   const contig = state.contig;
   const vs = Math.floor(state.startBp), ve = Math.ceil(state.endBp);
-  if (!contig || !(ve > vs)) return;
+  if (!contig || !(ve > vs)) {
+    __GS_DEBUG("vp_skip", { reason: "bad_window", contig: contig, vs: vs, ve: ve });
+    return;
+  }
   // Zoom gate: above a max span, individual variants are too many/dense to draw
   // usefully (and expensive to fetch) — skip and nudge to zoom in. A binned
   // density track for wide windows (P3 LOD) is the richer answer, deferred.
   const maxSpan = Number(cfg.variant_max_span_bp) || GS_VP_MAX_SPAN_BP;
   if ((ve - vs) > maxSpan) {
-    if (window.__GS_STATUS) window.__GS_STATUS("Zoom in to load variants", { autoHide: 1500 });
+    __GS_DEBUG("vp_skip", { reason: "zoom_gate", span: ve - vs, maxSpan: maxSpan });
+    if (window.__GS_STATUS) window.__GS_STATUS(
+      `Zoom in to load variants (window ${(ve - vs).toLocaleString()} bp > ${maxSpan.toLocaleString()} bp limit)`,
+      { autoHide: 2500 });
     return;
   }
-  if (!force && gsRegionCovered(_gsVpRegions, contig, vs, ve)) return; // coverage skip
+  if (!force && gsRegionCovered(_gsVpRegions, contig, vs, ve)) {
+    __GS_DEBUG("vp_skip", { reason: "covered", contig: contig, vs: vs, ve: ve });
+    return; // coverage skip
+  }
   const win = overscanRegion(vs, ve, GS_VP_OVERSCAN);
   // Clamp to the contig so a pan near an end doesn't request off-contig coords.
   const chrLen = Number((cfg.chrom_lengths || {})[contig])
@@ -813,10 +844,23 @@ async function gsLoadVariantsForViewport(force) {
       `Loading variants for ${contig}:${win.start.toLocaleString()}–${win.end.toLocaleString()}…`,
       { busy: true });
   }
+  const _t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+  __GS_DEBUG("vp_fetch_start", { reqKey: reqKey });
   try {
     const resp = await sendCommMessage("fetch_variants",
       { contig, start: win.start, end: win.end }, 30000);
+    // A server-side failure comes back as a resolved *_error response (not a
+    // rejection), so it would otherwise fall through silently — no variants, no
+    // message ("scrolled and nothing happened"). Surface it like a rejection.
+    if (resp && (resp.error || (resp.type && String(resp.type).endsWith("_error")))) {
+      throw new Error(resp.error || "variant fetch failed", { cause: resp.hint });
+    }
     if (resp && Array.isArray(resp.variant_tracks)) {
+      const _nv = resp.variant_tracks.reduce(
+        (a, t) => a + (t.variants_data ? t.variants_data.length : 0), 0);
+      __GS_DEBUG("vp_fetch_ok", { reqKey: reqKey, n_variants: _nv,
+        aggregate: !!resp.aggregate, cached: !!resp.cached,
+        ms: Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - _t0) });
       const region = { contig, start: win.start, end: win.end };
       _gsVpData.set(_gsRegionKey(region), resp.variant_tracks);
       const upd = gsWindowStoreUpdate(_gsVpRegions, region, (vs + ve) / 2, _gsVpKeepSpan());
@@ -852,10 +896,12 @@ async function gsLoadVariantsForViewport(force) {
     }
   } catch (e) {
     console.warn("viewport variant load failed:", e);
+    __GS_DEBUG("vp_fetch_error", { reqKey: reqKey, error: String(e && e.message || e) });
+    const hint = (e && e.cause) ? String(e.cause)
+      : "The connection to the kernel may have dropped or the request timed out. "
+        + "Try again, or re-run the cell.";
     gsSeriousFailureModal(
-      "Failed to load variants for this region. The connection to the kernel may "
-      + "have dropped or the request timed out. Try again, or re-run the cell.",
-      "Variant load failed");
+      "Failed to load variants for this region. " + hint, "Variant load failed");
   } finally {
     if (_gsVpInFlight === reqKey) _gsVpInFlight = null;
     _gsVpStatusInFlight = Math.max(0, _gsVpStatusInFlight - 1);

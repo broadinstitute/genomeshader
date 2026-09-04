@@ -479,7 +479,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
         console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
-        throw new Error(response.error);  // status handled in .catch (single decrement)
+        throw new Error(response.error, { cause: response.hint });  // handled in .catch
       }
       _readStatusDone(false);            // unknown response: decrement, don't leak
       return null;
@@ -495,7 +495,8 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         window.__GS_MODAL(
           'Failed to load reads' + (who ? ' for ' + who : '') + '.\n\n'
             + (err && err.message ? err.message : 'The read fetch failed.')
-            + '\n\nCheck that you are authenticated and can access the BAM/CRAM files.',
+            + '\n\n' + (err && err.cause ? String(err.cause)
+                : 'Check that you are authenticated and can access the BAM/CRAM files.'),
           { title: 'Failed to load reads' });
       }
       throw err;

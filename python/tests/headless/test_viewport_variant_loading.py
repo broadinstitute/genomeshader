@@ -229,6 +229,26 @@ def test_load_failure_shows_blocking_modal(browser):
     page.close()
 
 
+def test_error_response_is_surfaced_not_silent(browser):
+    """A server-side failure comes back as a RESOLVED fetch_variants_error (not a
+    rejection). The loader must surface it (modal with the server hint), not fall
+    through silently — the 'scrolled and nothing happened' bug."""
+    page = _open(browser)
+    page.evaluate(r"""() => {
+        window.__GS_SEND = (type) => type === "fetch_variants"
+            ? Promise.resolve({ type: "fetch_variants_error",
+                error: "Request timeout", hint: "Zoom to a smaller region." })
+            : Promise.resolve({});
+    }""")
+    page.evaluate("async () => { try { await window.gsLoadVariantsForViewport(true); } catch (e) {} }")
+    page.wait_for_function(
+        "() => !!document.querySelector('.gs-modal-backdrop')", timeout=5000)
+    msg = page.evaluate(
+        "() => (document.querySelector('.gs-modal-msg')||{}).textContent || ''")
+    assert "Zoom to a smaller region" in msg, msg   # server hint shown
+    page.close()
+
+
 def test_far_ranging_evicts_distant_windows(browser):
     page = _open(browser)
     page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")
@@ -249,9 +269,11 @@ def test_zoom_gate_skips_wide_windows(browser):
     """Above the max-span zoom gate, individual variants aren't fetched
     (IGV-style: zoom in to load variants)."""
     page = _open(browser)
+    # Pin the gate in config so the test doesn't depend on the shipped default.
+    page.evaluate("() => { window.GENOMESHADER_CONFIG.variant_max_span_bp = 200000; }")
     page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")
     n0 = len(_fetch_calls(page))
-    # zoom out well past the 200kb default gate
+    # zoom out well past the 200kb gate
     page.evaluate("""async () => {
         window.__GS_STATE.startBp = 1; window.__GS_STATE.endBp = 300000;
         await window.gsLoadVariantsForViewport(true);
