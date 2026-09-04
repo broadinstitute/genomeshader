@@ -173,6 +173,12 @@
       <svg class="overlay" id="flowOverlay"></svg>
     </div>
 
+    <!-- Indel lollipops, drawn ABOVE the variant (flow) canvas so they sit on the
+         variants (merged from the old standalone Indel track). Full-viewer SVG so
+         it shares the genome x-axis with the tracks SVG; pointer-events pass
+         through except on the lollipop hit targets. -->
+    <svg class="flow-indel-overlay" id="flowIndelOverlay"></svg>
+
     <div class="hud" id="hud"></div>
     <div class="tooltip" id="tooltip"></div>
     <!-- Bottom status bar: shows text + a progress bar during background work. -->

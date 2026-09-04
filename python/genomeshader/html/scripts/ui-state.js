@@ -33,8 +33,9 @@ const state = {
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
     { id: "repeats", label: "RepeatMasker", collapsed: false, height: 40, minHeight: 30 },
     { id: "reference", label: "Reference", collapsed: false, height: 96, minHeight: 72 },
-    { id: "ruler", label: "Indel", collapsed: false, height: 48, minHeight: 36 },
-    { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 110 }
+    // Indel lollipops now overlay the top of the Variants/Haplotypes track (the
+    // standalone Indel/ruler track was merged in); a bit taller for the strip.
+    { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 172, minHeight: 132 }
   ],
   trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
   trackResizeState: null, // { trackId, startX, startY, startHeight }

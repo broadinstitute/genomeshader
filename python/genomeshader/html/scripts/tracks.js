@@ -207,7 +207,7 @@ function renderTracks() {
   }
 
   // repeats is optional (dropped when no repeats_data) — don't require it here.
-  if (!ideogramLayout || !genesLayout || !rulerLayout || !referenceLayout || !flowLayout) return;
+  if (!ideogramLayout || !genesLayout || !referenceLayout || !flowLayout) return;
 
   // Ideogram layout
   if (!ideogramLayout.track.collapsed) {
@@ -1208,21 +1208,30 @@ function renderTracks() {
   }
 
   // --- Locus ruler
-  if (!rulerLayout.track.collapsed) {
+  if (flowLayout && !flowLayout.track.collapsed) {
     let rulerX, rulerY, rulerW, rulerH, baseX, baseY;
     if (isVertical) {
-      rulerX = rulerLayout.contentLeft + 8;
+      rulerX = flowLayout.contentLeft + 8;
       rulerW = 56;
       rulerY = 16;
       rulerH = H - 32;
       baseX = rulerX + 14;
     } else {
-      rulerY = rulerLayout.contentTop + 8;
+      rulerY = flowLayout.contentTop + 4;
       rulerH = 56;
       rulerX = 16;
       rulerW = W - 32;
-      baseY = rulerY + 14;
+      baseY = rulerY + 12;
     }
+    // Indel lollipops render into a dedicated overlay ABOVE the variant
+    // (flow) canvas so they sit on the variants — the standalone Indel track
+    // is gone. Full-viewer overlay -> same genome x-mapping as the tracks SVG.
+    const flowIndelOverlay = document.getElementById('flowIndelOverlay');
+    if (!flowIndelOverlay) return;
+    while (flowIndelOverlay.firstChild) flowIndelOverlay.removeChild(flowIndelOverlay.firstChild);
+    flowIndelOverlay.setAttribute('width', W);
+    flowIndelOverlay.setAttribute('height', H);
+    flowIndelOverlay.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
   // Variant marks: use all variant tracks so every track adds a marker to the ruler
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
@@ -1305,7 +1314,7 @@ function renderTracks() {
         _toggleIndel();
       });
     }
-    tracksSvg.appendChild(lineEl);
+    flowIndelOverlay.appendChild(lineEl);
     
     // Store reference to variant elements for hover updates
     if (!state.locusVariantElements.has(idx)) {
@@ -1354,7 +1363,7 @@ function renderTracks() {
         e.preventDefault();
         _toggleIndel();
       });
-      tracksSvg.appendChild(clickArea);
+      flowIndelOverlay.appendChild(clickArea);
     }
 
     let circleEl;
@@ -1403,7 +1412,7 @@ function renderTracks() {
         renderAll();
       });
     }
-    tracksSvg.appendChild(circleEl);
+    flowIndelOverlay.appendChild(circleEl);
     
     // Store reference to circle element for hover updates
     if (!state.locusVariantElements.has(idx)) {
@@ -1420,7 +1429,7 @@ function renderTracks() {
 
       if (isVertical) {
         const gapEndY = nextPosAtVariant;
-        tracksSvg.appendChild(el("rect", {
+        flowIndelOverlay.appendChild(el("rect", {
           x: baseX - 18,
           y: gapEndY,
           width: 36,
@@ -1443,7 +1452,7 @@ function renderTracks() {
         const insertionBandHeight = 24;
         const insertionBandY = baseY - insertionBandHeight / 2;
 
-        tracksSvg.appendChild(el("rect", {
+        flowIndelOverlay.appendChild(el("rect", {
           x: gapStartX,
           y: insertionBandY,
           width: displayedGapSizeX,
@@ -1457,18 +1466,6 @@ function renderTracks() {
     }
   }
 
-    // separator
-    if (isVertical) {
-      tracksSvg.appendChild(el("line", {
-        x1: rulerX + rulerW, x2: rulerX + rulerW, y1: 0, y2: H,
-        stroke: "rgba(127,127,127,0.12)"
-      }));
-    } else {
-      tracksSvg.appendChild(el("line", {
-        x1: 0, x2: W, y1: rulerY + rulerH, y2: rulerY + rulerH,
-        stroke: "rgba(127,127,127,0.12)"
-      }));
-    }
   }
 
   // --- Reference track

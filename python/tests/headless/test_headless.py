@@ -115,14 +115,15 @@ def test_renders_in_sandboxed_origin(browser):
 
 
 def test_ruler_flow_alignment(browser, tmp_path):
-    """Ruler variant marks must sit at the same x as their flow nodes."""
+    """Indel lollipops (now overlaying the flow track) must sit at the same x as
+    their flow nodes — the coordinate correctness of the Indel->Variants merge."""
     page, _ = _open(browser, tmp_path, "horizontal")
     _wait_nodes(page)
     diffs = page.evaluate(
         """() => {
             const root = document.querySelector('[id^="genomeshader-root-"]');
             const ruler = {};
-            root.querySelectorAll('#tracksSvg line[data-variant-id]').forEach(l => {
+            root.querySelectorAll('#flowIndelOverlay line[data-variant-id]').forEach(l => {
                 const x1 = +l.getAttribute('x1'), x2 = +l.getAttribute('x2');
                 if (Math.abs(x1 - x2) < 0.5) ruler[l.getAttribute('data-variant-id')] = x1;
             });

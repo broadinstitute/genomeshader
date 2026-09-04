@@ -124,14 +124,14 @@ function getTrackLayout() {
   const isVertical = isVerticalMode();
   
   // Standard tracks that should have hover-only controls (no reserved space)
-  const standardTracks = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
+  const standardTracks = ["ideogram", "genes", "repeats", "reference", "flow"];
   function isStandardTrack(trackId) {
     return standardTracks.includes(trackId) || (typeof trackId === "string" && trackId.startsWith("flow-"));
   }
   // Annotation tracks now show an always-visible label at the top, so they must
   // reserve header space for it (content is offset below the label). The flow /
   // variant area keeps its full height with no reserved header.
-  const labelSpaceTracks = ["ideogram", "genes", "repeats", "reference", "ruler"];
+  const labelSpaceTracks = ["ideogram", "genes", "repeats", "reference"];
   function reservesLabelSpace(trackId) {
     return !isStandardTrack(trackId) || labelSpaceTracks.includes(trackId);
   }

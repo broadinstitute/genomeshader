@@ -1044,7 +1044,7 @@ function getTrackControlsEl() {
   return trackControls;
 }
 // Standard tracks that have hover-only controls
-const STANDARD_TRACKS = ["ideogram", "genes", "repeats", "reference", "ruler", "flow"];
+const STANDARD_TRACKS = ["ideogram", "genes", "repeats", "reference", "flow"];
 function isFlowTrack(trackId) {
   return trackId === "flow" || (typeof trackId === "string" && trackId.startsWith("flow-"));
 }
