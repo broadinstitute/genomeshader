@@ -176,3 +176,41 @@ def test_far_ranging_evicts_distant_windows(browser):
     assert len(regions) <= 3, f"loaded windows not evicted (bounded): {regions}"
     assert len(keys) == len(regions), "evicted window data not released"
     page.close()
+
+
+def test_zoom_gate_skips_wide_windows(browser):
+    """Above the max-span zoom gate, individual variants aren't fetched
+    (IGV-style: zoom in to load variants)."""
+    page = _open(browser)
+    page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")
+    n0 = len(_fetch_calls(page))
+    # zoom out well past the 200kb default gate
+    page.evaluate("""async () => {
+        window.__GS_STATE.startBp = 1; window.__GS_STATE.endBp = 300000;
+        await window.gsLoadVariantsForViewport(true);
+    }""")
+    assert len(_fetch_calls(page)) == n0, "a window wider than the gate must not fetch"
+    page.close()
+
+
+def test_seed_registers_startup_window(browser):
+    """The startup region's variants (shipped in config) are registered with the
+    pager, so panning back doesn't refetch and dynamic paging works from frame 1."""
+    import tempfile
+    page = browser.new_page(viewport=VIEWPORT)
+    cfg = {
+        "viewport_variant_loading": True,
+        "region": "chr1:100-200",
+        "variant_tracks": [{"id": "vp", "label": "VP", "name": "vp", "variants_data": [
+            {"id": "chr1:150", "position": 150, "pos": 150, "ref": "A", "alt": "C",
+             "n_ref": 9, "n_alt": 1, "n_missing": 0, "n_samples": 10}]}],
+    }
+    html = harness.build_page(config=cfg)
+    f = os.path.join(tempfile.mkdtemp(), "seed.html")
+    open(f, "w").write(html)
+    page.goto("file://" + f, wait_until="load")
+    page.wait_for_function("() => window.__GS_READY === true", timeout=20000)
+    regions = page.evaluate("() => window.__gsVpState().regions")
+    assert any(r["contig"] == "chr1" and r["start"] == 100 and r["end"] == 200
+               for r in regions), f"startup window not seeded: {regions}"
+    page.close()

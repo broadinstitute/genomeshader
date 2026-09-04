@@ -3745,6 +3745,12 @@ class GenomeShader:
                 'end': data_end,
             },
             'comm_available': comm_available,  # Indicates if Jupyter comms are available
+            # IGV-style dynamic loading: fetch variants for the visible window on
+            # pan/zoom (not just the startup region). Needs the comm round-trip.
+            'viewport_variant_loading': bool(comm_available),
+            # Zoom gate: above this span, skip loading individual variants (too
+            # many/dense to draw); tune per callset density.
+            'variant_max_span_bp': int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "200000")),
             'sample_mapping': self._sample_mapping,  # Sample mapping: VCF sample names -> BAM sample names
             'cache_debug': self._cache_debug_delta(cache_debug_start),
             'ucsc_warm_debug': self._last_ucsc_warm_stats,

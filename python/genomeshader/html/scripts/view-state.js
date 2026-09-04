@@ -727,6 +727,7 @@ if (typeof window !== "undefined") {
 // windows (union, deduped by variant id). Uses the pure store cores above
 // (overscanRegion / gsRegionCovered / gsWindowStoreUpdate).
 const GS_VP_OVERSCAN = 0.5;      // fetch viewport ± 50% on each side
+const GS_VP_MAX_SPAN_BP = 200000; // above this span, skip loading individual variants (zoom gate)
 let _gsVpRegions = [];           // [{contig,start,end}] currently-loaded windows
 const _gsVpData = new Map();     // regionKey -> variant_tracks[] for that window
 let _gsVpInFlight = null;        // request key currently being fetched (dedupe)
@@ -763,6 +764,14 @@ async function gsLoadVariantsForViewport(force) {
   const contig = state.contig;
   const vs = Math.floor(state.startBp), ve = Math.ceil(state.endBp);
   if (!contig || !(ve > vs)) return;
+  // Zoom gate: above a max span, individual variants are too many/dense to draw
+  // usefully (and expensive to fetch) — skip and nudge to zoom in. A binned
+  // density track for wide windows (P3 LOD) is the richer answer, deferred.
+  const maxSpan = Number(cfg.variant_max_span_bp) || GS_VP_MAX_SPAN_BP;
+  if ((ve - vs) > maxSpan) {
+    if (window.__GS_STATUS) window.__GS_STATUS("Zoom in to load variants", { autoHide: 1500 });
+    return;
+  }
   if (!force && gsRegionCovered(_gsVpRegions, contig, vs, ve)) return; // coverage skip
   const win = overscanRegion(vs, ve, GS_VP_OVERSCAN);
   const reqKey = `${contig}:${win.start}-${win.end}`;
@@ -823,9 +832,31 @@ function gsScheduleViewportVariantLoad(delay) {
     delay == null ? 150 : delay);
 }
 
+// Register the startup region's variants (shipped in config) with the viewport
+// store so panning back doesn't refetch them, and dynamic paging works from the
+// first frame. If the config shipped variant META only (comm-payload mode),
+// there's nothing to seed — kick a fetch for the initial window instead.
+function gsSeedInitialVariantWindow() {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  if (!cfg.viewport_variant_loading) return;
+  const m = String(cfg.region || "").match(/^([^:]+):(\d+)-(\d+)$/);
+  if (!m) return;
+  const region = { contig: m[1], start: parseInt(m[2], 10), end: parseInt(m[3], 10) };
+  const tracks = cfg.variant_tracks || [];
+  const hasData = tracks.some((t) => (t.variants_data || []).length > 0);
+  if (hasData) {
+    _gsVpRegions = [region];
+    _gsVpData.clear();
+    _gsVpData.set(_gsRegionKey(region), tracks);
+  } else if (typeof gsScheduleViewportVariantLoad === "function") {
+    gsScheduleViewportVariantLoad(0);
+  }
+}
+
 if (typeof window !== "undefined") {
   window.gsLoadVariantsForViewport = gsLoadVariantsForViewport;
   window.gsScheduleViewportVariantLoad = gsScheduleViewportVariantLoad;
+  window.gsSeedInitialVariantWindow = gsSeedInitialVariantWindow;
   // Test introspection: which windows are loaded right now.
   window.__gsVpState = () => ({
     regions: _gsVpRegions.map((r) => ({ ...r })),

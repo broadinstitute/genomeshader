@@ -5282,6 +5282,10 @@ function setupCanvasHover() {
   // Populate the Region/contig switcher from the genome's contigs.
   if (typeof gsPopulateContigSelect === "function") gsPopulateContigSelect();
 
+  // Register the startup variants with the viewport pager (IGV-style dynamic
+  // loading: more variants load as you pan/zoom).
+  if (typeof gsSeedInitialVariantWindow === "function") gsSeedInitialVariantWindow();
+
   // Initial update
   updateSelectionDisplay();
   
