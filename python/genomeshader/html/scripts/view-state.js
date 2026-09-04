@@ -752,6 +752,25 @@ function __GS_DEBUG(event, fields) {
 }
 if (typeof window !== "undefined") window.__GS_DEBUG = __GS_DEBUG;
 
+// Capture uncaught JS errors + promise rejections into the debug log, so a
+// forensic read of the log shows a crash + where it happened (not just silence).
+if (typeof window !== "undefined") {
+  window.addEventListener("error", function (e) {
+    __GS_DEBUG("js_error", {
+      message: String(e && e.message || e),
+      source: e && e.filename, line: e && e.lineno, col: e && e.colno,
+      stack: e && e.error && e.error.stack ? String(e.error.stack).split("\n").slice(0, 4).join(" | ") : null,
+    });
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    const r = e && e.reason;
+    __GS_DEBUG("js_unhandled_rejection", {
+      reason: String(r && r.message || r),
+      stack: r && r.stack ? String(r.stack).split("\n").slice(0, 4).join(" | ") : null,
+    });
+  });
+}
+
 // Serious load failures (variant/region fetch rejected — kernel dropped or 30s
 // comm timeout) must be surfaced with a centered, blocking modal the user has to
 // acknowledge, not a status flash that scrolls away. Single-instance so rapid

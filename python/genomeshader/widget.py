@@ -223,6 +223,16 @@ class GenomeShaderWidget(anywidget.AnyWidget):
             return
         msg_type = content.get("type")
         request_id = content.get("request_id")
+        # Forensic log of every inbound comm (except the debug-log channel itself,
+        # which would be noise). Small fields only — never whole payloads.
+        if msg_type != "debug_log":
+            try:
+                self._shader._debug_log(
+                    "comm_recv", type=msg_type, request_id=request_id,
+                    contig=content.get("contig"), start=content.get("start"),
+                    end=content.get("end"), sample_id=content.get("sample_id"))
+            except Exception:
+                pass
         if msg_type == "fetch_reads":
             try:
                 payload = self._shader._fetch_reads_payload(
