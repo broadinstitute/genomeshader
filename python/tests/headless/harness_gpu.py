@@ -110,10 +110,13 @@ def webgpu_works(browser):
 
 
 @contextlib.contextmanager
-def open_viewer(browser, config=None, orientation="horizontal", timeout=25000):
+def open_viewer(browser, config=None, orientation="horizontal", timeout=25000,
+                init_script=None):
     """Open the real viewer over a secure origin, wait until it's ready.
 
     Yields (page, errors). ``errors`` collects pageerror + console.error.
+    ``init_script`` (JS string) runs before any page script — use it to
+    instrument globals/prototypes ahead of the first render.
     """
     page = browser.new_page(viewport=VIEWPORT)
     errors = []
@@ -124,6 +127,8 @@ def open_viewer(browser, config=None, orientation="horizontal", timeout=25000):
         "try{localStorage.setItem('genomeshader.orientation',%r);"
         "localStorage.setItem('genomeshader.theme','light');}catch(e){}" % orientation
     )
+    if init_script:
+        page.add_init_script(init_script)
     with _serve(harness.build_page(config=config)) as url:
         page.goto(url, wait_until="load")
         page.wait_for_function("() => window.__GS_READY === true", timeout=timeout)

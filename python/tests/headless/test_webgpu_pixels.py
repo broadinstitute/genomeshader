@@ -271,3 +271,65 @@ def test_snp_glyph_overlay(gpu_browser):
                 return n;
             }""", tid)
         assert nonblank == 0, "text overlay painted glyphs with no SNP elements present"
+
+
+# Instrument the 2D context BEFORE load: count thin vertical strokes (the
+# per-variant connector line was a 1px vertical stroke over the allele stack).
+_CONNECTOR_PROBE = r"""
+window.__GS_THINV = 0;
+(function () {
+  const P = CanvasRenderingContext2D.prototype;
+  let x0, y0, x1, y1, act = false;
+  const rs = () => { x0 = y0 = 1e9; x1 = y1 = -1e9; act = true; };
+  const pt = (x, y) => { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; };
+  const ob = P.beginPath; P.beginPath = function () { rs(); return ob.apply(this, arguments); };
+  ["moveTo", "lineTo"].forEach((m) => { const o = P[m]; P[m] = function (x, y) { if (act) pt(x, y); return o.apply(this, arguments); }; });
+  const oa = P.arcTo; P.arcTo = function (a, b, c, d) { if (act) { pt(a, b); pt(c, d); } return oa.apply(this, arguments); };
+  const os = P.stroke; P.stroke = function () {
+    if (act && x1 >= x0 && Math.abs(x1 - x0) <= 3 && Math.abs(y1 - y0) >= 6) window.__GS_THINV++;
+    return os.apply(this, arguments);
+  };
+})();
+"""
+
+
+def test_no_per_variant_connector_line(gpu_browser):
+    """Regression: the variant/flow track must NOT draw a per-variant thin grey
+    vertical connector line over the top of the allele stack (looked like a
+    circle-less lollipop). It was ctx.moveTo(vx,6)->lineTo(cx,junctionY)->stroke
+    in drawOneFlowBand. Instrument the 2D context and assert no thin vertical
+    strokes are painted."""
+    with hg.open_viewer(gpu_browser, init_script=_CONNECTOR_PROBE) as (page, errors):
+        page.wait_for_function(
+            "() => (window._alleleNodePositions || []).length > 0", timeout=20000)
+        page.wait_for_timeout(400)
+        thin = page.evaluate("() => window.__GS_THINV || 0")
+        assert thin == 0, f"per-variant connector line(s) drawn: {thin} thin vertical strokes"
+        assert not [e for e in errors if "pageerror" in e], errors
+
+
+def test_reference_allele_node_present(gpu_browser):
+    """Regression: the reference allele node must render on the variant track (an
+    earlier fix wrongly skipped it). At least one allele node whose label is the
+    formatted reference allele should exist for a variant that has one."""
+    with hg.open_viewer(gpu_browser) as (page, _):
+        page.wait_for_function(
+            "() => (window._alleleNodePositions || []).length > 0", timeout=20000)
+        has_ref = page.evaluate(
+            """() => {
+                const cfg = window.GENOMESHADER_CONFIG || {};
+                const vts = cfg.variant_tracks || [];
+                const refs = new Set();
+                vts.forEach(t => (t.variants_data || []).forEach(v => {
+                    if (v.refAllele) refs.add(String(v.refAllele));
+                }));
+                if (refs.size === 0) return true;  // no ref info in fixture -> not applicable
+                // a rendered node whose actual allele equals a variant's ref
+                return (window._alleleNodePositions || []).some(n => {
+                    const lbl = String(n.label || "");
+                    // ref label is "<REF> (n bp)"; match the leading allele token
+                    const tok = lbl.split(" ")[0];
+                    return refs.has(tok);
+                });
+            }""")
+        assert has_ref, "reference allele node not rendered on the variant track"
