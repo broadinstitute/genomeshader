@@ -6,10 +6,32 @@ to stderr (under the cell) with a remediation hint chosen from the error text.
 Bound to a stub so no compiled extension / GCS session is needed.
 """
 import types
+from unittest.mock import Mock, patch
 
 import pytest
 
 from genomeshader.view import GenomeShader
+
+
+def test_real_construction_with_debug_does_not_crash(tmp_path, monkeypatch):
+    """debug=True must not crash __init__. _setup_debug_logging runs at the top
+    of __init__, before genome_build/gcs_session_dir are assigned, so it must
+    read them defensively (regression: AttributeError on genome_build)."""
+    monkeypatch.chdir(tmp_path)
+    with patch("genomeshader.view.gs._init", return_value=Mock()):
+        s = GenomeShader(genome_build="hg38",
+                         gcs_session_dir="gs://test-bucket/genomeshader", debug=True)
+    assert s._debug is True
+    assert s._debug_log_path and list(tmp_path.glob("genomeshader_debug_*.log"))
+
+
+def test_real_construction_without_debug_writes_no_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with patch("genomeshader.view.gs._init", return_value=Mock()):
+        s = GenomeShader(genome_build="hg38", gcs_session_dir="gs://test-bucket/genomeshader")
+    assert s._debug is False
+    assert s._debug_log_path is None
+    assert list(tmp_path.glob("genomeshader_debug_*.log")) == []
 
 
 def _stub(debug):

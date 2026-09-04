@@ -1532,8 +1532,11 @@ class GenomeShader:
         handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
         logger.addHandler(handler)
         self._debug_logger = logger
-        self._debug_log("session_start", genome_build=self.genome_build,
-                        gcs_session_dir=self.gcs_session_dir)
+        # NB: called at the very top of __init__, before genome_build /
+        # gcs_session_dir are assigned — read them defensively.
+        self._debug_log("session_start",
+                        genome_build=getattr(self, "genome_build", None),
+                        gcs_session_dir=getattr(self, "gcs_session_dir", None))
         print(f"GenomeShader: debug logging -> {self._debug_log_path}", flush=True)
 
     def _debug_log(self, event: str, **fields):
