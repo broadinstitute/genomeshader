@@ -858,7 +858,10 @@ function renderSmartTrack(trackId) {
           const xEnd = Math.min(trackMaxX, gap.gapEnd + GAP_VISUAL_PAD_PX);
           const width = xEnd - x;
           if (!(width > 0)) continue;
-          ctx.fillStyle = "rgba(255,255,255,0.92)";
+          // Theme background, not hardcoded white — otherwise expanding an indel
+          // paints a white gap over the reads in dark mode. --bg is what an empty
+          // reads track shows (its --reads-bg tint is near-transparent over --bg).
+          ctx.fillStyle = cssVar("--bg");
           ctx.fillRect(x, gapOverlayY, width, gapOverlayHeight);
           ctx.strokeStyle = "rgba(127,127,127,0.55)";
           ctx.lineWidth = 1;
