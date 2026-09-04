@@ -695,10 +695,43 @@ function renderFlowCanvas() {
     // Reduce stem length by half
     const stemEndY = junctionY + (stemEndYFull - junctionY) / 2;
     
-    // Per-variant vertical stems removed: indels are now marked by the
-    // lollipop overlay (#flowIndelOverlay) on top of the variant track, and
-    // non-indel variants read from their allele nodes — the generic stem line
-    // per variant was redundant clutter once the lollipops moved here.
+    if (useWebGPU) {
+      for (let i=0;i<win.length;i++) {
+        const v = win[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
+        const color = isHovered ? blueHex : grayHex;
+        const alpha = isHovered ? 0.7 : 0.5;
+        // Position column based on mode
+        const x = variantMode === "genomic"
+          ? xGenomeCanonical(v.pos, W)
+          : xColumn(i, win.length);
+        const xScaled = x * devicePixelRatio;
+        flowInstancedRenderer.addLine(
+          xScaled, yBandToFlow(junctionY) * devicePixelRatio,
+          xScaled, yBandToFlow(stemEndY) * devicePixelRatio,
+          color, alpha
+        );
+      }
+    } else {
+      for (let i=0;i<win.length;i++) {
+        const v = win[i];
+        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
+        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
+        ctx.strokeStyle = isHovered ? colBlue : colGray;
+        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
+        ctx.lineWidth = isHovered ? 2.5 : 1;
+        // Position column based on mode
+        const x = variantMode === "genomic"
+          ? xGenomeCanonical(v.pos, W)
+          : xColumn(i, win.length);
+        ctx.beginPath();
+        ctx.moveTo(x, junctionY);
+        ctx.lineTo(x, stemEndY);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    }
 
     // Text labels (still use Canvas 2D for text)
     // Group variants by position to handle multiple variants at same position
@@ -1579,12 +1612,12 @@ function renderFlowCanvas() {
         // Get colors based on allele type (use actual allele from map, not extracted from label)
         const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
         const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
-        // The reference allele is already the Reference track above; drawing it
-        // again as a full-height bar per variant is the "vertical line" clutter
-        // the user asked to remove. Skip the ref node entirely (no draw / no
-        // space / no hit-test). Alt alleles keep their order.indexOf() indices,
-        // so selection + reorder are unaffected.
-        if (actualAllele && v.refAllele && actualAllele === v.refAllele) continue;
+        // Skip the no-call ('.') allele node: it renders as a grey bar at the top
+        // of every variant's allele stack (even with zero missing calls), which
+        // the user sees as circle-less "vertical lines" above the reference
+        // allele. Dropping it leaves ref + alt nodes + the indel lollipops. Alt
+        // nodes keep their order.indexOf() indices, so selection/reorder are fine.
+        if (!isVertical && label === (typeof formatAlleleLabel === "function" ? formatAlleleLabel(".") : ". (no-call)")) continue;
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
@@ -1859,12 +1892,12 @@ function renderFlowCanvas() {
         // Get colors based on allele type (use actual allele from map, not extracted from label)
         const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
         const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
-        // The reference allele is already the Reference track above; drawing it
-        // again as a full-height bar per variant is the "vertical line" clutter
-        // the user asked to remove. Skip the ref node entirely (no draw / no
-        // space / no hit-test). Alt alleles keep their order.indexOf() indices,
-        // so selection + reorder are unaffected.
-        if (actualAllele && v.refAllele && actualAllele === v.refAllele) continue;
+        // Skip the no-call ('.') allele node: it renders as a grey bar at the top
+        // of every variant's allele stack (even with zero missing calls), which
+        // the user sees as circle-less "vertical lines" above the reference
+        // allele. Dropping it leaves ref + alt nodes + the indel lollipops. Alt
+        // nodes keep their order.indexOf() indices, so selection/reorder are fine.
+        if (!isVertical && label === (typeof formatAlleleLabel === "function" ? formatAlleleLabel(".") : ". (no-call)")) continue;
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
