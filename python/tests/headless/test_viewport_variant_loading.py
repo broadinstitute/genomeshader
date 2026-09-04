@@ -162,6 +162,47 @@ def test_load_reports_progress_status(browser):
     page.close()
 
 
+def test_hung_fetch_does_not_block_other_windows(browser):
+    """Regression: a single fetch that never resolves (comm hangs) must NOT
+    stall loading for OTHER windows. An earlier serialization ('one fetch at a
+    time') let one stuck request brick all subsequent loads — the symptom was
+    'now it's just not loading the data'. The loader dedups only the identical
+    in-flight window, so panning to a different window still fetches."""
+    page = _open(browser)
+    # First fetch_variants hangs forever; later ones resolve normally.
+    page.evaluate(r"""() => {
+        window.__GS_COMM_LOG = [];
+        let n = 0;
+        window.__GS_SEND = function (type, data) {
+            window.__GS_COMM_LOG.push({ type, data });
+            if (type === "fetch_variants") {
+                n += 1;
+                if (n === 1) return new Promise(() => {});  // hang: never settles
+                const { contig, start, end } = data;
+                const mk = (p) => ({ id: contig + ":" + p, position: p, pos: p,
+                    ref: "A", alt: "C", n_ref: 10, n_alt: 5, n_missing: 0, n_samples: 15 });
+                const mid = Math.floor((start + end) / 2);
+                return Promise.resolve({ type: "fetch_variants_response",
+                    variant_tracks: [{ name: "vp", variants_data: [mk(start + 1), mk(mid), mk(end - 1)] }],
+                    insertion_variants_lookup: [] });
+            }
+            return Promise.resolve({});
+        };
+    }""")
+    base = page.evaluate("() => ({s: window.__GS_STATE.startBp, e: window.__GS_STATE.endBp})")
+    span = base["e"] - base["s"]
+    # Kick window A WITHOUT awaiting — its fetch hangs, leaving A in-flight.
+    page.evaluate("() => { window.gsLoadVariantsForViewport(true); }")
+    # Pan far to window B and await: must still fetch despite A stuck in-flight.
+    _set_view(page, base["s"] + span * 5, base["e"] + span * 5)
+    calls = _fetch_calls(page)
+    assert len(calls) == 2, f"hung window A blocked window B: {calls}"
+    n = page.evaluate(
+        "() => ((window.GENOMESHADER_CONFIG.variant_tracks||[])[0]||{}).variants_data?.length || 0")
+    assert n == 3, "window B variants never rendered while A was stuck"
+    page.close()
+
+
 def test_far_ranging_evicts_distant_windows(browser):
     page = _open(browser)
     page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")

@@ -1066,7 +1066,23 @@ class GenomeShader:
         """Kick off the background VCF-sample -> read-file index once BOTH
         variants (sample universe) and reads (attached files or pending dirs)
         are present. Called at the end of attach_variants and attach_reads, so
-        it fires after whichever of the two is called second."""
+        it fires after whichever of the two is called second.
+
+        Also warns about read (BAM) samples that aren't in the variant sample
+        universe: reads for a sample with no variant track won't be rendered, so
+        surface them rather than dropping them silently.
+        """
+        if self._vcf_sample_universe:
+            try:
+                bam_samples = set(self.get_bam_sample_names())
+            except Exception:
+                bam_samples = set()
+            excluded = sorted(bam_samples - self._vcf_sample_universe)
+            if excluded:
+                warnings.warn(
+                    f"{len(excluded)} read (BAM) sample(s) are not in the variant "
+                    f"sample set and will not be rendered: {', '.join(excluded)}"
+                )
         self._maybe_start_read_index()
 
     def attach_loci(self, loci: Union[str, List[str]]):
@@ -1644,11 +1660,15 @@ class GenomeShader:
         locus = f"{contig}:{start}-{end}"
         region = {"contig": contig, "start": start, "end": end}
 
-        # Reference / genes / ideogram / data_bounds for this window, so the
-        # viewport pager keeps those tracks in sync with the variants as you pan
-        # (they'd otherwise stay on the startup region — stale reference, and the
-        # out-of-data grey overlay stuck over freshly-loaded variants).
-        meta = self._region_track_meta(contig, start, end)
+        # Reference + data_bounds for this window, so the viewport pager keeps the
+        # reference track and the out-of-data grey overlay in sync as you pan
+        # (the two things that otherwise stay stuck on the startup region).
+        # LIGHT on purpose: genes()/repeats() are UCSC-backed and can block for
+        # seconds per cold window — putting them on the per-pan variant hot path
+        # pushed the fetch past the 30s comm timeout ("not loading" on human
+        # genomes). The gene/repeat tracks refresh on the next contig jump
+        # (navigate_payload) or full render, not on every pan.
+        meta = self._region_track_meta(contig, start, end, light=True)
 
         # Host cache (#77): serve a re-visited / covered window from RAM instead
         # of re-reading+parsing it from the VCF (the measured wall). Bounded+LRU.
@@ -1686,10 +1706,16 @@ class GenomeShader:
                 "insertion_variants_lookup": payload["insertion_variants_lookup"],
                 "region": region, "aggregate": aggregate, **meta}
 
-    def _region_track_meta(self, contig, start, end) -> dict:
+    def _region_track_meta(self, contig, start, end, light: bool = False) -> dict:
         """Reference / genes / ideogram / repeats + data_bounds for a window, so
         the pager can keep those tracks in sync with the variants as you pan.
-        Each piece is fetched defensively (missing -> empty default)."""
+        Each piece is fetched defensively (missing -> empty default).
+
+        light=True returns only reference_data + data_bounds — the cheap pieces
+        safe to ride along on the per-pan variant hot path. genes()/repeats()/
+        ideogram() are omitted because they can be UCSC-backed and slow; putting
+        them on every pan pushed the fetch past the comm timeout.
+        """
         start, end = int(start), int(end)
 
         def _safe(fn, *args, default):
@@ -1699,13 +1725,18 @@ class GenomeShader:
             except Exception:
                 return default
 
-        return {
+        meta = {
             "reference_data": _safe(self.reference, contig, start, end, default=""),
+            "data_bounds": {"start": start, "end": end},
+        }
+        if light:
+            return meta
+        meta.update({
             "transcripts_data": _safe(self.genes, contig, start, end, default=[]),
             "repeats_data": _safe(self.repeats, contig, start, end, default=[]),
             "ideogram_data": _safe(self.ideogram, contig, default=[]),
-            "data_bounds": {"start": start, "end": end},
-        }
+        })
+        return meta
 
     @staticmethod
     def _displayed_window_for_request(requested_region, min_window_bp: int = 40):

@@ -780,12 +780,13 @@ async function gsLoadVariantsForViewport(force) {
   win.start = Math.max(1, win.start);
   if (chrLen > 0) win.end = Math.min(win.end, chrLen);
   if (!(win.end > win.start)) return;
-  // One viewport fetch at a time. Rapid panning over cold (uncached) regions
-  // otherwise queues multiple multi-second decodes behind the comm timeout — one
-  // times out ("variant load failed") while a later one succeeds. The debounced
-  // trigger re-fires on the next settle, so nothing is lost.
-  if (_gsVpInFlight !== null) return;
+  // Dedup only the identical in-flight window. A single hung fetch (comm never
+  // resolves) must NOT block loads for OTHER windows — serializing on any
+  // in-flight request bricks all future loading when one request sticks.
+  // Rapid panning may briefly overlap fetches; the transient "variant load
+  // failed" self-heals on the next settle and is preferable to a hard stall.
   const reqKey = `${contig}:${win.start}-${win.end}`;
+  if (_gsVpInFlight === reqKey) return;
   _gsVpInFlight = reqKey;
   // Progress feedback: a cold window is read-bound (htslib decompress+parse of
   // the in-range VCF lines) and can take seconds at cohort scale (#78 measured
