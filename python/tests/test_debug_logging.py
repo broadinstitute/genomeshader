@@ -22,7 +22,9 @@ def test_real_construction_with_debug_does_not_crash(tmp_path, monkeypatch):
         s = GenomeShader(genome_build="hg38",
                          gcs_session_dir="gs://test-bucket/genomeshader", debug=True)
     assert s._debug is True
-    assert s._debug_log_path and list(tmp_path.glob("genomeshader_debug_*.log"))
+    # logs live in a dedicated (gitignored) subdir, not the cwd/repo root
+    assert s._debug_log_path and list(tmp_path.glob("genomeshader_logs/genomeshader_debug_*.log"))
+    assert "genomeshader_logs" in s._debug_log_path
 
 
 def test_real_construction_without_debug_writes_no_file(tmp_path, monkeypatch):

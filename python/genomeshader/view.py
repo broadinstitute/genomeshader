@@ -1524,7 +1524,11 @@ class GenomeShader:
         if not getattr(self, "_debug", False):
             return
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        self._debug_log_path = os.path.abspath(f"genomeshader_debug_{stamp}.log")
+        # Keep logs out of the repo root: one dedicated dir (gitignored), under
+        # GENOMESHADER_LOG_DIR if set, else ./genomeshader_logs.
+        log_dir = os.environ.get("GENOMESHADER_LOG_DIR") or os.path.join(os.getcwd(), "genomeshader_logs")
+        os.makedirs(log_dir, exist_ok=True)
+        self._debug_log_path = os.path.abspath(os.path.join(log_dir, f"genomeshader_debug_{stamp}.log"))
         logger = logging.getLogger(f"genomeshader.debug.{id(self)}")
         logger.setLevel(logging.DEBUG)
         logger.propagate = False

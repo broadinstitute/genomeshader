@@ -25,3 +25,7 @@ fiss_downloads/
 
 # htslib remote-index caches (dropped in cwd when region-seeking remote VCFs)
 *.pf7.vcf.gz.tbi
+
+# Debug logs (GenomeShader debug=True)
+genomeshader_logs/
+genomeshader_debug_*.log
