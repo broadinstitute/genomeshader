@@ -333,3 +333,41 @@ def test_reference_allele_node_present(gpu_browser):
                 });
             }""")
         assert has_ref, "reference allele node not rendered on the variant track"
+
+
+def test_indel_lollipop_click_expands_not_selects(gpu_browser):
+    """Clicking the indel lollipop must expand the indel, NOT select the variant.
+    The lollipop lives in a separate overlay from the flow's variant-select layer;
+    its hit-area must swallow the whole gesture (mousedown/pointerdown/click) so a
+    click can't leak through to the variant hoverRect / mousedown-select below."""
+    cfg = {
+        "region": "chr1:100835-100855",
+        "data_bounds": {"start": 100835, "end": 100855},
+        "reference_data": "ATTATCTAGTTTAGAAAAA",
+        "chrom_lengths": {"chr1": 248000000},
+        "variant_tracks": [{"id": "flow-0", "label": "WGS", "variants_phased": False,
+            "variants_data": [{"id": "i1", "pos": 100845, "position": 100845,
+                "refAllele": "A", "altAlleles": ["ATTT"], "isInsertion": True,
+                "isDeletion": False, "ref": "A", "alt": "ATTT", "n_ref": 90,
+                "n_alt": 6, "n_missing": 3, "n_samples": 99, "genotypes": [], "samples": []}]}],
+        "viewport_variant_loading": False,
+    }
+    with hg.open_viewer(gpu_browser, config=cfg) as (page, errors):
+        page.wait_for_function(
+            '() => !!document.querySelector("#flowIndelOverlay line[data-variant-id]")',
+            timeout=20000)
+        box = page.evaluate("""() => {
+            const l = document.querySelector('#flowIndelOverlay line[data-variant-id]');
+            const r = l.getBoundingClientRect();
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }""")
+        # click a few px off the 1px stem's exact center — must still land on the
+        # widened hit-area and expand (not fall through to the select layer).
+        page.mouse.click(box["x"] + 6, box["y"])
+        page.wait_for_timeout(200)
+        st = page.evaluate("""() => ({
+            exp: [...(window.__GS_STATE.expandedInsertions || [])],
+            sel: window.__GS_STATE.selectedAlleles ? [...window.__GS_STATE.selectedAlleles] : [],
+        })""")
+        assert st["exp"] == ["i1"], f"lollipop click did not expand the indel: {st}"
+        assert st["sel"] == [], f"lollipop click leaked to variant select: {st}"

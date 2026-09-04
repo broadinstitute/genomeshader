@@ -1340,10 +1340,10 @@ function renderTracks() {
         });
       } else {
         clickArea = el("rect", {
-          x: pos - 5,
-          y: baseY - 22,
-          width: 10,
-          height: 34,
+          x: pos - 11,
+          y: baseY - 26,
+          width: 22,
+          height: 42,
           fill: "transparent",
           style: "cursor: pointer; pointer-events: auto;",
           "data-variant-id": variantId
@@ -1360,11 +1360,16 @@ function renderTracks() {
         state.hoveredVariantId = null;
         renderHoverOnly();
       });
-      clickArea.addEventListener("pointerdown", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        _toggleIndel();
-      });
+      // Swallow the WHOLE gesture, not just pointerdown: the flow's variant
+      // select fires on `mousedown` (main.js alleleMouseDownHandler) and the
+      // per-variant hoverRect selects on `click`. If any of those reach the
+      // layer below, the click both expands AND selects (or just selects). Stop
+      // them all here so clicking the lollipop only toggles the indel.
+      const _swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
+      clickArea.addEventListener("pointerdown", (e) => { _swallow(e); _toggleIndel(); });
+      clickArea.addEventListener("mousedown", _swallow);
+      clickArea.addEventListener("mouseup", _swallow);
+      clickArea.addEventListener("click", _swallow);
       flowIndelOverlay.appendChild(clickArea);
     }
 
@@ -1407,6 +1412,7 @@ function renderTracks() {
       circleEl.setAttribute("title", _indelTitle);
       const _swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
       circleEl.addEventListener("pointerdown", (e) => { _swallow(e); _toggleIndel(); });
+      circleEl.addEventListener("mousedown", _swallow);
       circleEl.addEventListener("pointerup", _swallow);
       circleEl.addEventListener("click", _swallow);
     }
