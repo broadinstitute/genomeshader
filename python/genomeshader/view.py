@@ -601,6 +601,24 @@ class GenomeShader:
         self._variant_payload_by_view.clear()
         self._variant_payload_comm_buffers.clear()
 
+    def dump_config(self, path: str = "genomeshader_config.json") -> str:
+        """Write the last rendered widget config (the exact GENOMESHADER_CONFIG
+        the frontend received) to a JSON file. Call after show()/render(). Hand
+        this file to a developer: the test harness can render it verbatim
+        (harness.build_page(config=json.load(open(path)))), reproducing exactly
+        what you see instead of a synthetic fixture that diverges. Returns the
+        absolute path written.
+        """
+        cfg = getattr(self, "_last_config", None)
+        if cfg is None:
+            raise ValueError("No config yet — call show()/render() first.")
+        path = os.path.abspath(path)
+        with open(path, "w") as f:
+            json.dump(cfg, f, default=str)
+        print(f"GenomeShader: wrote render config -> {path} "
+              f"({len(cfg.get('variant_tracks') or [])} variant track(s))", flush=True)
+        return path
+
     def clear_local_cache(self) -> dict:
         """Clear the on-disk local cache (downloaded GCS artifacts, per-window
         reference/genes/repeats, cached read pileups) AND the in-memory caches.
