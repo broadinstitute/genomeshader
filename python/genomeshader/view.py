@@ -1795,7 +1795,15 @@ class GenomeShader:
         # pushed the fetch past the 30s comm timeout ("not loading" on human
         # genomes). The gene/repeat tracks refresh on the next contig jump
         # (navigate_payload) or full render, not on every pan.
+        # Granular debug logging: if a fetch hangs, the LAST line in the log
+        # names the step that stuck (reference/meta vs the VCF read). The user's
+        # log showed vp_fetch_start with no completion -> pinpoint it server-side.
+        self._debug_log("fetch_meta_start", locus=locus)
+        _t_meta = time.perf_counter()
         meta = self._region_track_meta(contig, start, end, light=True)
+        self._debug_log("fetch_meta_done", locus=locus,
+                        ms=round((time.perf_counter() - _t_meta) * 1000, 1),
+                        ref_len=len(meta.get("reference_data") or ""))
 
         # Host cache (#77): serve a re-visited / covered window from RAM instead
         # of re-reading+parsing it from the VCF (the measured wall). Bounded+LRU.
@@ -1814,21 +1822,28 @@ class GenomeShader:
         except (TypeError, ValueError):
             agg_max = 5000
         payload, aggregate = None, False
-        if agg_max >= 0 and self._variant_sample_count() > agg_max:
+        n_samples = self._variant_sample_count()
+        use_agg = agg_max >= 0 and n_samples > agg_max
+        self._debug_log("fetch_read_start", locus=locus, n_samples=n_samples,
+                        path=("aggregate" if use_agg else "full"))
+        _t_read = time.perf_counter()
+        if use_agg:
             try:
                 agg_df = self._session.get_locus_variant_aggregates(locus)
                 if agg_df is not None and isinstance(agg_df, pl.DataFrame) and len(agg_df) > 0:
                     tracks, ins = self._build_variant_payload_from_aggregates(agg_df)
                     payload, aggregate = {"variant_tracks": tracks,
                                           "insertion_variants_lookup": ins}, True
-            except Exception:
-                pass
+            except Exception as e:
+                self._debug_log("fetch_agg_error", locus=locus, error=str(e))
         if payload is None:
             df = self.get_locus_variants(locus)
             tracks, ins = self._build_variant_payload(df)
             payload, aggregate = {"variant_tracks": tracks,
                                   "insertion_variants_lookup": ins}, False
 
+        self._debug_log("fetch_read_done", locus=locus,
+                        ms=round((time.perf_counter() - _t_read) * 1000, 1))
         self._agg_region_cache_put(sig, contig, start, end, payload, aggregate)
         _log_result(_count(payload["variant_tracks"]), aggregate, False)
         return {"variant_tracks": payload["variant_tracks"],

@@ -257,6 +257,9 @@ class GenomeShaderWidget(anywidget.AnyWidget):
             # Viewport variant load (P2): fetch one window's variant payload on
             # pan/zoom without a full re-render.
             try:
+                self._shader._debug_log(
+                    "fetch_variants_recv", contig=content.get("contig"),
+                    start=content.get("start"), end=content.get("end"))
                 payload = self._shader.fetch_variants_payload(
                     content.get("contig"), content.get("start"), content.get("end"))
                 self.send({"type": "fetch_variants_response", "request_id": request_id, **payload})
