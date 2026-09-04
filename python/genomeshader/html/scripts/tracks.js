@@ -1092,6 +1092,121 @@ function renderTracks() {
   }
   }
 
+  // Coordinate axis: base line + major/minor ticks + bp labels + edge
+  // labels. Factored out of the old Indel ruler so it can ride the
+  // Reference track (baseX used in vertical mode, baseY in horizontal).
+  function drawGenomicAxis(baseX, baseY) {
+      // Base line
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: baseX, x2: baseX, y1: 16, y2: H-16,
+          stroke: "rgba(127,127,127,0.70)",
+          "stroke-width": 1.2
+        }));
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: 16, x2: W-16, y1: baseY, y2: baseY,
+          stroke: "rgba(127,127,127,0.70)",
+          "stroke-width": 1.2
+        }));
+      }
+
+      const span = state.endBp - state.startBp;
+      const dim = isVertical ? H : W;
+      const desiredMajorTicks = Math.max(5, Math.min(10, Math.floor((dim - 32) / 140)));
+      const majorBp = chooseNiceTickBp(span, desiredMajorTicks);
+      const minorBp = majorBp / 5;
+
+      const pxPerMajor = (dim - 32) / (span / majorBp);
+      const showLabels = pxPerMajor >= 80;
+
+    const firstMinor = Math.ceil(state.startBp / minorBp) * minorBp;
+
+    // Track major tick label positions to avoid overlap with edge labels
+    const majorTickLabelPositions = [];
+
+    for (let bp = firstMinor; bp <= state.endBp; bp += minorBp) {
+      const pos = genomePos(bp);
+      const isMajor = (Math.round(bp / minorBp) % 5) === 0;
+
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: baseX - (isMajor ? 9 : 5), x2: baseX + (isMajor ? 9 : 5),
+          y1: pos, y2: pos,
+          stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
+          "stroke-width": isMajor ? 1.1 : 1
+        }));
+
+        if (isMajor && showLabels) {
+          const textEl = el("text", {
+            x: baseX + 26,
+            y: pos,
+            class: "svg-small",
+            "text-anchor": "start",
+            "dominant-baseline": "middle"
+          }, formatBp(Math.round(bp), span));
+          tracksSvg.appendChild(textEl);
+          majorTickLabelPositions.push(pos);
+        }
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: pos, x2: pos,
+          y1: baseY - (isMajor ? 9 : 5), y2: baseY + (isMajor ? 9 : 5),
+          stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
+          "stroke-width": isMajor ? 1.1 : 1
+        }));
+
+        if (isMajor && showLabels) {
+          tracksSvg.appendChild(el("text", {
+            x: pos,
+            y: baseY + 26,
+            class: "svg-small",
+            "text-anchor": "middle"
+          }, formatBp(Math.round(bp), span)));
+          majorTickLabelPositions.push(pos);
+        }
+      }
+    }
+
+    // Only show edge labels if no tick label is too close
+    const edgeThreshold = 100; // pixels
+    if (isVertical) {
+      const bottomEdgeY = H - 16;
+      const topEdgeY = 16;
+      const hasNearbyBottomTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - bottomEdgeY) < edgeThreshold);
+      const hasNearbyTopTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - topEdgeY) < edgeThreshold);
+
+      if (!hasNearbyBottomTick) {
+        const textEl = el("text", {
+          x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
+        }, formatBp(Math.round(state.startBp), span));
+        tracksSvg.appendChild(textEl);
+      }
+      if (!hasNearbyTopTick) {
+        const textEl = el("text", {
+          x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
+        }, formatBp(Math.round(state.endBp), span));
+        tracksSvg.appendChild(textEl);
+      }
+    } else {
+      const leftEdgeX = 16;
+      const rightEdgeX = W - 16;
+      const hasNearbyLeftTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - leftEdgeX) < edgeThreshold);
+      const hasNearbyRightTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - rightEdgeX) < edgeThreshold);
+
+      if (!hasNearbyLeftTick) {
+        tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
+          formatBp(Math.round(state.startBp), span)
+        ));
+      }
+      if (!hasNearbyRightTick) {
+        tracksSvg.appendChild(el("text", {
+          x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
+        }, formatBp(Math.round(state.endBp), span)));
+      }
+    }
+  }
+
   // --- Locus ruler
   if (!rulerLayout.track.collapsed) {
     let rulerX, rulerY, rulerW, rulerH, baseX, baseY;
@@ -1108,116 +1223,6 @@ function renderTracks() {
       rulerW = W - 32;
       baseY = rulerY + 14;
     }
-
-    // Base line
-    if (isVertical) {
-      tracksSvg.appendChild(el("line", {
-        x1: baseX, x2: baseX, y1: 16, y2: H-16,
-        stroke: "rgba(127,127,127,0.70)",
-        "stroke-width": 1.2
-      }));
-    } else {
-      tracksSvg.appendChild(el("line", {
-        x1: 16, x2: W-16, y1: baseY, y2: baseY,
-        stroke: "rgba(127,127,127,0.70)",
-        "stroke-width": 1.2
-      }));
-    }
-
-    const span = state.endBp - state.startBp;
-    const dim = isVertical ? H : W;
-    const desiredMajorTicks = Math.max(5, Math.min(10, Math.floor((dim - 32) / 140)));
-    const majorBp = chooseNiceTickBp(span, desiredMajorTicks);
-    const minorBp = majorBp / 5;
-
-    const pxPerMajor = (dim - 32) / (span / majorBp);
-    const showLabels = pxPerMajor >= 80;
-
-  const firstMinor = Math.ceil(state.startBp / minorBp) * minorBp;
-
-  // Track major tick label positions to avoid overlap with edge labels
-  const majorTickLabelPositions = [];
-
-  for (let bp = firstMinor; bp <= state.endBp; bp += minorBp) {
-    const pos = genomePos(bp);
-    const isMajor = (Math.round(bp / minorBp) % 5) === 0;
-
-    if (isVertical) {
-      tracksSvg.appendChild(el("line", {
-        x1: baseX - (isMajor ? 9 : 5), x2: baseX + (isMajor ? 9 : 5),
-        y1: pos, y2: pos,
-        stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
-        "stroke-width": isMajor ? 1.1 : 1
-      }));
-
-      if (isMajor && showLabels) {
-        const textEl = el("text", {
-          x: baseX + 26,
-          y: pos,
-          class: "svg-small",
-          "text-anchor": "start",
-          "dominant-baseline": "middle"
-        }, formatBp(Math.round(bp), span));
-        tracksSvg.appendChild(textEl);
-        majorTickLabelPositions.push(pos);
-      }
-    } else {
-      tracksSvg.appendChild(el("line", {
-        x1: pos, x2: pos,
-        y1: baseY - (isMajor ? 9 : 5), y2: baseY + (isMajor ? 9 : 5),
-        stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
-        "stroke-width": isMajor ? 1.1 : 1
-      }));
-
-      if (isMajor && showLabels) {
-        tracksSvg.appendChild(el("text", {
-          x: pos,
-          y: baseY + 26,
-          class: "svg-small",
-          "text-anchor": "middle"
-        }, formatBp(Math.round(bp), span)));
-        majorTickLabelPositions.push(pos);
-      }
-    }
-  }
-
-  // Only show edge labels if no tick label is too close
-  const edgeThreshold = 100; // pixels
-  if (isVertical) {
-    const bottomEdgeY = H - 16;
-    const topEdgeY = 16;
-    const hasNearbyBottomTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - bottomEdgeY) < edgeThreshold);
-    const hasNearbyTopTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - topEdgeY) < edgeThreshold);
-
-    if (!hasNearbyBottomTick) {
-      const textEl = el("text", {
-        x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
-      }, formatBp(Math.round(state.startBp), span));
-      tracksSvg.appendChild(textEl);
-    }
-    if (!hasNearbyTopTick) {
-      const textEl = el("text", {
-        x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
-      }, formatBp(Math.round(state.endBp), span));
-      tracksSvg.appendChild(textEl);
-    }
-  } else {
-    const leftEdgeX = 16;
-    const rightEdgeX = W - 16;
-    const hasNearbyLeftTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - leftEdgeX) < edgeThreshold);
-    const hasNearbyRightTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - rightEdgeX) < edgeThreshold);
-
-    if (!hasNearbyLeftTick) {
-      tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
-        formatBp(Math.round(state.startBp), span)
-      ));
-    }
-    if (!hasNearbyRightTick) {
-      tracksSvg.appendChild(el("text", {
-        x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
-      }, formatBp(Math.round(state.endBp), span)));
-    }
-  }
 
   // Variant marks: use all variant tracks so every track adds a marker to the ruler
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
@@ -1871,7 +1876,8 @@ function renderTracks() {
         const dels = (typeof getExpandedDeletionsInView === "function") ? getExpandedDeletionsInView() : [];
         const wash = "rgba(70,70,70,0.62)", edge = "rgba(35,35,35,0.9)";
         dels.forEach((d, i) => {
-          const rowTop = referenceY + referenceH + 3 + i * DELETION_ROW_H;
+          // +50 clears the coordinate-axis strip now drawn below the sequence.
+          const rowTop = referenceY + referenceH + 50 + i * DELETION_ROW_H;
           const rowH = DELETION_ROW_H - 5;
           const loBp = Math.max(d.loBp, Math.ceil(state.startBp));
           const hiBp = Math.min(d.hiBp, Math.floor(state.endBp));
@@ -1912,6 +1918,14 @@ function renderTracks() {
             style: "fill: rgba(229,83,75,0.95); font-size:8px; font-weight:bold; letter-spacing:.04em;" }, "DEL"));
         });
       }
+    }
+
+    // Coordinate axis now rides the Reference track (merged from the old
+    // Indel ruler): draw it just below the reference sequence band.
+    if (isVertical) {
+      drawGenomicAxis(referenceX + referenceW + 20, 0);
+    } else {
+      drawGenomicAxis(0, referenceY + referenceH + 22);
     }
 
     // Comment pins (defined in comments.js): comments are a baseline annotation,
