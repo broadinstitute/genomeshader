@@ -214,3 +214,29 @@ def test_seed_registers_startup_window(browser):
     assert any(r["contig"] == "chr1" and r["start"] == 100 and r["end"] == 200
                for r in regions), f"startup window not seeded: {regions}"
     page.close()
+
+
+def test_load_syncs_reference_and_data_bounds(browser):
+    """The variant payload now carries reference/genes/data_bounds for the window,
+    so paging updates the reference track and the data_bounds (grey overlay)
+    instead of leaving them on the startup region."""
+    page = _open(browser)
+    page.evaluate("""() => { window.__GS_SEND = (type, data) => {
+        window.__GS_COMM_LOG = window.__GS_COMM_LOG || [];
+        window.__GS_COMM_LOG.push({ type, data });
+        if (type === "fetch_variants") return Promise.resolve({
+            type: "fetch_variants_response",
+            variant_tracks: [{ name: "vp", variants_data: [] }],
+            insertion_variants_lookup: [],
+            reference_data: "ACGTACGT",
+            transcripts_data: [], repeats_data: [], ideogram_data: [],
+            data_bounds: { start: data.start, end: data.end },
+        });
+        return Promise.resolve({}); }; }""")
+    page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")
+    page.wait_for_timeout(150)
+    cfg = page.evaluate("""() => ({ ref: window.GENOMESHADER_CONFIG.reference_data,
+        db: window.GENOMESHADER_CONFIG.data_bounds })""")
+    assert cfg["ref"] == "ACGTACGT", cfg
+    assert cfg["db"] and cfg["db"]["end"] > cfg["db"]["start"], cfg
+    page.close()

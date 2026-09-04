@@ -70,3 +70,19 @@ def test_none_returns_become_defaults():
     assert p["reference_data"] == "" and p["ideogram_data"] == []
     assert p["transcripts_data"] == [] and p["repeats_data"] == []
     assert p["insertion_variants_lookup"] == []  # absent key -> default
+
+
+def test_region_track_meta_defensive():
+    o = _stub(
+        reference=lambda c, s, e: "ACGT",
+        genes=lambda c, s, e: [{"name": "g"}],
+        repeats=_raise,                       # missing -> []
+        ideogram=lambda c: [{"chrom": c}],
+    )
+    o._region_track_meta = types.MethodType(GenomeShader._region_track_meta, o)
+    m = o._region_track_meta("chr2", 100, 200)
+    assert m["reference_data"] == "ACGT"
+    assert m["transcripts_data"] == [{"name": "g"}]
+    assert m["repeats_data"] == []            # raiser -> default
+    assert m["ideogram_data"] == [{"chrom": "chr2"}]
+    assert m["data_bounds"] == {"start": 100, "end": 200}

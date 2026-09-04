@@ -1644,6 +1644,12 @@ class GenomeShader:
         locus = f"{contig}:{start}-{end}"
         region = {"contig": contig, "start": start, "end": end}
 
+        # Reference / genes / ideogram / data_bounds for this window, so the
+        # viewport pager keeps those tracks in sync with the variants as you pan
+        # (they'd otherwise stay on the startup region — stale reference, and the
+        # out-of-data grey overlay stuck over freshly-loaded variants).
+        meta = self._region_track_meta(contig, start, end)
+
         # Host cache (#77): serve a re-visited / covered window from RAM instead
         # of re-reading+parsing it from the VCF (the measured wall). Bounded+LRU.
         sig = self._variant_dataset_signature()
@@ -1652,7 +1658,8 @@ class GenomeShader:
             sub = self._subset_variant_payload(hit["payload"], start, end)
             return {"variant_tracks": sub["variant_tracks"],
                     "insertion_variants_lookup": sub["insertion_variants_lookup"],
-                    "region": region, "aggregate": hit["aggregate"], "cached": True}
+                    "region": region, "aggregate": hit["aggregate"], "cached": True,
+                    **meta}
 
         try:
             agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "5000"))
@@ -1677,7 +1684,28 @@ class GenomeShader:
         self._agg_region_cache_put(sig, contig, start, end, payload, aggregate)
         return {"variant_tracks": payload["variant_tracks"],
                 "insertion_variants_lookup": payload["insertion_variants_lookup"],
-                "region": region, "aggregate": aggregate}
+                "region": region, "aggregate": aggregate, **meta}
+
+    def _region_track_meta(self, contig, start, end) -> dict:
+        """Reference / genes / ideogram / repeats + data_bounds for a window, so
+        the pager can keep those tracks in sync with the variants as you pan.
+        Each piece is fetched defensively (missing -> empty default)."""
+        start, end = int(start), int(end)
+
+        def _safe(fn, *args, default):
+            try:
+                out = fn(*args)
+                return out if out is not None else default
+            except Exception:
+                return default
+
+        return {
+            "reference_data": _safe(self.reference, contig, start, end, default=""),
+            "transcripts_data": _safe(self.genes, contig, start, end, default=[]),
+            "repeats_data": _safe(self.repeats, contig, start, end, default=[]),
+            "ideogram_data": _safe(self.ideogram, contig, default=[]),
+            "data_bounds": {"start": start, "end": end},
+        }
 
     def _variant_dataset_signature(self) -> str:
         serialized = json.dumps(self._variant_datasets, sort_keys=True)

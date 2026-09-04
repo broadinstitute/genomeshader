@@ -83,8 +83,12 @@ function renderTracks() {
     }
   }
   
-  // Draw data bounds overlays across all tracks except ideogram (if data bounds exist and differ from view)
-  if (dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
+  // Draw data bounds overlays across all tracks except ideogram (if data bounds
+  // exist and differ from view). Skip entirely when viewport variant loading is
+  // on — data pages in across the whole contig, so the "out of data" grey is
+  // misleading (and would otherwise linger over freshly-paged-in variants).
+  const _vpOn = !!(window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.viewport_variant_loading);
+  if (!_vpOn && dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
     const dataStartPos = genomePos(dataBounds.start);
     const dataEndPos = genomePos(dataBounds.end);
     

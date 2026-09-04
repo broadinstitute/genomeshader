@@ -774,8 +774,18 @@ async function gsLoadVariantsForViewport(force) {
   }
   if (!force && gsRegionCovered(_gsVpRegions, contig, vs, ve)) return; // coverage skip
   const win = overscanRegion(vs, ve, GS_VP_OVERSCAN);
+  // Clamp to the contig so a pan near an end doesn't request off-contig coords.
+  const chrLen = Number((cfg.chrom_lengths || {})[contig])
+    || (typeof chrLengths !== "undefined" ? Number(chrLengths[contig]) : 0) || 0;
+  win.start = Math.max(1, win.start);
+  if (chrLen > 0) win.end = Math.min(win.end, chrLen);
+  if (!(win.end > win.start)) return;
+  // One viewport fetch at a time. Rapid panning over cold (uncached) regions
+  // otherwise queues multiple multi-second decodes behind the comm timeout — one
+  // times out ("variant load failed") while a later one succeeds. The debounced
+  // trigger re-fires on the next settle, so nothing is lost.
+  if (_gsVpInFlight !== null) return;
   const reqKey = `${contig}:${win.start}-${win.end}`;
-  if (_gsVpInFlight === reqKey) return;                                // already fetching
   _gsVpInFlight = reqKey;
   // Progress feedback: a cold window is read-bound (htslib decompress+parse of
   // the in-range VCF lines) and can take seconds at cohort scale (#78 measured
@@ -799,6 +809,23 @@ async function gsLoadVariantsForViewport(force) {
       for (const ev of upd.evicted) _gsVpData.delete(_gsRegionKey(ev));
       if (Array.isArray(resp.insertion_variants_lookup)) {
         cfg.insertion_variants_lookup = resp.insertion_variants_lookup;
+      }
+      // Keep reference / genes / ideogram / data_bounds in sync with the paged
+      // window (they ride along with the variant payload now) so the reference
+      // track updates as you pan and the out-of-data overlay tracks the loaded
+      // region instead of the startup one.
+      if (typeof resp.reference_data === "string") {
+        cfg.reference_data = resp.reference_data; referenceSequence = resp.reference_data;
+      }
+      if (Array.isArray(resp.transcripts_data)) {
+        cfg.transcripts_data = resp.transcripts_data; transcripts = resp.transcripts_data;
+      }
+      if (Array.isArray(resp.repeats_data)) {
+        cfg.repeats_data = resp.repeats_data; repeats = resp.repeats_data;
+      }
+      if (Array.isArray(resp.ideogram_data)) cfg.ideogram_data = resp.ideogram_data;
+      if (resp.data_bounds && typeof resp.data_bounds.start === "number") {
+        cfg.data_bounds = resp.data_bounds; dataBounds = resp.data_bounds;
       }
       _gsVpRebuildTracks();
       if (typeof renderAll === "function") renderAll();
