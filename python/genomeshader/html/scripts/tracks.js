@@ -1221,7 +1221,9 @@ function renderTracks() {
       rulerH = 56;
       rulerX = 16;
       rulerW = W - 32;
-      baseY = rulerY + 12;
+      // Lollipop head (circle at baseY-18) sits in the blank strip at the top of
+      // the variant track, below the divider; the stem drops toward the nodes.
+      baseY = rulerY + 24;
     }
     // Indel lollipops render into a dedicated overlay ABOVE the variant
     // (flow) canvas so they sit on the variants — the standalone Indel track
@@ -1272,7 +1274,7 @@ function renderTracks() {
     } else {
       lineEl = el("line", {
         x1: pos, x2: pos,
-        y1: baseY - 18, y2: baseY + 18,
+        y1: baseY - 18, y2: baseY + 6,
         stroke: strokeColor,
         "stroke-width": strokeWidth,
         style: "cursor: pointer;",
@@ -1339,9 +1341,9 @@ function renderTracks() {
       } else {
         clickArea = el("rect", {
           x: pos - 5,
-          y: baseY - 20,
+          y: baseY - 22,
           width: 10,
-          height: 40,
+          height: 34,
           fill: "transparent",
           style: "cursor: pointer; pointer-events: auto;",
           "data-variant-id": variantId

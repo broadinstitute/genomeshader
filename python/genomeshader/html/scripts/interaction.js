@@ -695,43 +695,10 @@ function renderFlowCanvas() {
     // Reduce stem length by half
     const stemEndY = junctionY + (stemEndYFull - junctionY) / 2;
     
-    if (useWebGPU) {
-      for (let i=0;i<win.length;i++) {
-        const v = win[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
-        const color = isHovered ? blueHex : grayHex;
-        const alpha = isHovered ? 0.7 : 0.5;
-        // Position column based on mode
-        const x = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        const xScaled = x * devicePixelRatio;
-        flowInstancedRenderer.addLine(
-          xScaled, yBandToFlow(junctionY) * devicePixelRatio,
-          xScaled, yBandToFlow(stemEndY) * devicePixelRatio,
-          color, alpha
-        );
-      }
-    } else {
-      for (let i=0;i<win.length;i++) {
-        const v = win[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
-        ctx.strokeStyle = isHovered ? colBlue : colGray;
-        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        // Position column based on mode
-        const x = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        ctx.beginPath();
-        ctx.moveTo(x, junctionY);
-        ctx.lineTo(x, stemEndY);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1.0;
-    }
+    // Per-variant vertical stems removed: indels are now marked by the
+    // lollipop overlay (#flowIndelOverlay) on top of the variant track, and
+    // non-indel variants read from their allele nodes — the generic stem line
+    // per variant was redundant clutter once the lollipops moved here.
 
     // Text labels (still use Canvas 2D for text)
     // Group variants by position to handle multiple variants at same position
