@@ -12,11 +12,14 @@ use rust_htslib::bcf::{
 };
 use rust_htslib::tbx;
 
-use crate::env::{ gcs_authorize_data_access, local_guess_curl_ca_bundle };
+use crate::env::{ ensure_gcs_token_fresh, gcs_authorize_data_access, local_guess_curl_ca_bundle };
 
 /// Open a tabix (.tbi) index by URL with the same GCS-auth / CA-bundle retry
 /// ladder as `open_url_with_fallbacks`.
 fn open_tbx_with_fallbacks(url: &Url) -> Result<tbx::Reader> {
+    if url.scheme() != "file" {
+        ensure_gcs_token_fresh();
+    }
     match tbx::Reader::from_url(url) {
         Ok(r) => Ok(r),
         Err(_) => {
@@ -57,6 +60,9 @@ pub fn vcf_index_contigs(bcf_path: &str, index_path: Option<&str>) -> Result<Vec
 /// Open a URL with the same GCS-auth / CA-bundle retry ladder as the reads
 /// path (see stage::open_bam).
 fn open_url_with_fallbacks(url: &Url) -> Result<IndexedReader> {
+    if url.scheme() != "file" {
+        ensure_gcs_token_fresh(); // proactive 45-min refresh before a gs:// open
+    }
     match IndexedReader::from_url(url) {
         Ok(r) => Ok(r),
         Err(_) => {

@@ -11,10 +11,14 @@ use rayon::prelude::*;
 use rust_htslib::bam::IndexedReader;
 
 use crate::alignment::extract_reads;
-use crate::env::{ gcs_authorize_data_access, local_guess_curl_ca_bundle };
+use crate::env::{ ensure_gcs_token_fresh, gcs_authorize_data_access, local_guess_curl_ca_bundle };
 
 pub fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader> {
     env::set_current_dir(cache_path).unwrap();
+
+    if reads_url.scheme() != "file" {
+        ensure_gcs_token_fresh(); // proactive 45-min refresh before a gs:// open
+    }
 
     let bam = match IndexedReader::from_url(reads_url) {
         Ok(bam) => bam,
