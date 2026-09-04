@@ -356,11 +356,28 @@ def test_indel_lollipop_click_expands_not_selects(gpu_browser):
         page.wait_for_function(
             '() => !!document.querySelector("#flowIndelOverlay line[data-variant-id]")',
             timeout=20000)
+        # Stacking invariant: the lollipop overlay MUST sit above the flow
+        # container (a z-index:101 stacking context). If it drops below, the
+        # flow's variant hoverRects capture every hover/click and the indel is
+        # unreachable — the exact bug this guards.
+        zc = page.evaluate("""() => ({
+            flow: parseInt(getComputedStyle(document.getElementById('flow')).zIndex) || 0,
+            indel: parseInt(getComputedStyle(document.getElementById('flowIndelOverlay')).zIndex) || 0,
+        })""")
+        assert zc["indel"] > zc["flow"], f"lollipop overlay not above the flow: {zc}"
+
         box = page.evaluate("""() => {
             const l = document.querySelector('#flowIndelOverlay line[data-variant-id]');
             const r = l.getBoundingClientRect();
             return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
         }""")
+        # The topmost element at the lollipop must be a lollipop hit target (not a
+        # variant hoverRect from the flow layer below).
+        topvid = page.evaluate(
+            "(b) => { const e = document.elementFromPoint(b.x, b.y); return e && e.getAttribute && e.getAttribute('data-variant-id'); }",
+            box)
+        assert topvid == "i1", f"lollipop not on top at its own point (got {topvid})"
+
         # click a few px off the 1px stem's exact center — must still land on the
         # widened hit-area and expand (not fall through to the select layer).
         page.mouse.click(box["x"] + 6, box["y"])

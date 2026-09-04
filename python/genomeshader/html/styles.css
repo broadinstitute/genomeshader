@@ -1066,7 +1066,12 @@ svg.overlay {
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 6;
+  /* MUST sit above .flow (z-index:101) — the flow container is a stacking
+     context, so a lower z here buried the lollipop behind the flow's variant
+     hoverRects and every hover/click hit the variant, not the indel. Keep it
+     below #trackControls (z-index:120, click-through) so track controls stay
+     interactive. */
+  z-index: 110;
 }
 
 .hud {
