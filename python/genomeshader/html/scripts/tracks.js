@@ -1399,20 +1399,16 @@ function renderTracks() {
       state.hoveredVariantId = null;
       renderHoverOnly();
     });
-    // Pointerdown handler to toggle insertion expansion
-    if (isInsertion(v)) {
+    // Clicking the lollipop head expands the indel (ins OR del) — same action as
+    // the stem. It must NOT fall through to the flow's variant-select underneath,
+    // so it grabs pointer events and stops the whole gesture (down/up/click).
+    if (typeof isIndel === "function" && isIndel(v)) {
       circleEl.style.pointerEvents = "auto";
-      circleEl.setAttribute("title", "Click to expand insertion");
-      circleEl.addEventListener("pointerdown", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (state.expandedInsertions.has(variantId)) {
-          state.expandedInsertions.delete(variantId);
-        } else {
-          state.expandedInsertions.add(variantId);
-        }
-        renderAll();
-      });
+      circleEl.setAttribute("title", _indelTitle);
+      const _swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
+      circleEl.addEventListener("pointerdown", (e) => { _swallow(e); _toggleIndel(); });
+      circleEl.addEventListener("pointerup", _swallow);
+      circleEl.addEventListener("click", _swallow);
     }
     flowIndelOverlay.appendChild(circleEl);
     
