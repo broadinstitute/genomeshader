@@ -1707,6 +1707,21 @@ class GenomeShader:
             "data_bounds": {"start": start, "end": end},
         }
 
+    @staticmethod
+    def _displayed_window_for_request(requested_region, min_window_bp: int = 40):
+        """Displayed region for a locus-string request: the EXACT requested
+        window, widened to a minimum span CENTERED on the requested midpoint when
+        it's smaller than `min_window_bp` (so `show("chr:100-100")` still
+        renders). Returns (contig, start, end); start is clamped to >= 1."""
+        contig = requested_region[0]
+        start = int(requested_region[1])
+        end = int(requested_region[2])
+        if end - start < min_window_bp:
+            mid = (start + end) / 2.0
+            start = int(round(mid - min_window_bp / 2.0))
+            end = start + min_window_bp
+        return contig, max(1, start), end
+
     def _variant_dataset_signature(self) -> str:
         serialized = json.dumps(self._variant_datasets, sort_keys=True)
         return self._cache_id(serialized)
@@ -3526,15 +3541,7 @@ class GenomeShader:
         # window). A too-small request is widened to a minimum window CENTERED on
         # the requested midpoint, so `show("chr:100-100")` still renders.
         if requested_region is not None:
-            MIN_WINDOW_BP = 40
-            ref_chr = requested_region[0]
-            ref_start = int(requested_region[1])
-            ref_end = int(requested_region[2])
-            if ref_end - ref_start < MIN_WINDOW_BP:
-                mid = (ref_start + ref_end) / 2.0
-                ref_start = int(round(mid - MIN_WINDOW_BP / 2.0))
-                ref_end = ref_start + MIN_WINDOW_BP
-            ref_start = max(1, ref_start)
+            ref_chr, ref_start, ref_end = self._displayed_window_for_request(requested_region)
         
         # Store the actual data bounds (where reads/variants exist)
         # These may differ from the displayed region if user zooms/pans

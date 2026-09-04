@@ -569,3 +569,31 @@ def test_read_load_failure_removes_track_and_shows_modal(browser, tmp_path):
     page.wait_for_timeout(100)
     assert page.evaluate("() => !document.querySelector('.gs-modal-backdrop')")
     page.close()
+
+
+def test_hud_stays_visible(browser, tmp_path):
+    """The coordinate HUD is persistently visible (it used to auto-hide 3s
+    after a render)."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    assert page.evaluate(
+        "() => document.getElementById('hud').classList.contains('visible')")
+    page.close()
+
+
+def test_data_bounds_overlay_suppressed_when_viewport_loading(browser, tmp_path):
+    """The grey out-of-data overlay draws when the view exceeds data_bounds, but
+    is suppressed when viewport variant loading is on (data pages in across the
+    contig)."""
+    base = {"region": "chr1:1-100000", "data_bounds": {"start": 40000, "end": 60000}}
+    p1, _ = _open(browser, tmp_path, "horizontal", config=dict(base))
+    _wait_ready(p1)
+    off = p1.evaluate("() => document.querySelectorAll('.data-bounds-overlay').length")
+    p1.close()
+    p2, _ = _open(browser, tmp_path, "horizontal",
+                  config=dict(base, viewport_variant_loading=True))
+    _wait_ready(p2)
+    on = p2.evaluate("() => document.querySelectorAll('.data-bounds-overlay').length")
+    p2.close()
+    assert off > 0, "overlay should draw when the view exceeds data bounds"
+    assert on == 0, "overlay must be suppressed when viewport variant loading is on"
