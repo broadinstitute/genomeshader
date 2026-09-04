@@ -790,48 +790,9 @@ function renderFlowCanvas() {
     // Store positions globally for click detection
     window._variantLabelPositions = variantLabelPositions;
 
-    // Connector lines from ruler to columns
-    const y0 = 6;
-    if (useWebGPU) {
-      for (let i=0; i<win.length; i++) {
-        const v = win[i];
-        // Indels are shown on the Indel track; skip their connector line here.
-        if (typeof isIndel === "function" && isIndel(v)) continue;
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
-        const color = isHovered ? blueHex : grayHex;
-        const alpha = isHovered ? 0.7 : 0.5;
-        const vx = xGenomeCanonical(v.pos, W);
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        flowInstancedRenderer.addLine(
-          vx * devicePixelRatio, yBandToFlow(y0) * devicePixelRatio,
-          cx * devicePixelRatio, yBandToFlow(junctionY) * devicePixelRatio,
-          color, alpha
-        );
-      }
-    } else {
-      for (let i=0; i<win.length; i++) {
-        const v = win[i];
-        // Indels are shown on the Indel track; skip their connector line here.
-        if (typeof isIndel === "function" && isIndel(v)) continue;
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
-        ctx.strokeStyle = isHovered ? colBlue : colGray;
-        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        const vx = xGenomeCanonical(v.pos, W);
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        ctx.beginPath();
-        ctx.moveTo(vx, y0);
-        ctx.lineTo(cx, junctionY);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1.0;
-    }
+    // Per-variant connector line removed: it drew a thin grey 1px vertical line
+    // centred on each variant, over the top of the allele stack (the "vertical
+    // line" the user asked to remove). Allele nodes + indel lollipops remain.
   }
 
   // Helper function to format allele with length suffix
@@ -1579,12 +1540,6 @@ function renderFlowCanvas() {
         // Get colors based on allele type (use actual allele from map, not extracted from label)
         const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
         const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
-        // The reference allele is already the Reference track above; drawing it
-        // again as a full-height bar per variant is the "vertical line" clutter
-        // the user asked to remove. Skip the ref node entirely (no draw / no
-        // space / no hit-test). Alt alleles keep their order.indexOf() indices,
-        // so selection + reorder are unaffected.
-        if (actualAllele && v.refAllele && actualAllele === v.refAllele) continue;
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
@@ -1859,12 +1814,6 @@ function renderFlowCanvas() {
         // Get colors based on allele type (use actual allele from map, not extracted from label)
         const actualAllele = displaySpec.displayLabelToAllele.get(label) || labelToAllele.get(label) || extractAlleleFromLabel(label);
         const colors = getAlleleNodeColors(label, v, actualAllele, isDragging);
-        // The reference allele is already the Reference track above; drawing it
-        // again as a full-height bar per variant is the "vertical line" clutter
-        // the user asked to remove. Skip the ref node entirely (no draw / no
-        // space / no hit-test). Alt alleles keep their order.indexOf() indices,
-        // so selection + reorder are unaffected.
-        if (actualAllele && v.refAllele && actualAllele === v.refAllele) continue;
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
