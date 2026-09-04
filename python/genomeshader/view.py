@@ -3412,8 +3412,16 @@ class GenomeShader:
         # Try to get variant data if locus is a string
         variants_df = None
         variant_agg_mode = False  # scale path: per-variant aggregates, no per-sample
+        # The EXACT window the caller asked for (locus string only). The displayed
+        # region honors this rather than the data's min/max + padding, so a
+        # requested 1kb window shows 1kb, not a wider padded view.
+        requested_region = None
         input_resolve_start = time.perf_counter()
         if isinstance(locus_or_dataframe, str):
+            try:
+                requested_region = self._parse_locus(locus_or_dataframe)  # (contig, start, end)
+            except Exception:
+                requested_region = None
             self._progress(f"Fetching variants for {locus_or_dataframe} …", 1, 4)
             try:
                 # Scale path: for very large cohorts the per-sample long format
@@ -3484,6 +3492,21 @@ class GenomeShader:
             ref_chr = samples_df["reference_contig"].min()
             ref_start = samples_df["reference_start"].min()
             ref_end = samples_df["reference_end"].max()
+
+        # Honor the caller's exact window (locus string). Data-derived bounds +
+        # padding above only apply to a bare DataFrame input (no requested
+        # window). A too-small request is widened to a minimum window CENTERED on
+        # the requested midpoint, so `show("chr:100-100")` still renders.
+        if requested_region is not None:
+            MIN_WINDOW_BP = 40
+            ref_chr = requested_region[0]
+            ref_start = int(requested_region[1])
+            ref_end = int(requested_region[2])
+            if ref_end - ref_start < MIN_WINDOW_BP:
+                mid = (ref_start + ref_end) / 2.0
+                ref_start = int(round(mid - MIN_WINDOW_BP / 2.0))
+                ref_end = ref_start + MIN_WINDOW_BP
+            ref_start = max(1, ref_start)
         
         # Store the actual data bounds (where reads/variants exist)
         # These may differ from the displayed region if user zooms/pans
