@@ -571,6 +571,34 @@ def test_read_load_failure_removes_track_and_shows_modal(browser, tmp_path):
     page.close()
 
 
+def test_clear_cache_button_dispatches_comm(browser, tmp_path):
+    """The Settings > Local cache 'Clear' row sends the clear_cache comm and
+    reports the freed count in the status bar."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    page.evaluate("""() => {
+        window.__GS_CLEAR_SENT = null;
+        window.__GS_SEND = (type, data) => {
+            if (type === 'clear_cache') {
+                window.__GS_CLEAR_SENT = true;
+                return Promise.resolve({ type: 'clear_cache_response', files: 12, bytes: 5 * 1024 * 1024 });
+            }
+            return Promise.resolve({});
+        };
+        window.__GS_STATUS_LAST = null;
+        const real = window.__GS_STATUS;
+        window.__GS_STATUS = (m, o) => { window.__GS_STATUS_LAST = m; return real ? real(m, o) : undefined; };
+    }""")
+    page.evaluate("() => document.getElementById('clearCacheItem').click()")
+    page.wait_for_function("() => window.__GS_CLEAR_SENT === true", timeout=5000)
+    page.wait_for_function(
+        "() => typeof window.__GS_STATUS_LAST === 'string' && window.__GS_STATUS_LAST.indexOf('12') >= 0",
+        timeout=5000)
+    msg = page.evaluate("() => window.__GS_STATUS_LAST")
+    assert "cache cleared" in msg.lower() and "5" in msg, msg
+    page.close()
+
+
 def test_hud_stays_visible(browser, tmp_path):
     """The coordinate HUD is persistently visible (it used to auto-hide 3s
     after a render)."""

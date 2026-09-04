@@ -384,6 +384,35 @@ orientationItem.addEventListener("click", () => {
   renderAll();
 });
 
+// Settings: clear the on-disk + in-memory local cache on demand. Cache-only, so
+// safe/reversible (re-fetched on next access) — no confirm dialog, just feedback.
+const clearCacheItem = getElementById("clearCacheItem");
+if (clearCacheItem) {
+  clearCacheItem.addEventListener("click", () => {
+    const lbl = getElementById("clearCacheLabel");
+    if (typeof sendCommMessage !== "function") {
+      if (window.__GS_MODAL) window.__GS_MODAL(
+        "Cache clearing needs the live kernel connection, which isn't available here.",
+        { title: "Local cache" });
+      return;
+    }
+    if (lbl) lbl.textContent = "Clearing…";
+    sendCommMessage("clear_cache", {}, 30000).then((resp) => {
+      const files = (resp && resp.files) || 0;
+      const mb = (((resp && resp.bytes) || 0) / (1024 * 1024));
+      if (lbl) lbl.textContent = "Clear";
+      const msg = `Local cache cleared — ${files.toLocaleString()} file(s), `
+        + `${mb.toFixed(mb < 10 ? 1 : 0)} MB freed.`;
+      if (window.__GS_STATUS) window.__GS_STATUS(msg, { autoHide: 3500 });
+    }).catch((e) => {
+      if (lbl) lbl.textContent = "Clear";
+      if (window.__GS_MODAL) window.__GS_MODAL(
+        "Failed to clear the local cache: " + (e && e.message ? e.message : e),
+        { title: "Local cache" });
+    });
+  });
+}
+
 // Variant layout mode toggle in settings menu
 const variantLayoutModeItem = getElementById("variantLayoutModeItem");
 

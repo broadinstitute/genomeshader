@@ -582,6 +582,35 @@ class GenomeShader:
         self._variant_payload_by_view.clear()
         self._variant_payload_comm_buffers.clear()
 
+    def clear_local_cache(self) -> dict:
+        """Clear the on-disk local cache (downloaded GCS artifacts, per-window
+        reference/genes/repeats, cached read pileups) AND the in-memory caches.
+        Returns {"files": n, "bytes": total} for the freed on-disk contents.
+        Safe: everything here is a cache — it is re-fetched on next access.
+        """
+        import shutil
+
+        files, freed = 0, 0
+        cache_dir = getattr(self, "_local_cache_dir", None)
+        if cache_dir is not None and Path(cache_dir).exists():
+            for child in Path(cache_dir).iterdir():
+                try:
+                    if child.is_file() or child.is_symlink():
+                        freed += child.stat().st_size
+                        files += 1
+                        child.unlink()
+                    else:
+                        for p in child.rglob("*"):
+                            if p.is_file() or p.is_symlink():
+                                freed += p.stat().st_size
+                                files += 1
+                        shutil.rmtree(child, ignore_errors=True)
+                except OSError:
+                    pass
+            Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        self.clear_cache()
+        return {"files": files, "bytes": freed}
+
     def _cache_id(self, s: str) -> str:
         return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 

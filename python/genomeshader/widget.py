@@ -269,6 +269,13 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                 self.send({"type": "navigate_response", "request_id": request_id, **payload})
             except Exception as e:
                 self.send({"type": "navigate_error", "request_id": request_id, "error": str(e)})
+        elif msg_type == "clear_cache":
+            # Settings: user-requested wipe of the on-disk + in-memory local cache.
+            try:
+                stats = self._shader.clear_local_cache()
+                self.send({"type": "clear_cache_response", "request_id": request_id, **stats})
+            except Exception as e:
+                self.send({"type": "clear_cache_error", "request_id": request_id, "error": str(e)})
         elif msg_type == "ucsc_genomes":
             # Assembly picker: all UCSC assemblies + the best match for this build.
             try:
