@@ -848,7 +848,7 @@ async function gsLoadVariantsForViewport(force) {
   __GS_DEBUG("vp_fetch_start", { reqKey: reqKey });
   try {
     const resp = await sendCommMessage("fetch_variants",
-      { contig, start: win.start, end: win.end }, 30000);
+      { contig, start: win.start, end: win.end }, 90000);  // cold remote window can exceed 30s
     // A server-side failure comes back as a resolved *_error response (not a
     // rejection), so it would otherwise fall through silently — no variants, no
     // message ("scrolled and nothing happened"). Surface it like a rejection.

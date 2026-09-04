@@ -18,7 +18,31 @@ use std::{
     collections::{ hash_map::DefaultHasher, HashMap, HashSet },
     hash::{ Hash, Hasher },
     path::PathBuf,
+    time::Instant,
 };
+
+/// True when GENOMESHADER_DEBUG is set — gates the per-step timing eprintln!s so
+/// a slow/stalled variant fetch names the culprit step (staged read, request
+/// cache read, VCF compute, cache write) in the kernel log.
+fn gs_debug() -> bool {
+    let on = |k: &str| std::env::var(k)
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    // GENOMESHADER_RUST_DEBUG is set by a debug=True GenomeShader (kept distinct
+    // from GENOMESHADER_DEBUG so a debug instance doesn't force every later
+    // Python instance into debug via the shared process env).
+    on("GENOMESHADER_DEBUG") || on("GENOMESHADER_RUST_DEBUG")
+}
+
+/// The per-request GCS parquet cache (read+write on every window) is OFF by
+/// default: those two remote round-trips per pan are what stall viewport
+/// loading, and the in-memory df cache already serves same-session revisits.
+/// Opt back in with GENOMESHADER_VARIANT_REQUEST_CACHE=1 for cross-session reuse.
+fn gs_variant_request_cache_enabled() -> bool {
+    std::env::var("GENOMESHADER_VARIANT_REQUEST_CACHE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
 
 use iset::*;
 use url::Url;
@@ -744,6 +768,9 @@ impl Session {
             return Ok(PyDataFrame(cached_df.clone()));
         }
 
+        let dbg = gs_debug();
+
+        let _t = Instant::now();
         if let Some((staged_start, staged_stop, _staged_marker)) =
             self.find_covering_variant_staged_file(&l_fmt.0, l_fmt.1, l_fmt.2)
         {
@@ -756,31 +783,49 @@ impl Session {
                 if let Ok(filtered) =
                     self.read_parquet_uri_filtered(&remote_uri, l_fmt.1, l_fmt.2)
                 {
+                    if dbg { eprintln!("[gs] {} staged-parquet hit {}ms", locus, _t.elapsed().as_millis()); }
                     self.variant_df_cache.insert(cache_key.clone(), filtered.clone());
                     return Ok(PyDataFrame(filtered));
                 }
             }
         }
+        if dbg { eprintln!("[gs] {} staged-parquet miss {}ms", locus, _t.elapsed().as_millis()); }
 
-        if let Some(remote_uri) =
-            self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
-        {
-            if let Ok(cached_df) = self.read_parquet_uri(&remote_uri) {
-                self.variant_df_cache.insert(cache_key.clone(), cached_df.clone());
-                return Ok(PyDataFrame(cached_df));
+        // Per-request GCS parquet cache read (opt-in): a remote round-trip per
+        // window that, on a miss, still pays the open/HEAD cost — a prime stall.
+        if gs_variant_request_cache_enabled() {
+            let _t = Instant::now();
+            if let Some(remote_uri) =
+                self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
+            {
+                if let Ok(cached_df) = self.read_parquet_uri(&remote_uri) {
+                    if dbg { eprintln!("[gs] {} reqcache hit {}ms", locus, _t.elapsed().as_millis()); }
+                    self.variant_df_cache.insert(cache_key.clone(), cached_df.clone());
+                    return Ok(PyDataFrame(cached_df));
+                }
             }
+            if dbg { eprintln!("[gs] {} reqcache miss {}ms", locus, _t.elapsed().as_millis()); }
         }
 
+        let _tc = Instant::now();
         let df = self.compute_variants_for_locus(&l_fmt.0, &l_fmt.1, &l_fmt.2, &locus)?;
-        if let Some(remote_uri) =
-            self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
-        {
-            if let Err(err) = self.write_parquet_uri(&remote_uri, df.clone()) {
-                eprintln!(
-                    "Warning: Failed to write variant request cache to '{}': {}",
-                    remote_uri, err
-                );
+        if dbg { eprintln!("[gs] {} compute {}ms ({} rows)", locus, _tc.elapsed().as_millis(), df.height()); }
+
+        // Write-back to the GCS request cache (opt-in): a remote WRITE per window
+        // on the hot path — off by default so a pan can't stall on the upload.
+        if gs_variant_request_cache_enabled() {
+            let _tw = Instant::now();
+            if let Some(remote_uri) =
+                self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
+            {
+                if let Err(err) = self.write_parquet_uri(&remote_uri, df.clone()) {
+                    eprintln!(
+                        "Warning: Failed to write variant request cache to '{}': {}",
+                        remote_uri, err
+                    );
+                }
             }
+            if dbg { eprintln!("[gs] {} reqcache-write {}ms", locus, _tw.elapsed().as_millis()); }
         }
 
         if !self.staged_tree.contains_key(&l_fmt.0) {

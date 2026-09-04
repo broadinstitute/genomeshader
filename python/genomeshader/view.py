@@ -255,6 +255,12 @@ class GenomeShader:
         # fetch failures are printed under the cell. Also enabled via env
         # GENOMESHADER_DEBUG=1 so it can be turned on without editing code.
         self._debug = bool(debug) or os.environ.get("GENOMESHADER_DEBUG", "").strip().lower() in {"1", "true", "yes"}
+        # Propagate to the Rust extension so its per-step variant-fetch timing
+        # (staged read / compute / cache) prints under the cell when debug is on.
+        # Use a DISTINCT env var so enabling debug on one instance doesn't flip
+        # later Python instances into debug via the shared process env.
+        if self._debug:
+            os.environ["GENOMESHADER_RUST_DEBUG"] = "1"
         self._debug_logger = None
         self._debug_log_path = None
         self._setup_debug_logging()
