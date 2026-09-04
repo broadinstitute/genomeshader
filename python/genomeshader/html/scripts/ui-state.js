@@ -194,6 +194,14 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
   updateDocumentTitle();
 }
 
+// Drop the RepeatMasker track when no repeats were supplied — an empty track
+// just wastes vertical space.
+if (!(window.GENOMESHADER_CONFIG
+      && Array.isArray(window.GENOMESHADER_CONFIG.repeats_data)
+      && window.GENOMESHADER_CONFIG.repeats_data.length > 0)) {
+  state.tracks = state.tracks.filter(t => t.id !== "repeats");
+}
+
 // Replace single "flow" track with one track per variant dataset when config.variant_tracks is provided
 if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && window.GENOMESHADER_CONFIG.variant_tracks.length > 0) {
   const variantTracksConfig = window.GENOMESHADER_CONFIG.variant_tracks;

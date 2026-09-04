@@ -1601,27 +1601,12 @@ function renderGenesPanel() {
 // -----------------------------
 // HUD + renderAll
 // -----------------------------
-let hudHideTimeout = null;
-
 function renderHUD() {
   const locusText = `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
   hud.textContent = locusText;
-
-  // In inline mode, show HUD and auto-hide after 3 seconds
-  if (hostMode === 'inline') {
-    hud.classList.add('visible');
-
-    // Clear any existing timeout
-    if (hudHideTimeout) {
-      clearTimeout(hudHideTimeout);
-    }
-
-    // Set new timeout to hide HUD after 3 seconds
-    hudHideTimeout = setTimeout(() => {
-      hud.classList.remove('visible');
-      hudHideTimeout = null;
-    }, 3000);
-  }
+  // Keep the coordinate readout persistently visible (it used to auto-hide 3s
+  // after a render, so at rest it vanished and only flashed while panning).
+  hud.classList.add('visible');
 }
 
 function updateTooltip() {
