@@ -535,6 +535,37 @@ function renderTracks() {
         "stroke-width": 1
       }));
     }
+
+    // Staged chromosome-click target: a differently-coloured (blue) box over the
+    // clicked area. It's a PENDING jump (committed by Go), distinct from the red
+    // current-view box. Same arm-proportional mapping as the view box.
+    const _pl = state.__pendingLocus;
+    if (_pl && _pl.contig === state.contig && chrLength > 0) {
+      const pc = Math.max(1, Math.min(chrLength, (Number(_pl.start) + Number(_pl.end)) / 2));
+      const pIsP = pc <= centromerePos;
+      const spanFrac = Math.max(0, Number(_pl.end) - Number(_pl.start)) / chrLength;
+      if (isVertical) {
+        const armY = pIsP ? pY : qY, armH = pIsP ? pH : qH, armLen = pIsP ? pArmLength : qArmLength;
+        const fr = pIsP ? (pc / armLen) : ((pc - centromerePos) / armLen);
+        const boxH = Math.max(12, spanFrac * armH);
+        const cy = pIsP ? (pY + pH - fr * pH) : (qY + fr * qH);
+        const by = Math.max(armY, Math.min(armY + armH - boxH, cy - boxH / 2));
+        tracksSvg.appendChild(el("rect", {
+          x: (pIsP ? pX : qX) - 1, y: by, width: (pIsP ? pW : qW) + 2, height: boxH,
+          fill: "rgba(80,150,255,0.25)", stroke: "rgba(80,150,255,0.95)", "stroke-width": 1.5,
+        }));
+      } else {
+        const armX = pIsP ? pX : qX, armW = pIsP ? pW : qW, armLen = pIsP ? pArmLength : qArmLength;
+        const fr = pIsP ? (pc / armLen) : ((pc - centromerePos) / armLen);
+        const boxW = Math.max(12, spanFrac * armW);
+        const cx = armX + fr * armW;
+        const bx = Math.max(armX, Math.min(armX + armW - boxW, cx - boxW / 2));
+        tracksSvg.appendChild(el("rect", {
+          x: bx, y: (pIsP ? pY : qY) - 1, width: boxW, height: (pIsP ? pH : qH) + 2,
+          fill: "rgba(80,150,255,0.25)", stroke: "rgba(80,150,255,0.95)", "stroke-width": 1.5,
+        }));
+      }
+    }
   }
 
   // --- Genes track (exons/introns/strand)

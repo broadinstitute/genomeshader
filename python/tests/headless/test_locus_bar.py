@@ -63,12 +63,24 @@ def test_bar_present_and_populated(browser):
     page.close()
 
 
+def _go_disabled(page):
+    return page.eval_on_selector("#locusGoBtn", "el => el.disabled")
+
+
+def test_go_disabled_until_edit(browser):
+    page = _open(browser)
+    assert _go_disabled(page) is True                 # nothing changed yet
+    page.fill("#locusPosInput", "1,000-2,000")         # typing stages -> enables Go
+    assert _go_disabled(page) is False
+    page.click("#locusGoBtn")                          # commit -> greys out again
+    assert _go_disabled(page) is True
+    page.close()
+
+
 def test_go_range(browser):
     page = _open(browser)
-    page.evaluate(
-        "() => { document.getElementById('locusContigSelect').value='chr1';"
-        "document.getElementById('locusPosInput').value='1,000-2,000';"
-        "document.getElementById('locusGoBtn').click(); }")
+    page.fill("#locusPosInput", "1,000-2,000")         # fill fires input -> dirty -> Go on
+    page.click("#locusGoBtn")
     s = _state(page)
     assert (s["c"], s["s"], s["e"]) == ("chr1", 1000, 2000), s
     page.close()
@@ -76,13 +88,54 @@ def test_go_range(browser):
 
 def test_go_single_position_expands_100bp(browser):
     page = _open(browser)
-    page.evaluate(
-        "() => { document.getElementById('locusContigSelect').value='chr1';"
-        "document.getElementById('locusPosInput').value='1500';"
-        "document.getElementById('locusGoBtn').click(); }")
+    page.fill("#locusPosInput", "1500")
+    page.click("#locusGoBtn")
     s = _state(page)
     # +/-100 each side of 1500.
     assert (s["s"], s["e"]) == (1400, 1600), s
+    page.close()
+
+
+def test_contig_select_stages_not_jumps(browser):
+    # Picking a contig must NOT jump; it stages the change and enables Go.
+    page = _open(browser)
+    page.evaluate(
+        "() => { const s = document.getElementById('locusContigSelect');"
+        "s.value = 'chr2'; s.dispatchEvent(new Event('change', {bubbles: true})); }")
+    assert _state(page)["c"] == "chr1"                 # still on chr1 (not jumped)
+    assert _go_disabled(page) is False                 # Go now enabled
+    page.click("#locusGoBtn")
+    assert _state(page)["c"] == "chr2"                  # committed
+    page.close()
+
+
+def test_chrom_click_stages_pending_box(browser):
+    # Clicking the chromosome overview (opt-in) stages a pending target: sets
+    # __pendingLocus, fills the bar, enables Go — but does NOT jump.
+    page = _open(browser)
+    before = _state(page)
+    r = page.evaluate(r"""() => {
+        window.__GS_STATE.chromClickJump = true;
+        window.__GS_STATE.gestureMovedPx = 0;
+        const hit = window.__GS_STATE.__ideogramHitRect;
+        if (!hit) return { ok: false, reason: 'no hit rect' };
+        const m = document.getElementById('main').getBoundingClientRect();
+        // Click ~25% across the ideogram band.
+        const ev = { button: 0,
+            clientX: m.left + hit.x + hit.w * 0.25,
+            clientY: m.top + hit.y + hit.h * 0.5 };
+        const staged = window.gsMaybeChromClickStage(ev);
+        return { ok: true, staged: staged, pl: window.__GS_STATE.__pendingLocus,
+                 goDisabled: document.getElementById('locusGoBtn').disabled };
+    }""")
+    assert r["ok"], r
+    assert r["staged"] is True
+    assert r["pl"] and r["pl"]["contig"] == before["c"]
+    assert r["goDisabled"] is False                    # Go enabled by the stage
+    assert _state(page) == before                      # view NOT moved yet
+    # The staged center should sit near 25% of the contig (chr1 = 1,000,000).
+    center = (r["pl"]["start"] + r["pl"]["end"]) / 2
+    assert 200_000 < center < 300_000, center
     page.close()
 
 

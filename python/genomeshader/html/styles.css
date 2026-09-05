@@ -964,6 +964,13 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 #locusBar .locus-go:hover { filter: brightness(1.08); }
 #locusBar .locus-go:active { filter: brightness(0.95); }
+#locusBar .locus-go:disabled {
+  background: var(--panel);
+  color: var(--muted);
+  border-color: var(--border2);
+  cursor: default;
+  filter: none;
+}
 
 .main {
   position: absolute;

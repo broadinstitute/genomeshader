@@ -1017,6 +1017,10 @@ function gsGoToLocus(text) {
   state.startBp = start;
   state.endBp = end;
   if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+  // Committed: drop the staged box + dirty flag so the bar re-syncs to the view
+  // and Go greys out again.
+  state.__pendingLocus = null;
+  state.__locusDirty = false;
   if (contigChanged) gsResetRegionData();
   if (typeof updateDocumentTitle === "function") updateDocumentTitle();
   if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
@@ -1029,17 +1033,20 @@ if (typeof window !== "undefined") {
   window.gsGoToLocus = gsGoToLocus;
 }
 
-// Click on the Chromosome (ideogram) overview to jump there — opt-in via the
-// "Click chromosome to jump" setting. Maps the click position across the WHOLE
-// contig (the ideogram is a full-chromosome overview) and recenters the current
-// span on it. `e` is a pointerup event; called from the main gesture handler so
-// it can tell a click from a pan (state.gestureMovedPx).
-function gsMaybeChromClickJump(e) {
+// Click on the Chromosome (ideogram) overview to STAGE a jump there — opt-in via
+// the "Click chromosome to jump" setting. Maps the click across the WHOLE contig
+// (the ideogram is a full-chromosome overview), recenters the current span on it,
+// and stages that as a pending target: draws a differently-coloured rectangle
+// over the clicked area, fills the locus bar, and enables Go. It does NOT jump —
+// Go (or Enter) commits it. `e` is a pointerup event; called from the main
+// gesture handler so it can tell a click from a pan (state.gestureMovedPx).
+function gsMaybeChromClickStage(e) {
   if (!state.chromClickJump) return false;
   if ((state.gestureMovedPx || 0) > 4) return false;         // was a drag/pan
   if (e && e.button !== undefined && e.button !== 0) return false;
   const rect = state.__ideogramHitRect;
   if (!rect || !(rect.w > 0) || !(rect.h > 0) || !(rect.len > 0)) return false;
+  if (rect.contig !== state.contig) return false;
   const mainEl = document.getElementById("main");
   if (!mainEl) return false;
   const r = mainEl.getBoundingClientRect();
@@ -1053,18 +1060,41 @@ function gsMaybeChromClickJump(e) {
     : (px - rect.x) / rect.w;
   const pos = Math.max(1, Math.round(frac * rect.len));
   const span = Math.max(1, Math.floor(state.endBp - state.startBp)) || 1000;
-  const start = Math.max(1, Math.round(pos - span / 2));
-  const end = start + span;
-  gsGoToLocus(`${rect.contig}:${start}-${end}`);
+  let start = Math.max(1, Math.round(pos - span / 2));
+  let end = start + span;
+  if (rect.len) { end = Math.min(end, rect.len); if (start >= end) start = Math.max(1, end - 1); }
+
+  // Stage it (no navigation). The ideogram renderer draws the pending box.
+  state.__pendingLocus = { contig: rect.contig, start, end };
+  const sel = document.getElementById("locusContigSelect");
+  const posEl = document.getElementById("locusPosInput");
+  if (sel) sel.value = rect.contig;
+  if (posEl) posEl.value = `${start.toLocaleString()}-${end.toLocaleString()}`;
+  gsMarkLocusDirty(true);
+  if (typeof renderAll === "function") renderAll();
   return true;
 }
-if (typeof window !== "undefined") window.gsMaybeChromClickJump = gsMaybeChromClickJump;
+if (typeof window !== "undefined") window.gsMaybeChromClickStage = gsMaybeChromClickStage;
 
-// Reflect the current view into the top locus bar fields (unless the user is
-// mid-edit in the position box). Called after any navigation/pan/zoom.
+// Enable Go only when the bar holds an uncommitted change ("dirty"): a new
+// contig picked, an edited position, or a staged chromosome-click box.
+function gsUpdateGoButton() {
+  const go = document.getElementById("locusGoBtn");
+  if (go) go.disabled = !state.__locusDirty;
+}
+function gsMarkLocusDirty(v) {
+  state.__locusDirty = (v !== false);
+  gsUpdateGoButton();
+}
+
+// Reflect the current view into the top locus bar fields. Held back while the
+// user is mid-edit (focused) or has a staged-but-uncommitted change (dirty), so
+// pan/zoom doesn't stomp what they're about to Go to. Called after any
+// navigation/pan/zoom.
 function gsSyncLocusBar() {
   const sel = document.getElementById("locusContigSelect");
   const pos = document.getElementById("locusPosInput");
+  if (state.__locusDirty) { gsUpdateGoButton(); return; }
   if (sel && sel.value !== state.contig) {
     // Repopulate lazily if the contig isn't an option yet.
     if (!Array.from(sel.options).some(o => o.value === state.contig)) {
@@ -1077,6 +1107,7 @@ function gsSyncLocusBar() {
     const e = Math.max(s, Math.ceil(state.endBp));
     pos.value = `${s.toLocaleString()}-${e.toLocaleString()}`;
   }
+  gsUpdateGoButton();
 }
 
 // Populate + wire the top locus bar. Idempotent (safe to call again).
@@ -1086,21 +1117,35 @@ function gsInitLocusBar() {
   const go = document.getElementById("locusGoBtn");
   if (sel) {
     const contigs = gsContigList();
-    sel.innerHTML = "";
-    for (const c of contigs) {
-      const opt = document.createElement("option");
-      opt.value = c;
-      opt.textContent = c;
-      if (c === state.contig) opt.selected = true;
-      sel.appendChild(opt);
+    // Rebuild options only when the contig list actually changed — this can run
+    // per render, and clobbering the <select> every frame would reset a staged
+    // (uncommitted) contig pick back to the current view.
+    const cur = Array.from(sel.options).map(o => o.value);
+    const same = cur.length === contigs.length && cur.every((v, i) => v === contigs[i]);
+    if (!same) {
+      sel.innerHTML = "";
+      for (const c of contigs) {
+        const opt = document.createElement("option");
+        opt.value = c;
+        opt.textContent = c;
+        sel.appendChild(opt);
+      }
     }
+    // Never override a staged (dirty) selection; otherwise reflect the view.
+    if (!state.__locusDirty) sel.value = state.contig;
     if (!sel.__gsWired) {
       sel.__gsWired = true;
-      // Changing the contig jumps to it, keeping whatever's typed in the position
-      // box (blank -> contig start at the current span).
+      // Picking a contig does NOT jump — it stages the change (Go commits it).
+      // Clear the position box (blank -> whole contig at the current span on Go)
+      // and any staged chromosome-click box (it belongs to the old contig).
       sel.addEventListener("change", () => {
-        const p = pos && pos.value.trim();
-        gsGoToLocus(p ? `${sel.value}:${p}` : sel.value);
+        if (pos) pos.value = "";
+        const hadPending = !!state.__pendingLocus;
+        state.__pendingLocus = null;
+        gsMarkLocusDirty(true);
+        // Only re-render to clear a stale pending box; a bare contig pick needs
+        // no redraw (and re-rendering here re-syncs the bar off the OLD contig).
+        if (hadPending && typeof renderAll === "function") renderAll();
       });
     }
   }
@@ -1111,15 +1156,29 @@ function gsInitLocusBar() {
   };
   if (go && !go.__gsWired) {
     go.__gsWired = true;
-    go.addEventListener("click", submit);
+    go.addEventListener("click", () => { if (!go.disabled) submit(); });
   }
   if (pos && !pos.__gsWired) {
     pos.__gsWired = true;
+    // Typing new coordinates stages them (enables Go) and drops any staged
+    // chromosome-click box, since the user is now specifying via text.
+    pos.addEventListener("input", () => {
+      if (state.__pendingLocus) {
+        state.__pendingLocus = null;
+        if (typeof renderAll === "function") renderAll();
+      }
+      gsMarkLocusDirty(true);
+    });
     pos.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); submit(); }
     });
   }
+  gsUpdateGoButton();
   gsSyncLocusBar();
+}
+if (typeof window !== "undefined") {
+  window.gsMarkLocusDirty = gsMarkLocusDirty;
+  window.gsUpdateGoButton = gsUpdateGoButton;
 }
 if (typeof window !== "undefined") {
   window.gsInitLocusBar = gsInitLocusBar;

@@ -5933,10 +5933,10 @@ function bindInteractions(root, state, main) {
   };
 
   function endPointer(e) {
-    // Click on the Chromosome overview to jump there (opt-in setting). Only when
-    // this pointer sequence was a click, not a pan.
-    if (typeof gsMaybeChromClickJump === "function") {
-      try { gsMaybeChromClickJump(e); } catch (err) {}
+    // Click on the Chromosome overview to STAGE a jump there (opt-in setting).
+    // Only when this pointer sequence was a click, not a pan.
+    if (typeof gsMaybeChromClickStage === "function") {
+      try { gsMaybeChromClickStage(e); } catch (err) {}
     }
     if (state.pendingFlowDrag && state.pendingFlowDrag.pointerId === e.pointerId) {
       state.pendingFlowDrag = null;   // was a click, not a drag
