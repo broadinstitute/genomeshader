@@ -48,3 +48,27 @@ def test_missing_cache_dir_does_not_raise():
     stats = o.clear_local_cache()
     assert stats == {"files": 0, "bytes": 0}
     assert o._cleared is True
+
+
+def test_clear_cache_drops_downloaded_windows():
+    # "Keep variants once downloaded until the cache is cleared" — clear_cache must
+    # empty the host window cache AND the Rust per-locus df cache. Bind the real
+    # clear_cache to a stub carrying just the fields it touches.
+    o = types.SimpleNamespace()
+    o._agg_region_cache = [{"window": 1}, {"window": 2}]
+    o._template_html_cache = None
+    o._template_html_signature = None
+    for attr in ("_ideogram_cache", "_genes_cache", "_repeats_cache",
+                 "_reference_cache", "_variant_payload_cache", "_variant_payload_index",
+                 "_variant_payload_index_loaded", "_variant_payload_by_view",
+                 "_variant_payload_comm_buffers"):
+        setattr(o, attr, {})
+    rust_cleared = {"n": 0}
+    o._session = types.SimpleNamespace(
+        clear_variant_cache=lambda: rust_cleared.__setitem__("n", rust_cleared["n"] + 1))
+    o.clear_cache = types.MethodType(GenomeShader.clear_cache, o)
+
+    o.clear_cache()
+
+    assert o._agg_region_cache == []          # downloaded windows dropped
+    assert rust_cleared["n"] == 1             # Rust df cache cleared too

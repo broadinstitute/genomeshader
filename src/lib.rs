@@ -904,6 +904,14 @@ impl Session {
         }
     }
 
+    /// Drop the per-locus variant DataFrame cache without detaching files, so
+    /// "Clear local cache" actually frees downloaded variant windows (the memory
+    /// cache is otherwise only cleared on attach/reset).
+    fn clear_variant_cache(&mut self) -> PyResult<()> {
+        self.variant_df_cache = HashMap::new();
+        Ok(())
+    }
+
     fn reset(&mut self) -> PyResult<()> {
         self.reads_cohort = HashSet::new();
         self.loci = HashSet::new();

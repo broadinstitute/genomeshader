@@ -368,10 +368,23 @@ class GenomeShader:
         # (at 20k+ samples each record line is ~500KB — the wall is the read,
         # not the tally), so amortize it: a re-visited or covered window is
         # served from RAM without re-parsing. Companion to the frontend window
-        # store (#71). Bounded + LRU — the cache holds only small window
+        # store (#71). Coverage-matched LRU — the cache holds only small window
         # payloads (aggregates), never whole files.
+        #
+        # Cap high so a whole browsing session's downloaded windows stay resident:
+        # once a region is read off the (remote) VCF, re-visiting it — even from a
+        # different zoom/pan that lands on overlapping bounds — must be served from
+        # RAM, not re-downloaded. The user clears it explicitly via
+        # clear_local_cache ("Clear local cache"). Each payload is a small
+        # per-window aggregate (KB), so hundreds cost only a few MB.
+        # ponytail: RAM LRU with a high cap; if a marathon pan across a whole human
+        # chromosome ever evicts wanted windows, disk-back it like _reads_cache_path.
         self._agg_region_cache: list = []
-        self._agg_region_cache_max = 12
+        try:
+            self._agg_region_cache_max = max(
+                12, int(os.environ.get("GENOMESHADER_WINDOW_CACHE_MAX", "512")))
+        except (TypeError, ValueError):
+            self._agg_region_cache_max = 512
 
         # Payload transport controls for Jupyter comms stability.
         self._variant_payload_cache_max_entries = 5
@@ -572,6 +585,16 @@ class GenomeShader:
         """
         self._template_html_cache = None
         self._template_html_signature = None
+        # Downloaded variant windows (host RAM) + the Rust-side per-locus df cache:
+        # these are what "keep variants once downloaded" relies on, so clearing the
+        # cache must actually drop them (otherwise Clear does nothing to variants).
+        self._agg_region_cache = []
+        try:
+            if getattr(self, "_session", None) is not None and hasattr(
+                    self._session, "clear_variant_cache"):
+                self._session.clear_variant_cache()
+        except Exception:
+            pass
         self._ideogram_cache.clear()
         self._genes_cache.clear()
         self._repeats_cache.clear()
