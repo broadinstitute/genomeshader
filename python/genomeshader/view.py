@@ -1722,6 +1722,7 @@ class GenomeShader:
         default rather than failing the whole jump.
         """
         start, end = int(start), int(end)
+        span = max(0, end - start)
 
         def _safe(fn, *args, default):
             try:
@@ -1730,19 +1731,42 @@ class GenomeShader:
             except Exception:
                 return default
 
-        vp = self.fetch_variants_payload(contig, start, end)
+        # Large-window guard: a jump to a very wide region must NOT pull the whole
+        # VCF (or a multi-megabase reference string). Above the same span the
+        # frontend zoom-gate uses, skip the per-variant fetch and the reference
+        # base sequence; the frontend shows a "zoom in to load variants" banner.
+        # Genes/ideogram stay (cheap, and useful as an overview at this scale).
+        try:
+            var_cap = int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "1000000"))
+        except (TypeError, ValueError):
+            var_cap = 1_000_000
+        too_wide = span > var_cap
+
+        if too_wide:
+            variant_tracks, ins_lookup, reference_data = [], [], ""
+        else:
+            vp = self.fetch_variants_payload(contig, start, end)
+            variant_tracks = vp.get("variant_tracks", [])
+            ins_lookup = vp.get("insertion_variants_lookup", [])
+            # reference() is 1-based [start, end] like render()'s reference track.
+            reference_data = _safe(self.reference, contig, start, end, default="")
+
         return {
             "contig": contig,
             "start": start,
             "end": end,
             "region": f"{contig}:{start}-{end}",
-            # reference() is 1-based [start, end] like render()'s reference track.
-            "reference_data": _safe(self.reference, contig, start, end, default=""),
+            "reference_data": reference_data,
             "ideogram_data": _safe(self.ideogram, contig, default=[]),
             "transcripts_data": _safe(self.genes, contig, start, end, default=[]),
             "repeats_data": _safe(self.repeats, contig, start, end, default=[]),
-            "variant_tracks": vp.get("variant_tracks", []),
-            "insertion_variants_lookup": vp.get("insertion_variants_lookup", []),
+            "variant_tracks": variant_tracks,
+            "insertion_variants_lookup": ins_lookup,
+            # Signals the frontend to show the "region too wide" banner and not to
+            # expect variants/reference for this window.
+            "too_wide_for_variants": too_wide,
+            "span_bp": span,
+            "variant_max_span_bp": var_cap,
         }
 
     def fetch_variants_payload(self, contig, start, end):

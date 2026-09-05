@@ -72,6 +72,40 @@ def test_none_returns_become_defaults():
     assert p["insertion_variants_lookup"] == []  # absent key -> default
 
 
+def test_wide_window_skips_variant_and_reference_fetch():
+    # A jump to a very wide region must NOT pull the whole VCF (or a multi-Mb
+    # reference string). Above variant_max_span_bp (default 1,000,000),
+    # navigate_payload skips fetch_variants_payload + reference and flags the
+    # window so the frontend can show the "zoom in" banner. Genes/ideogram stay.
+    calls = {"fetch": 0, "ref": 0}
+
+    def fetch(c, s, e):
+        calls["fetch"] += 1
+        return {"variant_tracks": [{"name": "t", "variants_data": [{"pos": 1}]}],
+                "insertion_variants_lookup": [{"id": "i1"}]}
+
+    def ref(c, s, e):
+        calls["ref"] += 1
+        return "ACGT"
+
+    o = _stub(fetch_variants_payload=fetch, reference=ref,
+              ideogram=lambda c: [{"chrom": c}], genes=lambda c, s, e: [{"name": "g"}],
+              repeats=lambda c, s, e: [])
+
+    narrow = o.navigate_payload("chr1", 1000, 2000)
+    assert narrow["too_wide_for_variants"] is False
+    assert calls == {"fetch": 1, "ref": 1}
+    assert narrow["variant_tracks"] and narrow["reference_data"] == "ACGT"
+
+    wide = o.navigate_payload("chr1", 1, 5_000_000)
+    assert wide["too_wide_for_variants"] is True
+    assert calls == {"fetch": 1, "ref": 1}          # not called again
+    assert wide["variant_tracks"] == [] and wide["reference_data"] == ""
+    assert wide["insertion_variants_lookup"] == []
+    assert wide["span_bp"] == 4_999_999
+    assert wide["transcripts_data"] == [{"name": "g"}]   # genes still load
+
+
 def test_region_track_meta_defensive():
     o = _stub(
         reference=lambda c, s, e: "ACGT",

@@ -914,6 +914,57 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   z-index: 200 !important;
 }
 
+/* IGV-style always-visible locus bar (contig + position + Go), pinned at top. */
+#locusBar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 36px;
+  z-index: 130;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--border);
+}
+#locusBar .locus-contig,
+#locusBar .locus-pos {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  box-sizing: border-box;
+}
+#locusBar .locus-contig {
+  max-width: 220px;
+  flex: 0 0 auto;
+}
+#locusBar .locus-pos {
+  flex: 1 1 auto;
+  min-width: 140px;
+  max-width: 360px;
+}
+#locusBar .locus-go {
+  height: 24px;
+  padding: 0 14px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+#locusBar .locus-go:hover { filter: brightness(1.08); }
+#locusBar .locus-go:active { filter: brightness(0.95); }
+
 .main {
   position: absolute;
   left: 0;

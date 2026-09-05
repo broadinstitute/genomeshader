@@ -72,6 +72,8 @@ const orientationItem = getElementById("orientationItem");
 const orientationLabel = getElementById("orientationLabel");
 const lockAllelesItem = getElementById("lockAllelesItem");
 const lockAllelesToggle = getElementById("lockAllelesToggle");
+const chromClickJumpItem = getElementById("chromClickJumpItem");
+const chromClickJumpToggle = getElementById("chromClickJumpToggle");
 const aggregateRareAllelesItem = getElementById("aggregateRareAllelesItem");
 const aggregateRareAllelesToggle = getElementById("aggregateRareAllelesToggle");
 const aggregateRareAllelesCutoffItem = getElementById("aggregateRareAllelesCutoffItem");
@@ -214,6 +216,17 @@ function setLockAlleles(enabled) {
   gsLocalStorage.setItem("genomeshader.lockAlleles", v ? "true" : "false");
   state.lockAlleles = v;
   if (lockAllelesToggle) lockAllelesToggle.checked = v;
+}
+// Click-chromosome-to-jump: opt-in (default OFF) so a stray ideogram click
+// doesn't teleport the view unexpectedly.
+function getStoredChromClickJump() {
+  return gsLocalStorage.getItem("genomeshader.chromClickJump") === "true";
+}
+function setChromClickJump(enabled) {
+  const v = enabled === true;
+  gsLocalStorage.setItem("genomeshader.chromClickJump", v ? "true" : "false");
+  state.chromClickJump = v;
+  if (chromClickJumpToggle) chromClickJumpToggle.checked = v;
 }
 function getStoredAggregateRareAlleles() {
   return gsLocalStorage.getItem("genomeshader.aggregateRareAlleles") === "true";
@@ -432,6 +445,15 @@ if (lockAllelesItem && lockAllelesToggle) {
   });
   lockAllelesToggle.addEventListener("change", () => {
     setLockAlleles(lockAllelesToggle.checked);
+  });
+}
+if (chromClickJumpItem && chromClickJumpToggle) {
+  chromClickJumpItem.addEventListener("click", (e) => {
+    if (e.target === chromClickJumpToggle) return;
+    setChromClickJump(!(state.chromClickJump === true));
+  });
+  chromClickJumpToggle.addEventListener("change", () => {
+    setChromClickJump(chromClickJumpToggle.checked);
   });
 }
 if (aggregateRareAllelesItem && aggregateRareAllelesToggle) {

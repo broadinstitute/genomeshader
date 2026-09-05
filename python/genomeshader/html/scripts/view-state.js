@@ -933,6 +933,199 @@ function gsSwitchContig(contig) {
   gsRequestNavigate(state.contig, Math.floor(state.startBp), Math.ceil(state.endBp));
 }
 
+// A single typed position expands this many bp on EACH side (IGV-style).
+const GS_SINGLE_POS_PAD_BP = 100;
+
+// Parse an IGV-style locus box value into { contig, start, end } (1-based
+// inclusive) or { error }. Accepts "contig:start-end", "contig:pos", "start-end",
+// "pos", or a bare "contig". Commas/whitespace are ignored. A bare position
+// expands +/-GS_SINGLE_POS_PAD_BP. start/end are null for a contig-only value
+// (caller picks the span). Does NOT clamp — caller clamps to the contig length.
+function gsParseLocusInput(text, currentContig, contigLens) {
+  const lens = contigLens || {};
+  const s = String(text == null ? "" : text).trim();
+  if (!s) return { error: "Enter a contig and/or position" };
+
+  let contig = currentContig;
+  let rangePart = "";
+  const colon = s.lastIndexOf(":");
+  if (colon >= 0) {
+    const c = s.slice(0, colon).trim();
+    if (c) contig = c;
+    rangePart = s.slice(colon + 1).trim();
+  } else if (Object.prototype.hasOwnProperty.call(lens, s)) {
+    return { contig: s, start: null, end: null };   // bare known contig name
+  } else {
+    rangePart = s;                                    // bare range on current contig
+  }
+
+  const clean = rangePart.replace(/[,\s]/g, "");
+  if (!clean) return { contig, start: null, end: null };  // "contig:" -> whole contig
+
+  const m = clean.match(/^(\d+)(?:[-–](\d+))?$/);
+  if (!m) return { error: `Could not parse position "${rangePart}"` };
+  let start, end;
+  if (m[2] !== undefined) {
+    start = parseInt(m[1], 10);
+    end = parseInt(m[2], 10);
+    if (end < start) { const t = start; start = end; end = t; }
+  } else {
+    const p = parseInt(m[1], 10);
+    start = p - GS_SINGLE_POS_PAD_BP;
+    end = p + GS_SINGLE_POS_PAD_BP;
+  }
+  return { contig, start, end };
+}
+
+// Jump the view to a typed locus string. Returns true on a valid jump, false
+// (with a transient status message) on bad input / unknown contig.
+function gsGoToLocus(text) {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const lens = (cfg.chrom_lengths && Object.keys(cfg.chrom_lengths).length)
+    ? cfg.chrom_lengths
+    : (typeof chrLengths !== "undefined" ? chrLengths : {});
+  const parsed = gsParseLocusInput(text, state.contig, lens);
+  if (parsed.error) {
+    if (window.__GS_STATUS) window.__GS_STATUS(parsed.error, { autoHide: 4000 });
+    return false;
+  }
+  const contig = parsed.contig;
+  const haveLens = Object.keys(lens).length > 0;
+  if (haveLens && !Object.prototype.hasOwnProperty.call(lens, contig)) {
+    if (window.__GS_STATUS) window.__GS_STATUS(`Unknown contig "${contig}"`, { autoHide: 4000 });
+    return false;
+  }
+  const len = Number(lens[contig]) || 0;
+
+  let start = parsed.start;
+  let end = parsed.end;
+  if (start == null || end == null) {
+    // Contig-only: land at the start keeping the current span.
+    const span = Math.max(1, Math.floor(state.endBp - state.startBp)) || 1000;
+    start = 1;
+    end = 1 + (len ? Math.min(span, len) : span);
+  }
+  start = Math.max(1, Math.floor(start));
+  end = Math.max(start + 1, Math.floor(end));
+  if (len) {
+    end = Math.min(end, len);
+    if (start >= end) start = Math.max(1, end - 1);
+  }
+
+  const contigChanged = contig !== state.contig;
+  state.contig = contig;
+  state.startBp = start;
+  state.endBp = end;
+  if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+  if (contigChanged) gsResetRegionData();
+  if (typeof updateDocumentTitle === "function") updateDocumentTitle();
+  if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
+  if (typeof renderAll === "function") renderAll();
+  gsRequestNavigate(state.contig, Math.floor(state.startBp), Math.ceil(state.endBp));
+  return true;
+}
+if (typeof window !== "undefined") {
+  window.gsParseLocusInput = gsParseLocusInput;
+  window.gsGoToLocus = gsGoToLocus;
+}
+
+// Click on the Chromosome (ideogram) overview to jump there — opt-in via the
+// "Click chromosome to jump" setting. Maps the click position across the WHOLE
+// contig (the ideogram is a full-chromosome overview) and recenters the current
+// span on it. `e` is a pointerup event; called from the main gesture handler so
+// it can tell a click from a pan (state.gestureMovedPx).
+function gsMaybeChromClickJump(e) {
+  if (!state.chromClickJump) return false;
+  if ((state.gestureMovedPx || 0) > 4) return false;         // was a drag/pan
+  if (e && e.button !== undefined && e.button !== 0) return false;
+  const rect = state.__ideogramHitRect;
+  if (!rect || !(rect.w > 0) || !(rect.h > 0) || !(rect.len > 0)) return false;
+  const mainEl = document.getElementById("main");
+  if (!mainEl) return false;
+  const r = mainEl.getBoundingClientRect();
+  const px = e.clientX - r.left;
+  const py = e.clientY - r.top;
+  if (px < rect.x || px > rect.x + rect.w || py < rect.y || py > rect.y + rect.h) {
+    return false;                                            // click wasn't on the ideogram
+  }
+  const frac = rect.vertical
+    ? (py - rect.y) / rect.h
+    : (px - rect.x) / rect.w;
+  const pos = Math.max(1, Math.round(frac * rect.len));
+  const span = Math.max(1, Math.floor(state.endBp - state.startBp)) || 1000;
+  const start = Math.max(1, Math.round(pos - span / 2));
+  const end = start + span;
+  gsGoToLocus(`${rect.contig}:${start}-${end}`);
+  return true;
+}
+if (typeof window !== "undefined") window.gsMaybeChromClickJump = gsMaybeChromClickJump;
+
+// Reflect the current view into the top locus bar fields (unless the user is
+// mid-edit in the position box). Called after any navigation/pan/zoom.
+function gsSyncLocusBar() {
+  const sel = document.getElementById("locusContigSelect");
+  const pos = document.getElementById("locusPosInput");
+  if (sel && sel.value !== state.contig) {
+    // Repopulate lazily if the contig isn't an option yet.
+    if (!Array.from(sel.options).some(o => o.value === state.contig)) {
+      gsInitLocusBar();
+    }
+    sel.value = state.contig;
+  }
+  if (pos && document.activeElement !== pos) {
+    const s = Math.max(1, Math.floor(state.startBp));
+    const e = Math.max(s, Math.ceil(state.endBp));
+    pos.value = `${s.toLocaleString()}-${e.toLocaleString()}`;
+  }
+}
+
+// Populate + wire the top locus bar. Idempotent (safe to call again).
+function gsInitLocusBar() {
+  const sel = document.getElementById("locusContigSelect");
+  const pos = document.getElementById("locusPosInput");
+  const go = document.getElementById("locusGoBtn");
+  if (sel) {
+    const contigs = gsContigList();
+    sel.innerHTML = "";
+    for (const c of contigs) {
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      if (c === state.contig) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    if (!sel.__gsWired) {
+      sel.__gsWired = true;
+      // Changing the contig jumps to it, keeping whatever's typed in the position
+      // box (blank -> contig start at the current span).
+      sel.addEventListener("change", () => {
+        const p = pos && pos.value.trim();
+        gsGoToLocus(p ? `${sel.value}:${p}` : sel.value);
+      });
+    }
+  }
+  const submit = () => {
+    if (!sel) return;
+    const p = pos ? pos.value.trim() : "";
+    gsGoToLocus(p ? `${sel.value}:${p}` : sel.value);
+  };
+  if (go && !go.__gsWired) {
+    go.__gsWired = true;
+    go.addEventListener("click", submit);
+  }
+  if (pos && !pos.__gsWired) {
+    pos.__gsWired = true;
+    pos.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); submit(); }
+    });
+  }
+  gsSyncLocusBar();
+}
+if (typeof window !== "undefined") {
+  window.gsInitLocusBar = gsInitLocusBar;
+  window.gsSyncLocusBar = gsSyncLocusBar;
+}
+
 async function gsRequestNavigate(contig, start, end) {
   if (typeof sendCommMessage !== "function") {
     if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad(0);
@@ -993,6 +1186,18 @@ function gsApplyNavigatePayload(p) {
     _gsVpData.set(_gsRegionKey(region), p.variant_tracks);
     _gsVpRebuildTracks();
   }
+  // Large-window guard (backend skipped variants + reference for a very wide
+  // jump so it never pulls the whole VCF). Tell the user to zoom in.
+  if (p.too_wide_for_variants) {
+    const capMb = (Number(p.variant_max_span_bp || 0) / 1e6);
+    const capTxt = capMb >= 1 ? `${capMb.toLocaleString()} Mb` : `${Number(p.variant_max_span_bp || 0).toLocaleString()} bp`;
+    if (window.__GS_STATUS) {
+      window.__GS_STATUS(
+        `Region too wide to load variants (> ${capTxt}). Zoom in to see variants.`,
+        { autoHide: 7000 });
+    }
+  }
+  if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
   if (typeof updateDocumentTitle === "function") updateDocumentTitle();
   if (typeof renderAll === "function") renderAll();
 }

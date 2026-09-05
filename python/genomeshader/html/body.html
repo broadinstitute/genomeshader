@@ -1,5 +1,15 @@
 <div class="app sidebar-right-collapsed" style="position: relative; display: block;">
-  <div class="sidebar-left" id="sidebarLeft" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
+  <!-- Always-visible IGV-style locus bar: contig + position + Go. Spans the full
+       width at the top; the three panels below start at top:36px. -->
+  <div id="locusBar" role="toolbar" aria-label="Locus navigation">
+    <select id="locusContigSelect" class="locus-contig" title="Contig" aria-label="Contig" data-1p-ignore></select>
+    <input id="locusPosInput" class="locus-pos" type="text" spellcheck="false" autocomplete="off"
+           placeholder="position or start-end (e.g. 1,500 or 1,000-2,000)"
+           title="Enter a position (expands ±100 bp) or a start-end range, then press Enter or Go"
+           aria-label="Position or range" data-1p-ignore>
+    <button id="locusGoBtn" class="locus-go" title="Jump to this locus">Go</button>
+  </div>
+  <div class="sidebar-left" id="sidebarLeft" style="position: absolute; left: 0; top: 36px; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
     <div class="sidebar-left-content">
       <div class="sidebar-left-command-strip">
         <div class="command-strip-main">
@@ -35,14 +45,7 @@
       <div class="group"><span>SAS</span><span class="pill">328</span></div>
     </div>
 
-    <!-- Region / Contig Section -->
-    <div class="sidebarHeader" style="margin-top: 20px;">
-      <h3>Region</h3>
-    </div>
-    <div id="contigSwitchSection" style="padding: 9px 10px; margin: 7px 0 20px; border-radius: 10px; background: var(--panel2);">
-      <label style="display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;">Contig</label>
-      <select id="contigSelect" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px;" data-1p-ignore></select>
-    </div>
+    <!-- Region/contig navigation moved to the always-visible top locus bar. -->
 
     <!-- Sample Search Section -->
     <div class="sidebarHeader" style="margin-top: 20px;">
@@ -128,6 +131,10 @@
           <td>Lock allele positions</td>
           <td class="menuRight"><input type="checkbox" id="lockAllelesToggle" data-1p-ignore></td>
         </tr>
+        <tr class="settings-row" id="chromClickJumpItem" role="menuitem">
+          <td>Click chromosome to jump</td>
+          <td class="menuRight"><input type="checkbox" id="chromClickJumpToggle" data-1p-ignore></td>
+        </tr>
         <tr class="settings-row" id="aggregateRareAllelesItem" role="menuitem">
           <td>Aggregate low-frequency</td>
           <td class="menuRight"><input type="checkbox" id="aggregateRareAllelesToggle" data-1p-ignore></td>
@@ -158,7 +165,7 @@
     </div>
   </div>
 
-  <div class="main" id="main" style="position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 1;">
+  <div class="main" id="main" style="position: absolute; left: 0; top: 36px; right: 0; bottom: 0; z-index: 1;">
     <div class="tracks" id="tracksContainer">
       <svg id="tracksSvg" width="100%" height="100%"></svg>
       <canvas id="tracksWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
@@ -188,7 +195,7 @@
     </div>
   </div>
 
-  <div class="sidebar-right" id="sidebarRight" style="position: absolute; right: 0; top: 0; bottom: 0; width: 8px; z-index: 100; pointer-events: auto;">
+  <div class="sidebar-right" id="sidebarRight" style="position: absolute; right: 0; top: 36px; bottom: 0; width: 8px; z-index: 100; pointer-events: auto;">
     <div class="sidebar-right-content">
       <!-- Tab Content Area -->
       <div class="sidebar-right-tab-content">

@@ -91,6 +91,12 @@ if (typeof getStoredLockAlleles === "function") {
     lockAllelesToggle.checked = state.lockAlleles === true;
   }
 }
+if (typeof getStoredChromClickJump === "function") {
+  state.chromClickJump = getStoredChromClickJump();
+  if (typeof chromClickJumpToggle !== "undefined" && chromClickJumpToggle) {
+    chromClickJumpToggle.checked = state.chromClickJump === true;
+  }
+}
 if (typeof getStoredAggregateRareAlleles === "function") {
   state.aggregateRareAlleles = getStoredAggregateRareAlleles();
 }

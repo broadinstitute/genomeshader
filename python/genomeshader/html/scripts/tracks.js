@@ -278,7 +278,7 @@ function renderTracks() {
     const bandH = isVertical ? ideogramH : ideogramH;
     
     // Validate band dimensions before using them
-    if (isNaN(bandX) || isNaN(bandY) || isNaN(bandW) || isNaN(bandH) || 
+    if (isNaN(bandX) || isNaN(bandY) || isNaN(bandW) || isNaN(bandH) ||
         bandW <= 0 || bandH <= 0) {
       console.warn('Genomeshader: Invalid band dimensions', { bandX, bandY, bandW, bandH, ideogramX, ideogramY, ideogramW, ideogramH, W, H });
       return;
@@ -286,6 +286,14 @@ function renderTracks() {
 
     // Use global chromosome lengths for mapping cytoband positions
     const chrLength = getChromosomeLength();
+
+    // Publish the ideogram band's screen rect + contig length so the
+    // click-chromosome-to-jump handler can map a click x -> genomic position
+    // across the WHOLE contig (the ideogram is a full-chromosome overview).
+    state.__ideogramHitRect = {
+      x: bandX, y: bandY, w: bandW, h: bandH,
+      len: chrLength, contig: state.contig, vertical: isVertical,
+    };
     
     // Get ideogram data from config (already parsed from JSON in Python)
     let ideogramData = [];

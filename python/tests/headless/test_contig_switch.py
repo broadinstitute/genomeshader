@@ -77,9 +77,10 @@ def _open(browser):
 
 
 def test_dropdown_lists_genome_contigs(browser):
+    # Contig navigation now lives in the always-visible top locus bar.
     page = _open(browser)
     opts = page.evaluate(
-        "() => Array.from(document.getElementById('contigSelect').options).map(o => o.value)")
+        "() => Array.from(document.getElementById('locusContigSelect').options).map(o => o.value)")
     assert opts == ["chr1", "chr2", "chr3"], opts
     page.close()
 

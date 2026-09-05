@@ -2137,6 +2137,7 @@ function renderAll() {
   setupCanvasHover();
   setupVariantHoverAreas(); // Set up ID-based hover areas
   updateDocumentTitle();
+  if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
 }
 
 // Coalesce renders during rapid interaction (pan/zoom/pinch): many events in a
@@ -5296,6 +5297,8 @@ function setupCanvasHover() {
 
   // Populate the Region/contig switcher from the genome's contigs.
   if (typeof gsPopulateContigSelect === "function") gsPopulateContigSelect();
+  // Always-visible top locus bar (contig + position + Go).
+  if (typeof gsInitLocusBar === "function") gsInitLocusBar();
 
   // Register the startup variants with the viewport pager (IGV-style dynamic
   // loading: more variants load as you pan/zoom).
@@ -5930,6 +5933,11 @@ function bindInteractions(root, state, main) {
   };
 
   function endPointer(e) {
+    // Click on the Chromosome overview to jump there (opt-in setting). Only when
+    // this pointer sequence was a click, not a pan.
+    if (typeof gsMaybeChromClickJump === "function") {
+      try { gsMaybeChromClickJump(e); } catch (err) {}
+    }
     if (state.pendingFlowDrag && state.pendingFlowDrag.pointerId === e.pointerId) {
       state.pendingFlowDrag = null;   // was a click, not a drag
     }
