@@ -1569,9 +1569,16 @@ class GenomeShader:
 
     def _debug_log(self, event: str, **fields):
         """Append one structured event to the debug log (JSON tail after the
-        event name). No-op when debug is off. Never raises."""
+        event name). No-op when debug is off. Never raises. Every line is
+        stamped with the current thread so a cross-thread stall (e.g. htslib
+        remote reads off the main thread) is visible."""
         if not getattr(self, "_debug_logger", None):
             return
+        try:
+            import threading
+            fields.setdefault("_thread", threading.current_thread().name)
+        except Exception:
+            pass
         try:
             payload = json.dumps(fields, default=str, sort_keys=True)
         except Exception:
