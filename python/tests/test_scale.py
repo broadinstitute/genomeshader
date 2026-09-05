@@ -113,6 +113,21 @@ def test_aggregate_builder_shape_and_counts():
     assert v2["alleleSampleCounts"] == {".": 0, "ref": 3, "a1": 2}
 
 
+def test_aggregate_builder_id_stable_across_windows():
+    # The same variant (no VCF ID) read in two overlapping overscan windows gets
+    # a different per-call load-order variant_id, but its display id must be
+    # stable (position-based) so the frontend dedups the overlap instead of
+    # rendering the variant twice ("squished"). Regression for viewport scroll.
+    def row(vid):
+        return [{"position": 200, "ref_allele": "C", "alt_allele": "T", "alt_index": 1,
+                 "variant_id": vid, "vcf_id": None, "filter_status": "PASS",
+                 "info_fields": ".", "n_ref": 9, "n_alt": 4, "n_missing": 0,
+                 "n_samples": 13}]
+    id_a = _build_variants_data_from_aggregates(row(3))[0]["id"]
+    id_b = _build_variants_data_from_aggregates(row(9))[0]["id"]
+    assert id_a == id_b == "200"
+
+
 def test_aggregate_builder_zero_total_uniform():
     rows = [{"position": 5, "ref_allele": "A", "alt_allele": "C", "alt_index": 1,
              "variant_id": 0, "vcf_id": None, "filter_status": "PASS", "info_fields": ".",

@@ -167,7 +167,8 @@ def _build_variants_data_from_aggregates(rows):
             allele_frequencies = {k: 1.0 / n_a for k in allele_sample_counts}
         variant_type, is_insertion, _is_del, max_ins = _classify_variant(ref_allele, alt_alleles)
         vcf_id = g["vcf_id"]
-        variant_display_id = str(vcf_id) if vcf_id else str(g["variant_id"])
+        # Stable across overlapping overscan windows — see _build_variants_data_for_track.
+        variant_display_id = str(vcf_id) if vcf_id else str(pos)
         variants_data.append({
             "id": variant_display_id,
             "vcfId": str(vcf_id) if vcf_id else "",
@@ -2066,7 +2067,7 @@ class GenomeShader:
                     "filter_status": row.get("filter_status", "PASS"),
                     "info_fields": row.get("info_fields", "."),
                 }
-            row_display_id = str(vcf_id) if vcf_id else str(variant_id)
+            row_display_id = str(vcf_id) if vcf_id else str(pos)
             if row_display_id not in variant_groups[pos]["variant_display_ids"]:
                 variant_groups[pos]["variant_display_ids"].append(row_display_id)
             if alt_allele not in variant_groups[pos]["altAlleles"]:
@@ -2081,7 +2082,7 @@ class GenomeShader:
                 vcf_id_str = str(row["vcf_id"]).strip()
                 if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
                     row_vcf_id = vcf_id_str
-            row_display_id = str(row_vcf_id) if row_vcf_id else str(row["variant_id"])
+            row_display_id = str(row_vcf_id) if row_vcf_id else str(pos)
             display_ids = variant_groups[pos].setdefault("variant_display_ids", [])
             if row_display_id not in display_ids:
                 display_ids.append(row_display_id)
@@ -2186,7 +2187,12 @@ class GenomeShader:
 
         for pos, variant_info in sorted(variant_groups.items(), key=lambda x: x[0]):
             vcf_id = variant_info.get("vcf_id")
-            variant_display_id = str(vcf_id) if vcf_id else str(variant_info["variant_id"])
+            # Stable identity: fall back to genomic position (variants are grouped
+            # by pos), NOT the per-read load-order variant_id — that index differs
+            # between overlapping overscan windows, so the same variant would get
+            # two ids and render twice ("squished") once scroll started loading
+            # adjacent windows.
+            variant_display_id = str(vcf_id) if vcf_id else str(variant_info["pos"])
             key = (pos, variant_info["refAllele"])
             variant_genotypes = {
                 sn: sample_genotypes[sn][key]
