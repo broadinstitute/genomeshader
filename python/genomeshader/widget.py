@@ -238,6 +238,7 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                 payload = self._shader._fetch_reads_payload(
                     sample_id=content.get("sample_id"),
                     samples=content.get("samples"),
+                    locus=content.get("locus"),
                 )
                 self.send({"type": "fetch_reads_response", "request_id": request_id, **payload})
             except Exception as e:  # surfaced to the frontend as a reads error

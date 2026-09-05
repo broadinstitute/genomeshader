@@ -431,7 +431,12 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
   return sendCommMessage('fetch_reads', {
     strategy: strategy,
     selected_alleles: allelesArray,
-    sample_id: sampleId || null
+    sample_id: sampleId || null,
+    // Fetch reads for the CURRENTLY VIEWED window, not the server's last-rendered
+    // locus. Viewport paging (pan/zoom) never re-runs render(), so _last_locus
+    // goes stale — reads would come back for the old region and never align with
+    // what's on screen. Matches _readsLocusSig() so the client read cache agrees.
+    locus: _readsLocusSig() || null
   })
     .then(function(response) {
       track.loading = false;

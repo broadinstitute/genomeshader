@@ -39,10 +39,14 @@ def test_widget_reads_response():
     sent = []
     w.send = lambda m, *a, **k: sent.append(m)
 
-    w._on_custom_msg(w, {"type": "fetch_reads", "request_id": "r1", "sample_id": "S1"}, [])
+    w._on_custom_msg(w, {"type": "fetch_reads", "request_id": "r1", "sample_id": "S1",
+                         "locus": "chr1:100-200"}, [])
     assert sent[0]["type"] == "fetch_reads_response"
     assert sent[0]["request_id"] == "r1" and sent[0]["count"] == 1
-    shader._fetch_reads_payload.assert_called_once_with(sample_id="S1", samples=None)
+    # Reads must be fetched for the CURRENTLY VIEWED window (passed from the
+    # client), not the server's stale last-rendered locus.
+    shader._fetch_reads_payload.assert_called_once_with(
+        sample_id="S1", samples=None, locus="chr1:100-200")
 
 
 def test_widget_reads_error():

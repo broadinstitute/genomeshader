@@ -4056,9 +4056,24 @@ function setupCanvasHover() {
   
   // Recompute candidate samples based on strategy and selection
   function recomputeCandidateSamples() {
+    // The carrier pool for a selection is fixed by the selected alleles + combine
+    // mode — it does NOT depend on the viewport, strategy, or sample count. So
+    // compute it ONCE per selection and freeze it: re-running on pan/zoom (or a
+    // slider/strategy nudge) would repull the same samples and make the
+    // "Matching samples" box flicker/refresh. Only a genuinely new selection (or
+    // AND/OR toggle) recomputes. The candidate carriers of a variant don't change
+    // when we re-fetch the same variant in a new window, so freezing is correct.
+    const sig = (state.sampleSelection.combineMode || "") + "|"
+      + Array.from(state.selectedAlleles).sort().join(",");
+    if (sig === state.sampleSelection._candidateSig) {
+      updateSamplePreview();
+      return;
+    }
+    state.sampleSelection._candidateSig = sig;
+
     // Clear previous candidates
     state.sampleSelection.candidateSamples = [];
-    
+
     // If no alleles selected, no candidates
     if (state.selectedAlleles.size === 0) {
       updateSamplePreview();
