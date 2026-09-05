@@ -473,7 +473,13 @@ pub fn extract_variant_aggregates(
     start: &u64,
     stop: &u64,
 ) -> Result<DataFrame> {
-    let mut reader = open_indexed_bcf(bcf_path, index_path)?;
+    // Same per-thread reader cache as extract_variants — at 1M-sample scroll
+    // this path would otherwise re-download the index every window.
+    let cache_key = reader_cache_key(bcf_path, index_path);
+    let mut reader = match READER_CACHE.with(|c| c.borrow_mut().remove(&cache_key)) {
+        Some(r) => r,
+        None => open_indexed_bcf(bcf_path, index_path)?,
+    };
     let header = reader.header().clone();
     let n_samples = header.sample_count() as usize;
     let info_tags: Vec<String> = header
@@ -602,7 +608,7 @@ pub fn extract_variant_aggregates(
         }
     }
 
-    Ok(DataFrame::new(vec![
+    let df = DataFrame::new(vec![
         Series::new("chromosome", chromosomes),
         Series::new("position", positions),
         Series::new("ref_allele", ref_alleles),
@@ -616,7 +622,11 @@ pub fn extract_variant_aggregates(
         Series::new("n_alt", n_alts),
         Series::new("n_missing", n_missings),
         Series::new("n_samples", n_sampless),
-    ])?)
+    ])?;
+
+    READER_CACHE.with(|c| c.borrow_mut().insert(cache_key, reader));
+
+    Ok(df)
 }
 
 #[cfg(test)]
