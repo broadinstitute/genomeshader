@@ -59,9 +59,8 @@ def test_clear_cache_drops_downloaded_windows():
     o._template_html_cache = None
     o._template_html_signature = None
     for attr in ("_ideogram_cache", "_genes_cache", "_repeats_cache",
-                 "_reference_cache", "_variant_payload_cache", "_variant_payload_index",
-                 "_variant_payload_index_loaded", "_variant_payload_by_view",
-                 "_variant_payload_comm_buffers"):
+                 "_reference_cache", "_variant_payload_index",
+                 "_variant_payload_index_loaded"):
         setattr(o, attr, {})
     rust_cleared = {"n": 0}
     o._session = types.SimpleNamespace(

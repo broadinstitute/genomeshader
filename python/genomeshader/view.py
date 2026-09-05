@@ -6,9 +6,6 @@ import warnings
 import threading
 import socket
 import copy
-import base64
-import gzip
-import math
 import subprocess
 import tempfile
 import urllib.parse
@@ -355,11 +352,8 @@ class GenomeShader:
             "reference": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
             "variant_payload": {"mem": 0, "gcs": 0, "build": 0, "gcs_write": 0},
         }
-        self._variant_payload_cache: dict = {}
         self._variant_payload_index: dict = {}
         self._variant_payload_index_loaded: dict = {}
-        self._variant_payload_by_view: dict = {}
-        self._variant_payload_comm_buffers: dict = {}
         self._attached_loci: set = set()
         self._last_ucsc_warm_stats: dict = {}
 
@@ -386,13 +380,6 @@ class GenomeShader:
         except (TypeError, ValueError):
             self._agg_region_cache_max = 512
 
-        # Payload transport controls for Jupyter comms stability.
-        self._variant_payload_cache_max_entries = 5
-        self._variant_payload_view_max_entries = 5
-        self._variant_payload_comm_buffer_max_entries = 8
-        self._variant_payload_comm_chunk_chars_default = 240_000
-        self._variant_payload_comm_hard_limit_bytes = 64 * 1024 * 1024
-        self._variant_payload_comm_compress_min_bytes = 512 * 1024
         self._local_cache_dir = Path(
             os.environ.get(
                 "GENOMESHADER_LOCAL_CACHE_DIR",
@@ -619,11 +606,8 @@ class GenomeShader:
             "reference": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
             "variant_payload": {"mem": 0, "gcs": 0, "build": 0, "gcs_write": 0},
         }
-        self._variant_payload_cache.clear()
         self._variant_payload_index.clear()
         self._variant_payload_index_loaded.clear()
-        self._variant_payload_by_view.clear()
-        self._variant_payload_comm_buffers.clear()
 
     def dump_config(self, path: str = "genomeshader_config.json") -> str:
         """Write the last rendered widget config (the exact GENOMESHADER_CONFIG
@@ -1036,71 +1020,6 @@ class GenomeShader:
         })
         while len(self._agg_region_cache) > self._agg_region_cache_max:
             self._agg_region_cache.pop(0)  # evict least-recently-used
-
-    def _prune_oldest_entries(self, mapping: dict, max_entries: int):
-        while len(mapping) > max_entries:
-            oldest_key = next(iter(mapping))
-            mapping.pop(oldest_key, None)
-
-    def _prune_variant_payload_state(self):
-        self._prune_oldest_entries(self._variant_payload_cache, self._variant_payload_cache_max_entries)
-        self._prune_oldest_entries(self._variant_payload_by_view, self._variant_payload_view_max_entries)
-        self._prune_oldest_entries(
-            self._variant_payload_comm_buffers,
-            self._variant_payload_comm_buffer_max_entries,
-        )
-
-    def _build_comm_payload_buffer(
-        self,
-        view_id: str,
-        payload: dict,
-        accept_compression: bool,
-        chunk_chars: int,
-    ) -> dict:
-        chunk_chars = max(64_000, min(int(chunk_chars), 1_000_000))
-        payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        payload_bytes = payload_json.encode("utf-8")
-        payload_bytes_len = len(payload_bytes)
-        if payload_bytes_len > self._variant_payload_comm_hard_limit_bytes:
-            raise ValueError(
-                f"Variant payload too large for comm transport ({payload_bytes_len / (1024 * 1024):.1f} MB). "
-                "Reduce locus size or number of variants."
-            )
-
-        compression = "none"
-        data_bytes = payload_bytes
-        if accept_compression and payload_bytes_len >= self._variant_payload_comm_compress_min_bytes:
-            compressed = gzip.compress(payload_bytes, compresslevel=6)
-            if len(compressed) < len(payload_bytes):
-                data_bytes = compressed
-                compression = "gzip"
-
-        encoded = base64.b64encode(data_bytes).decode("ascii")
-        total_chunks = max(1, math.ceil(len(encoded) / chunk_chars))
-        payload_token = self._cache_id(
-            f"{view_id}:{payload_bytes_len}:{len(encoded)}:{compression}:{time.time_ns()}"
-        )
-        self._variant_payload_comm_buffers[payload_token] = {
-            "view_id": view_id,
-            "created_at": time.time(),
-            "encoding": "base64",
-            "compression": compression,
-            "payload_json_bytes": payload_bytes_len,
-            "payload_transfer_bytes": len(data_bytes),
-            "encoded": encoded,
-            "chunk_chars": chunk_chars,
-            "total_chunks": total_chunks,
-        }
-        self._prune_variant_payload_state()
-        return {
-            "payload_token": payload_token,
-            "encoding": "base64",
-            "compression": compression,
-            "chunk_chars": chunk_chars,
-            "total_chunks": total_chunks,
-            "payload_json_bytes": payload_bytes_len,
-            "payload_transfer_bytes": len(data_bytes),
-        }
 
     def session_name(self):
         """
@@ -3972,15 +3891,13 @@ class GenomeShader:
         # Check if comms are available for bidirectional communication
         comm_available = COMM_AVAILABLE
 
-        # Prefer Jupyter comms for variant payload transport (works in Terra).
         # inline_payload forces the full variant data straight into the config
-        # (no comm, no URL) — used by the anywidget host, which carries the
-        # config over the ipywidgets model and can't reach a localhost URL.
-        use_payload_comm = bool(comm_available and precomputed_variant_payload is not None) and not inline_payload
+        # (no URL) — used by the anywidget host, which carries the config over
+        # the ipywidgets model and can't reach a localhost URL. Otherwise write
+        # the payload to a local file URL and ship only track metadata inline.
         variant_payload_url = None
         use_payload_url = False
-        if not use_payload_comm and not inline_payload:
-            # Fallback: write payload to a local URL when comms are unavailable.
+        if not inline_payload:
             try:
                 payload = {
                     "variant_tracks": variant_tracks,
@@ -4010,10 +3927,9 @@ class GenomeShader:
             'repeats_data': repeats_data,
             'reference_data': reference_sequence,
             # Keep config small; detailed variant payload is loaded from URL when available.
-            'variant_tracks': variant_tracks_meta if (use_payload_url or use_payload_comm) else variant_tracks,
-            'insertion_variants_lookup': [] if (use_payload_url or use_payload_comm) else insertion_variants_lookup,
+            'variant_tracks': variant_tracks_meta if use_payload_url else variant_tracks,
+            'insertion_variants_lookup': [] if use_payload_url else insertion_variants_lookup,
             'variant_payload_url': variant_payload_url,
-            'variant_payload_via_comm': use_payload_comm,
             'data_bounds': {
                 'start': data_start,
                 'end': data_end,
