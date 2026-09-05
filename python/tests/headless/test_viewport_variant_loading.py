@@ -137,6 +137,47 @@ def test_pan_beyond_window_fetches_again(browser):
     page.close()
 
 
+def test_insertion_lookup_synced_after_paging(browser):
+    """Regression: expanding an indel insertion must widen the coordinate axis on
+    ALL tracks (reference/ruler/genes), not just the flow. The reference/ruler
+    compute the expansion gap via getGapAfterBpPx/getTotalExpandedInsertionGapBp,
+    which read the module-level `insertionVariantsLookup`. Viewport paging rebuilt
+    variant_tracks but left that lookup stale, so a freshly-paged insertion's id
+    wasn't found -> gap 0 -> only the flow (which reads variant_tracks directly)
+    appeared to expand. _gsVpRebuildTracks must now re-derive the lookup from the
+    merged variants. The mock returns an EMPTY insertion_variants_lookup on
+    purpose, so a pass proves the lookup was rebuilt from variants_data."""
+    page = _open(browser)
+    page.evaluate(r"""() => {
+        window.__GS_SEND = function (type, data) {
+            if (type === "fetch_variants") {
+                const { contig, start, end } = data;
+                const p = Math.floor((start + end) / 2);
+                const v = { id: contig + ":" + p, position: p, pos: p,
+                    refAllele: "A", altAlleles: ["ACGT"], ref: "A", alt: "ACGT",
+                    isInsertion: true, maxInsertionLength: 3, insertionGapPx: 24,
+                    variantType: "insertion",
+                    n_ref: 10, n_alt: 5, n_missing: 0, n_samples: 15 };
+                return Promise.resolve({ type: "fetch_variants_response",
+                    variant_tracks: [{ name: "vp", variants_data: [v] }],
+                    insertion_variants_lookup: [] });
+            }
+            return Promise.resolve({});
+        };
+    }""")
+    page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")
+    # The rebuild must have derived the insertion into the (config-mirrored) lookup
+    # even though the response shipped an empty one.
+    lookup = page.evaluate(
+        "() => window.GENOMESHADER_CONFIG.insertion_variants_lookup || []")
+    vid = page.evaluate(
+        "() => ((window.GENOMESHADER_CONFIG.variant_tracks||[])[0]||{}).variants_data[0].id")
+    assert len(lookup) == 1, f"insertion lookup not rebuilt after paging: {lookup}"
+    assert str(lookup[0]["id"]) == str(vid)
+    assert lookup[0]["insertionGapPx"] > 0
+    page.close()
+
+
 def test_load_reports_progress_status(browser):
     # #79: a cold window fetch is multi-second at scale, so the loader must
     # surface a descriptive busy status and then clear/settle it.

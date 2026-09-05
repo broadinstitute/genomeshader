@@ -806,6 +806,34 @@ function _gsVpRebuildTracks() {
     merged.push({ ...meta, variants_data: [...vs.values()] });
   }
   window.GENOMESHADER_CONFIG.variant_tracks = merged;
+
+  // Keep the module-level globals the coordinate/gap functions read in sync with
+  // the paged data. The flow track renders straight from variant_tracks, but the
+  // reference/ruler/genes tracks compute insertion-expansion gaps via
+  // getGapAfterBpPx / getTotalExpandedInsertionGapBp, which read `variants` and
+  // `insertionVariantsLookup`. _gsVpRebuildTracks runs on the FIRST (startup)
+  // viewport load too, so if we don't refresh these the gap functions keep
+  // matching against the stale seed lookup -> a freshly-expanded insertion's id
+  // isn't found -> gap 0 -> only the flow appears to expand while the reference
+  // and other coordinate tracks stay put.
+  variants = (merged[0] && merged[0].variants_data) || [];
+  const _lookup = [];
+  for (const t of merged) {
+    for (const v of (t.variants_data || [])) {
+      if (v && v.isInsertion && Number(v.insertionGapPx) > 0) {
+        _lookup.push({
+          id: String(v.id),
+          pos: Number(v.pos),
+          maxInsertionLength: Number(v.maxInsertionLength) || 0,
+          insertionGapPx: Number(v.insertionGapPx) || 0,
+        });
+      }
+    }
+  }
+  _lookup.sort((a, b) => a.pos - b.pos);
+  insertionVariantsLookup = _lookup;
+  window.GENOMESHADER_CONFIG.insertion_variants_lookup = _lookup;
+  insertionMaxLenById = null;  // invalidate cache -> rebuilt from fresh data
 }
 
 async function gsLoadVariantsForViewport(force) {
