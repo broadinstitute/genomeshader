@@ -1,5 +1,7 @@
 use anyhow::Result;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::time::Instant;
 
 use polars::prelude::*;
 use url::Url;
@@ -13,6 +15,31 @@ use rust_htslib::bcf::{
 use rust_htslib::tbx;
 
 use crate::env::{ ensure_gcs_token_fresh, gcs_authorize_data_access, local_guess_curl_ca_bundle };
+
+/// Stderr timing under the notebook cell when GENOMESHADER_DEBUG / _RUST_DEBUG is set.
+fn vdbg() -> bool {
+    std::env::var("GENOMESHADER_DEBUG").map(|v| v == "1").unwrap_or(false)
+        || std::env::var("GENOMESHADER_RUST_DEBUG").map(|v| v == "1").unwrap_or(false)
+}
+
+thread_local! {
+    // Per-thread cache of opened region-seekable readers. Indexed access is
+    // open-once / fetch-many: caching the reader downloads each file's
+    // .tbi/.csi index a single time per thread, then every viewport window
+    // streams only its own region via fetch — the whole file is never
+    // localized. Keyed by (data, index) path. htslib readers hold raw pointers
+    // (!Send) so they can't live in the (Send) pyclass; a thread_local is the
+    // correct home. get_locus_variants runs under the GIL with &mut self, so
+    // there is no concurrent access to guard.
+    static READER_CACHE: RefCell<HashMap<String, IndexedReader>> = RefCell::new(HashMap::new());
+}
+
+fn reader_cache_key(bcf_path: &str, index_path: Option<&str>) -> String {
+    match index_path {
+        Some(i) => format!("{}##idx##{}", bcf_path, i),
+        None => bcf_path.to_string(),
+    }
+}
 
 /// Open a tabix (.tbi) index by URL with the same GCS-auth / CA-bundle retry
 /// ladder as `open_url_with_fallbacks`.
@@ -60,18 +87,26 @@ pub fn vcf_index_contigs(bcf_path: &str, index_path: Option<&str>) -> Result<Vec
 /// Open a URL with the same GCS-auth / CA-bundle retry ladder as the reads
 /// path (see stage::open_bam).
 fn open_url_with_fallbacks(url: &Url) -> Result<IndexedReader> {
+    let dbg = vdbg();
     if url.scheme() != "file" {
         ensure_gcs_token_fresh(); // proactive 45-min refresh before a gs:// open
     }
+    let t = Instant::now();
     match IndexedReader::from_url(url) {
-        Ok(r) => Ok(r),
-        Err(_) => {
+        Ok(r) => { if dbg { eprintln!("[gs] open from_url attempt1 ok {}ms", t.elapsed().as_millis()); } Ok(r) }
+        Err(e1) => {
+            if dbg { eprintln!("[gs] open from_url attempt1 FAILED {}ms: {}", t.elapsed().as_millis(), e1); }
             gcs_authorize_data_access();
+            let t2 = Instant::now();
             match IndexedReader::from_url(url) {
-                Ok(r) => Ok(r),
-                Err(_) => {
+                Ok(r) => { if dbg { eprintln!("[gs] open from_url attempt2 ok {}ms", t2.elapsed().as_millis()); } Ok(r) }
+                Err(e2) => {
+                    if dbg { eprintln!("[gs] open from_url attempt2 FAILED {}ms: {}", t2.elapsed().as_millis(), e2); }
                     local_guess_curl_ca_bundle();
-                    Ok(IndexedReader::from_url(url)?)
+                    let t3 = Instant::now();
+                    let r = IndexedReader::from_url(url)?;
+                    if dbg { eprintln!("[gs] open from_url attempt3 ok {}ms", t3.elapsed().as_millis()); }
+                    Ok(r)
                 }
             }
         }
@@ -237,7 +272,16 @@ pub fn extract_variants(
 ) -> Result<DataFrame> {
     // Open for indexed access so only the requested region is read off disk /
     // streamed from GCS — the callset may be a terabyte split per contig.
-    let mut reader = open_indexed_bcf(bcf_path, index_path)?;
+    let _dbg = vdbg();
+    let _to = Instant::now();
+    let cache_key = reader_cache_key(bcf_path, index_path);
+    let cached = READER_CACHE.with(|c| c.borrow_mut().remove(&cache_key));
+    let was_cached = cached.is_some();
+    let mut reader = match cached {
+        Some(r) => r,
+        None => open_indexed_bcf(bcf_path, index_path)?,
+    };
+    if _dbg { eprintln!("[gs] extract_variants OPEN {}ms {} (cached={})", _to.elapsed().as_millis(), bcf_path, was_cached); }
 
     // Get header to extract sample names
     let header = reader.header().clone();
@@ -285,11 +329,15 @@ pub fn extract_variants(
     // in this file (e.g. a per-contig split) — treat that as "no variants here"
     // and fall through to an empty (correctly-typed) DataFrame. fetch is
     // 0-based half-open; our start/stop are 1-based inclusive.
+    let _tf = Instant::now();
+    let mut _n_recs = 0u64;
     if let Ok(rid) = header.name2rid(chr.as_bytes()) {
         reader.fetch(rid, start.saturating_sub(1), Some(*stop))?;
+        if _dbg { eprintln!("[gs] extract_variants FETCH-seek {}ms", _tf.elapsed().as_millis()); }
 
         for record_result in reader.records() {
             let record: rust_htslib::bcf::record::Record = record_result?;
+            _n_recs += 1;
 
             let pos = record.pos() as u64 + 1; // Convert to 1-based
 
@@ -384,6 +432,7 @@ pub fn extract_variants(
         }
         }
     }
+    if _dbg { eprintln!("[gs] extract_variants DECODE-done {}ms ({} recs scanned)", _tf.elapsed().as_millis(), _n_recs); }
 
     let df = DataFrame::new(
         vec![
@@ -400,7 +449,11 @@ pub fn extract_variants(
             Series::new("info_fields", info_values),
         ]
     )?;
-    
+
+    // Return the reader to the per-thread cache so the next viewport window
+    // reuses the already-downloaded index instead of re-opening the remote file.
+    READER_CACHE.with(|c| c.borrow_mut().insert(cache_key, reader));
+
     Ok(df)
 }
 

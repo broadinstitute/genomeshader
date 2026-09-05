@@ -867,7 +867,7 @@ async function gsLoadVariantsForViewport(force) {
   __GS_DEBUG("vp_fetch_start", { reqKey: reqKey });
   try {
     const resp = await sendCommMessage("fetch_variants",
-      { contig, start: win.start, end: win.end }, 90000);  // cold remote window can exceed 30s
+      { contig, start: win.start, end: win.end }, 300000);  // first cold remote open (downloads the index) can be minutes; the Rust reader cache makes every later window fast
     // A server-side failure comes back as a resolved *_error response (not a
     // rejection), so it would otherwise fall through silently — no variants, no
     // message ("scrolled and nothing happened"). Surface it like a rejection.
