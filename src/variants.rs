@@ -1,5 +1,7 @@
 use anyhow::Result;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::time::Instant;
 
 use polars::prelude::*;
 use url::Url;
@@ -10,21 +12,101 @@ use rust_htslib::bcf::{
     IndexedReader,
     Read,
 };
+use rust_htslib::tbx;
 
-use crate::env::{ gcs_authorize_data_access, local_guess_curl_ca_bundle };
+use crate::env::{ ensure_gcs_token_fresh, gcs_authorize_data_access, local_guess_curl_ca_bundle };
+
+/// Stderr timing under the notebook cell when GENOMESHADER_DEBUG / _RUST_DEBUG is set.
+fn vdbg() -> bool {
+    std::env::var("GENOMESHADER_DEBUG").map(|v| v == "1").unwrap_or(false)
+        || std::env::var("GENOMESHADER_RUST_DEBUG").map(|v| v == "1").unwrap_or(false)
+}
+
+thread_local! {
+    // Per-thread cache of opened region-seekable readers. Indexed access is
+    // open-once / fetch-many: caching the reader downloads each file's
+    // .tbi/.csi index a single time per thread, then every viewport window
+    // streams only its own region via fetch — the whole file is never
+    // localized. Keyed by (data, index) path. htslib readers hold raw pointers
+    // (!Send) so they can't live in the (Send) pyclass; a thread_local is the
+    // correct home. get_locus_variants runs under the GIL with &mut self, so
+    // there is no concurrent access to guard.
+    static READER_CACHE: RefCell<HashMap<String, IndexedReader>> = RefCell::new(HashMap::new());
+}
+
+fn reader_cache_key(bcf_path: &str, index_path: Option<&str>) -> String {
+    match index_path {
+        Some(i) => format!("{}##idx##{}", bcf_path, i),
+        None => bcf_path.to_string(),
+    }
+}
+
+/// Open a tabix (.tbi) index by URL with the same GCS-auth / CA-bundle retry
+/// ladder as `open_url_with_fallbacks`.
+fn open_tbx_with_fallbacks(url: &Url) -> Result<tbx::Reader> {
+    if url.scheme() != "file" {
+        ensure_gcs_token_fresh();
+    }
+    match tbx::Reader::from_url(url) {
+        Ok(r) => Ok(r),
+        Err(_) => {
+            gcs_authorize_data_access();
+            match tbx::Reader::from_url(url) {
+                Ok(r) => Ok(r),
+                Err(_) => {
+                    local_guess_curl_ca_bundle();
+                    Ok(tbx::Reader::from_url(url)?)
+                }
+            }
+        }
+    }
+}
+
+/// Contigs that actually carry records in this variant file, read from its
+/// tabix (.tbi) index. Cheap — reads the index, not the (potentially
+/// 20k-sample) VCF header — and, unlike the header's `##contig` lines, lists
+/// only sequences that have data. Powers per-contig query routing so a locus
+/// opens only the file(s) that contain the contig, instead of every file in a
+/// one-VCF-per-contig callset. Errs for files without a readable tabix index
+/// (e.g. `.bcf`/`.csi`, or an explicit-index open); the caller then
+/// always-queries those, so routing never drops data.
+pub fn vcf_index_contigs(bcf_path: &str, index_path: Option<&str>) -> Result<Vec<String>> {
+    // Explicit-index opens use htslib's `data##idx##index` composite, which the
+    // tabix reader doesn't accept — let the caller always-query those.
+    if index_path.is_some() {
+        anyhow::bail!("explicit index: contig routing not derived via tabix");
+    }
+    let reader = if bcf_path.contains("://") {
+        open_tbx_with_fallbacks(&Url::parse(bcf_path)?)?
+    } else {
+        tbx::Reader::from_path(bcf_path)?
+    };
+    Ok(reader.seqnames())
+}
 
 /// Open a URL with the same GCS-auth / CA-bundle retry ladder as the reads
 /// path (see stage::open_bam).
 fn open_url_with_fallbacks(url: &Url) -> Result<IndexedReader> {
+    let dbg = vdbg();
+    if url.scheme() != "file" {
+        ensure_gcs_token_fresh(); // proactive 45-min refresh before a gs:// open
+    }
+    let t = Instant::now();
     match IndexedReader::from_url(url) {
-        Ok(r) => Ok(r),
-        Err(_) => {
+        Ok(r) => { if dbg { eprintln!("[gs] open from_url attempt1 ok {}ms", t.elapsed().as_millis()); } Ok(r) }
+        Err(e1) => {
+            if dbg { eprintln!("[gs] open from_url attempt1 FAILED {}ms: {}", t.elapsed().as_millis(), e1); }
             gcs_authorize_data_access();
+            let t2 = Instant::now();
             match IndexedReader::from_url(url) {
-                Ok(r) => Ok(r),
-                Err(_) => {
+                Ok(r) => { if dbg { eprintln!("[gs] open from_url attempt2 ok {}ms", t2.elapsed().as_millis()); } Ok(r) }
+                Err(e2) => {
+                    if dbg { eprintln!("[gs] open from_url attempt2 FAILED {}ms: {}", t2.elapsed().as_millis(), e2); }
                     local_guess_curl_ca_bundle();
-                    Ok(IndexedReader::from_url(url)?)
+                    let t3 = Instant::now();
+                    let r = IndexedReader::from_url(url)?;
+                    if dbg { eprintln!("[gs] open from_url attempt3 ok {}ms", t3.elapsed().as_millis()); }
+                    Ok(r)
                 }
             }
         }
@@ -190,7 +272,16 @@ pub fn extract_variants(
 ) -> Result<DataFrame> {
     // Open for indexed access so only the requested region is read off disk /
     // streamed from GCS — the callset may be a terabyte split per contig.
-    let mut reader = open_indexed_bcf(bcf_path, index_path)?;
+    let _dbg = vdbg();
+    let _to = Instant::now();
+    let cache_key = reader_cache_key(bcf_path, index_path);
+    let cached = READER_CACHE.with(|c| c.borrow_mut().remove(&cache_key));
+    let was_cached = cached.is_some();
+    let mut reader = match cached {
+        Some(r) => r,
+        None => open_indexed_bcf(bcf_path, index_path)?,
+    };
+    if _dbg { eprintln!("[gs] extract_variants OPEN {}ms {} (cached={})", _to.elapsed().as_millis(), bcf_path, was_cached); }
 
     // Get header to extract sample names
     let header = reader.header().clone();
@@ -238,11 +329,15 @@ pub fn extract_variants(
     // in this file (e.g. a per-contig split) — treat that as "no variants here"
     // and fall through to an empty (correctly-typed) DataFrame. fetch is
     // 0-based half-open; our start/stop are 1-based inclusive.
+    let _tf = Instant::now();
+    let mut _n_recs = 0u64;
     if let Ok(rid) = header.name2rid(chr.as_bytes()) {
         reader.fetch(rid, start.saturating_sub(1), Some(*stop))?;
+        if _dbg { eprintln!("[gs] extract_variants FETCH-seek {}ms", _tf.elapsed().as_millis()); }
 
         for record_result in reader.records() {
             let record: rust_htslib::bcf::record::Record = record_result?;
+            _n_recs += 1;
 
             let pos = record.pos() as u64 + 1; // Convert to 1-based
 
@@ -337,6 +432,7 @@ pub fn extract_variants(
         }
         }
     }
+    if _dbg { eprintln!("[gs] extract_variants DECODE-done {}ms ({} recs scanned)", _tf.elapsed().as_millis(), _n_recs); }
 
     let df = DataFrame::new(
         vec![
@@ -353,7 +449,183 @@ pub fn extract_variants(
             Series::new("info_fields", info_values),
         ]
     )?;
-    
+
+    // Return the reader to the per-thread cache so the next viewport window
+    // reuses the already-downloaded index instead of re-opening the remote file.
+    READER_CACHE.with(|c| c.borrow_mut().insert(cache_key, reader));
+
+    Ok(df)
+}
+
+/// Aggregate variant extractor for LARGE cohorts (≥100k–1M samples). Emits ONE
+/// row per (variant, alt) with per-allele SAMPLE counts computed during decode —
+/// O(samples) counters, never the O(variants×samples) long-format that OOMs at
+/// 1M. No per-sample genotypes cross the boundary (the browser only needs
+/// aggregates; carriers come from `fetch_carriers`). Counts match the sample-set
+/// semantics of the Python builder: a het 0/1 counts toward BOTH ref and its alt.
+///
+/// Columns: chromosome, position, ref_allele, alt_allele, alt_index, variant_id,
+/// vcf_id, filter_status, info_fields, n_ref, n_alt, n_missing, n_samples.
+pub fn extract_variant_aggregates(
+    bcf_path: &str,
+    index_path: Option<&str>,
+    chr: &String,
+    start: &u64,
+    stop: &u64,
+) -> Result<DataFrame> {
+    // Same per-thread reader cache as extract_variants — at 1M-sample scroll
+    // this path would otherwise re-download the index every window.
+    let cache_key = reader_cache_key(bcf_path, index_path);
+    let mut reader = match READER_CACHE.with(|c| c.borrow_mut().remove(&cache_key)) {
+        Some(r) => r,
+        None => open_indexed_bcf(bcf_path, index_path)?,
+    };
+    let header = reader.header().clone();
+    let n_samples = header.sample_count() as usize;
+    let info_tags: Vec<String> = header
+        .header_records()
+        .iter()
+        .filter_map(|rec| match rec {
+            HeaderRecord::Info { values, .. } => values.get("ID").cloned(),
+            _ => None,
+        })
+        .collect();
+
+    let mut chromosomes = Vec::new();
+    let mut positions = Vec::new();
+    let mut ref_alleles = Vec::new();
+    let mut alt_alleles = Vec::new();
+    let mut alt_indices = Vec::new();
+    let mut variant_ids = Vec::new();
+    let mut vcf_ids = Vec::new();
+    let mut filter_statuses = Vec::new();
+    let mut info_values = Vec::new();
+    let mut n_refs = Vec::new();
+    let mut n_alts = Vec::new();
+    let mut n_missings = Vec::new();
+    let mut n_sampless = Vec::new();
+
+    let mut variant_map: HashMap<(u64, String, String), u32> = HashMap::new();
+    let mut next_variant_id: u32 = 0;
+
+    if let Ok(rid) = header.name2rid(chr.as_bytes()) {
+        reader.fetch(rid, start.saturating_sub(1), Some(*stop))?;
+        for record_result in reader.records() {
+            let record = record_result?;
+            let pos = record.pos() as u64 + 1;
+            if pos < *start || pos > *stop {
+                continue;
+            }
+            let vcf_id_bytes = record.id();
+            let vcf_id_str = if vcf_id_bytes.is_empty()
+                || (vcf_id_bytes.len() == 1 && vcf_id_bytes[0] == b'.')
+            {
+                None
+            } else {
+                Some(String::from_utf8_lossy(&vcf_id_bytes).to_string())
+            };
+            let filter_value = extract_filter_value(&header, &record);
+            let info_value = extract_info_value(&header, &record, &info_tags);
+
+            let alleles = record.alleles();
+            let ref_allele: String = String::from_utf8_lossy(alleles[0]).to_string();
+            let n_alts_here = alleles.len().saturating_sub(1);
+
+            // One decode of genotypes per record; tally per-allele SAMPLE counts.
+            // present[k] += 1 once per sample that carries allele index k; missing
+            // += 1 for any sample with a missing call.
+            // Tally per-allele SAMPLE counts by scanning the RAW GT integer
+            // buffer, not the Genotype API. `record.genotypes()` + `.get(i)`
+            // constructs a `Genotype(Vec<GenotypeAllele>)` PER SAMPLE — a heap
+            // allocation per sample per variant, the dominant decode cost at
+            // 20k+ samples. `format(b"GT").integer()` gives one shared buffer of
+            // per-sample i32 slices; we decode htslib's GT encoding inline:
+            //   allele index = (v >> 1) - 1   (-1 => missing);
+            //   v == i32::MIN (bcf_int32_vector_end) pads shorter ploidy -> stop.
+            // Output is bit-identical to the Genotype-API loop (guarded by
+            // aggregates_match_longformat_recompute).
+            let gt_fmt = record.format(b"GT");
+            let gts = gt_fmt.integer()?;
+            let mut present = vec![0u32; n_alts_here + 1]; // index 0..=n_alts
+            let mut missing = 0u32;
+            let mut seen_alt = vec![false; n_alts_here + 1]; // scratch, hoisted
+            for sample_idx in 0..n_samples {
+                let slice = gts[sample_idx];
+                let mut seen_ref = false;
+                let mut seen_missing = false;
+                for s in seen_alt.iter_mut() {
+                    *s = false;
+                }
+                for &v in slice {
+                    if v == i32::MIN {
+                        break; // vector end: rest of this sample's slot is padding
+                    }
+                    let a = (v >> 1) - 1;
+                    if a < 0 {
+                        seen_missing = true;
+                    } else if a == 0 {
+                        seen_ref = true;
+                    } else if (a as usize) <= n_alts_here {
+                        seen_alt[a as usize] = true;
+                    }
+                }
+                if seen_ref {
+                    present[0] += 1;
+                }
+                for k in 1..=n_alts_here {
+                    if seen_alt[k] {
+                        present[k] += 1;
+                    }
+                }
+                if seen_missing {
+                    missing += 1;
+                }
+            }
+
+            for (alt_idx, alt_allele) in alleles[1..].iter().enumerate() {
+                let alt_allele_str = String::from_utf8_lossy(alt_allele).to_string();
+                let variant_id = *variant_map
+                    .entry((pos, ref_allele.clone(), alt_allele_str.clone()))
+                    .or_insert_with(|| {
+                        let id = next_variant_id;
+                        next_variant_id += 1;
+                        id
+                    });
+                chromosomes.push(chr.clone());
+                positions.push(pos);
+                ref_alleles.push(ref_allele.clone());
+                alt_alleles.push(alt_allele_str);
+                alt_indices.push((alt_idx + 1) as i32);
+                variant_ids.push(variant_id);
+                vcf_ids.push(vcf_id_str.clone());
+                filter_statuses.push(filter_value.clone());
+                info_values.push(info_value.clone());
+                n_refs.push(present[0]);
+                n_alts.push(present[alt_idx + 1]);
+                n_missings.push(missing);
+                n_sampless.push(n_samples as u32);
+            }
+        }
+    }
+
+    let df = DataFrame::new(vec![
+        Series::new("chromosome", chromosomes),
+        Series::new("position", positions),
+        Series::new("ref_allele", ref_alleles),
+        Series::new("alt_allele", alt_alleles),
+        Series::new("alt_index", alt_indices),
+        Series::new("variant_id", variant_ids),
+        Series::new("vcf_id", vcf_ids),
+        Series::new("filter_status", filter_statuses),
+        Series::new("info_fields", info_values),
+        Series::new("n_ref", n_refs),
+        Series::new("n_alt", n_alts),
+        Series::new("n_missing", n_missings),
+        Series::new("n_samples", n_sampless),
+    ])?;
+
+    READER_CACHE.with(|c| c.borrow_mut().insert(cache_key, reader));
+
     Ok(df)
 }
 
@@ -370,6 +642,55 @@ mod tests {
     fn positions(df: &DataFrame) -> Vec<u64> {
         df.column("position").unwrap().u64().unwrap()
             .into_no_null_iter().collect()
+    }
+
+    #[test]
+    fn aggregates_match_longformat_recompute() {
+        // extract_variant_aggregates must produce the same per-allele SAMPLE
+        // counts (ref/alt/missing) that you'd get by tallying the long-format
+        // rows — proving the O(samples)-counter aggregation is correct.
+        let (chr, s, e) = ("chr1".to_string(), 1u64, 1000u64);
+        let long = extract_variants(&fixture(), None, None, &chr, &s, &e).unwrap();
+        let agg = extract_variant_aggregates(&fixture(), None, &chr, &s, &e).unwrap();
+
+        let pos = long.column("position").unwrap().u64().unwrap();
+        let alt = long.column("alt_allele").unwrap().str().unwrap();
+        let gt = long.column("genotype").unwrap().str().unwrap();
+        let ai = long.column("alt_index").unwrap().i32().unwrap();
+        use std::collections::HashMap;
+        let mut nref: HashMap<(u64, String), u32> = HashMap::new();
+        let mut nalt: HashMap<(u64, String), u32> = HashMap::new();
+        let mut nmiss: HashMap<(u64, String), u32> = HashMap::new();
+        for i in 0..long.height() {
+            let key = (pos.get(i).unwrap(), alt.get(i).unwrap().to_string());
+            let g = gt.get(i).unwrap();
+            let this_ai = ai.get(i).unwrap();
+            let (mut r, mut a, mut m) = (false, false, false);
+            for t in g.split(|c| c == '/' || c == '|') {
+                let t = t.trim();
+                if t == "." || t.is_empty() {
+                    m = true;
+                } else if let Ok(k) = t.parse::<i32>() {
+                    if k == 0 { r = true; } else if k == this_ai { a = true; }
+                }
+            }
+            if r { *nref.entry(key.clone()).or_insert(0) += 1; }
+            if a { *nalt.entry(key.clone()).or_insert(0) += 1; }
+            if m { *nmiss.entry(key).or_insert(0) += 1; }
+        }
+
+        let apos = agg.column("position").unwrap().u64().unwrap();
+        let aalt = agg.column("alt_allele").unwrap().str().unwrap();
+        let arefc = agg.column("n_ref").unwrap().u32().unwrap();
+        let aaltc = agg.column("n_alt").unwrap().u32().unwrap();
+        let amissc = agg.column("n_missing").unwrap().u32().unwrap();
+        assert_eq!(agg.height(), 4, "4 biallelic variants in the fixture");
+        for i in 0..agg.height() {
+            let key = (apos.get(i).unwrap(), aalt.get(i).unwrap().to_string());
+            assert_eq!(arefc.get(i).unwrap(), *nref.get(&key).unwrap_or(&0), "n_ref {:?}", key);
+            assert_eq!(aaltc.get(i).unwrap(), *nalt.get(&key).unwrap_or(&0), "n_alt {:?}", key);
+            assert_eq!(amissc.get(i).unwrap(), *nmiss.get(&key).unwrap_or(&0), "n_missing {:?}", key);
+        }
     }
 
     #[test]
@@ -400,6 +721,17 @@ mod tests {
         let df = extract_variants(&fixture(), None, None, &"chrZ".to_string(), &1, &1000).unwrap();
         assert_eq!(df.height(), 0);
         assert_eq!(df.get_column_names().len(), 11);
+    }
+
+    #[test]
+    fn index_contigs_lists_data_sequences() {
+        // Contig routing reads the sequences that actually have records from the
+        // tabix index (not the header's ##contig lines). The fixture holds chr1.
+        let contigs = vcf_index_contigs(&fixture(), None).unwrap();
+        assert!(contigs.contains(&"chr1".to_string()), "got {contigs:?}");
+        // An explicit index isn't derivable via the tabix reader -> Err, so the
+        // caller always-queries that file.
+        assert!(vcf_index_contigs(&fixture(), Some("x.tbi")).is_err());
     }
 
     #[test]

@@ -59,8 +59,17 @@ The current user is taken from the gcloud/Google identity.
 
 ## Testing
 
-Three suites. The Rust and Python suites are the default CI gate; the headless
-UI suite renders the real frontend and guards browser-side regressions.
+Four layers. Rust + Python + headless-UI are the default CI gate
+(`.github/workflows/ci.yml`); the WebGPU pixel layer runs on a self-hosted GPU
+runner (`.github/workflows/webgpu.yml`). One command runs everything locally:
+
+```bash
+scripts/run_all_tests.sh          # all layers (WebGPU pixels skip without a GPU)
+scripts/run_all_tests.sh --gpu    # set up the GPU/WebGPU env first, then run pixels for real
+scripts/run_all_tests.sh --fast   # skip the slow browser layers
+```
+
+The individual suites, if you want to run them one at a time:
 
 ### Rust
 
@@ -117,9 +126,10 @@ things that actually break:
   reproduce a sandboxed notebook output (VS Code / Colab / Terra), where
   `localStorage` throws. Use to guard the sandbox-render path.
 
-**Caveat:** WebGPU does not paint under swiftshader in headless Chromium, so the
-tests assert on the **SVG / DOM / interaction** layers (which do render), not on
-WebGPU pixels. Signals the tests read: `window.__GS_READY` / `window.__GS_ERR`
+**Caveat:** WebGPU does not paint under swiftshader in headless Chromium, so
+*these* tests assert on the **SVG / DOM / interaction** layers (which do render),
+not on WebGPU pixels. For WebGPU pixel assertions on a real GPU, see
+[WebGPU pixel tests](#webgpu-pixel-tests-real-gpu). Signals the tests read: `window.__GS_READY` / `window.__GS_ERR`
 (load state), `#tracksSvg` children (tracks rendered), `window._alleleNodePositions`
 (flow node geometry, for hit-testing/alignment), and `window.__rc` (render count,
 when instrumented).
@@ -172,7 +182,9 @@ not a replica.
 Behaviors a fixed bug depends on that the headless harness **can't** yet reach
 (no live ipywidgets comm to seed data; WebGPU interaction layer doesn't paint or
 receive clicks under swiftshader). Verify these by hand in JupyterLab until we
-can seed comm state / stand up a real-GPU runner:
+seed comm state / port them onto the real-GPU runner (see
+[WebGPU pixel tests](#webgpu-pixel-tests-real-gpu), which now paints WebGPU on a
+real GPU — the render-only items below can migrate there):
 
 - **Comments tab — count + prev/next navigator**: count is correct; arrows
   disable at the first/last comment; each step recenters + flashes. (Needs
@@ -211,3 +223,24 @@ can seed comm state / stand up a real-GPU runner:
   compiled extension, a real BAM, and WebGPU — verify by hand after
   `maturin develop --release`. If neither `MD` nor a staged reference is available,
   a status toast says SNPs aren't shown and indels still render.
+
+### WebGPU pixel tests (real GPU)
+
+The headless suite above asserts on SVG/DOM/interaction, not WebGPU pixels — the
+GPU layer doesn't paint under headless Chromium's software renderer. To test the
+**actual WebGPU output** (the smart-track canvas #65, the SNP glyph atlas #67,
+read colors, indel shading) on a real GPU, there's now a separate path that
+renders real Chrome against your GPU and reads the pixels back:
+
+```bash
+python -m playwright install chrome                      # real Chrome (bundled Chromium has WebGPU compiled out)
+python scripts/webgpu_smoke.py                           # PASS = WebGPU paints + pixel readback matches
+pytest python/tests/headless/test_webgpu_pixels.py -q    # the pixel suite (reads, colors, #65 virtualization, #67 SNP glyphs)
+```
+
+On a headless server/CI, `source scripts/setup_gpu_webgpu.sh` first (it stands up
+the virtual display + drivers the GPU stack needs). Full guide — the suite, the
+`harness_gpu` helpers, the read-seeding test seam, how to write a pixel test, and
+a troubleshooting table: **[planning/WEBGPU_TESTING.md](planning/WEBGPU_TESTING.md)**.
+Like the headless suite, pixel tests **skip cleanly** where no GPU is present, so
+`pytest -q` stays green everywhere else.

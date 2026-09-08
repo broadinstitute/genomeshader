@@ -42,24 +42,10 @@ function processReadsData(rawReads) {
   // Sort by start position
   readArray.sort((a, b) => a.start - b.start);
 
-  // Cap rendered reads. Each expanded sample track sizes its canvases (2D +
-  // WebGPU) to the FULL read stack (maxRows * rowH); a deep-coverage locus
-  // (thousands of reads, doubled by paired-end mate splitting) makes those
-  // canvases enormous and stalls the GPU/compositor — the "expand freezes" bug.
-  // Downsample evenly across the locus so coverage stays representative but the
-  // stack stays bounded. ponytail: fixed cap; the real fix is viewport-sized
-  // virtualized canvases (draw only visible rows onto a container-height canvas).
-  const MAX_RENDER_READS = 300;
-  let downsampled = false;
-  if (readArray.length > MAX_RENDER_READS) {
-    const step = readArray.length / MAX_RENDER_READS;
-    const kept = [];
-    for (let i = 0; i < MAX_RENDER_READS; i++) kept.push(readArray[Math.floor(i * step)]);
-    readArray.length = 0;
-    Array.prototype.push.apply(readArray, kept);
-    downsampled = true;
-  }
-  
+  // No read cap: canvases are virtualized (viewport-sized + scroll offset),
+  // so an arbitrarily deep pileup no longer inflates the canvas past the GPU
+  // limit. All reads render.
+
   // Improved greedy packing: assign reads to rows, checking if read fits anywhere in each row
   const rows = [];
   for (const read of readArray) {
@@ -92,7 +78,7 @@ function processReadsData(rawReads) {
   
   // Only log in debug mode or for first few calls to avoid console spam
   // console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
-  return { reads: readArray, rowCount: rows.length, downsampled: downsampled };
+  return { reads: readArray, rowCount: rows.length };
 }
 // Exposed for the headless harness to regression-test read grouping (paired-end
 // mates share a query_name; markers must stay confined to their own read).
@@ -202,8 +188,34 @@ async function initSmartTrackWebGPU(trackId) {
   webgpuCanvas.style.height = '100%';
   webgpuCanvas.style.pointerEvents = 'none';
   
+  // Transparent 2D text overlay above the WebGPU canvas, for SNP base letters
+  // (WebGPU has no text). Cheap now that canvases are viewport-sized (not the
+  // full stack that caused the earlier GPU stall). Sticky + zIndex above WebGPU.
+  const textCanvas = document.createElement('canvas');
+  textCanvas.className = 'text-overlay';
+  textCanvas.id = `smart-track-text-${trackId}`;
+  textCanvas.style.position = 'sticky';
+  textCanvas.style.top = '0';
+  textCanvas.style.left = '0';
+  textCanvas.style.zIndex = '3';
+  textCanvas.style.pointerEvents = 'none';
+  // A canvas is inline by default; as a later inline sibling of the WebGPU
+  // canvas it inherits a line-box/baseline gap (~font descent) and sits a few px
+  // LOW, so the SNP letters landed below their tiles. Block-level removes the
+  // inline gap so the overlay aligns exactly with the WebGPU canvas.
+  textCanvas.style.display = 'block';
+
+  // Virtualization spacer: gives the container its scroll height so the
+  // viewport-sized (sticky) canvases can draw only the visible rows — lifts the
+  // full-stack canvas size (the ~16384px GPU wall behind the read cap).
+  const spacer = document.createElement('div');
+  spacer.className = 'smart-track-vspacer';
+  spacer.style.cssText = 'position:relative;width:1px;pointer-events:none;flex:0 0 auto;';
+
   container.appendChild(canvas);
   container.appendChild(webgpuCanvas);
+  container.appendChild(textCanvas);
+  container.appendChild(spacer);
   // Live in the scrolling reads region (#smartScroll) so the whole sample-track
   // stack scrolls together below the pinned header.
   ((typeof ensureSmartScrollWrapper === "function" && ensureSmartScrollWrapper())
@@ -265,6 +277,8 @@ async function initSmartTrackWebGPU(trackId) {
       instancedRenderer,
       canvas,
       webgpuCanvas,
+      textCanvas,
+      spacer,
       container
     });
 
@@ -290,7 +304,9 @@ async function initSmartTrackWebGPU(trackId) {
       webgpuCore: null,
       instancedRenderer: null,
       canvas,
-      webgpuCanvas: null,
+      webgpuCanvas,
+      textCanvas,
+      spacer: null,
       container
     });
     
@@ -415,7 +431,12 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
   return sendCommMessage('fetch_reads', {
     strategy: strategy,
     selected_alleles: allelesArray,
-    sample_id: sampleId || null
+    sample_id: sampleId || null,
+    // Fetch reads for the CURRENTLY VIEWED window, not the server's last-rendered
+    // locus. Viewport paging (pan/zoom) never re-runs render(), so _last_locus
+    // goes stale — reads would come back for the old region and never align with
+    // what's on screen. Matches _readsLocusSig() so the client read cache agrees.
+    locus: _readsLocusSig() || null
   })
     .then(function(response) {
       track.loading = false;
@@ -463,16 +484,26 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
         console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
-        throw new Error(response.error);  // status handled in .catch (single decrement)
+        throw new Error(response.error, { cause: response.hint });  // handled in .catch
       }
       _readStatusDone(false);            // unknown response: decrement, don't leak
       return null;
     })
     .catch(function(err) {
       track.loading = false;
+      const who = sampleId || track.sampleId;
       console.error(`Failed to fetch reads for Smart track ${trackId}:`, err);
-      _readStatusDone('Failed to load reads', true);
-      renderAll();
+      _readStatusDone(false);       // clear the busy bar; the modal carries the message
+      // A read track that failed to load shouldn't linger empty — remove it.
+      removeSmartTrack(trackId);    // also re-renders + refreshes the sidebar
+      if (window.__GS_MODAL) {
+        window.__GS_MODAL(
+          'Failed to load reads' + (who ? ' for ' + who : '') + '.\n\n'
+            + (err && err.message ? err.message : 'The read fetch failed.')
+            + '\n\n' + (err && err.cause ? String(err.cause)
+                : 'Check that you are authenticated and can access the BAM/CRAM files.'),
+          { title: 'Failed to load reads' });
+      }
       throw err;
     });
 }
@@ -1216,8 +1247,63 @@ function initializeRightSidebar() {
     
     // Initialize active tab
     updateActiveTab();
-    
+
     // Initial render
     renderSmartTracksSidebar();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Test seam: seed a Smart track with canned reads and paint it WITHOUT the
+// ipywidgets comm (which the headless / real-GPU harness can't provide). Mirrors
+// the exact path fetchReadsForSmartTrack takes on a real load — createSmartTrack,
+// then set readsData / readsLayout / sampleId and renderSmartTrack — so a WebGPU
+// pixel test exercises the real read + SNP draw. Same window.__GS_* seam pattern
+// as window.__GS_processReadsData above; no production code calls it.
+if (typeof window !== "undefined") {
+  window.__GS_TEST_seedSmartTrack = async function (sampleId, rawReads, opts) {
+    opts = opts || {};
+    const track = createSmartTrack(opts.strategy || "best", opts.selectedAlleles || []);
+    track.sampleId = sampleId;
+    track.label = sampleId;
+    track.collapsed = opts.collapsed === true; // default expanded (rows visible)
+    track.readsData = rawReads;
+    track.readsLayout = processReadsData(rawReads);
+    // initSmartTrackWebGPU (started by createSmartTrack) is async; wait for the
+    // per-track renderer to come up before we paint.
+    for (let i = 0; i < 80 && !state.smartTrackRenderers.has(track.id); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    updateTracksHeight();
+    renderAll();
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    try { renderSmartTrack(track.id); } catch (e) {}
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    const rec = state.smartTrackRenderers.get(track.id) || {};
+    return {
+      trackId: track.id,
+      rowCount: track.readsLayout ? track.readsLayout.rowCount : 0,
+      readCount: track.readsLayout ? track.readsLayout.reads.length : 0,
+      hasWebGPU: !!rec.webgpuCore,
+    };
+  };
+
+  // Test seam: narrow the visible locus to `spanBp` bases (keeping startBp) and
+  // re-render, so a pixel test can zoom in far enough that per-base SNP tiles
+  // are wide enough to draw their base letter (#67). Returns the new window.
+  window.__GS_TEST_setSpan = function (spanBp) {
+    state.endBp = state.startBp + spanBp;
+    renderAll();
+    return { startBp: state.startBp, endBp: state.endBp };
+  };
+
+  // Test seam: run the REAL read-fetch path for a fresh track, so a test can mock
+  // __GS_SEND to fail and assert the error handling (track removed + modal shown).
+  // Resolves to the trackId whether the fetch succeeds or fails.
+  window.__GS_TEST_loadReads = function (sampleId, strategy, selectedAlleles) {
+    const s = strategy || "best_evidence";
+    const track = createSmartTrack(s, selectedAlleles || new Set());
+    return fetchReadsForSmartTrack(track.id, s, selectedAlleles || new Set(), sampleId)
+      .then(() => track.id, () => track.id);
+  };
 }

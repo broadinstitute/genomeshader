@@ -17,7 +17,16 @@ class WebGPUCore {
     }
 
     this.canvas = canvas;
-    const adapter = await navigator.gpu.requestAdapter();
+    // requestAdapter() can transiently return null right after page load (GPU
+    // process / other canvases' init still settling) — a single null then
+    // silently drops this canvas to the Canvas2D fallback. Every canvas (main
+    // tracks, flow, each smart track) routes through here, so retry once-a-frame
+    // a few times before giving up.
+    let adapter = null;
+    for (let attempt = 0; attempt < 5 && !adapter; attempt++) {
+      adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) await new Promise((r) => setTimeout(r, 100));
+    }
     if (!adapter) {
       throw new Error('Failed to get WebGPU adapter');
     }
@@ -108,6 +117,27 @@ class WebGPUCore {
       this.device.queue.writeBuffer(this.projectionBuffer, 0, this.projectionMatrix);
       this.device.queue.writeBuffer(this.projectionBuffer, 16 * 4, this.screenSize);
     });
+  }
+
+  // Sync the orthographic projection to explicit device-pixel dims. The canvas
+  // can be resized between init and a render (first paint before layout settled,
+  // orientation swap); the projection was otherwise only written at init / on
+  // window-resize, so a stale one mapped all geometry offscreen until a manual
+  // resize (#81). Called every frame from the renderer.
+  setViewport(width, height) {
+    if (!this.projectionBuffer || !this.projectionMatrix || !this.screenSize) return;
+    if (!(width > 0) || !(height > 0)) return;
+    if (this.projectionMatrix[0] === 2.0 / width && this.projectionMatrix[5] === -2.0 / height) {
+      return; // already in sync — skip the buffer writes
+    }
+    this.projectionMatrix[0] = 2.0 / width;
+    this.projectionMatrix[5] = -2.0 / height;
+    this.projectionMatrix[12] = -1;
+    this.projectionMatrix[13] = 1;
+    this.screenSize[0] = width;
+    this.screenSize[1] = height;
+    this.device.queue.writeBuffer(this.projectionBuffer, 0, this.projectionMatrix);
+    this.device.queue.writeBuffer(this.projectionBuffer, 16 * 4, this.screenSize);
   }
 
   getCurrentTexture() {

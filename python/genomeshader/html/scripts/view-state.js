@@ -3,138 +3,6 @@
 let variants = [];
 let loadedVariantTracks = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
 
-function decodeBase64ToUint8Array(base64Text) {
-  const binary = atob(base64Text);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-async function maybeDecompressPayload(bytes, compression) {
-  if (compression === "none" || !compression) {
-    return bytes;
-  }
-  if (compression !== "gzip") {
-    throw new Error(`Unsupported payload compression '${compression}'`);
-  }
-  if (typeof DecompressionStream === "undefined") {
-    throw new Error("Browser does not support DecompressionStream for gzip payloads");
-  }
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-  const decompressed = await new Response(stream).arrayBuffer();
-  return new Uint8Array(decompressed);
-}
-
-async function fetchVariantPayloadViaChunkedComms() {
-  const supportsCompression = typeof DecompressionStream !== "undefined";
-  const initResp = await sendCommMessage(
-    "fetch_variant_payload_init",
-    {
-      view_id: window.GENOMESHADER_VIEW_ID,
-      chunk_chars: 240000,
-      accept_compression: supportsCompression,
-    },
-    120000
-  );
-
-  // Backward-compatible fallback: old backend may still return full payload directly.
-  if (initResp && initResp.type === "fetch_variant_payload_response" && initResp.payload) {
-    return initResp.payload;
-  }
-  if (!initResp || initResp.type !== "fetch_variant_payload_init_response") {
-    if (initResp && initResp.type === "fetch_variant_payload_error") {
-      throw new Error(initResp.error || "fetch_variant_payload_init failed");
-    }
-    throw new Error("Unexpected response to fetch_variant_payload_init");
-  }
-
-  const payloadToken = initResp.payload_token;
-  const totalChunks = Number(initResp.total_chunks || 0);
-  const compression = initResp.compression || "none";
-  const payloadJsonBytes = Number(initResp.payload_json_bytes || 0);
-  const payloadTransferBytes = Number(initResp.payload_transfer_bytes || 0);
-  if (!payloadToken || !Number.isFinite(totalChunks) || totalChunks <= 0) {
-    throw new Error("Invalid chunked payload metadata");
-  }
-  console.info("Genomeshader: variant payload transfer", {
-    total_chunks: totalChunks,
-    compression,
-    payload_json_mb: payloadJsonBytes > 0 ? (payloadJsonBytes / (1024 * 1024)).toFixed(2) : "unknown",
-    payload_transfer_mb: payloadTransferBytes > 0 ? (payloadTransferBytes / (1024 * 1024)).toFixed(2) : "unknown",
-  });
-
-  const parts = new Array(totalChunks);
-  for (let i = 0; i < totalChunks; i++) {
-    const chunkResp = await sendCommMessage(
-      "fetch_variant_payload_chunk",
-      {
-        payload_token: payloadToken,
-        chunk_index: i,
-      },
-      120000
-    );
-    if (!chunkResp || chunkResp.type !== "fetch_variant_payload_chunk_response") {
-      if (chunkResp && chunkResp.type === "fetch_variant_payload_error") {
-        throw new Error(chunkResp.error || `Chunk request failed at index ${i}`);
-      }
-      throw new Error(`Unexpected chunk response at index ${i}`);
-    }
-    parts[i] = chunkResp.chunk || "";
-    if ((i + 1) % 20 === 0 || i + 1 === totalChunks) {
-      console.info(`Genomeshader: received variant payload chunk ${i + 1}/${totalChunks}`);
-    }
-  }
-
-  const b64 = parts.join("");
-  const encodedBytes = decodeBase64ToUint8Array(b64);
-  const payloadBytes = await maybeDecompressPayload(encodedBytes, compression);
-  const payloadText = new TextDecoder("utf-8").decode(payloadBytes);
-  return JSON.parse(payloadText);
-}
-
-// Prefer loading heavy variant payload via Jupyter comms (works in Terra).
-if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_payload_via_comm) {
-  try {
-    const payload = await fetchVariantPayloadViaChunkedComms();
-    if (payload) {
-      if (payload && Array.isArray(payload.variant_tracks)) {
-        loadedVariantTracks = payload.variant_tracks;
-        window.GENOMESHADER_CONFIG.variant_tracks = payload.variant_tracks;
-      }
-      if (payload && Array.isArray(payload.insertion_variants_lookup)) {
-        window.GENOMESHADER_CONFIG.insertion_variants_lookup = payload.insertion_variants_lookup;
-      }
-      console.log("Loaded variant payload via Jupyter comms");
-    }
-  } catch (err) {
-    console.warn("Failed to fetch variant payload via chunked comms, retrying legacy path:", err);
-    try {
-      const legacyResp = await sendCommMessage(
-        "fetch_variant_payload",
-        { view_id: window.GENOMESHADER_VIEW_ID },
-        120000
-      );
-      if (legacyResp && legacyResp.type === "fetch_variant_payload_response" && legacyResp.payload) {
-        const payload = legacyResp.payload;
-        if (Array.isArray(payload.variant_tracks)) {
-          loadedVariantTracks = payload.variant_tracks;
-          window.GENOMESHADER_CONFIG.variant_tracks = payload.variant_tracks;
-        }
-        if (Array.isArray(payload.insertion_variants_lookup)) {
-          window.GENOMESHADER_CONFIG.insertion_variants_lookup = payload.insertion_variants_lookup;
-        }
-        console.log("Loaded variant payload via legacy Jupyter comms");
-      } else if (legacyResp && legacyResp.type === "fetch_variant_payload_error") {
-        console.warn("Legacy variant payload fetch failed:", legacyResp.error);
-      }
-    } catch (legacyErr) {
-      console.warn("Failed to fetch variant payload via legacy comms:", legacyErr);
-    }
-  }
-}
-
 // Fallback for environments where comms are unavailable.
 if (
   window.GENOMESHADER_CONFIG &&
@@ -624,4 +492,777 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.reference_data) {
   }
 } else {
   console.warn("No reference_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
+}
+
+// ---------------------------------------------------------------------------
+// Scale / render algorithmic cores (pure, headless-tested). Render wiring that
+// consumes these is browser-verified separately (see planning/TODO.md).
+// ---------------------------------------------------------------------------
+
+// Virtualized read-track row window: which read rows are visible for a given
+// scroll offset, so a viewport-sized canvas can draw only those rows (lifts the
+// full-stack canvas size that forced the 300-read cap).
+function computeVirtualRowWindow(scrollTop, viewportH, rowH, totalRows, overscan) {
+  scrollTop = Math.max(0, scrollTop || 0);
+  overscan = Math.max(0, overscan || 0);
+  if (!(rowH > 0) || !(totalRows > 0)) return { startRow: 0, endRow: -1 };
+  const startRow = Math.max(0, Math.floor(scrollTop / rowH) - overscan);
+  const endRow = Math.min(totalRows - 1, Math.floor((scrollTop + viewportH) / rowH) + overscan);
+  return { startRow, endRow };
+}
+
+// Overscan region: pad a viewport bp-range by `factor` so a pan reveals
+// already-drawn content instead of blank edges (pairs with viewport variant
+// loading). Clamps start to >= 1.
+function overscanRegion(startBp, endBp, factor) {
+  startBp = Math.round(startBp); endBp = Math.round(endBp);
+  const span = Math.max(0, endBp - startBp);
+  const pad = Math.round(span * Math.max(0, factor || 0));
+  return { start: Math.max(1, startBp - pad), end: endBp + pad };
+}
+
+// Standard-genetic-code translation of a reference window in a chosen frame.
+// Returns [{index, aa}] where index is the 0-based offset of the codon's first
+// base in `seq`. Codon track MVP core (render is additive, browser-verified).
+const _GS_CODON_TABLE = {
+  TTT:"F",TTC:"F",TTA:"L",TTG:"L",CTT:"L",CTC:"L",CTA:"L",CTG:"L",
+  ATT:"I",ATC:"I",ATA:"I",ATG:"M",GTT:"V",GTC:"V",GTA:"V",GTG:"V",
+  TCT:"S",TCC:"S",TCA:"S",TCG:"S",CCT:"P",CCC:"P",CCA:"P",CCG:"P",
+  ACT:"T",ACC:"T",ACA:"T",ACG:"T",GCT:"A",GCC:"A",GCA:"A",GCG:"A",
+  TAT:"Y",TAC:"Y",TAA:"*",TAG:"*",CAT:"H",CAC:"H",CAA:"Q",CAG:"Q",
+  AAT:"N",AAC:"N",AAA:"K",AAG:"K",GAT:"D",GAC:"D",GAA:"E",GAG:"E",
+  TGT:"C",TGC:"C",TGA:"*",TGG:"W",CGT:"R",CGC:"R",CGA:"R",CGG:"R",
+  AGT:"S",AGC:"S",AGA:"R",AGG:"R",GGT:"G",GGC:"G",GGA:"G",GGG:"G",
+};
+function translateFrame(seq, frame) {
+  if (typeof seq !== "string" || !seq) return [];
+  frame = ((frame || 0) % 3 + 3) % 3;
+  const s = seq.toUpperCase();
+  const out = [];
+  for (let i = frame; i + 3 <= s.length; i += 3) {
+    out.push({ index: i, aa: _GS_CODON_TABLE[s.slice(i, i + 3)] || "X" });
+  }
+  return out;
+}
+
+if (typeof window !== "undefined") {
+  window.__gsComputeVirtualRowWindow = computeVirtualRowWindow;
+  window.__gsOverscanRegion = overscanRegion;
+  window.__gsTranslateFrame = translateFrame;
+}
+
+// Viewport variant loading (P2) store core: keep a sparse set of loaded windows,
+// evict ones far from the current center, and test coverage to decide whether a
+// fetch is needed. Pure; the pan/zoom trigger + comm fetch are browser-wired.
+function _gsRegionKey(r) { return `${r.contig}:${r.start}-${r.end}`; }
+
+function gsWindowStoreUpdate(regions, newRegion, centerBp, keepSpan) {
+  regions = Array.isArray(regions) ? regions.slice() : [];
+  const nk = _gsRegionKey(newRegion);
+  regions = regions.filter((r) => _gsRegionKey(r) !== nk);
+  regions.push(newRegion);
+  const kept = [], evicted = [];
+  for (const r of regions) {
+    const mid = (Number(r.start) + Number(r.end)) / 2;
+    if (_gsRegionKey(r) !== nk && Math.abs(mid - centerBp) > keepSpan) evicted.push(r);
+    else kept.push(r);
+  }
+  return { regions: kept, evicted };
+}
+
+// Is [start,end] on `contig` fully covered by a single loaded region? (If not,
+// the caller fetches the window ± overscan.)
+function gsRegionCovered(regions, contig, start, end) {
+  if (!Array.isArray(regions)) return false;
+  return regions.some((r) => r.contig === contig
+    && Number(r.start) <= start && Number(r.end) >= end);
+}
+
+if (typeof window !== "undefined") {
+  window.__gsWindowStoreUpdate = gsWindowStoreUpdate;
+  window.__gsRegionCovered = gsRegionCovered;
+}
+
+// ---------------------------------------------------------------------------
+// Viewport-driven variant loading (#71) + overscan (#41). Enabled by
+// GENOMESHADER_CONFIG.viewport_variant_loading. On each pan/zoom settle we fetch
+// variants for the visible window padded by an overscan margin (so a pan into
+// the margin already has data — no blank edges), keep a bounded set of recently
+// viewed windows, and evict far ones. This lets the browser page through a
+// cohort far larger than fits in memory: everything renders from per-variant
+// aggregates for the current window, independent of sample count. Variants
+// render from GENOMESHADER_CONFIG.variant_tracks; we rebuild that from the kept
+// windows (union, deduped by variant id). Uses the pure store cores above
+// (overscanRegion / gsRegionCovered / gsWindowStoreUpdate).
+const GS_VP_OVERSCAN = 0.5;      // fetch viewport ± 50% on each side
+const GS_VP_MAX_SPAN_BP = 1000000; // above this span, skip loading individual variants (zoom gate)
+let _gsVpRegions = [];           // [{contig,start,end}] currently-loaded windows
+const _gsVpData = new Map();     // regionKey -> variant_tracks[] for that window
+let _gsVpInFlight = null;        // request key currently being fetched (dedupe)
+let _gsVpTimer = null;
+let _gsVpStatusInFlight = 0;     // # overlapping loads showing the busy status bar
+let _gsFailureModalOpen = false; // one blocking failure modal at a time (no stacking)
+
+// Frontend debug event log -> server debug file (via the debug_log comm), so the
+// loader's decisions (why a scroll did/didn't fetch, timings, sizes) are visible
+// when the user runs with debug=True. No-op unless config.debug. Also mirrors to
+// the browser console for live inspection. Fire-and-forget; never throws.
+function __GS_DEBUG(event, fields) {
+  const cfg = window.GENOMESHADER_CONFIG;
+  if (!cfg || !cfg.debug) return;
+  try { console.debug("[gs]", event, fields || {}); } catch (e) {}
+  try {
+    if (typeof sendCommMessage === "function") {
+      sendCommMessage("debug_log", { event: event, fields: fields || {} }, 5000)
+        .catch(function () {});
+    }
+  } catch (e) {}
+}
+if (typeof window !== "undefined") window.__GS_DEBUG = __GS_DEBUG;
+
+// Capture uncaught JS errors + promise rejections into the debug log, so a
+// forensic read of the log shows a crash + where it happened (not just silence).
+if (typeof window !== "undefined") {
+  window.addEventListener("error", function (e) {
+    __GS_DEBUG("js_error", {
+      message: String(e && e.message || e),
+      source: e && e.filename, line: e && e.lineno, col: e && e.colno,
+      stack: e && e.error && e.error.stack ? String(e.error.stack).split("\n").slice(0, 4).join(" | ") : null,
+    });
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    const r = e && e.reason;
+    __GS_DEBUG("js_unhandled_rejection", {
+      reason: String(r && r.message || r),
+      stack: r && r.stack ? String(r.stack).split("\n").slice(0, 4).join(" | ") : null,
+    });
+  });
+}
+
+// Serious load failures (variant/region fetch rejected — kernel dropped or 30s
+// comm timeout) must be surfaced with a centered, blocking modal the user has to
+// acknowledge, not a status flash that scrolls away. Single-instance so rapid
+// panning that times out several windows doesn't stack a wall of dialogs.
+function gsSeriousFailureModal(message, title) {
+  if (_gsFailureModalOpen || typeof window.__GS_MODAL !== "function") return;
+  _gsFailureModalOpen = true;
+  window.__GS_MODAL(message, {
+    title: title || "Load failed",
+    onClose: function () { _gsFailureModalOpen = false; },
+  });
+}
+
+function _gsVpKeepSpan() {
+  // Keep windows whose center is within ~3 viewport spans of the current center.
+  return Math.max(1, state.endBp - state.startBp) * 3;
+}
+
+function _gsVpRebuildTracks() {
+  // Union the kept windows' variant_tracks into config, deduped by variant id
+  // (overscan-overlapping windows share edge variants).
+  const byTrack = new Map();
+  for (const r of _gsVpRegions) {
+    for (const t of (_gsVpData.get(_gsRegionKey(r)) || [])) {
+      const key = t.name || t.id || "default";
+      if (!byTrack.has(key)) byTrack.set(key, { meta: t, vs: new Map() });
+      const slot = byTrack.get(key).vs;
+      for (const v of (t.variants_data || [])) slot.set(String(v.id), v);
+    }
+  }
+  const merged = [];
+  for (const { meta, vs } of byTrack.values()) {
+    merged.push({ ...meta, variants_data: [...vs.values()] });
+  }
+  window.GENOMESHADER_CONFIG.variant_tracks = merged;
+
+  // Keep the module-level globals the coordinate/gap functions read in sync with
+  // the paged data. The flow track renders straight from variant_tracks, but the
+  // reference/ruler/genes tracks compute insertion-expansion gaps via
+  // getGapAfterBpPx / getTotalExpandedInsertionGapBp, which read `variants` and
+  // `insertionVariantsLookup`. _gsVpRebuildTracks runs on the FIRST (startup)
+  // viewport load too, so if we don't refresh these the gap functions keep
+  // matching against the stale seed lookup -> a freshly-expanded insertion's id
+  // isn't found -> gap 0 -> only the flow appears to expand while the reference
+  // and other coordinate tracks stay put.
+  variants = (merged[0] && merged[0].variants_data) || [];
+  const _lookup = [];
+  for (const t of merged) {
+    for (const v of (t.variants_data || [])) {
+      if (v && v.isInsertion && Number(v.insertionGapPx) > 0) {
+        _lookup.push({
+          id: String(v.id),
+          pos: Number(v.pos),
+          maxInsertionLength: Number(v.maxInsertionLength) || 0,
+          insertionGapPx: Number(v.insertionGapPx) || 0,
+        });
+      }
+    }
+  }
+  _lookup.sort((a, b) => a.pos - b.pos);
+  insertionVariantsLookup = _lookup;
+  window.GENOMESHADER_CONFIG.insertion_variants_lookup = _lookup;
+  insertionMaxLenById = null;  // invalidate cache -> rebuilt from fresh data
+}
+
+async function gsLoadVariantsForViewport(force) {
+  const cfg = window.GENOMESHADER_CONFIG;
+  __GS_DEBUG("vp_load_enter", { force: !!force,
+    start: Math.floor(state.startBp), end: Math.ceil(state.endBp), contig: state.contig });
+  if (!cfg || !cfg.viewport_variant_loading) {
+    __GS_DEBUG("vp_skip", { reason: "disabled" });
+    return;
+  }
+  const contig = state.contig;
+  const vs = Math.floor(state.startBp), ve = Math.ceil(state.endBp);
+  if (!contig || !(ve > vs)) {
+    __GS_DEBUG("vp_skip", { reason: "bad_window", contig: contig, vs: vs, ve: ve });
+    return;
+  }
+  // Zoom gate: above a max span, individual variants are too many/dense to draw
+  // usefully (and expensive to fetch) — skip and nudge to zoom in. A binned
+  // density track for wide windows (P3 LOD) is the richer answer, deferred.
+  const maxSpan = Number(cfg.variant_max_span_bp) || GS_VP_MAX_SPAN_BP;
+  if ((ve - vs) > maxSpan) {
+    __GS_DEBUG("vp_skip", { reason: "zoom_gate", span: ve - vs, maxSpan: maxSpan });
+    if (window.__GS_STATUS) window.__GS_STATUS(
+      `Zoom in to load variants (window ${(ve - vs).toLocaleString()} bp > ${maxSpan.toLocaleString()} bp limit)`,
+      { autoHide: 2500 });
+    return;
+  }
+  if (!force && gsRegionCovered(_gsVpRegions, contig, vs, ve)) {
+    __GS_DEBUG("vp_skip", { reason: "covered", contig: contig, vs: vs, ve: ve });
+    return; // coverage skip
+  }
+  const win = overscanRegion(vs, ve, GS_VP_OVERSCAN);
+  // Clamp to the contig so a pan near an end doesn't request off-contig coords.
+  const chrLen = Number((cfg.chrom_lengths || {})[contig])
+    || (typeof chrLengths !== "undefined" ? Number(chrLengths[contig]) : 0) || 0;
+  win.start = Math.max(1, win.start);
+  if (chrLen > 0) win.end = Math.min(win.end, chrLen);
+  if (!(win.end > win.start)) return;
+  // Dedup only the identical in-flight window. A single hung fetch (comm never
+  // resolves) must NOT block loads for OTHER windows — serializing on any
+  // in-flight request bricks all future loading when one request sticks.
+  // Rapid panning may briefly overlap fetches; the transient "variant load
+  // failed" self-heals on the next settle and is preferable to a hard stall.
+  const reqKey = `${contig}:${win.start}-${win.end}`;
+  if (_gsVpInFlight === reqKey) return;
+  _gsVpInFlight = reqKey;
+  // Progress feedback: a cold window is read-bound (htslib decompress+parse of
+  // the in-range VCF lines) and can take seconds at cohort scale (#78 measured
+  // ~13s remote), so tell the user what's happening. Indeterminate — the server
+  // doesn't stream progress. Counter so overlapping loads don't hide the bar
+  // early (mirrors smart-tracks read-load status).
+  _gsVpStatusInFlight++;
+  if (window.__GS_STATUS) {
+    window.__GS_STATUS(
+      `Loading variants for ${contig}:${win.start.toLocaleString()}–${win.end.toLocaleString()}…`,
+      { busy: true });
+  }
+  const _t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+  __GS_DEBUG("vp_fetch_start", { reqKey: reqKey });
+  try {
+    const resp = await sendCommMessage("fetch_variants",
+      { contig, start: win.start, end: win.end }, 300000);  // first cold remote open (downloads the index) can be minutes; the Rust reader cache makes every later window fast
+    // A server-side failure comes back as a resolved *_error response (not a
+    // rejection), so it would otherwise fall through silently — no variants, no
+    // message ("scrolled and nothing happened"). Surface it like a rejection.
+    if (resp && (resp.error || (resp.type && String(resp.type).endsWith("_error")))) {
+      throw new Error(resp.error || "variant fetch failed", { cause: resp.hint });
+    }
+    if (resp && Array.isArray(resp.variant_tracks)) {
+      const _nv = resp.variant_tracks.reduce(
+        (a, t) => a + (t.variants_data ? t.variants_data.length : 0), 0);
+      __GS_DEBUG("vp_fetch_ok", { reqKey: reqKey, n_variants: _nv,
+        aggregate: !!resp.aggregate, cached: !!resp.cached,
+        ms: Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - _t0) });
+      const region = { contig, start: win.start, end: win.end };
+      _gsVpData.set(_gsRegionKey(region), resp.variant_tracks);
+      const upd = gsWindowStoreUpdate(_gsVpRegions, region, (vs + ve) / 2, _gsVpKeepSpan());
+      _gsVpRegions = upd.regions;
+      for (const ev of upd.evicted) _gsVpData.delete(_gsRegionKey(ev));
+      if (Array.isArray(resp.insertion_variants_lookup)) {
+        cfg.insertion_variants_lookup = resp.insertion_variants_lookup;
+      }
+      // Keep reference / genes / ideogram / data_bounds in sync with the paged
+      // window (they ride along with the variant payload now) so the reference
+      // track updates as you pan and the out-of-data overlay tracks the loaded
+      // region instead of the startup one.
+      if (typeof resp.reference_data === "string") {
+        cfg.reference_data = resp.reference_data; referenceSequence = resp.reference_data;
+      }
+      if (Array.isArray(resp.transcripts_data)) {
+        cfg.transcripts_data = resp.transcripts_data; transcripts = resp.transcripts_data;
+      }
+      if (Array.isArray(resp.repeats_data)) {
+        cfg.repeats_data = resp.repeats_data; repeats = resp.repeats_data;
+      }
+      if (Array.isArray(resp.ideogram_data)) cfg.ideogram_data = resp.ideogram_data;
+      if (resp.data_bounds && typeof resp.data_bounds.start === "number") {
+        cfg.data_bounds = resp.data_bounds; dataBounds = resp.data_bounds;
+      }
+      _gsVpRebuildTracks();
+      if (typeof renderAll === "function") renderAll();
+      if (window.__GS_STATUS && _gsVpStatusInFlight <= 1) {
+        const nv = resp.variant_tracks.reduce(
+          (a, t) => a + (t.variants_data ? t.variants_data.length : 0), 0);
+        window.__GS_STATUS(`Loaded ${nv.toLocaleString()} variants`, { autoHide: 1800 });
+      }
+    }
+  } catch (e) {
+    console.warn("viewport variant load failed:", e);
+    __GS_DEBUG("vp_fetch_error", { reqKey: reqKey, error: String(e && e.message || e) });
+    const hint = (e && e.cause) ? String(e.cause)
+      : "The connection to the kernel may have dropped or the request timed out. "
+        + "Try again, or re-run the cell.";
+    gsSeriousFailureModal(
+      "Failed to load variants for this region. " + hint, "Variant load failed");
+  } finally {
+    if (_gsVpInFlight === reqKey) _gsVpInFlight = null;
+    _gsVpStatusInFlight = Math.max(0, _gsVpStatusInFlight - 1);
+    // Only clear the busy bar when the last overlapping load settles; a
+    // success/failure message above (autoHide) supersedes it when shown.
+    if (_gsVpStatusInFlight === 0 && window.__GS_STATUS) {
+      const bar = document.getElementById("statusBar");
+      if (bar && bar.classList.contains("indeterminate")) window.__GS_STATUS(false);
+    }
+  }
+}
+
+// Debounced trigger — called from the pan/zoom settle points.
+function gsScheduleViewportVariantLoad(delay) {
+  if (_gsVpTimer) clearTimeout(_gsVpTimer);
+  _gsVpTimer = setTimeout(() => { _gsVpTimer = null; gsLoadVariantsForViewport(false); },
+    delay == null ? 150 : delay);
+}
+
+// Register the startup region's variants (shipped in config) with the viewport
+// store so panning back doesn't refetch them, and dynamic paging works from the
+// first frame. If the config shipped variant META only (comm-payload mode),
+// there's nothing to seed — kick a fetch for the initial window instead.
+function gsSeedInitialVariantWindow() {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  if (!cfg.viewport_variant_loading) return;
+  const m = String(cfg.region || "").match(/^([^:]+):(\d+)-(\d+)$/);
+  if (!m) return;
+  const region = { contig: m[1], start: parseInt(m[2], 10), end: parseInt(m[3], 10) };
+  const tracks = cfg.variant_tracks || [];
+  const hasData = tracks.some((t) => (t.variants_data || []).length > 0);
+  if (hasData) {
+    _gsVpRegions = [region];
+    _gsVpData.clear();
+    _gsVpData.set(_gsRegionKey(region), tracks);
+  } else if (typeof gsScheduleViewportVariantLoad === "function") {
+    gsScheduleViewportVariantLoad(0);
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.gsLoadVariantsForViewport = gsLoadVariantsForViewport;
+  window.gsScheduleViewportVariantLoad = gsScheduleViewportVariantLoad;
+  window.gsSeedInitialVariantWindow = gsSeedInitialVariantWindow;
+  // Test introspection: which windows are loaded right now.
+  window.__gsVpState = () => ({
+    regions: _gsVpRegions.map((r) => ({ ...r })),
+    windowKeys: [..._gsVpData.keys()],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Contig switcher (sidebar "Region" dropdown). Reference / genes / ideogram /
+// repeats are per-window and baked into the initial config, so jumping to a
+// contig needs the host: gsSwitchContig moves the view and asks for the new
+// region's payload (`navigate` comm), then applies it. Without a comm it still
+// moves the view and reloads variants via the viewport loader.
+// ---------------------------------------------------------------------------
+function gsContigList() {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const lens = cfg.chrom_lengths && Object.keys(cfg.chrom_lengths).length
+    ? cfg.chrom_lengths
+    : (typeof chrLengths !== "undefined" ? chrLengths : {});
+  return Object.keys(lens);
+}
+
+function gsPopulateContigSelect() {
+  const sel = document.getElementById("contigSelect");
+  if (!sel) return;
+  const contigs = gsContigList();
+  sel.innerHTML = "";
+  for (const c of contigs) {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c;
+    if (c === state.contig) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  if (!sel.__gsWired) {
+    sel.__gsWired = true;
+    sel.addEventListener("change", () => gsSwitchContig(sel.value));
+  }
+}
+
+// Drop the previous contig's per-region data so it doesn't flash before the new
+// region's payload arrives.
+function gsResetRegionData() {
+  const cfg = window.GENOMESHADER_CONFIG || (window.GENOMESHADER_CONFIG = {});
+  referenceSequence = "";
+  transcripts = [];
+  repeats = [];
+  cfg.reference_data = "";
+  cfg.transcripts_data = [];
+  cfg.repeats_data = [];
+  _gsVpRegions = [];
+  _gsVpData.clear();
+  _gsVpRebuildTracks();
+}
+
+function gsSwitchContig(contig) {
+  if (!contig || contig === state.contig) return;
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const len = Number((cfg.chrom_lengths || {})[contig])
+    || (typeof chrLengths !== "undefined" ? Number(chrLengths[contig]) : 0) || 0;
+  const curSpan = Math.max(1, Math.floor(state.endBp - state.startBp)) || 1000;
+  const span = len ? Math.min(curSpan, len) : curSpan;
+  state.contig = contig;
+  state.startBp = 1;
+  state.endBp = 1 + span;
+  if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+  gsResetRegionData();
+  if (typeof updateDocumentTitle === "function") updateDocumentTitle();
+  if (typeof renderAll === "function") renderAll();
+  gsRequestNavigate(state.contig, Math.floor(state.startBp), Math.ceil(state.endBp));
+}
+
+// A single typed position expands this many bp on EACH side (IGV-style).
+const GS_SINGLE_POS_PAD_BP = 100;
+
+// Parse an IGV-style locus box value into { contig, start, end } (1-based
+// inclusive) or { error }. Accepts "contig:start-end", "contig:pos", "start-end",
+// "pos", or a bare "contig". Commas/whitespace are ignored. A bare position
+// expands +/-GS_SINGLE_POS_PAD_BP. start/end are null for a contig-only value
+// (caller picks the span). Does NOT clamp — caller clamps to the contig length.
+function gsParseLocusInput(text, currentContig, contigLens) {
+  const lens = contigLens || {};
+  const s = String(text == null ? "" : text).trim();
+  if (!s) return { error: "Enter a contig and/or position" };
+
+  let contig = currentContig;
+  let rangePart = "";
+  const colon = s.lastIndexOf(":");
+  if (colon >= 0) {
+    const c = s.slice(0, colon).trim();
+    if (c) contig = c;
+    rangePart = s.slice(colon + 1).trim();
+  } else if (Object.prototype.hasOwnProperty.call(lens, s)) {
+    return { contig: s, start: null, end: null };   // bare known contig name
+  } else {
+    rangePart = s;                                    // bare range on current contig
+  }
+
+  const clean = rangePart.replace(/[,\s]/g, "");
+  if (!clean) return { contig, start: null, end: null };  // "contig:" -> whole contig
+
+  const m = clean.match(/^(\d+)(?:[-–](\d+))?$/);
+  if (!m) return { error: `Could not parse position "${rangePart}"` };
+  let start, end;
+  if (m[2] !== undefined) {
+    start = parseInt(m[1], 10);
+    end = parseInt(m[2], 10);
+    if (end < start) { const t = start; start = end; end = t; }
+  } else {
+    const p = parseInt(m[1], 10);
+    start = p - GS_SINGLE_POS_PAD_BP;
+    end = p + GS_SINGLE_POS_PAD_BP;
+  }
+  return { contig, start, end };
+}
+
+// Jump the view to a typed locus string. Returns true on a valid jump, false
+// (with a transient status message) on bad input / unknown contig.
+function gsGoToLocus(text) {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const lens = (cfg.chrom_lengths && Object.keys(cfg.chrom_lengths).length)
+    ? cfg.chrom_lengths
+    : (typeof chrLengths !== "undefined" ? chrLengths : {});
+  const parsed = gsParseLocusInput(text, state.contig, lens);
+  if (parsed.error) {
+    if (window.__GS_STATUS) window.__GS_STATUS(parsed.error, { autoHide: 4000 });
+    return false;
+  }
+  const contig = parsed.contig;
+  const haveLens = Object.keys(lens).length > 0;
+  if (haveLens && !Object.prototype.hasOwnProperty.call(lens, contig)) {
+    if (window.__GS_STATUS) window.__GS_STATUS(`Unknown contig "${contig}"`, { autoHide: 4000 });
+    return false;
+  }
+  const len = Number(lens[contig]) || 0;
+
+  let start = parsed.start;
+  let end = parsed.end;
+  if (start == null || end == null) {
+    // Contig-only: land at the start keeping the current span.
+    const span = Math.max(1, Math.floor(state.endBp - state.startBp)) || 1000;
+    start = 1;
+    end = 1 + (len ? Math.min(span, len) : span);
+  }
+  start = Math.max(1, Math.floor(start));
+  end = Math.max(start + 1, Math.floor(end));
+  if (len) {
+    end = Math.min(end, len);
+    if (start >= end) start = Math.max(1, end - 1);
+  }
+
+  const contigChanged = contig !== state.contig;
+  state.contig = contig;
+  state.startBp = start;
+  state.endBp = end;
+  if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+  // Committed: drop the staged box + dirty flag so the bar re-syncs to the view
+  // and Go greys out again.
+  state.__pendingLocus = null;
+  state.__locusDirty = false;
+  if (contigChanged) gsResetRegionData();
+  if (typeof updateDocumentTitle === "function") updateDocumentTitle();
+  if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
+  if (typeof renderAll === "function") renderAll();
+  gsRequestNavigate(state.contig, Math.floor(state.startBp), Math.ceil(state.endBp));
+  return true;
+}
+if (typeof window !== "undefined") {
+  window.gsParseLocusInput = gsParseLocusInput;
+  window.gsGoToLocus = gsGoToLocus;
+}
+
+// Click on the Chromosome (ideogram) overview to STAGE a jump there — opt-in via
+// the "Click chromosome to jump" setting. Maps the click across the WHOLE contig
+// (the ideogram is a full-chromosome overview), recenters the current span on it,
+// and stages that as a pending target: draws a differently-coloured rectangle
+// over the clicked area, fills the locus bar, and enables Go. It does NOT jump —
+// Go (or Enter) commits it. `e` is a pointerup event; called from the main
+// gesture handler so it can tell a click from a pan (state.gestureMovedPx).
+function gsMaybeChromClickStage(e) {
+  if (!state.chromClickJump) return false;
+  if ((state.gestureMovedPx || 0) > 4) return false;         // was a drag/pan
+  if (e && e.button !== undefined && e.button !== 0) return false;
+  const rect = state.__ideogramHitRect;
+  if (!rect || !(rect.w > 0) || !(rect.h > 0) || !(rect.len > 0)) return false;
+  if (rect.contig !== state.contig) return false;
+  const mainEl = document.getElementById("main");
+  if (!mainEl) return false;
+  const r = mainEl.getBoundingClientRect();
+  const px = e.clientX - r.left;
+  const py = e.clientY - r.top;
+  if (px < rect.x || px > rect.x + rect.w || py < rect.y || py > rect.y + rect.h) {
+    return false;                                            // click wasn't on the ideogram
+  }
+  const frac = rect.vertical
+    ? (py - rect.y) / rect.h
+    : (px - rect.x) / rect.w;
+  const pos = Math.max(1, Math.round(frac * rect.len));
+  const span = Math.max(1, Math.floor(state.endBp - state.startBp)) || 1000;
+  let start = Math.max(1, Math.round(pos - span / 2));
+  let end = start + span;
+  if (rect.len) { end = Math.min(end, rect.len); if (start >= end) start = Math.max(1, end - 1); }
+
+  // Stage it (no navigation). The ideogram renderer draws the pending box.
+  state.__pendingLocus = { contig: rect.contig, start, end };
+  const sel = document.getElementById("locusContigSelect");
+  const posEl = document.getElementById("locusPosInput");
+  if (sel) sel.value = rect.contig;
+  if (posEl) posEl.value = `${start.toLocaleString()}-${end.toLocaleString()}`;
+  gsMarkLocusDirty(true);
+  if (typeof renderAll === "function") renderAll();
+  return true;
+}
+if (typeof window !== "undefined") window.gsMaybeChromClickStage = gsMaybeChromClickStage;
+
+// Enable Go only when the bar holds an uncommitted change ("dirty"): a new
+// contig picked, an edited position, or a staged chromosome-click box.
+function gsUpdateGoButton() {
+  const go = document.getElementById("locusGoBtn");
+  if (go) go.disabled = !state.__locusDirty;
+}
+function gsMarkLocusDirty(v) {
+  state.__locusDirty = (v !== false);
+  gsUpdateGoButton();
+}
+
+// Reflect the current view into the top locus bar fields. Held back while the
+// user is mid-edit (focused) or has a staged-but-uncommitted change (dirty), so
+// pan/zoom doesn't stomp what they're about to Go to. Called after any
+// navigation/pan/zoom.
+function gsSyncLocusBar() {
+  const sel = document.getElementById("locusContigSelect");
+  const pos = document.getElementById("locusPosInput");
+  if (state.__locusDirty) { gsUpdateGoButton(); return; }
+  if (sel && sel.value !== state.contig) {
+    // Repopulate lazily if the contig isn't an option yet.
+    if (!Array.from(sel.options).some(o => o.value === state.contig)) {
+      gsInitLocusBar();
+    }
+    sel.value = state.contig;
+  }
+  if (pos && document.activeElement !== pos) {
+    const s = Math.max(1, Math.floor(state.startBp));
+    const e = Math.max(s, Math.ceil(state.endBp));
+    pos.value = `${s.toLocaleString()}-${e.toLocaleString()}`;
+  }
+  gsUpdateGoButton();
+}
+
+// Populate + wire the top locus bar. Idempotent (safe to call again).
+function gsInitLocusBar() {
+  const sel = document.getElementById("locusContigSelect");
+  const pos = document.getElementById("locusPosInput");
+  const go = document.getElementById("locusGoBtn");
+  if (sel) {
+    const contigs = gsContigList();
+    // Rebuild options only when the contig list actually changed — this can run
+    // per render, and clobbering the <select> every frame would reset a staged
+    // (uncommitted) contig pick back to the current view.
+    const cur = Array.from(sel.options).map(o => o.value);
+    const same = cur.length === contigs.length && cur.every((v, i) => v === contigs[i]);
+    if (!same) {
+      sel.innerHTML = "";
+      for (const c of contigs) {
+        const opt = document.createElement("option");
+        opt.value = c;
+        opt.textContent = c;
+        sel.appendChild(opt);
+      }
+    }
+    // Never override a staged (dirty) selection; otherwise reflect the view.
+    if (!state.__locusDirty) sel.value = state.contig;
+    if (!sel.__gsWired) {
+      sel.__gsWired = true;
+      // Picking a contig does NOT jump — it stages the change (Go commits it).
+      // Clear the position box (blank -> whole contig at the current span on Go)
+      // and any staged chromosome-click box (it belongs to the old contig).
+      sel.addEventListener("change", () => {
+        if (pos) pos.value = "";
+        const hadPending = !!state.__pendingLocus;
+        state.__pendingLocus = null;
+        gsMarkLocusDirty(true);
+        // Only re-render to clear a stale pending box; a bare contig pick needs
+        // no redraw (and re-rendering here re-syncs the bar off the OLD contig).
+        if (hadPending && typeof renderAll === "function") renderAll();
+      });
+    }
+  }
+  const submit = () => {
+    if (!sel) return;
+    const p = pos ? pos.value.trim() : "";
+    gsGoToLocus(p ? `${sel.value}:${p}` : sel.value);
+  };
+  if (go && !go.__gsWired) {
+    go.__gsWired = true;
+    go.addEventListener("click", () => { if (!go.disabled) submit(); });
+  }
+  if (pos && !pos.__gsWired) {
+    pos.__gsWired = true;
+    // Typing new coordinates stages them (enables Go) and drops any staged
+    // chromosome-click box, since the user is now specifying via text.
+    pos.addEventListener("input", () => {
+      if (state.__pendingLocus) {
+        state.__pendingLocus = null;
+        if (typeof renderAll === "function") renderAll();
+      }
+      gsMarkLocusDirty(true);
+    });
+    pos.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); submit(); }
+    });
+  }
+  gsUpdateGoButton();
+  gsSyncLocusBar();
+}
+if (typeof window !== "undefined") {
+  window.gsMarkLocusDirty = gsMarkLocusDirty;
+  window.gsUpdateGoButton = gsUpdateGoButton;
+}
+if (typeof window !== "undefined") {
+  window.gsInitLocusBar = gsInitLocusBar;
+  window.gsSyncLocusBar = gsSyncLocusBar;
+}
+
+async function gsRequestNavigate(contig, start, end) {
+  if (typeof sendCommMessage !== "function") {
+    if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad(0);
+    return;
+  }
+  if (window.__GS_STATUS) {
+    window.__GS_STATUS(
+      `Loading ${contig}:${start.toLocaleString()}–${end.toLocaleString()}…`, { busy: true });
+  }
+  try {
+    const resp = await sendCommMessage("navigate", { contig, start, end }, 30000);
+    if (resp) gsApplyNavigatePayload(resp);
+    if (window.__GS_STATUS) window.__GS_STATUS(false);
+  } catch (e) {
+    console.warn("navigate failed:", e);
+    if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad(0);
+    gsSeriousFailureModal(
+      "Failed to load this region. The connection to the kernel may have dropped "
+      + "or the request timed out. Try again, or re-run the cell.",
+      "Region load failed");
+  }
+}
+
+// Apply a host `navigate` response: reference / genes / repeats / ideogram /
+// variants for the new window. Reassigns the module render inputs (same closure)
+// + config, then re-renders.
+function gsApplyNavigatePayload(p) {
+  if (!p) return;
+  const cfg = window.GENOMESHADER_CONFIG || (window.GENOMESHADER_CONFIG = {});
+  if (typeof p.contig === "string") state.contig = p.contig;
+  if (typeof p.start === "number") state.startBp = p.start;
+  if (typeof p.end === "number") state.endBp = p.end;
+  if (typeof p.reference_data === "string") {
+    cfg.reference_data = p.reference_data;
+    referenceSequence = p.reference_data;
+  }
+  if (Array.isArray(p.transcripts_data)) {
+    cfg.transcripts_data = p.transcripts_data;
+    transcripts = p.transcripts_data;
+  }
+  if (Array.isArray(p.repeats_data)) {
+    cfg.repeats_data = p.repeats_data;
+    repeats = p.repeats_data;
+  }
+  if (Array.isArray(p.ideogram_data)) cfg.ideogram_data = p.ideogram_data;
+  if (typeof p.start === "number" && typeof p.end === "number") {
+    cfg.data_bounds = { start: p.start, end: p.end };
+    dataBounds = { start: p.start, end: p.end };
+  }
+  if (Array.isArray(p.insertion_variants_lookup)) {
+    cfg.insertion_variants_lookup = p.insertion_variants_lookup;
+  }
+  if (Array.isArray(p.variant_tracks)) {
+    // Seed the viewport store with the new window so later pans union/evict off it.
+    const region = { contig: state.contig, start: Math.floor(state.startBp), end: Math.ceil(state.endBp) };
+    _gsVpRegions = [region];
+    _gsVpData.clear();
+    _gsVpData.set(_gsRegionKey(region), p.variant_tracks);
+    _gsVpRebuildTracks();
+  }
+  // Large-window guard (backend skipped variants + reference for a very wide
+  // jump so it never pulls the whole VCF). Tell the user to zoom in.
+  if (p.too_wide_for_variants) {
+    const capMb = (Number(p.variant_max_span_bp || 0) / 1e6);
+    const capTxt = capMb >= 1 ? `${capMb.toLocaleString()} Mb` : `${Number(p.variant_max_span_bp || 0).toLocaleString()} bp`;
+    if (window.__GS_STATUS) {
+      window.__GS_STATUS(
+        `Region too wide to load variants (> ${capTxt}). Zoom in to see variants.`,
+        { autoHide: 7000 });
+    }
+  }
+  if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
+  if (typeof updateDocumentTitle === "function") updateDocumentTitle();
+  if (typeof renderAll === "function") renderAll();
+}
+
+if (typeof window !== "undefined") {
+  window.gsSwitchContig = gsSwitchContig;
+  window.gsPopulateContigSelect = gsPopulateContigSelect;
+  window.gsApplyNavigatePayload = gsApplyNavigatePayload;
 }

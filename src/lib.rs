@@ -1,3 +1,9 @@
+// The #[pymethods]/#[pyfunction] macros (pyo3 0.20) expand into `impl` blocks
+// nested inside a generated function, which newer rustc flags as
+// `non_local_definitions`. It's a macro-internal artifact, not our code; silence
+// it crate-wide (removable once pyo3 is upgraded past the fix).
+#![allow(non_local_definitions)]
+
 pub mod alignment;
 pub mod env;
 pub mod stage;
@@ -12,7 +18,31 @@ use std::{
     collections::{ hash_map::DefaultHasher, HashMap, HashSet },
     hash::{ Hash, Hasher },
     path::PathBuf,
+    time::Instant,
 };
+
+/// True when GENOMESHADER_DEBUG is set — gates the per-step timing eprintln!s so
+/// a slow/stalled variant fetch names the culprit step (staged read, request
+/// cache read, VCF compute, cache write) in the kernel log.
+fn gs_debug() -> bool {
+    let on = |k: &str| std::env::var(k)
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    // GENOMESHADER_RUST_DEBUG is set by a debug=True GenomeShader (kept distinct
+    // from GENOMESHADER_DEBUG so a debug instance doesn't force every later
+    // Python instance into debug via the shared process env).
+    on("GENOMESHADER_DEBUG") || on("GENOMESHADER_RUST_DEBUG")
+}
+
+/// The per-request GCS parquet cache (read+write on every window) is OFF by
+/// default: those two remote round-trips per pan are what stall viewport
+/// loading, and the in-memory df cache already serves same-session revisits.
+/// Opt back in with GENOMESHADER_VARIANT_REQUEST_CACHE=1 for cross-session reuse.
+fn gs_variant_request_cache_enabled() -> bool {
+    std::env::var("GENOMESHADER_VARIANT_REQUEST_CACHE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
 
 use iset::*;
 use url::Url;
@@ -35,7 +65,34 @@ pub struct Session {
     variant_file_groups: Vec<Vec<(String, Option<String>)>>,
     /// Parallel to variant_file_groups: optional per-track sample subset (None = all).
     variant_group_samples: Vec<Option<Vec<String>>>,
+    /// Parallel to variant_file_groups: per-contig routing so a locus query opens
+    /// only the file(s) that actually contain the contig (callsets split one VCF
+    /// per contig otherwise pay N index/header opens per window).
+    variant_group_contigs: Vec<ContigRouting>,
     variant_df_cache: HashMap<String, DataFrame>,
+}
+
+/// Which files in a variant group hold which contigs, from each file's tabix
+/// index. `by_contig[chr]` = indices into the group's file list that contain
+/// `chr`; `always` = files whose contigs couldn't be indexed (no tabix /
+/// explicit index / error), which are queried for every locus so routing never
+/// drops data.
+#[derive(Default)]
+struct ContigRouting {
+    by_contig: HashMap<String, Vec<usize>>,
+    always: Vec<usize>,
+}
+
+impl ContigRouting {
+    /// File indices to query for `chr`: those whose index lists `chr`, plus the
+    /// always-query files. Sorted+deduped. Empty => `chr` is in no indexed file.
+    fn indices_for(&self, chr: &str) -> Vec<usize> {
+        let mut idxs = self.by_contig.get(chr).cloned().unwrap_or_default();
+        idxs.extend(self.always.iter().copied());
+        idxs.sort_unstable();
+        idxs.dedup();
+        idxs
+    }
 }
 
 impl Session {
@@ -160,6 +217,12 @@ impl Session {
 
     fn write_parquet_uri(&self, uri: &str, df: DataFrame) -> PyResult<()> {
         df.lazy()
+            // sink_parquet streams; combined with the default common-subplan
+            // elimination polars prints "Cannot combine 'streaming' with
+            // 'comm_subplan_elim'. CSE will be turned off." CSE has nothing to
+            // optimize on a fresh single-frame write, so disable it up front to
+            // silence the (harmless) warning.
+            .with_comm_subplan_elim(false)
             .sink_parquet_cloud(uri.to_string(), None, ParquetWriteOptions::default())
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -303,7 +366,8 @@ impl Session {
             let group_samples = self.variant_group_samples
                 .get(group_index)
                 .and_then(|s| s.as_deref());
-            for (variant_file, index_file) in file_list {
+            for fi in self.routed_indices(group_index, chr) {
+                let (variant_file, index_file) = &file_list[fi];
                 match variants::extract_variants(variant_file, index_file.as_deref(), group_samples, chr, start, stop) {
                     Ok(df) => {
                         if let Some(existing) = group_df {
@@ -457,7 +521,28 @@ impl Session {
             cache_base_uri,
             variant_file_groups: Vec::new(),
             variant_group_samples: Vec::new(),
+            variant_group_contigs: Vec::new(),
             variant_df_cache: HashMap::new(),
+        }
+    }
+
+    /// Files in group `group_index` to query for `chr`: those whose tabix index
+    /// lists `chr`, plus any always-query files. Empty => the contig is absent
+    /// from every indexed file (a genuine empty result). Missing routing (should
+    /// not happen) falls back to querying all files.
+    fn routed_indices(&self, group_index: usize, chr: &str) -> Vec<usize> {
+        let group_len = self.variant_file_groups[group_index].len();
+        let idxs = match self.variant_group_contigs.get(group_index) {
+            Some(r) => r.indices_for(chr),
+            None => (0..group_len).collect(),
+        };
+        // Absent contig (in no indexed file): query one file anyway so the group
+        // still yields an empty, correctly-typed frame — preserving the
+        // pre-routing empty-result-not-error behavior the viewer relies on.
+        if idxs.is_empty() && group_len > 0 {
+            vec![0]
+        } else {
+            idxs
         }
     }
 
@@ -501,7 +586,7 @@ impl Session {
                 }
             };
 
-            Ok((chr, start - 1000, start + 1000))
+            Ok((chr, start.saturating_sub(1000), start + 1000))
         } else if parts.len() == 3 {
             let start = match parts[1].parse::<u64>() {
                 Ok(val) => val,
@@ -524,6 +609,13 @@ impl Session {
                     );
                 }
             };
+
+            // Single-position loci ("chr1:100-100", or start>=stop generally) must
+            // still be a non-empty half-open interval: the iset interval tree
+            // (find_covering_variant_staged_file) panics on an empty range, and an
+            // empty htslib region returns no records. fetch_carriers builds exactly
+            // "chr:pos-pos", so widen to at least one base.
+            let stop = if stop <= start { start + 1 } else { stop };
 
             Ok((chr, start, stop))
         } else {
@@ -633,6 +725,25 @@ impl Session {
             variant_files.into_iter().zip(index_files.into_iter()).collect()
         );
         self.variant_group_samples.push(samples);
+
+        // Build the contig -> file routing for this group from each file's tabix
+        // index (one open per file, once, at attach — vs opening every file on
+        // every window query). Files without a readable tabix index are always
+        // queried so nothing is dropped.
+        let group = self.variant_file_groups.last().unwrap();
+        let mut routing = ContigRouting::default();
+        for (i, (file, idx)) in group.iter().enumerate() {
+            match variants::vcf_index_contigs(file, idx.as_deref()) {
+                Ok(contigs) => {
+                    for c in contigs {
+                        routing.by_contig.entry(c).or_default().push(i);
+                    }
+                }
+                Err(_) => routing.always.push(i),
+            }
+        }
+        self.variant_group_contigs.push(routing);
+
         self.variant_df_cache.clear();
         Ok(())
     }
@@ -657,6 +768,9 @@ impl Session {
             return Ok(PyDataFrame(cached_df.clone()));
         }
 
+        let dbg = gs_debug();
+
+        let _t = Instant::now();
         if let Some((staged_start, staged_stop, _staged_marker)) =
             self.find_covering_variant_staged_file(&l_fmt.0, l_fmt.1, l_fmt.2)
         {
@@ -669,31 +783,49 @@ impl Session {
                 if let Ok(filtered) =
                     self.read_parquet_uri_filtered(&remote_uri, l_fmt.1, l_fmt.2)
                 {
+                    if dbg { eprintln!("[gs] {} staged-parquet hit {}ms", locus, _t.elapsed().as_millis()); }
                     self.variant_df_cache.insert(cache_key.clone(), filtered.clone());
                     return Ok(PyDataFrame(filtered));
                 }
             }
         }
+        if dbg { eprintln!("[gs] {} staged-parquet miss {}ms", locus, _t.elapsed().as_millis()); }
 
-        if let Some(remote_uri) =
-            self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
-        {
-            if let Ok(cached_df) = self.read_parquet_uri(&remote_uri) {
-                self.variant_df_cache.insert(cache_key.clone(), cached_df.clone());
-                return Ok(PyDataFrame(cached_df));
+        // Per-request GCS parquet cache read (opt-in): a remote round-trip per
+        // window that, on a miss, still pays the open/HEAD cost — a prime stall.
+        if gs_variant_request_cache_enabled() {
+            let _t = Instant::now();
+            if let Some(remote_uri) =
+                self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
+            {
+                if let Ok(cached_df) = self.read_parquet_uri(&remote_uri) {
+                    if dbg { eprintln!("[gs] {} reqcache hit {}ms", locus, _t.elapsed().as_millis()); }
+                    self.variant_df_cache.insert(cache_key.clone(), cached_df.clone());
+                    return Ok(PyDataFrame(cached_df));
+                }
             }
+            if dbg { eprintln!("[gs] {} reqcache miss {}ms", locus, _t.elapsed().as_millis()); }
         }
 
+        let _tc = Instant::now();
         let df = self.compute_variants_for_locus(&l_fmt.0, &l_fmt.1, &l_fmt.2, &locus)?;
-        if let Some(remote_uri) =
-            self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
-        {
-            if let Err(err) = self.write_parquet_uri(&remote_uri, df.clone()) {
-                eprintln!(
-                    "Warning: Failed to write variant request cache to '{}': {}",
-                    remote_uri, err
-                );
+        if dbg { eprintln!("[gs] {} compute {}ms ({} rows)", locus, _tc.elapsed().as_millis(), df.height()); }
+
+        // Write-back to the GCS request cache (opt-in): a remote WRITE per window
+        // on the hot path — off by default so a pan can't stall on the upload.
+        if gs_variant_request_cache_enabled() {
+            let _tw = Instant::now();
+            if let Some(remote_uri) =
+                self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
+            {
+                if let Err(err) = self.write_parquet_uri(&remote_uri, df.clone()) {
+                    eprintln!(
+                        "Warning: Failed to write variant request cache to '{}': {}",
+                        remote_uri, err
+                    );
+                }
             }
+            if dbg { eprintln!("[gs] {} reqcache-write {}ms", locus, _tw.elapsed().as_millis()); }
         }
 
         if !self.staged_tree.contains_key(&l_fmt.0) {
@@ -713,12 +845,80 @@ impl Session {
         Ok(PyDataFrame(df))
     }
 
+    /// Aggregate variant extractor for large cohorts (≥100k–1M samples): returns
+    /// per-(variant,alt) rows with per-allele SAMPLE counts (n_ref/n_alt/
+    /// n_missing) instead of the O(variants×samples) long format that OOMs at 1M.
+    /// No parquet caching (aggregates are cheap to recompute); no sample subset
+    /// (cohort-wide counts). Consumed by the Python aggregate payload builder.
+    fn get_locus_variant_aggregates(&mut self, locus: String) -> PyResult<PyDataFrame> {
+        let l_fmt = self.parse_locus(locus.clone())?;
+        if self.variant_file_groups.is_empty() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "No variant files attached. Use attach_variants() first.".to_string(),
+            ));
+        }
+        let mut combined_df: Option<DataFrame> = None;
+        for (group_index, file_list) in self.variant_file_groups.iter().enumerate() {
+            let mut group_df: Option<DataFrame> = None;
+            for fi in self.routed_indices(group_index, &l_fmt.0) {
+                let (variant_file, index_file) = &file_list[fi];
+                match variants::extract_variant_aggregates(
+                    variant_file, index_file.as_deref(), &l_fmt.0, &l_fmt.1, &l_fmt.2,
+                ) {
+                    Ok(df) => {
+                        group_df = Some(match group_df {
+                            Some(existing) => existing.vstack(&df).map_err(|e| {
+                                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                                    format!("Failed to combine aggregate frames: {}", e))
+                            })?,
+                            None => df,
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: aggregate extract failed for {}: {}", variant_file, e);
+                    }
+                }
+            }
+            if let Some(mut df) = group_df {
+                let n = df.height();
+                let track_ids: Vec<u32> = vec![group_index as u32; n];
+                df.with_column(Series::new("variant_track_id", track_ids))
+                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        format!("Failed to add variant_track_id: {}", e)))?;
+                combined_df = Some(match combined_df {
+                    Some(existing) => existing.vstack(&df).map_err(|e| {
+                        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            format!("Failed to combine aggregate frames: {}", e))
+                    })?,
+                    None => df,
+                });
+            }
+        }
+        match combined_df {
+            Some(mut df) => {
+                df.align_chunks();
+                Ok(PyDataFrame(df))
+            }
+            None => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "No variant aggregates for locus '{}'.", locus))),
+        }
+    }
+
+    /// Drop the per-locus variant DataFrame cache without detaching files, so
+    /// "Clear local cache" actually frees downloaded variant windows (the memory
+    /// cache is otherwise only cleared on attach/reset).
+    fn clear_variant_cache(&mut self) -> PyResult<()> {
+        self.variant_df_cache = HashMap::new();
+        Ok(())
+    }
+
     fn reset(&mut self) -> PyResult<()> {
         self.reads_cohort = HashSet::new();
         self.loci = HashSet::new();
         self.staged_tree = HashMap::new();
         self.variant_file_groups = Vec::new();
         self.variant_group_samples = Vec::new();
+        self.variant_group_contigs = Vec::new();
         self.variant_df_cache = HashMap::new();
 
         Ok(())
@@ -871,6 +1071,33 @@ fn _vcf_sample_names(bcf_path: String, index_path: Option<String>) -> PyResult<V
     })
 }
 
+#[pyfunction]
+fn _bam_sample_names(py: Python, bam_urls: Vec<String>) -> PyResult<Vec<(String, Vec<String>)>> {
+    // The @RG SM sample names in each BAM/CRAM header — the authoritative sample
+    // identity when filenames don't carry the sample name. Returns (url, [SM…])
+    // per file; a file that can't be opened yields an empty list. Network I/O, so
+    // release the GIL (runs on the background read-index thread).
+    py.allow_threads(|| {
+        let cache = std::env::temp_dir();
+        let mut out = Vec::with_capacity(bam_urls.len());
+        for u in bam_urls {
+            let sms = Url::parse(&u)
+                .ok()
+                .and_then(|url| stage::open_bam(&url, &cache).ok())
+                .map(|bam| {
+                    let mut v: Vec<String> =
+                        alignment::get_rg_to_sm_mapping(&bam).into_values().collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                })
+                .unwrap_or_default();
+            out.push((u, sms));
+        }
+        Ok(out)
+    })
+}
+
 /// A Python module implemented in Rust. The name of this function must match
 /// the `lib.name` setting in the `Cargo.toml`, else Python will not be able to
 /// import the module.
@@ -882,6 +1109,40 @@ fn genomeshader(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_version, m)?)?;
     m.add_function(wrap_pyfunction!(_extract_variants, m)?)?;
     m.add_function(wrap_pyfunction!(_vcf_sample_names, m)?)?;
+    m.add_function(wrap_pyfunction!(_bam_sample_names, m)?)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::ContigRouting;
+    use std::collections::HashMap;
+
+    #[test]
+    fn routes_to_files_holding_the_contig() {
+        // group of 3 files: file0 has chr1, file1 has chr2, file2 unindexed
+        // (always-queried).
+        let mut by_contig = HashMap::new();
+        by_contig.insert("chr1".to_string(), vec![0usize]);
+        by_contig.insert("chr2".to_string(), vec![1usize]);
+        let r = ContigRouting { by_contig, always: vec![2] };
+
+        // chr1 -> file0 + the always file; chr2 -> file1 + always.
+        assert_eq!(r.indices_for("chr1"), vec![0, 2]);
+        assert_eq!(r.indices_for("chr2"), vec![1, 2]);
+        // A contig in no indexed file still hits the always-queried file only.
+        assert_eq!(r.indices_for("chrX"), vec![2]);
+    }
+
+    #[test]
+    fn absent_contig_with_no_always_files_queries_nothing() {
+        let mut by_contig = HashMap::new();
+        by_contig.insert("chr1".to_string(), vec![0usize]);
+        let r = ContigRouting { by_contig, always: vec![] };
+        // chr1 present, chr2 genuinely absent -> empty (a real empty result, not
+        // a scan of every file).
+        assert_eq!(r.indices_for("chr1"), vec![0]);
+        assert!(r.indices_for("chr2").is_empty());
+    }
 }

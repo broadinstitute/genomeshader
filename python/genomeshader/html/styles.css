@@ -914,6 +914,64 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   z-index: 200 !important;
 }
 
+/* IGV-style always-visible locus bar (contig + position + Go), pinned at top. */
+#locusBar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 36px;
+  z-index: 130;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--border);
+}
+#locusBar .locus-contig,
+#locusBar .locus-pos {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  box-sizing: border-box;
+}
+#locusBar .locus-contig {
+  max-width: 220px;
+  flex: 0 0 auto;
+}
+#locusBar .locus-pos {
+  flex: 1 1 auto;
+  min-width: 140px;
+  max-width: 360px;
+}
+#locusBar .locus-go {
+  height: 24px;
+  padding: 0 14px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+#locusBar .locus-go:hover { filter: brightness(1.08); }
+#locusBar .locus-go:active { filter: brightness(0.95); }
+#locusBar .locus-go:disabled {
+  background: var(--panel);
+  color: var(--muted);
+  border-color: var(--border2);
+  cursor: default;
+  filter: none;
+}
+
 .main {
   position: absolute;
   left: 0;
@@ -1056,12 +1114,32 @@ svg.overlay {
 }
 
 /* Locus indicator lower-right */
+/* Indel lollipop overlay: full-viewer SVG above the variant/flow canvas. The
+   SVG itself is click-through; individual lollipop elements re-enable pointer
+   events so the indel toggle still works. */
+.flow-indel-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  /* MUST sit above .flow (z-index:101) — the flow container is a stacking
+     context, so a lower z here buried the lollipop behind the flow's variant
+     hoverRects and every hover/click hit the variant, not the indel. Keep it
+     below #trackControls (z-index:120, click-through) so track controls stay
+     interactive. */
+  z-index: 110;
+}
+
 .hud {
   position: absolute;
   /* Clear the collapsed right panel and its protruding tab (~40px into the
      view) so the position readout isn't covered. */
   right: 54px;
-  bottom: 10px;
+  /* Clear the status/loading bar (26px tall, pinned to the bottom) so the
+     coordinate readout isn't partly covered while a load is in progress. */
+  bottom: 34px;
   padding: 8px 10px;
   border-radius: 10px;
   background: var(--hudBg);
@@ -1880,3 +1958,27 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 #smartScroll .smart-track-container { scrollbar-width: none; }
 #smartScroll .smart-track-container::-webkit-scrollbar { width: 0; height: 0; }
 #smartScroll { overflow-y: auto; }
+
+/* Centered blocking modal dialog (window.__GS_MODAL) */
+.gs-modal-backdrop {
+  position: absolute; inset: 0; z-index: 10000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.45);
+}
+.gs-modal {
+  min-width: 260px; max-width: 440px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border2); border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  padding: 18px 20px;
+  font: 400 13px/1.5 ui-sans-serif, system-ui, sans-serif;
+}
+.gs-modal-title { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+.gs-modal-msg { white-space: pre-wrap; opacity: 0.92; }
+.gs-modal-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+.gs-modal-ok {
+  padding: 6px 18px; border-radius: 8px; cursor: pointer; border: none;
+  background: var(--blue, #2f81f7); color: #fff;
+  font: 600 13px/1 ui-sans-serif, system-ui, sans-serif;
+}
+.gs-modal-ok:hover { filter: brightness(1.08); }

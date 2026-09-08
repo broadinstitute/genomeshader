@@ -223,15 +223,92 @@ class GenomeShaderWidget(anywidget.AnyWidget):
             return
         msg_type = content.get("type")
         request_id = content.get("request_id")
+        # Forensic log of every inbound comm (except the debug-log channel itself,
+        # which would be noise). Small fields only — never whole payloads.
+        if msg_type != "debug_log":
+            try:
+                self._shader._debug_log(
+                    "comm_recv", type=msg_type, request_id=request_id,
+                    contig=content.get("contig"), start=content.get("start"),
+                    end=content.get("end"), sample_id=content.get("sample_id"))
+            except Exception:
+                pass
         if msg_type == "fetch_reads":
             try:
                 payload = self._shader._fetch_reads_payload(
                     sample_id=content.get("sample_id"),
                     samples=content.get("samples"),
+                    locus=content.get("locus"),
                 )
                 self.send({"type": "fetch_reads_response", "request_id": request_id, **payload})
             except Exception as e:  # surfaced to the frontend as a reads error
-                self.send({"type": "fetch_reads_error", "request_id": request_id, "error": str(e)})
+                hint = self._shader._report_fetch_failure(
+                    "reads", e, sample=content.get("sample_id"))
+                self.send({"type": "fetch_reads_error", "request_id": request_id,
+                           "error": str(e), "hint": hint})
+        elif msg_type == "fetch_carriers":
+            # Who carries this allele (on demand — used when the per-sample
+            # variant payload is size-gated at scale).
+            try:
+                carriers = self._shader.fetch_carriers(
+                    contig=content.get("contig"),
+                    pos=content.get("pos"),
+                    ref=content.get("ref"),
+                    allele=content.get("allele"),
+                    track_id=content.get("track_id"),
+                    strategy=content.get("strategy", "random"),
+                    n=int(content.get("n", 200)),
+                )
+                self.send({"type": "fetch_carriers_response", "request_id": request_id,
+                           "carriers": carriers})
+            except Exception as e:
+                self.send({"type": "fetch_carriers_error", "request_id": request_id,
+                           "carriers": [], "error": str(e)})
+        elif msg_type == "fetch_variants":
+            # Viewport variant load (P2): fetch one window's variant payload on
+            # pan/zoom without a full re-render.
+            try:
+                self._shader._debug_log(
+                    "fetch_variants_recv", contig=content.get("contig"),
+                    start=content.get("start"), end=content.get("end"))
+                payload = self._shader.fetch_variants_payload(
+                    content.get("contig"), content.get("start"), content.get("end"))
+                self.send({"type": "fetch_variants_response", "request_id": request_id, **payload})
+            except Exception as e:
+                hint = self._shader._report_fetch_failure(
+                    "variants", e, locus=f"{content.get('contig')}:{content.get('start')}-{content.get('end')}")
+                self.send({"type": "fetch_variants_error", "request_id": request_id,
+                           "error": str(e), "hint": hint})
+        elif msg_type == "navigate":
+            # Contig/region switch: the full per-window payload (reference, genes,
+            # ideogram, repeats, variants) for a new locus, since those are
+            # per-window and static in the initial config.
+            try:
+                payload = self._shader.navigate_payload(
+                    content.get("contig"), content.get("start"), content.get("end"))
+                self.send({"type": "navigate_response", "request_id": request_id, **payload})
+            except Exception as e:
+                hint = self._shader._report_fetch_failure(
+                    "region", e, region=f"{content.get('contig')}:{content.get('start')}-{content.get('end')}")
+                self.send({"type": "navigate_error", "request_id": request_id,
+                           "error": str(e), "hint": hint})
+        elif msg_type == "debug_log":
+            # Frontend event log (loader decisions, fetch lifecycle) forwarded to
+            # the server-side debug file so timing/sizing/skip reasons land in one
+            # place. Fire-and-forget; only emitted by the frontend when debug is on.
+            try:
+                event = content.get("event", "frontend")
+                fields = content.get("fields") or {}
+                self._shader._debug_log("frontend." + str(event), **fields)
+            except Exception:
+                pass
+        elif msg_type == "clear_cache":
+            # Settings: user-requested wipe of the on-disk + in-memory local cache.
+            try:
+                stats = self._shader.clear_local_cache()
+                self.send({"type": "clear_cache_response", "request_id": request_id, **stats})
+            except Exception as e:
+                self.send({"type": "clear_cache_error", "request_id": request_id, "error": str(e)})
         elif msg_type == "ucsc_genomes":
             # Assembly picker: all UCSC assemblies + the best match for this build.
             try:

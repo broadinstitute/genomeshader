@@ -32,9 +32,10 @@ const state = {
     { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
     { id: "repeats", label: "RepeatMasker", collapsed: false, height: 40, minHeight: 30 },
-    { id: "reference", label: "Reference", collapsed: false, height: 40, minHeight: 30 },
-    { id: "ruler", label: "Indel", collapsed: false, height: 68, minHeight: 40 },
-    { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 150, minHeight: 110 }
+    { id: "reference", label: "Reference", collapsed: false, height: 96, minHeight: 72 },
+    // Indel lollipops now overlay the top of the Variants/Haplotypes track (the
+    // standalone Indel/ruler track was merged in); a bit taller for the strip.
+    { id: "flow", label: "Variants/Haplotypes", collapsed: false, height: 172, minHeight: 132 }
   ],
   trackDragState: null,  // { trackId, startX, startY, offsetX, offsetY }
   trackResizeState: null, // { trackId, startX, startY, startHeight }
@@ -88,6 +89,12 @@ if (typeof getStoredLockAlleles === "function") {
   state.lockAlleles = getStoredLockAlleles();
   if (typeof lockAllelesToggle !== "undefined" && lockAllelesToggle) {
     lockAllelesToggle.checked = state.lockAlleles === true;
+  }
+}
+if (typeof getStoredChromClickJump === "function") {
+  state.chromClickJump = getStoredChromClickJump();
+  if (typeof chromClickJumpToggle !== "undefined" && chromClickJumpToggle) {
+    chromClickJumpToggle.checked = state.chromClickJump === true;
   }
 }
 if (typeof getStoredAggregateRareAlleles === "function") {
@@ -192,6 +199,14 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
   
   // Update document title with initial locus
   updateDocumentTitle();
+}
+
+// Drop the RepeatMasker track when no repeats were supplied — an empty track
+// just wastes vertical space.
+if (!(window.GENOMESHADER_CONFIG
+      && Array.isArray(window.GENOMESHADER_CONFIG.repeats_data)
+      && window.GENOMESHADER_CONFIG.repeats_data.length > 0)) {
+  state.tracks = state.tracks.filter(t => t.id !== "repeats");
 }
 
 // Replace single "flow" track with one track per variant dataset when config.variant_tracks is provided
@@ -350,6 +365,11 @@ function scheduleInitialWebGPURender() {
     if (typeof window.renderAll === "function") {
       // Render once now and once on the next frame to handle first-layout settle.
       window.renderAll();
+      // Viewport-driven variant loading (#71): fetch the opening window ± overscan
+      // (forced — nothing loaded yet). No-op unless enabled in config.
+      if (typeof window.gsLoadVariantsForViewport === "function") {
+        window.gsLoadVariantsForViewport(true);
+      }
       requestAnimationFrame(() => {
         if (typeof window.renderAll === "function") {
           window.renderAll();

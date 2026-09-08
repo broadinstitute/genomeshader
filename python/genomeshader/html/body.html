@@ -1,5 +1,15 @@
 <div class="app sidebar-right-collapsed" style="position: relative; display: block;">
-  <div class="sidebar-left" id="sidebarLeft" style="position: absolute; left: 0; top: 0; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
+  <!-- Always-visible IGV-style locus bar: contig + position + Go. Spans the full
+       width at the top; the three panels below start at top:36px. -->
+  <div id="locusBar" role="toolbar" aria-label="Locus navigation">
+    <select id="locusContigSelect" class="locus-contig" title="Contig" aria-label="Contig" data-1p-ignore></select>
+    <input id="locusPosInput" class="locus-pos" type="text" spellcheck="false" autocomplete="off"
+           placeholder="position or start-end (e.g. 1,500 or 1,000-2,000)"
+           title="Enter a position (expands ±100 bp) or a start-end range, then press Enter or Go"
+           aria-label="Position or range" data-1p-ignore>
+    <button id="locusGoBtn" class="locus-go" title="Jump to this locus" disabled>Go</button>
+  </div>
+  <div class="sidebar-left" id="sidebarLeft" style="position: absolute; left: 0; top: 36px; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
     <div class="sidebar-left-content">
       <div class="sidebar-left-command-strip">
         <div class="command-strip-main">
@@ -34,6 +44,8 @@
       <div class="group"><span>EUR</span><span class="pill">5340</span></div>
       <div class="group"><span>SAS</span><span class="pill">328</span></div>
     </div>
+
+    <!-- Region/contig navigation moved to the always-visible top locus bar. -->
 
     <!-- Sample Search Section -->
     <div class="sidebarHeader" style="margin-top: 20px;">
@@ -119,6 +131,10 @@
           <td>Lock allele positions</td>
           <td class="menuRight"><input type="checkbox" id="lockAllelesToggle" data-1p-ignore></td>
         </tr>
+        <tr class="settings-row" id="chromClickJumpItem" role="menuitem">
+          <td>Click chromosome to jump</td>
+          <td class="menuRight"><input type="checkbox" id="chromClickJumpToggle" data-1p-ignore></td>
+        </tr>
         <tr class="settings-row" id="aggregateRareAllelesItem" role="menuitem">
           <td>Aggregate low-frequency</td>
           <td class="menuRight"><input type="checkbox" id="aggregateRareAllelesToggle" data-1p-ignore></td>
@@ -136,6 +152,11 @@
           <td>Variable</td>
           <td class="menuRight">Super-pop</td>
         </tr>
+        <tr class="settings-section"><td colspan="2">Maintenance</td></tr>
+        <tr class="settings-row" id="clearCacheItem" role="menuitem" title="Delete cached downloads and re-fetch on next access">
+          <td>Local cache</td>
+          <td class="menuRight" id="clearCacheLabel">Clear</td>
+        </tr>
       </table>
     </div>
           </div>
@@ -144,7 +165,7 @@
     </div>
   </div>
 
-  <div class="main" id="main" style="position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 1;">
+  <div class="main" id="main" style="position: absolute; left: 0; top: 36px; right: 0; bottom: 0; z-index: 1;">
     <div class="tracks" id="tracksContainer">
       <svg id="tracksSvg" width="100%" height="100%"></svg>
       <canvas id="tracksWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
@@ -159,6 +180,12 @@
       <svg class="overlay" id="flowOverlay"></svg>
     </div>
 
+    <!-- Indel lollipops, drawn ABOVE the variant (flow) canvas so they sit on the
+         variants (merged from the old standalone Indel track). Full-viewer SVG so
+         it shares the genome x-axis with the tracks SVG; pointer-events pass
+         through except on the lollipop hit targets. -->
+    <svg class="flow-indel-overlay" id="flowIndelOverlay"></svg>
+
     <div class="hud" id="hud"></div>
     <div class="tooltip" id="tooltip"></div>
     <!-- Bottom status bar: shows text + a progress bar during background work. -->
@@ -168,7 +195,7 @@
     </div>
   </div>
 
-  <div class="sidebar-right" id="sidebarRight" style="position: absolute; right: 0; top: 0; bottom: 0; width: 8px; z-index: 100; pointer-events: auto;">
+  <div class="sidebar-right" id="sidebarRight" style="position: absolute; right: 0; top: 36px; bottom: 0; width: 8px; z-index: 100; pointer-events: auto;">
     <div class="sidebar-right-content">
       <!-- Tab Content Area -->
       <div class="sidebar-right-tab-content">

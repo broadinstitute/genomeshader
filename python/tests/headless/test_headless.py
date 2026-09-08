@@ -115,14 +115,15 @@ def test_renders_in_sandboxed_origin(browser):
 
 
 def test_ruler_flow_alignment(browser, tmp_path):
-    """Ruler variant marks must sit at the same x as their flow nodes."""
+    """Indel lollipops (now overlaying the flow track) must sit at the same x as
+    their flow nodes — the coordinate correctness of the Indel->Variants merge."""
     page, _ = _open(browser, tmp_path, "horizontal")
     _wait_nodes(page)
     diffs = page.evaluate(
         """() => {
             const root = document.querySelector('[id^="genomeshader-root-"]');
             const ruler = {};
-            root.querySelectorAll('#tracksSvg line[data-variant-id]').forEach(l => {
+            root.querySelectorAll('#flowIndelOverlay line[data-variant-id]').forEach(l => {
                 const x1 = +l.getAttribute('x1'), x2 = +l.getAttribute('x2');
                 if (Math.abs(x1 - x2) < 0.5) ruler[l.getAttribute('data-variant-id')] = x1;
             });
@@ -459,7 +460,169 @@ def test_paired_reads_keep_markers_on_own_read(browser, tmp_path):
     page.close()
 
 
+def test_virtual_row_window(browser, tmp_path):
+    """Virtualized read-track row window: only the visible rows (+overscan) are
+    selected, so a viewport-sized canvas can replace the full-stack one."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    fn = "(a) => window.__gsComputeVirtualRowWindow.apply(null, a)"
+    # rowH=18, viewport=180 (10 rows), 1000 total rows.
+    assert page.evaluate(fn, [0, 180, 18, 1000, 0]) == {"startRow": 0, "endRow": 10}
+    # scrolled to row 100 (scrollTop 1800), overscan 2.
+    assert page.evaluate(fn, [1800, 180, 18, 1000, 2]) == {"startRow": 98, "endRow": 112}
+    # clamps to totalRows-1 at the bottom.
+    r = page.evaluate(fn, [10 ** 6, 180, 18, 1000, 0])
+    assert r["endRow"] == 999
+    page.close()
+
+
+def test_overscan_region(browser, tmp_path):
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    fn = "(a) => window.__gsOverscanRegion.apply(null, a)"
+    # 1000 bp span, 50% overscan -> pad 500 each side; start clamps to >= 1.
+    assert page.evaluate(fn, [1000, 2000, 0.5]) == {"start": 500, "end": 2500}
+    assert page.evaluate(fn, [100, 200, 1.0])["start"] == 1  # clamp
+    page.close()
+
+
+def test_translate_frame(browser, tmp_path):
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    fn = "(a) => window.__gsTranslateFrame.apply(null, a)"
+    # ATG AAA TGA -> M K * ; frame 0.
+    out = page.evaluate(fn, ["ATGAAATGA", 0])
+    assert [c["aa"] for c in out] == ["M", "K", "*"]
+    assert out[1]["index"] == 3
+    # frame 1 shifts the reading frame; unknown codon -> "X".
+    assert page.evaluate(fn, ["NNN", 0])[0]["aa"] == "X"
+    page.close()
+
+
 # NOTE: allele *selection* is driven by the WebGPU interaction layer, which does
 # not paint (or receive clicks) under swiftshader in headless Chromium, so
 # selection behavior (e.g. double-click-keeps-selection) can't be asserted here.
 # Those fixes are verified by inspection + in a real browser.
+
+
+def test_window_store_update_and_coverage(browser, tmp_path):
+    """P2 sparse variant-window store: merge new windows, evict distant ones,
+    and test coverage to decide whether to fetch."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    up = "(a) => window.__gsWindowStoreUpdate.apply(null, a)"
+    cov = "(a) => window.__gsRegionCovered.apply(null, a)"
+    regions = [{"contig": "c", "start": 0, "end": 100},
+               {"contig": "c", "start": 100000, "end": 100100}]
+    new = {"contig": "c", "start": 200, "end": 300}
+    # center near 250, keepSpan 5000 -> the far (100k) region evicts.
+    out = page.evaluate(up, [regions, new, 250, 5000])
+    kept = sorted(r["start"] for r in out["regions"])
+    assert kept == [0, 200] and out["evicted"][0]["start"] == 100000
+    # coverage: [220,280] covered by [200,300]; [400,500] not.
+    assert page.evaluate(cov, [out["regions"], "c", 220, 280]) is True
+    assert page.evaluate(cov, [out["regions"], "c", 400, 500]) is False
+    page.close()
+
+
+def test_repeats_track_dropped_without_data_still_renders(browser, tmp_path):
+    """No repeats_data -> the RepeatMasker track is dropped, but the rest of the
+    tracks still render. Guards the regression where removing a track tripped the
+    required-layouts guard and blanked the whole SVG."""
+    page, _ = _open(browser, tmp_path, "horizontal", config={"region": "chr1:100-200"})
+    _wait_ready(page)
+    assert page.evaluate(_SVG_COUNT) > 0, "tracks did not render with repeats absent"
+    has = "() => (window.__GS_STATE.tracks||[]).some(t => t.id === 'repeats')"
+    assert page.evaluate(has) is False
+    page.close()
+
+    page2, _ = _open(browser, tmp_path, "horizontal", config={
+        "region": "chr1:100-200",
+        "repeats_data": [{"start": 120, "end": 150, "cls": "LINE"}],
+    })
+    _wait_ready(page2)
+    assert page2.evaluate(_SVG_COUNT) > 0
+    assert page2.evaluate(has) is True
+    page2.close()
+
+
+def test_read_load_failure_removes_track_and_shows_modal(browser, tmp_path):
+    """A failed read fetch removes the (empty) smart track and surfaces a
+    centered OK modal instead of a transient status."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    page.evaluate("""() => { window.__GS_SEND = (type) =>
+        type === 'fetch_reads'
+          ? Promise.resolve({ type: 'fetch_reads_error', error: 'auth denied' })
+          : Promise.resolve({}); }""")
+    page.evaluate("() => window.__GS_TEST_loadReads('SAMPLE', 'best_evidence')")
+    page.wait_for_function("() => !!document.querySelector('.gs-modal-backdrop')", timeout=5000)
+    info = page.evaluate(
+        "() => { const b=document.querySelector('.gs-modal-backdrop');"
+        " const ok=b&&b.querySelector('.gs-modal-ok');"
+        " return { ok: ok&&ok.textContent, title:(b.querySelector('.gs-modal-title')||{}).textContent,"
+        " ntracks:(window.__GS_STATE.smartTracks||[]).length }; }")
+    assert info["ok"] == "OK", info
+    assert "Failed to load reads" in (info["title"] or "")
+    assert info["ntracks"] == 0, "failed read track was not removed"
+    # OK dismisses the modal
+    page.evaluate("() => document.querySelector('.gs-modal-ok').click()")
+    page.wait_for_timeout(100)
+    assert page.evaluate("() => !document.querySelector('.gs-modal-backdrop')")
+    page.close()
+
+
+def test_clear_cache_button_dispatches_comm(browser, tmp_path):
+    """The Settings > Local cache 'Clear' row sends the clear_cache comm and
+    reports the freed count in the status bar."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    page.evaluate("""() => {
+        window.__GS_CLEAR_SENT = null;
+        window.__GS_SEND = (type, data) => {
+            if (type === 'clear_cache') {
+                window.__GS_CLEAR_SENT = true;
+                return Promise.resolve({ type: 'clear_cache_response', files: 12, bytes: 5 * 1024 * 1024 });
+            }
+            return Promise.resolve({});
+        };
+        window.__GS_STATUS_LAST = null;
+        const real = window.__GS_STATUS;
+        window.__GS_STATUS = (m, o) => { window.__GS_STATUS_LAST = m; return real ? real(m, o) : undefined; };
+    }""")
+    page.evaluate("() => document.getElementById('clearCacheItem').click()")
+    page.wait_for_function("() => window.__GS_CLEAR_SENT === true", timeout=5000)
+    page.wait_for_function(
+        "() => typeof window.__GS_STATUS_LAST === 'string' && window.__GS_STATUS_LAST.indexOf('12') >= 0",
+        timeout=5000)
+    msg = page.evaluate("() => window.__GS_STATUS_LAST")
+    assert "cache cleared" in msg.lower() and "5" in msg, msg
+    page.close()
+
+
+def test_hud_stays_visible(browser, tmp_path):
+    """The coordinate HUD is persistently visible (it used to auto-hide 3s
+    after a render)."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    assert page.evaluate(
+        "() => document.getElementById('hud').classList.contains('visible')")
+    page.close()
+
+
+def test_data_bounds_overlay_suppressed_when_viewport_loading(browser, tmp_path):
+    """The grey out-of-data overlay draws when the view exceeds data_bounds, but
+    is suppressed when viewport variant loading is on (data pages in across the
+    contig)."""
+    base = {"region": "chr1:1-100000", "data_bounds": {"start": 40000, "end": 60000}}
+    p1, _ = _open(browser, tmp_path, "horizontal", config=dict(base))
+    _wait_ready(p1)
+    off = p1.evaluate("() => document.querySelectorAll('.data-bounds-overlay').length")
+    p1.close()
+    p2, _ = _open(browser, tmp_path, "horizontal",
+                  config=dict(base, viewport_variant_loading=True))
+    _wait_ready(p2)
+    on = p2.evaluate("() => document.querySelectorAll('.data-bounds-overlay').length")
+    p2.close()
+    assert off > 0, "overlay should draw when the view exceeds data bounds"
+    assert on == 0, "overlay must be suppressed when viewport variant loading is on"

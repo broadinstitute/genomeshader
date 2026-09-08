@@ -1,17 +1,18 @@
 import os
 import re
+import random
 import hashlib
 import warnings
 import threading
 import socket
 import copy
-import base64
-import gzip
-import math
 import subprocess
 import tempfile
 import urllib.parse
 import time
+import sys
+import logging
+from datetime import datetime, timezone
 from typing import Union, List, Optional, Tuple
 from pathlib import Path
 import importlib.resources
@@ -32,6 +33,210 @@ except ImportError:
     Comm = None
     COMM_AVAILABLE = False
 
+
+def _apply_persample_scale_gate(variants_data, n_samples, persample_max):
+    """Scale gate: above `persample_max` samples, strip the per-sample maps
+    (sampleGenotypes / sampleAlleles) from each variant and flag it
+    (perSampleOmitted). The aggregate fields (alleleFrequencies /
+    alleleSampleCounts) are preserved so bands still render; carriers move to
+    fetch_carriers on demand and client-side ribbons switch off (no genotypes).
+    Returns True if the payload was gated. `persample_max < 0` disables gating.
+    """
+    if persample_max is None or persample_max < 0 or n_samples <= persample_max:
+        return False
+    for v in variants_data:
+        v.pop("sampleGenotypes", None)
+        v.pop("sampleAlleles", None)
+        v["perSampleOmitted"] = True
+    return True
+
+
+def _contig_name_candidates(contig):
+    """Candidate contig spellings to try against a UCSC assembly, in priority
+    order: the name as given, then the chr-prefix toggled (chr1<->1), then a few
+    common aliases (chrMT<->chrM). Lets UCSC fetches succeed when the loaded
+    data's contig naming differs from the assembly's (multispecies / plain-number
+    contigs vs hg38's chr-prefixed)."""
+    c = str(contig)
+    out = [c]
+    if c.startswith("chr"):
+        out.append(c[3:])
+    else:
+        out.append("chr" + c)
+    low = c.lower()
+    if low in ("chrmt", "mt", "chrm", "m"):
+        for alias in ("chrM", "chrMT", "MT", "M"):
+            if alias not in out:
+                out.append(alias)
+    seen = set()
+    deduped = []
+    for x in out:
+        if x and x not in seen:
+            seen.add(x)
+            deduped.append(x)
+    return deduped
+
+
+def _format_allele_label(allele):
+    """Module-level mirror of the nested formatter in _build_variants_data_for_track
+    (kept in sync); used by the aggregate builder so both paths format alleles
+    identically."""
+    if not allele or allele == ".":
+        return ". (no-call)"
+    length = len(allele)
+    length_label = "1 bp" if length == 1 else f"{length} bp"
+    display_allele = allele[:50] + "..." if length > 50 else allele
+    return f"{display_allele} ({length_label})"
+
+
+def _classify_variant(ref_allele, alt_alleles):
+    """Return (variant_type, is_insertion, is_deletion, max_insertion_length) —
+    same rules as the long-format builder."""
+    ref_len = len(ref_allele) if ref_allele else 0
+    is_insertion = is_deletion = False
+    max_insertion_length = 0
+    alt_types = set()
+    for alt in (alt_alleles or []):
+        alt_len = len(alt) if alt else 0
+        if alt_len > ref_len:
+            is_insertion = True
+            max_insertion_length = max(max_insertion_length, alt_len - ref_len)
+            alt_types.add("insertion")
+        elif alt_len < ref_len:
+            is_deletion = True
+            alt_types.add("deletion")
+        elif alt_len == 1:
+            alt_types.add("snv")
+        else:
+            alt_types.add("mnp")
+    if not alt_types:
+        variant_type = "snv"
+    elif len(alt_types) == 1:
+        variant_type = next(iter(alt_types))
+    else:
+        variant_type = "complex"
+    return variant_type, is_insertion, is_deletion, max_insertion_length
+
+
+def _build_variants_data_from_aggregates(rows):
+    """Build variants_data from AGGREGATE rows (extract_variant_aggregates output:
+    one row per (variant, alt) with n_ref/n_alt/n_missing) — the scale path that
+    never sees per-sample genotypes. Produces the same dict shape as the
+    long-format builder minus sampleGenotypes/sampleAlleles, with
+    perSampleOmitted=True. ALT order is resorted by descending sample support
+    (matching the long-format builder), and allele keys are assigned a1..aN in
+    that order.
+    """
+    # Group rows by variant (position, ref_allele), preserving alt order + counts.
+    groups = {}
+    order = []
+    for r in rows:
+        key = (r.get("position"), r.get("ref_allele"))
+        if key not in groups:
+            groups[key] = {
+                "alts": [],  # (alt_allele, n_alt, orig_index)
+                "n_ref": int(r.get("n_ref", 0) or 0),
+                "n_missing": int(r.get("n_missing", 0) or 0),
+                "vcf_id": r.get("vcf_id"),
+                "variant_id": r.get("variant_id"),
+                "filter_status": r.get("filter_status", "PASS"),
+                "info_fields": r.get("info_fields", "."),
+            }
+            order.append(key)
+        g = groups[key]
+        g["alts"].append((r.get("alt_allele"), int(r.get("n_alt", 0) or 0), len(g["alts"])))
+
+    variants_data = []
+    for key in order:
+        pos, ref_allele = key
+        g = groups[key]
+        # Resort alts by descending sample support; tie-break by original order.
+        alts_sorted = sorted(g["alts"], key=lambda t: (-t[1], t[2]))
+        alt_alleles = [a for (a, _c, _i) in alts_sorted]
+        allele_sample_counts = {".": g["n_missing"], "ref": g["n_ref"]}
+        for i, (_a, c, _i) in enumerate(alts_sorted):
+            allele_sample_counts[f"a{i+1}"] = c
+        total = sum(allele_sample_counts.values())
+        if total > 0:
+            allele_frequencies = {k: v / total for k, v in allele_sample_counts.items()}
+        else:
+            n_a = len(alt_alleles) + 2
+            allele_frequencies = {k: 1.0 / n_a for k in allele_sample_counts}
+        variant_type, is_insertion, _is_del, max_ins = _classify_variant(ref_allele, alt_alleles)
+        vcf_id = g["vcf_id"]
+        # Stable across overlapping overscan windows — see _build_variants_data_for_track.
+        variant_display_id = str(vcf_id) if vcf_id else str(pos)
+        variants_data.append({
+            "id": variant_display_id,
+            "vcfId": str(vcf_id) if vcf_id else "",
+            "pos": pos,
+            "refAllele": ref_allele,
+            "altAlleles": alt_alleles,
+            "filterStatus": g["filter_status"] or "PASS",
+            "infoRaw": g["info_fields"],
+            "alleles": ["ref"] + [f"a{i+1}" for i in range(len(alt_alleles))],
+            "alleleFrequencies": allele_frequencies,
+            "alleleSampleCounts": allele_sample_counts,
+            "perSampleOmitted": True,
+            "isInsertion": is_insertion,
+            "maxInsertionLength": max_ins,
+            "variantType": variant_type,
+            "insertionGapPx": max_ins * 8 if is_insertion else 0,
+            "formattedRefAllele": _format_allele_label(ref_allele) if ref_allele else None,
+            "formattedAltAlleles": [_format_allele_label(a) for a in alt_alleles],
+            "displayIds": [variant_display_id],
+        })
+    return variants_data
+
+
+def _carriers_from_variant_rows(rows, ref_allele, allele, n=None, rng_sample=None):
+    """From long-format per-sample rows for ONE variant, return the sample names
+    carrying `allele` (the ref string, or an ALT string). Mirrors the genotype->
+    allele logic in `_build_variants_data_for_track` (a sample carries the allele
+    if any of its rows' genotype includes the allele's index — index 0 for ref,
+    or the row's alt_index for the matching ALT row). Deduped; sampled to <= n.
+
+    This is the pure core of `fetch_carriers` — kept out of the I/O wrapper so it
+    can be unit-tested without a live VCF. `rng_sample(list, n)` is injected for
+    deterministic tests (falls back to a head slice).
+    """
+    is_ref = (allele == ref_allele)
+    carriers = []
+    seen = set()
+    for row in rows:
+        sname = row.get("sample_name")
+        if sname is None or sname in seen:
+            continue  # unknown sample, or already a confirmed carrier
+        gt = str(row.get("genotype", "./.") or "./.")
+        row_alt = row.get("alt_allele")
+        row_alt_idx = row.get("alt_index")
+        try:
+            row_alt_idx_int = int(row_alt_idx) if row_alt_idx is not None else None
+        except (TypeError, ValueError):
+            row_alt_idx_int = None
+        carries = False
+        for tok in gt.replace("|", "/").split("/"):
+            tok = tok.strip()
+            if tok in ("", "."):
+                continue
+            try:
+                idx = int(tok)
+            except ValueError:
+                continue
+            if is_ref:
+                if idx == 0:
+                    carries = True
+                    break
+            elif row_alt == allele and row_alt_idx_int is not None and idx == row_alt_idx_int:
+                carries = True
+                break
+        if carries:
+            seen.add(sname)
+            carriers.append(sname)
+    if n is not None and n >= 0 and len(carriers) > n:
+        carriers = rng_sample(carriers, n) if rng_sample is not None else carriers[:n]
+    return carriers
+
 import genomeshader.genomeshader as gs
 from . import staging
 
@@ -41,7 +246,23 @@ class GenomeShader:
         self,
         genome_build: str = 'hg38',
         gcs_session_dir: str = None,
+        debug: bool = False,
     ):
+        # Debug logging: off by default. When on, timing/sizing + an event log
+        # (server + frontend) are written to a per-session log file, and data
+        # fetch failures are printed under the cell. Also enabled via env
+        # GENOMESHADER_DEBUG=1 so it can be turned on without editing code.
+        self._debug = bool(debug) or os.environ.get("GENOMESHADER_DEBUG", "").strip().lower() in {"1", "true", "yes"}
+        # Propagate to the Rust extension so its per-step variant-fetch timing
+        # (staged read / compute / cache) prints under the cell when debug is on.
+        # Use a DISTINCT env var so enabling debug on one instance doesn't flip
+        # later Python instances into debug via the shared process env.
+        if self._debug:
+            os.environ["GENOMESHADER_RUST_DEBUG"] = "1"
+        self._debug_logger = None
+        self._debug_log_path = None
+        self._setup_debug_logging()
+
         # Network/render safety defaults must be available before validation calls.
         self._http_timeout = (10, 30)  # connect timeout, read timeout (seconds)
         self._track_load_timeout_s = 45
@@ -90,6 +311,17 @@ class GenomeShader:
         # set won't render, so they're reported by _reconcile_read_samples.
         self._vcf_sample_universe: set = set()
 
+        # Background VCF-sample -> [read URL] index, built once both variants and
+        # reads are attached (see _maybe_start_read_index). Matches by filename
+        # first (a guess — filenames aren't guaranteed to be sample names), then
+        # reads @RG SM headers for the leftovers (authoritative). Kept separate
+        # from the user's explicit _sample_mapping, which always wins.
+        self._read_index: dict = {}
+        self._pending_read_dirs: List[str] = []   # dirs to list in the background
+        self._read_index_thread = None
+        self._read_index_done = threading.Event()
+        self._read_index_lock = threading.Lock()
+
         # One entry per variant track: (track_name, list of paths). Order matches session's variant_file_groups.
         self._variant_datasets: List[Tuple[str, List[str]]] = []
         
@@ -120,21 +352,34 @@ class GenomeShader:
             "reference": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
             "variant_payload": {"mem": 0, "gcs": 0, "build": 0, "gcs_write": 0},
         }
-        self._variant_payload_cache: dict = {}
         self._variant_payload_index: dict = {}
         self._variant_payload_index_loaded: dict = {}
-        self._variant_payload_by_view: dict = {}
-        self._variant_payload_comm_buffers: dict = {}
         self._attached_loci: set = set()
         self._last_ucsc_warm_stats: dict = {}
 
-        # Payload transport controls for Jupyter comms stability.
-        self._variant_payload_cache_max_entries = 5
-        self._variant_payload_view_max_entries = 5
-        self._variant_payload_comm_buffer_max_entries = 8
-        self._variant_payload_comm_chunk_chars_default = 240_000
-        self._variant_payload_comm_hard_limit_bytes = 64 * 1024 * 1024
-        self._variant_payload_comm_compress_min_bytes = 512 * 1024
+        # Small bounded host-side cache of computed viewport variant payloads
+        # (#77). The expensive step is reading/parsing the window from the VCF
+        # (at 20k+ samples each record line is ~500KB — the wall is the read,
+        # not the tally), so amortize it: a re-visited or covered window is
+        # served from RAM without re-parsing. Companion to the frontend window
+        # store (#71). Coverage-matched LRU — the cache holds only small window
+        # payloads (aggregates), never whole files.
+        #
+        # Cap high so a whole browsing session's downloaded windows stay resident:
+        # once a region is read off the (remote) VCF, re-visiting it — even from a
+        # different zoom/pan that lands on overlapping bounds — must be served from
+        # RAM, not re-downloaded. The user clears it explicitly via
+        # clear_local_cache ("Clear local cache"). Each payload is a small
+        # per-window aggregate (KB), so hundreds cost only a few MB.
+        # ponytail: RAM LRU with a high cap; if a marathon pan across a whole human
+        # chromosome ever evicts wanted windows, disk-back it like _reads_cache_path.
+        self._agg_region_cache: list = []
+        try:
+            self._agg_region_cache_max = max(
+                12, int(os.environ.get("GENOMESHADER_WINDOW_CACHE_MAX", "512")))
+        except (TypeError, ValueError):
+            self._agg_region_cache_max = 512
+
         self._local_cache_dir = Path(
             os.environ.get(
                 "GENOMESHADER_LOCAL_CACHE_DIR",
@@ -327,6 +572,16 @@ class GenomeShader:
         """
         self._template_html_cache = None
         self._template_html_signature = None
+        # Downloaded variant windows (host RAM) + the Rust-side per-locus df cache:
+        # these are what "keep variants once downloaded" relies on, so clearing the
+        # cache must actually drop them (otherwise Clear does nothing to variants).
+        self._agg_region_cache = []
+        try:
+            if getattr(self, "_session", None) is not None and hasattr(
+                    self._session, "clear_variant_cache"):
+                self._session.clear_variant_cache()
+        except Exception:
+            pass
         self._ideogram_cache.clear()
         self._genes_cache.clear()
         self._repeats_cache.clear()
@@ -351,11 +606,55 @@ class GenomeShader:
             "reference": {"mem": 0, "gcs": 0, "api": 0, "gcs_write": 0},
             "variant_payload": {"mem": 0, "gcs": 0, "build": 0, "gcs_write": 0},
         }
-        self._variant_payload_cache.clear()
         self._variant_payload_index.clear()
         self._variant_payload_index_loaded.clear()
-        self._variant_payload_by_view.clear()
-        self._variant_payload_comm_buffers.clear()
+
+    def dump_config(self, path: str = "genomeshader_config.json") -> str:
+        """Write the last rendered widget config (the exact GENOMESHADER_CONFIG
+        the frontend received) to a JSON file. Call after show()/render(). Hand
+        this file to a developer: the test harness can render it verbatim
+        (harness.build_page(config=json.load(open(path)))), reproducing exactly
+        what you see instead of a synthetic fixture that diverges. Returns the
+        absolute path written.
+        """
+        cfg = getattr(self, "_last_config", None)
+        if cfg is None:
+            raise ValueError("No config yet — call show()/render() first.")
+        path = os.path.abspath(path)
+        with open(path, "w") as f:
+            json.dump(cfg, f, default=str)
+        print(f"GenomeShader: wrote render config -> {path} "
+              f"({len(cfg.get('variant_tracks') or [])} variant track(s))", flush=True)
+        return path
+
+    def clear_local_cache(self) -> dict:
+        """Clear the on-disk local cache (downloaded GCS artifacts, per-window
+        reference/genes/repeats, cached read pileups) AND the in-memory caches.
+        Returns {"files": n, "bytes": total} for the freed on-disk contents.
+        Safe: everything here is a cache — it is re-fetched on next access.
+        """
+        import shutil
+
+        files, freed = 0, 0
+        cache_dir = getattr(self, "_local_cache_dir", None)
+        if cache_dir is not None and Path(cache_dir).exists():
+            for child in Path(cache_dir).iterdir():
+                try:
+                    if child.is_file() or child.is_symlink():
+                        freed += child.stat().st_size
+                        files += 1
+                        child.unlink()
+                    else:
+                        for p in child.rglob("*"):
+                            if p.is_file() or p.is_symlink():
+                                freed += p.stat().st_size
+                                files += 1
+                        shutil.rmtree(child, ignore_errors=True)
+                except OSError:
+                    pass
+            Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        self.clear_cache()
+        return {"files": files, "bytes": freed}
 
     def _cache_id(self, s: str) -> str:
         return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
@@ -700,70 +999,27 @@ class GenomeShader:
             "insertion_variants_lookup": subset_insertion,
         }
 
-    def _prune_oldest_entries(self, mapping: dict, max_entries: int):
-        while len(mapping) > max_entries:
-            oldest_key = next(iter(mapping))
-            mapping.pop(oldest_key, None)
+    def _agg_region_cache_get(self, sig: str, contig: str, start: int, end: int):
+        """Smallest cached region (same dataset+contig) that fully covers
+        [start,end], or None. LRU-touch on hit."""
+        best = None
+        for r in self._agg_region_cache:
+            if (r["sig"] == sig and r["contig"] == contig
+                    and r["start"] <= start and r["end"] >= end):
+                if best is None or (r["end"] - r["start"]) < (best["end"] - best["start"]):
+                    best = r
+        if best is not None:
+            self._agg_region_cache.remove(best)
+            self._agg_region_cache.append(best)  # most-recently-used at the end
+        return best
 
-    def _prune_variant_payload_state(self):
-        self._prune_oldest_entries(self._variant_payload_cache, self._variant_payload_cache_max_entries)
-        self._prune_oldest_entries(self._variant_payload_by_view, self._variant_payload_view_max_entries)
-        self._prune_oldest_entries(
-            self._variant_payload_comm_buffers,
-            self._variant_payload_comm_buffer_max_entries,
-        )
-
-    def _build_comm_payload_buffer(
-        self,
-        view_id: str,
-        payload: dict,
-        accept_compression: bool,
-        chunk_chars: int,
-    ) -> dict:
-        chunk_chars = max(64_000, min(int(chunk_chars), 1_000_000))
-        payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        payload_bytes = payload_json.encode("utf-8")
-        payload_bytes_len = len(payload_bytes)
-        if payload_bytes_len > self._variant_payload_comm_hard_limit_bytes:
-            raise ValueError(
-                f"Variant payload too large for comm transport ({payload_bytes_len / (1024 * 1024):.1f} MB). "
-                "Reduce locus size or number of variants."
-            )
-
-        compression = "none"
-        data_bytes = payload_bytes
-        if accept_compression and payload_bytes_len >= self._variant_payload_comm_compress_min_bytes:
-            compressed = gzip.compress(payload_bytes, compresslevel=6)
-            if len(compressed) < len(payload_bytes):
-                data_bytes = compressed
-                compression = "gzip"
-
-        encoded = base64.b64encode(data_bytes).decode("ascii")
-        total_chunks = max(1, math.ceil(len(encoded) / chunk_chars))
-        payload_token = self._cache_id(
-            f"{view_id}:{payload_bytes_len}:{len(encoded)}:{compression}:{time.time_ns()}"
-        )
-        self._variant_payload_comm_buffers[payload_token] = {
-            "view_id": view_id,
-            "created_at": time.time(),
-            "encoding": "base64",
-            "compression": compression,
-            "payload_json_bytes": payload_bytes_len,
-            "payload_transfer_bytes": len(data_bytes),
-            "encoded": encoded,
-            "chunk_chars": chunk_chars,
-            "total_chunks": total_chunks,
-        }
-        self._prune_variant_payload_state()
-        return {
-            "payload_token": payload_token,
-            "encoding": "base64",
-            "compression": compression,
-            "chunk_chars": chunk_chars,
-            "total_chunks": total_chunks,
-            "payload_json_bytes": payload_bytes_len,
-            "payload_transfer_bytes": len(data_bytes),
-        }
+    def _agg_region_cache_put(self, sig, contig, start, end, payload, aggregate):
+        self._agg_region_cache.append({
+            "sig": sig, "contig": contig, "start": int(start), "end": int(end),
+            "payload": payload, "aggregate": bool(aggregate),
+        })
+        while len(self._agg_region_cache) > self._agg_region_cache_max:
+            self._agg_region_cache.pop(0)  # evict least-recently-used
 
     def session_name(self):
         """
@@ -807,34 +1063,36 @@ class GenomeShader:
             if gcs_path.endswith(".bam") or gcs_path.endswith(".cram"):
                 self._session.attach_reads([gcs_path], cohort)
             else:
-                bams = gs._gcs_list_files_of_type(gcs_path, ".bam")
-                crams = gs._gcs_list_files_of_type(gcs_path, ".cram")
-
-                self._session.attach_reads(bams, cohort)
-                self._session.attach_reads(crams, cohort)
+                # Defer the (potentially tens-of-thousands-of-objects) directory
+                # listing to the background read-index thread so it never blocks
+                # attach/show. The index lists + maps sample->file there, once
+                # variants are also attached (see _build_read_index).
+                self._pending_read_dirs.append((gcs_path, cohort))
 
         self._reconcile_read_samples()
 
     def _reconcile_read_samples(self):
-        """Warn about attached read samples that aren't in the VCF sample
-        universe. Reads only render for samples that exist in the variant
-        layer, so a BAM whose sample isn't in any attached VCF header (or was
-        excluded by a `samples=` subset) is silently never drawn — surface that
-        here. No-op until both variants and reads are attached."""
-        if not self._vcf_sample_universe:
-            return
-        try:
-            bam_samples = set(self.get_bam_sample_names())
-        except Exception:
-            return  # can't read BAM headers (offline / auth) — skip quietly
-        if not bam_samples:
-            return
-        excluded = sorted(bam_samples - self._vcf_sample_universe)
-        if excluded:
-            warnings.warn(
-                f"{len(excluded)} read sample(s) are not in the VCF sample "
-                f"universe and will not be rendered: {', '.join(excluded)}"
-            )
+        """Kick off the background VCF-sample -> read-file index once BOTH
+        variants (sample universe) and reads (attached files or pending dirs)
+        are present. Called at the end of attach_variants and attach_reads, so
+        it fires after whichever of the two is called second.
+
+        Also warns about read (BAM) samples that aren't in the variant sample
+        universe: reads for a sample with no variant track won't be rendered, so
+        surface them rather than dropping them silently.
+        """
+        if self._vcf_sample_universe:
+            try:
+                bam_samples = set(self.get_bam_sample_names())
+            except Exception:
+                bam_samples = set()
+            excluded = sorted(bam_samples - self._vcf_sample_universe)
+            if excluded:
+                warnings.warn(
+                    f"{len(excluded)} read (BAM) sample(s) are not in the variant "
+                    f"sample set and will not be rendered: {', '.join(excluded)}"
+                )
+        self._maybe_start_read_index()
 
     def attach_loci(self, loci: Union[str, List[str]]):
         """
@@ -924,12 +1182,20 @@ class GenomeShader:
 
         # Reconcile the requested sample subset against the VCF headers, and
         # grow the session-wide set of renderable (in-header) sample names.
+        # This reads each file's header (all sample names) over the network, so
+        # a big cohort split per contig is a handful of multi-100KB fetches —
+        # report progress so the setup isn't a silent wait.
+        print(f"GenomeShader: attach_variants '{track_name}': reading headers of "
+              f"{len(paths_to_attach)} file(s)…", flush=True)
+        _t_hdr = time.perf_counter()
         header_samples: set = set()
         for p, idx in zip(paths_to_attach, indexes_to_attach):
             try:
                 header_samples.update(gs._vcf_sample_names(p, idx))
             except Exception as e:
                 warnings.warn(f"could not read samples from '{p}': {e}")
+        print(f"GenomeShader:   {len(header_samples):,} sample(s) across header(s) "
+              f"({time.perf_counter() - _t_hdr:.1f}s)", flush=True)
 
         subset: Optional[List[str]] = None
         if samples is not None:
@@ -947,7 +1213,10 @@ class GenomeShader:
             self._vcf_sample_universe.update(header_samples)
 
         self._variant_datasets.append((str(track_name), paths_to_attach))
+        _t_idx = time.perf_counter()
         self._session.attach_variants(paths_to_attach, indexes_to_attach, subset)
+        print(f"GenomeShader:   indexed {len(paths_to_attach)} file(s) for contig routing "
+              f"({time.perf_counter() - _t_idx:.1f}s)", flush=True)
         self._reconcile_read_samples()
 
     def set_sample_mapping(self, mapping: dict):
@@ -993,15 +1262,127 @@ class GenomeShader:
             List[str]: List of unique BAM sample names corresponding to the
                 given VCF samples.
         """
+        # If the background read index is still building, let it finish — a read
+        # fetch is on-demand (the user just picked a sample), so a bounded wait is
+        # fine and avoids a spurious "no read file" before the index is ready.
+        if self._read_index_thread is not None and not self._read_index_done.is_set():
+            self._read_index_done.wait(timeout=120)
+
+        attached_by_stem = None  # lazily built {basename-stem: url} of attached reads
         bam_samples = set()
         for vcf_sample in vcf_samples:
             if self._sample_mapping and vcf_sample in self._sample_mapping:
-                # Use mapping
-                bam_samples.update(self._sample_mapping[vcf_sample])
-            else:
-                # Identity mapping (VCF name == BAM name)
+                bam_samples.update(self._sample_mapping[vcf_sample])  # explicit wins
+                continue
+            with self._read_index_lock:
+                hit = list(self._read_index.get(vcf_sample, []))
+            if hit:
+                bam_samples.update(hit)
+                continue
+            # Not in the index: an explicit .bam attach matched by filename stem,
+            # or the value is already a locator. Otherwise omit, so the caller
+            # reports a clean "no read file for sample" instead of trying to parse
+            # a bare sample name as a URL (the old behavior that hung "loading…").
+            if attached_by_stem is None:
+                attached_by_stem = self._attached_reads_by_stem()
+            if vcf_sample in attached_by_stem:
+                bam_samples.add(attached_by_stem[vcf_sample])
+            elif "://" in vcf_sample or vcf_sample.startswith("/"):
                 bam_samples.add(vcf_sample)
         return list(bam_samples)
+
+    @staticmethod
+    def _read_stem(url) -> str:
+        """Filename stem of a read URL: '.../HG1.bam' -> 'HG1'."""
+        base = str(url).rsplit("/", 1)[-1]
+        for ext in (".bam", ".cram"):
+            if base.endswith(ext):
+                return base[: -len(ext)]
+        return base
+
+    def _maybe_start_read_index(self):
+        """Start the background VCF-sample -> read-URL index once BOTH variants
+        (sample universe) and reads (attached files or pending dirs) are present.
+        Idempotent; called from _reconcile_read_samples after each attach."""
+        if self._read_index_thread is not None:
+            return
+        if not self._vcf_sample_universe:
+            return
+        has_reads = bool(self._pending_read_dirs)
+        if not has_reads:
+            try:
+                has_reads = bool(self._session.get_attached_reads())
+            except Exception:
+                has_reads = False
+        if not has_reads:
+            return
+        self._read_index_thread = threading.Thread(
+            target=self._build_read_index, name="gs-read-index", daemon=True)
+        self._read_index_thread.start()
+
+    def _build_read_index(self):
+        """Background: map each VCF sample to its read file(s). Filenames aren't
+        guaranteed to be sample names, so match by filename stem first (a guess)
+        and read @RG SM headers for the leftovers (authoritative)."""
+        import genomeshader.genomeshader as gs
+        t0 = time.perf_counter()
+        try:
+            urls = []
+            try:
+                urls.extend(self._session.get_attached_reads())
+            except Exception:
+                pass
+            for path, _cohort in list(self._pending_read_dirs):
+                try:
+                    urls.extend(gs._gcs_list_files_of_type(path, ".bam"))
+                    urls.extend(gs._gcs_list_files_of_type(path, ".cram"))
+                except Exception as e:
+                    warnings.warn(f"read-index: could not list '{path}': {e}")
+            urls = list(dict.fromkeys(str(u) for u in urls))  # de-dup, keep order
+            samples = set(self._vcf_sample_universe)
+
+            index: dict = {}
+            unmatched = []
+            for u in urls:                                   # fast pass: by filename
+                stem = self._read_stem(u)
+                if stem in samples:
+                    index.setdefault(stem, []).append(u)
+                else:
+                    unmatched.append(u)
+            print(f"GenomeShader: read-index: {len(urls):,} file(s); "
+                  f"{len(index):,} matched by name, reading @RG SM for "
+                  f"{len(unmatched):,}…", flush=True)
+            if unmatched:                                    # authoritative: by SM
+                try:
+                    for u, sms in gs._bam_sample_names(unmatched):
+                        for sm in sms:
+                            if sm in samples:
+                                index.setdefault(sm, []).append(u)
+                except Exception as e:
+                    warnings.warn(f"read-index: header read failed: {e}")
+
+            with self._read_index_lock:
+                self._read_index = index
+            print(f"GenomeShader: read-index ready: {len(index):,}/{len(samples):,} "
+                  f"sample(s) mapped ({time.perf_counter() - t0:.1f}s)", flush=True)
+        finally:
+            self._read_index_done.set()
+
+    def _attached_reads_by_stem(self) -> dict:
+        """{basename-stem -> url} for every attached BAM/CRAM, so a VCF sample
+        name resolves to its read file by filename (sample "X" -> ".../X.bam")
+        when no explicit sample mapping is set."""
+        out: dict = {}
+        try:
+            for url in self._session.get_attached_reads():
+                base = str(url).rsplit("/", 1)[-1]
+                for ext in (".bam", ".cram"):
+                    if base.endswith(ext):
+                        out[base[: -len(ext)]] = url
+                        break
+        except Exception:
+            pass
+        return out
     
     def get_bam_sample_names(self) -> List[str]:
         """
@@ -1101,6 +1482,93 @@ class GenomeShader:
     # v3: flush v2 payloads written before the extension was rebuilt (no has_md
     #     column / no reference-diffed SNPs) so the widget can't serve them.
     _READS_CACHE_VERSION = "v3"
+
+    # ----------------------------------------------------------------- debug
+    def _setup_debug_logging(self):
+        """Stand up the per-session debug log file when debug is on. One file
+        per GenomeShader instance, under the cwd so the operator finds it. No-op
+        (and no file) when debug is off — debug defaults to off."""
+        if not getattr(self, "_debug", False):
+            return
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        # Keep logs out of the repo root: one dedicated dir (gitignored), under
+        # GENOMESHADER_LOG_DIR if set, else ./genomeshader_logs.
+        log_dir = os.environ.get("GENOMESHADER_LOG_DIR") or os.path.join(os.getcwd(), "genomeshader_logs")
+        os.makedirs(log_dir, exist_ok=True)
+        self._debug_log_path = os.path.abspath(os.path.join(log_dir, f"genomeshader_debug_{stamp}.log"))
+        logger = logging.getLogger(f"genomeshader.debug.{id(self)}")
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        handler = logging.FileHandler(self._debug_log_path)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        logger.addHandler(handler)
+        self._debug_logger = logger
+        # NB: called at the very top of __init__, before genome_build /
+        # gcs_session_dir are assigned — read them defensively.
+        self._debug_log("session_start",
+                        genome_build=getattr(self, "genome_build", None),
+                        gcs_session_dir=getattr(self, "gcs_session_dir", None))
+        print(f"GenomeShader: debug logging -> {self._debug_log_path}", flush=True)
+
+    def _debug_log(self, event: str, **fields):
+        """Append one structured event to the debug log (JSON tail after the
+        event name). No-op when debug is off. Never raises. Every line is
+        stamped with the current thread so a cross-thread stall (e.g. htslib
+        remote reads off the main thread) is visible."""
+        if not getattr(self, "_debug_logger", None):
+            return
+        try:
+            import threading
+            fields.setdefault("_thread", threading.current_thread().name)
+        except Exception:
+            pass
+        try:
+            payload = json.dumps(fields, default=str, sort_keys=True)
+        except Exception:
+            payload = str(fields)
+        try:
+            self._debug_logger.info(f"{event} {payload}")
+        except Exception:
+            pass
+
+    def _report_fetch_failure(self, kind: str, error, **context):
+        """A data-fetch failure (variants/reads/region/navigate). Always log it
+        (debug file, if on) AND print an error under the cell with a suggested
+        fix, so a silent kernel-side failure isn't invisible. Returns a short
+        remediation hint the frontend can show in its modal."""
+        msg = str(error)
+        hint = self._fetch_failure_hint(kind, msg)
+        self._debug_log("fetch_failure", kind=kind, error=msg, hint=hint, **context)
+        where = context.get("locus") or context.get("region") or ""
+        line = f"GenomeShader ERROR: failed to load {kind}"
+        if where:
+            line += f" for {where}"
+        line += f": {msg}\n  -> {hint}"
+        try:
+            print(line, file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        return hint
+
+    @staticmethod
+    def _fetch_failure_hint(kind: str, msg: str) -> str:
+        """Map a failure to a plain-language workaround based on the error text."""
+        low = (msg or "").lower()
+        if "timeout" in low or "timed out" in low:
+            return ("The request exceeded the 30s kernel timeout — usually a cold, "
+                    "large-cohort window. Zoom to a smaller region, or re-run once the "
+                    "first read has warmed the cache.")
+        if "credential" in low or "denied" in low or "403" in low or "401" in low or "token" in low:
+            return ("Looks like a GCS auth problem. Re-run `gcloud auth application-default "
+                    "login` (or refresh your token) and try again.")
+        if "not found" in low or "404" in low or "no such file" in low:
+            return ("The file/index couldn't be found. Check the path and that the .tbi/.csi "
+                    "index sits next to the data file.")
+        if "connection" in low or "transport" in low or "comm" in low:
+            return ("The widget lost its connection to the kernel. Re-run the cell to remount "
+                    "the widget.")
+        return ("Re-run the cell; if it persists, enable debug=True and check the "
+                "genomeshader_debug log for the full traceback.")
 
     def _reads_cache_path(self, locus: str, bam_urls: List[str]) -> Path:
         sig = self._READS_CACHE_VERSION + "|" + str(locus) + "|" + ",".join(sorted(bam_urls))
@@ -1216,6 +1684,221 @@ class GenomeShader:
         """
         return self._session.get_locus_variants(locus)
 
+    def fetch_carriers(self, contig, pos, ref, allele, track_id=None,
+                       strategy="random", n=200):
+        """Sample names carrying `allele` at contig:pos, fetched on demand.
+
+        Used when the per-sample payload is size-gated (large cohorts): the flow
+        ships only aggregates, and "who carries this allele → load their reads"
+        resolves through here instead. Reuses the single-position variant
+        region-seek and filters genotypes; samples the result to `n`. `allele`
+        is the ref or an ALT allele string.
+        """
+        try:
+            df = self.get_locus_variants(f"{contig}:{int(pos)}-{int(pos)}")
+        except Exception:
+            return []
+        if df is None or not isinstance(df, pl.DataFrame) or len(df) == 0:
+            return []
+        try:
+            df = df.filter(pl.col("position") == int(pos))
+            if ref is not None and "ref_allele" in df.columns:
+                df = df.filter(pl.col("ref_allele") == ref)
+            if track_id is not None and "variant_track_id" in df.columns:
+                df = df.filter(pl.col("variant_track_id").cast(pl.Int64) == int(track_id))
+        except Exception:
+            pass
+        rng = (lambda lst, k: random.sample(lst, k)) if strategy == "random" else None
+        return _carriers_from_variant_rows(
+            list(df.iter_rows(named=True)), ref, allele, n=n, rng_sample=rng)
+
+    def navigate_payload(self, contig, start, end):
+        """Full per-window render payload for jumping to a new contig/region:
+        reference sequence, genes, ideogram, repeats, and variants. The frontend
+        contig switcher applies it in place (reference/genes/etc. are per-window
+        and otherwise static in the initial config). Reuses the same per-region
+        builders as `render` so the result matches a fresh render at that locus.
+        Each piece is fetched defensively — a missing track yields an empty
+        default rather than failing the whole jump.
+        """
+        start, end = int(start), int(end)
+        span = max(0, end - start)
+
+        def _safe(fn, *args, default):
+            try:
+                out = fn(*args)
+                return out if out is not None else default
+            except Exception:
+                return default
+
+        # Large-window guard: a jump to a very wide region must NOT pull the whole
+        # VCF (or a multi-megabase reference string). Above the same span the
+        # frontend zoom-gate uses, skip the per-variant fetch and the reference
+        # base sequence; the frontend shows a "zoom in to load variants" banner.
+        # Genes/ideogram stay (cheap, and useful as an overview at this scale).
+        try:
+            var_cap = int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "1000000"))
+        except (TypeError, ValueError):
+            var_cap = 1_000_000
+        too_wide = span > var_cap
+
+        if too_wide:
+            variant_tracks, ins_lookup, reference_data = [], [], ""
+        else:
+            vp = self.fetch_variants_payload(contig, start, end)
+            variant_tracks = vp.get("variant_tracks", [])
+            ins_lookup = vp.get("insertion_variants_lookup", [])
+            # reference() is 1-based [start, end] like render()'s reference track.
+            reference_data = _safe(self.reference, contig, start, end, default="")
+
+        return {
+            "contig": contig,
+            "start": start,
+            "end": end,
+            "region": f"{contig}:{start}-{end}",
+            "reference_data": reference_data,
+            "ideogram_data": _safe(self.ideogram, contig, default=[]),
+            "transcripts_data": _safe(self.genes, contig, start, end, default=[]),
+            "repeats_data": _safe(self.repeats, contig, start, end, default=[]),
+            "variant_tracks": variant_tracks,
+            "insertion_variants_lookup": ins_lookup,
+            # Signals the frontend to show the "region too wide" banner and not to
+            # expect variants/reference for this window.
+            "too_wide_for_variants": too_wide,
+            "span_bp": span,
+            "variant_max_span_bp": var_cap,
+        }
+
+    def fetch_variants_payload(self, contig, start, end):
+        """Viewport variant fetch (P2): build the variant payload for one window,
+        on demand, so the frontend can load a new region on pan/zoom without a
+        full re-render. Reuses the same aggregate/long-format threshold as render
+        (GENOMESHADER_VARIANT_AGG_MAX). Returns
+        {variant_tracks, insertion_variants_lookup, region, aggregate}.
+        """
+        start, end = int(start), int(end)
+        locus = f"{contig}:{start}-{end}"
+        region = {"contig": contig, "start": start, "end": end}
+        _t0 = time.perf_counter()
+
+        def _log_result(n, aggregate, cached):
+            self._debug_log("fetch_variants", locus=locus, span_bp=end - start,
+                            n_variants=n, aggregate=aggregate, cached=cached,
+                            ms=round((time.perf_counter() - _t0) * 1000, 1))
+
+        def _count(pl_tracks):
+            return sum(len(t.get("variants_data", [])) for t in pl_tracks)
+
+        # Reference + data_bounds for this window, so the viewport pager keeps the
+        # reference track and the out-of-data grey overlay in sync as you pan
+        # (the two things that otherwise stay stuck on the startup region).
+        # LIGHT on purpose: genes()/repeats() are UCSC-backed and can block for
+        # seconds per cold window — putting them on the per-pan variant hot path
+        # pushed the fetch past the 30s comm timeout ("not loading" on human
+        # genomes). The gene/repeat tracks refresh on the next contig jump
+        # (navigate_payload) or full render, not on every pan.
+        # Granular debug logging: if a fetch hangs, the LAST line in the log
+        # names the step that stuck (reference/meta vs the VCF read). The user's
+        # log showed vp_fetch_start with no completion -> pinpoint it server-side.
+        self._debug_log("fetch_meta_start", locus=locus)
+        _t_meta = time.perf_counter()
+        meta = self._region_track_meta(contig, start, end, light=True)
+        self._debug_log("fetch_meta_done", locus=locus,
+                        ms=round((time.perf_counter() - _t_meta) * 1000, 1),
+                        ref_len=len(meta.get("reference_data") or ""))
+
+        # Host cache (#77): serve a re-visited / covered window from RAM instead
+        # of re-reading+parsing it from the VCF (the measured wall). Bounded+LRU.
+        sig = self._variant_dataset_signature()
+        hit = self._agg_region_cache_get(sig, contig, start, end)
+        if hit is not None:
+            sub = self._subset_variant_payload(hit["payload"], start, end)
+            _log_result(_count(sub["variant_tracks"]), hit["aggregate"], True)
+            return {"variant_tracks": sub["variant_tracks"],
+                    "insertion_variants_lookup": sub["insertion_variants_lookup"],
+                    "region": region, "aggregate": hit["aggregate"], "cached": True,
+                    **meta}
+
+        try:
+            agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "5000"))
+        except (TypeError, ValueError):
+            agg_max = 5000
+        payload, aggregate = None, False
+        n_samples = self._variant_sample_count()
+        use_agg = agg_max >= 0 and n_samples > agg_max
+        self._debug_log("fetch_read_start", locus=locus, n_samples=n_samples,
+                        path=("aggregate" if use_agg else "full"))
+        _t_read = time.perf_counter()
+        if use_agg:
+            try:
+                agg_df = self._session.get_locus_variant_aggregates(locus)
+                if agg_df is not None and isinstance(agg_df, pl.DataFrame) and len(agg_df) > 0:
+                    tracks, ins = self._build_variant_payload_from_aggregates(agg_df)
+                    payload, aggregate = {"variant_tracks": tracks,
+                                          "insertion_variants_lookup": ins}, True
+            except Exception as e:
+                self._debug_log("fetch_agg_error", locus=locus, error=str(e))
+        if payload is None:
+            df = self.get_locus_variants(locus)
+            tracks, ins = self._build_variant_payload(df)
+            payload, aggregate = {"variant_tracks": tracks,
+                                  "insertion_variants_lookup": ins}, False
+
+        self._debug_log("fetch_read_done", locus=locus,
+                        ms=round((time.perf_counter() - _t_read) * 1000, 1))
+        self._agg_region_cache_put(sig, contig, start, end, payload, aggregate)
+        _log_result(_count(payload["variant_tracks"]), aggregate, False)
+        return {"variant_tracks": payload["variant_tracks"],
+                "insertion_variants_lookup": payload["insertion_variants_lookup"],
+                "region": region, "aggregate": aggregate, **meta}
+
+    def _region_track_meta(self, contig, start, end, light: bool = False) -> dict:
+        """Reference / genes / ideogram / repeats + data_bounds for a window, so
+        the pager can keep those tracks in sync with the variants as you pan.
+        Each piece is fetched defensively (missing -> empty default).
+
+        light=True returns only reference_data + data_bounds — the cheap pieces
+        safe to ride along on the per-pan variant hot path. genes()/repeats()/
+        ideogram() are omitted because they can be UCSC-backed and slow; putting
+        them on every pan pushed the fetch past the comm timeout.
+        """
+        start, end = int(start), int(end)
+
+        def _safe(fn, *args, default):
+            try:
+                out = fn(*args)
+                return out if out is not None else default
+            except Exception:
+                return default
+
+        meta = {
+            "reference_data": _safe(self.reference, contig, start, end, default=""),
+            "data_bounds": {"start": start, "end": end},
+        }
+        if light:
+            return meta
+        meta.update({
+            "transcripts_data": _safe(self.genes, contig, start, end, default=[]),
+            "repeats_data": _safe(self.repeats, contig, start, end, default=[]),
+            "ideogram_data": _safe(self.ideogram, contig, default=[]),
+        })
+        return meta
+
+    @staticmethod
+    def _displayed_window_for_request(requested_region, min_window_bp: int = 40):
+        """Displayed region for a locus-string request: the EXACT requested
+        window, widened to a minimum span CENTERED on the requested midpoint when
+        it's smaller than `min_window_bp` (so `show("chr:100-100")` still
+        renders). Returns (contig, start, end); start is clamped to >= 1."""
+        contig = requested_region[0]
+        start = int(requested_region[1])
+        end = int(requested_region[2])
+        if end - start < min_window_bp:
+            mid = (start + end) / 2.0
+            start = int(round(mid - min_window_bp / 2.0))
+            end = start + min_window_bp
+        return contig, max(1, start), end
+
     def _variant_dataset_signature(self) -> str:
         serialized = json.dumps(self._variant_datasets, sort_keys=True)
         return self._cache_id(serialized)
@@ -1257,6 +1940,55 @@ class GenomeShader:
                     "variants_phased": phased,
                 })
         return variant_tracks, insertion_variants_lookup
+
+    def _build_variant_payload_from_aggregates(
+        self, agg_df: pl.DataFrame
+    ) -> Tuple[List[dict], List[dict]]:
+        """Scale path: build variant_tracks from AGGREGATE rows
+        (get_locus_variant_aggregates output) via _build_variants_data_from_aggregates.
+        No per-sample data; bands render from aggregates, carriers via
+        fetch_carriers, ribbons off (variants_phased=False)."""
+        variant_tracks = []
+        insertion_variants_lookup = []
+        if agg_df is None or not isinstance(agg_df, pl.DataFrame) or len(agg_df) == 0:
+            return variant_tracks, insertion_variants_lookup
+        has_tracks = "variant_track_id" in agg_df.columns
+        n_tracks = len(self._variant_datasets) if has_tracks else 1
+        for track_id_val in range(n_tracks):
+            if has_tracks:
+                subset = agg_df.filter(
+                    pl.col("variant_track_id").cast(pl.Int64) == pl.lit(track_id_val))
+            else:
+                subset = agg_df
+            track_name = (
+                self._variant_datasets[track_id_val][0]
+                if track_id_val < len(self._variant_datasets)
+                else f"Variants {track_id_val}"
+            )
+            vdata = _build_variants_data_from_aggregates(list(subset.iter_rows(named=True)))
+            variant_tracks.append({
+                "id": f"flow-{track_id_val}",
+                "label": track_name,
+                "variants_data": vdata,
+                "variants_phased": False,
+            })
+            for v in vdata:
+                if v.get("isInsertion") and v.get("insertionGapPx", 0) > 0:
+                    insertion_variants_lookup.append({
+                        "id": v["id"], "pos": v["pos"],
+                        "maxInsertionLength": v["maxInsertionLength"],
+                        "insertionGapPx": v["insertionGapPx"],
+                    })
+        insertion_variants_lookup.sort(key=lambda v: v["pos"])
+        return variant_tracks, insertion_variants_lookup
+
+    def _variant_sample_count(self) -> int:
+        """Effective attached variant-sample count (max across datasets). Cheap —
+        reads the stored sample lists, not the callset."""
+        try:
+            return max((len(d[1]) for d in self._variant_datasets), default=0)
+        except Exception:
+            return 0
 
     def _build_variants_data_for_track(
         self, variants_df: pl.DataFrame
@@ -1301,7 +2033,7 @@ class GenomeShader:
                     "filter_status": row.get("filter_status", "PASS"),
                     "info_fields": row.get("info_fields", "."),
                 }
-            row_display_id = str(vcf_id) if vcf_id else str(variant_id)
+            row_display_id = str(vcf_id) if vcf_id else str(pos)
             if row_display_id not in variant_groups[pos]["variant_display_ids"]:
                 variant_groups[pos]["variant_display_ids"].append(row_display_id)
             if alt_allele not in variant_groups[pos]["altAlleles"]:
@@ -1316,7 +2048,7 @@ class GenomeShader:
                 vcf_id_str = str(row["vcf_id"]).strip()
                 if vcf_id_str and vcf_id_str != "." and vcf_id_str.lower() not in ("null", "none", ""):
                     row_vcf_id = vcf_id_str
-            row_display_id = str(row_vcf_id) if row_vcf_id else str(row["variant_id"])
+            row_display_id = str(row_vcf_id) if row_vcf_id else str(pos)
             display_ids = variant_groups[pos].setdefault("variant_display_ids", [])
             if row_display_id not in display_ids:
                 display_ids.append(row_display_id)
@@ -1421,7 +2153,12 @@ class GenomeShader:
 
         for pos, variant_info in sorted(variant_groups.items(), key=lambda x: x[0]):
             vcf_id = variant_info.get("vcf_id")
-            variant_display_id = str(vcf_id) if vcf_id else str(variant_info["variant_id"])
+            # Stable identity: fall back to genomic position (variants are grouped
+            # by pos), NOT the per-read load-order variant_id — that index differs
+            # between overlapping overscan windows, so the same variant would get
+            # two ids and render twice ("squished") once scroll started loading
+            # adjacent windows.
+            variant_display_id = str(vcf_id) if vcf_id else str(variant_info["pos"])
             key = (pos, variant_info["refAllele"])
             variant_genotypes = {
                 sn: sample_genotypes[sn][key]
@@ -1593,6 +2330,24 @@ class GenomeShader:
             for v in variants_data
             for gt in (v.get("sampleGenotypes") or {}).values()
         )
+        # Scale gate: above a sample-count threshold, don't ship the per-sample
+        # maps (sampleGenotypes/sampleAlleles) — they scale with variants×samples
+        # and are the browser wall at 50k+ samples. Bands still render from the
+        # aggregates (alleleFrequencies/alleleSampleCounts), carriers come from
+        # fetch_carriers on demand, and client-side ribbons naturally switch off
+        # (no genotypes) — matching the "ribbons zoom-in-only / drop at scale"
+        # decision. Small cohorts keep the full per-sample payload unchanged.
+        # Threshold configurable via GENOMESHADER_PERSAMPLE_MAX (default 5000;
+        # set very high to always ship per-sample).
+        try:
+            persample_max = int(os.environ.get("GENOMESHADER_PERSAMPLE_MAX", "5000"))
+        except (TypeError, ValueError):
+            persample_max = 5000
+        n_samples = max(
+            (len(v.get("sampleGenotypes") or {}) for v in variants_data),
+            default=0,
+        )
+        _apply_persample_scale_gate(variants_data, n_samples, persample_max)
         return variants_data, insertion_variants_lookup, variants_phased
 
     def ideogram(self, contig: str) -> pl.DataFrame:
@@ -1685,22 +2440,33 @@ class GenomeShader:
         if not self._allow_ucsc_api:
             return []
 
-        # Define the API endpoint with the track, contig, start, end parameters
+        # Try the contig as given, then normalized spellings (chr1<->1, etc.) so
+        # a mismatch between the loaded data's contig names and the assembly's
+        # doesn't silently return nothing. Break on the first candidate that
+        # actually returns data (normally the first == one request).
         # Encode free-form fields so a contig/build with ';'/'&' can't corrupt the query.
-        api_endpoint = (
-            "https://api.genome.ucsc.edu/getData/track?"
-            f"genome={urllib.parse.quote(str(self.genome_build), safe='')}"
-            f";track={urllib.parse.quote(str(track), safe='')}"
-            f";chrom={urllib.parse.quote(str(contig), safe='')}"
-            f";start={int(start)};end={int(end)}"
-        )
-
-        # Make a GET request to the API endpoint
-        response = self._http_get_json(
-            api_endpoint,
-            f"Failed to retrieve gene track '{track}' for locus '{contig}:{start}-{end}'",
-        )
-        if response.status_code == 200:
+        response = None
+        for _cand in _contig_name_candidates(contig):
+            api_endpoint = (
+                "https://api.genome.ucsc.edu/getData/track?"
+                f"genome={urllib.parse.quote(str(self.genome_build), safe='')}"
+                f";track={urllib.parse.quote(str(track), safe='')}"
+                f";chrom={urllib.parse.quote(str(_cand), safe='')}"
+                f";start={int(start)};end={int(end)}"
+            )
+            resp = self._http_get_json(
+                api_endpoint,
+                f"Failed to retrieve gene track '{track}' for locus '{contig}:{start}-{end}'",
+            )
+            response = resp
+            if resp.status_code == 200:
+                _d = resp.json() if resp is not None else None
+                _td = _d.get(track) if isinstance(_d, dict) else None
+                _has = (isinstance(_td, dict) and bool(_td.get(_cand))) or (isinstance(_td, list) and bool(_td))
+                if _has:
+                    contig = _cand  # rest of the parse keys on the working name
+                    break
+        if response is not None and response.status_code == 200:
             self._cache_debug_bump("genes", "api")
             data = response.json()
 
@@ -2870,17 +3636,49 @@ class GenomeShader:
 
         # Try to get variant data if locus is a string
         variants_df = None
+        variant_agg_mode = False  # scale path: per-variant aggregates, no per-sample
+        # The EXACT window the caller asked for (locus string only). The displayed
+        # region honors this rather than the data's min/max + padding, so a
+        # requested 1kb window shows 1kb, not a wider padded view.
+        requested_region = None
         input_resolve_start = time.perf_counter()
         if isinstance(locus_or_dataframe, str):
+            try:
+                requested_region = self._parse_locus(locus_or_dataframe)  # (contig, start, end)
+            except Exception:
+                requested_region = None
             self._progress(f"Fetching variants for {locus_or_dataframe} …", 1, 4)
             try:
-                # Try to get variant data first
-                variants_df = self.get_locus_variants(locus_or_dataframe)
-                if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
-                    samples_df = variants_df.clone()
-                else:
-                    # If no variant data, try reads
-                    samples_df = self.get_locus(locus_or_dataframe)
+                # Scale path: for very large cohorts the per-sample long format
+                # OOMs (variants×samples), so fetch per-variant AGGREGATES and
+                # render bands from them (carriers come from fetch_carriers).
+                # Threshold via GENOMESHADER_VARIANT_AGG_MAX (default 5000, the
+                # Tier-2 start per DATA_LOADING_SCALE_V2 §13.6): above it, render
+                # from aggregates. Long-format at 20k samples is ~60M rows / 100s+
+                # (measured on Pf7), so aggregate-first must be the default at
+                # cohort scale, not only above 100k. Falls back to long-format on
+                # any error.
+                try:
+                    _agg_max = int(os.environ.get("GENOMESHADER_VARIANT_AGG_MAX", "5000"))
+                except (TypeError, ValueError):
+                    _agg_max = 5000
+                if _agg_max >= 0 and self._variant_sample_count() > _agg_max:
+                    try:
+                        agg_df = self._session.get_locus_variant_aggregates(locus_or_dataframe)
+                        if agg_df is not None and isinstance(agg_df, pl.DataFrame) and len(agg_df) > 0:
+                            variants_df = agg_df
+                            samples_df = agg_df.clone()
+                            variant_agg_mode = True
+                    except Exception:
+                        variant_agg_mode = False
+                if not variant_agg_mode:
+                    # Try to get variant data first
+                    variants_df = self.get_locus_variants(locus_or_dataframe)
+                    if variants_df is not None and isinstance(variants_df, pl.DataFrame) and len(variants_df) > 0:
+                        samples_df = variants_df.clone()
+                    else:
+                        # If no variant data, try reads
+                        samples_df = self.get_locus(locus_or_dataframe)
             except Exception as e:
                 # If variant extraction fails, fall back to reads
                 try:
@@ -2919,6 +3717,13 @@ class GenomeShader:
             ref_chr = samples_df["reference_contig"].min()
             ref_start = samples_df["reference_start"].min()
             ref_end = samples_df["reference_end"].max()
+
+        # Honor the caller's exact window (locus string). Data-derived bounds +
+        # padding above only apply to a bare DataFrame input (no requested
+        # window). A too-small request is widened to a minimum window CENTERED on
+        # the requested midpoint, so `show("chr:100-100")` still renders.
+        if requested_region is not None:
+            ref_chr, ref_start, ref_end = self._displayed_window_for_request(requested_region)
         
         # Store the actual data bounds (where reads/variants exist)
         # These may differ from the displayed region if user zooms/pans
@@ -3092,7 +3897,10 @@ class GenomeShader:
             variant_tracks = precomputed_variant_payload.get("variant_tracks", [])
             insertion_variants_lookup = precomputed_variant_payload.get("insertion_variants_lookup", [])
         else:
-            variant_tracks, insertion_variants_lookup = self._build_variant_payload(variants_df)
+            if variant_agg_mode:
+                variant_tracks, insertion_variants_lookup = self._build_variant_payload_from_aggregates(variants_df)
+            else:
+                variant_tracks, insertion_variants_lookup = self._build_variant_payload(variants_df)
         timing_debug["variant_payload_ms"] = round((time.perf_counter() - t_variant_payload) * 1000.0, 1)
 
         # Load template HTML
@@ -3107,15 +3915,13 @@ class GenomeShader:
         # Check if comms are available for bidirectional communication
         comm_available = COMM_AVAILABLE
 
-        # Prefer Jupyter comms for variant payload transport (works in Terra).
         # inline_payload forces the full variant data straight into the config
-        # (no comm, no URL) — used by the anywidget host, which carries the
-        # config over the ipywidgets model and can't reach a localhost URL.
-        use_payload_comm = bool(comm_available and precomputed_variant_payload is not None) and not inline_payload
+        # (no URL) — used by the anywidget host, which carries the config over
+        # the ipywidgets model and can't reach a localhost URL. Otherwise write
+        # the payload to a local file URL and ship only track metadata inline.
         variant_payload_url = None
         use_payload_url = False
-        if not use_payload_comm and not inline_payload:
-            # Fallback: write payload to a local URL when comms are unavailable.
+        if not inline_payload:
             try:
                 payload = {
                     "variant_tracks": variant_tracks,
@@ -3145,15 +3951,21 @@ class GenomeShader:
             'repeats_data': repeats_data,
             'reference_data': reference_sequence,
             # Keep config small; detailed variant payload is loaded from URL when available.
-            'variant_tracks': variant_tracks_meta if (use_payload_url or use_payload_comm) else variant_tracks,
-            'insertion_variants_lookup': [] if (use_payload_url or use_payload_comm) else insertion_variants_lookup,
+            'variant_tracks': variant_tracks_meta if use_payload_url else variant_tracks,
+            'insertion_variants_lookup': [] if use_payload_url else insertion_variants_lookup,
             'variant_payload_url': variant_payload_url,
-            'variant_payload_via_comm': use_payload_comm,
             'data_bounds': {
                 'start': data_start,
                 'end': data_end,
             },
             'comm_available': comm_available,  # Indicates if Jupyter comms are available
+            # IGV-style dynamic loading: fetch variants for the visible window on
+            # pan/zoom (not just the startup region). Needs the comm round-trip.
+            'viewport_variant_loading': bool(comm_available),
+            # Zoom gate: above this span, skip loading individual variants (too
+            # many/dense to draw); tune per callset density.
+            'variant_max_span_bp': int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "1000000")),
+            'debug': bool(getattr(self, "_debug", False)),  # frontend event logging -> debug_log comm
             'sample_mapping': self._sample_mapping,  # Sample mapping: VCF sample names -> BAM sample names
             'cache_debug': self._cache_debug_delta(cache_debug_start),
             'ucsc_warm_debug': self._last_ucsc_warm_stats,
@@ -3460,7 +4272,14 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             None: Displays the visualization in the notebook.
         """
         # The ipywidget path is the portable transport (Notebook + Lab + Terra).
-        return self.show_widget(locus)
+        # First render decodes the window's variants over all samples (the cold
+        # ~seconds-scale read at cohort scale) + assembles reference/genes; report
+        # so it isn't a silent wait.
+        print(f"GenomeShader: rendering {locus}…", flush=True)
+        _t = time.perf_counter()
+        out = self.show_widget(locus)
+        print(f"GenomeShader:   rendered {locus} ({time.perf_counter() - _t:.1f}s)", flush=True)
+        return out
 
     def save(
         self,

@@ -72,6 +72,8 @@ const orientationItem = getElementById("orientationItem");
 const orientationLabel = getElementById("orientationLabel");
 const lockAllelesItem = getElementById("lockAllelesItem");
 const lockAllelesToggle = getElementById("lockAllelesToggle");
+const chromClickJumpItem = getElementById("chromClickJumpItem");
+const chromClickJumpToggle = getElementById("chromClickJumpToggle");
 const aggregateRareAllelesItem = getElementById("aggregateRareAllelesItem");
 const aggregateRareAllelesToggle = getElementById("aggregateRareAllelesToggle");
 const aggregateRareAllelesCutoffItem = getElementById("aggregateRareAllelesCutoffItem");
@@ -214,6 +216,17 @@ function setLockAlleles(enabled) {
   gsLocalStorage.setItem("genomeshader.lockAlleles", v ? "true" : "false");
   state.lockAlleles = v;
   if (lockAllelesToggle) lockAllelesToggle.checked = v;
+}
+// Click-chromosome-to-jump: opt-in (default OFF) so a stray ideogram click
+// doesn't teleport the view unexpectedly.
+function getStoredChromClickJump() {
+  return gsLocalStorage.getItem("genomeshader.chromClickJump") === "true";
+}
+function setChromClickJump(enabled) {
+  const v = enabled === true;
+  gsLocalStorage.setItem("genomeshader.chromClickJump", v ? "true" : "false");
+  state.chromClickJump = v;
+  if (chromClickJumpToggle) chromClickJumpToggle.checked = v;
 }
 function getStoredAggregateRareAlleles() {
   return gsLocalStorage.getItem("genomeshader.aggregateRareAlleles") === "true";
@@ -384,6 +397,35 @@ orientationItem.addEventListener("click", () => {
   renderAll();
 });
 
+// Settings: clear the on-disk + in-memory local cache on demand. Cache-only, so
+// safe/reversible (re-fetched on next access) — no confirm dialog, just feedback.
+const clearCacheItem = getElementById("clearCacheItem");
+if (clearCacheItem) {
+  clearCacheItem.addEventListener("click", () => {
+    const lbl = getElementById("clearCacheLabel");
+    if (typeof sendCommMessage !== "function") {
+      if (window.__GS_MODAL) window.__GS_MODAL(
+        "Cache clearing needs the live kernel connection, which isn't available here.",
+        { title: "Local cache" });
+      return;
+    }
+    if (lbl) lbl.textContent = "Clearing…";
+    sendCommMessage("clear_cache", {}, 30000).then((resp) => {
+      const files = (resp && resp.files) || 0;
+      const mb = (((resp && resp.bytes) || 0) / (1024 * 1024));
+      if (lbl) lbl.textContent = "Clear";
+      const msg = `Local cache cleared — ${files.toLocaleString()} file(s), `
+        + `${mb.toFixed(mb < 10 ? 1 : 0)} MB freed.`;
+      if (window.__GS_STATUS) window.__GS_STATUS(msg, { autoHide: 3500 });
+    }).catch((e) => {
+      if (lbl) lbl.textContent = "Clear";
+      if (window.__GS_MODAL) window.__GS_MODAL(
+        "Failed to clear the local cache: " + (e && e.message ? e.message : e),
+        { title: "Local cache" });
+    });
+  });
+}
+
 // Variant layout mode toggle in settings menu
 const variantLayoutModeItem = getElementById("variantLayoutModeItem");
 
@@ -403,6 +445,15 @@ if (lockAllelesItem && lockAllelesToggle) {
   });
   lockAllelesToggle.addEventListener("change", () => {
     setLockAlleles(lockAllelesToggle.checked);
+  });
+}
+if (chromClickJumpItem && chromClickJumpToggle) {
+  chromClickJumpItem.addEventListener("click", (e) => {
+    if (e.target === chromClickJumpToggle) return;
+    setChromClickJump(!(state.chromClickJump === true));
+  });
+  chromClickJumpToggle.addEventListener("change", () => {
+    setChromClickJump(chromClickJumpToggle.checked);
   });
 }
 if (aggregateRareAllelesItem && aggregateRareAllelesToggle) {
@@ -1019,5 +1070,54 @@ mq?.addEventListener?.("change", () => {
       bar.classList.remove("indeterminate");
     }
     if (opts.autoHide) hideTimer = setTimeout(hide, opts.autoHide);
+  };
+})();
+
+// Centered blocking modal with an OK button. window.__GS_MODAL(message, opts):
+//   opts.title    heading text; opts.okLabel button label (default "OK");
+//   opts.onClose  called after dismiss. Dismiss via OK / Enter / Esc / backdrop.
+// Overlays the widget root so it centers on the viewer, not the whole page.
+(function setupModal() {
+  window.__GS_MODAL = function (message, opts) {
+    opts = opts || {};
+    const host = (typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document.body;
+    const backdrop = document.createElement("div");
+    backdrop.className = "gs-modal-backdrop";
+    const box = document.createElement("div");
+    box.className = "gs-modal";
+    box.setAttribute("role", "alertdialog");
+    if (opts.title) {
+      const h = document.createElement("div");
+      h.className = "gs-modal-title";
+      h.textContent = String(opts.title);
+      box.appendChild(h);
+    }
+    const msg = document.createElement("div");
+    msg.className = "gs-modal-msg";
+    msg.textContent = String(message == null ? "" : message);
+    box.appendChild(msg);
+    const actions = document.createElement("div");
+    actions.className = "gs-modal-actions";
+    const ok = document.createElement("button");
+    ok.className = "gs-modal-ok";
+    ok.textContent = opts.okLabel || "OK";
+    actions.appendChild(ok);
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    host.appendChild(backdrop);
+
+    function close() {
+      try { backdrop.remove(); } catch (e) {}
+      document.removeEventListener("keydown", onKey, true);
+      if (typeof opts.onClose === "function") { try { opts.onClose(); } catch (e) {} }
+    }
+    function onKey(e) {
+      if (e.key === "Escape" || e.key === "Enter") { e.preventDefault(); e.stopPropagation(); close(); }
+    }
+    ok.addEventListener("click", close);
+    backdrop.addEventListener("mousedown", function (e) { if (e.target === backdrop) close(); });
+    document.addEventListener("keydown", onKey, true);
+    setTimeout(function () { try { ok.focus(); } catch (e) {} }, 0);
+    return close;
   };
 })();

@@ -695,43 +695,10 @@ function renderFlowCanvas() {
     // Reduce stem length by half
     const stemEndY = junctionY + (stemEndYFull - junctionY) / 2;
     
-    if (useWebGPU) {
-      for (let i=0;i<win.length;i++) {
-        const v = win[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
-        const color = isHovered ? blueHex : grayHex;
-        const alpha = isHovered ? 0.7 : 0.5;
-        // Position column based on mode
-        const x = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        const xScaled = x * devicePixelRatio;
-        flowInstancedRenderer.addLine(
-          xScaled, yBandToFlow(junctionY) * devicePixelRatio,
-          xScaled, yBandToFlow(stemEndY) * devicePixelRatio,
-          color, alpha
-        );
-      }
-    } else {
-      for (let i=0;i<win.length;i++) {
-        const v = win[i];
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
-        ctx.strokeStyle = isHovered ? colBlue : colGray;
-        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        // Position column based on mode
-        const x = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        ctx.beginPath();
-        ctx.moveTo(x, junctionY);
-        ctx.lineTo(x, stemEndY);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1.0;
-    }
+    // Per-variant vertical stems removed: indels are now marked by the
+    // lollipop overlay (#flowIndelOverlay) on top of the variant track, and
+    // non-indel variants read from their allele nodes — the generic stem line
+    // per variant was redundant clutter once the lollipops moved here.
 
     // Text labels (still use Canvas 2D for text)
     // Group variants by position to handle multiple variants at same position
@@ -823,48 +790,9 @@ function renderFlowCanvas() {
     // Store positions globally for click detection
     window._variantLabelPositions = variantLabelPositions;
 
-    // Connector lines from ruler to columns
-    const y0 = 6;
-    if (useWebGPU) {
-      for (let i=0; i<win.length; i++) {
-        const v = win[i];
-        // Indels are shown on the Indel track; skip their connector line here.
-        if (typeof isIndel === "function" && isIndel(v)) continue;
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
-        const color = isHovered ? blueHex : grayHex;
-        const alpha = isHovered ? 0.7 : 0.5;
-        const vx = xGenomeCanonical(v.pos, W);
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        flowInstancedRenderer.addLine(
-          vx * devicePixelRatio, yBandToFlow(y0) * devicePixelRatio,
-          cx * devicePixelRatio, yBandToFlow(junctionY) * devicePixelRatio,
-          color, alpha
-        );
-      }
-    } else {
-      for (let i=0; i<win.length; i++) {
-        const v = win[i];
-        // Indels are shown on the Indel track; skip their connector line here.
-        if (typeof isIndel === "function" && isIndel(v)) continue;
-        const variantIdx = variants.findIndex(v2 => v2.id === v.id);
-        const isHovered = (state.hoveredVariantId != null && String(v.id) === String(state.hoveredVariantId));
-        ctx.strokeStyle = isHovered ? colBlue : colGray;
-        ctx.globalAlpha = isHovered ? 0.7 : 0.5;
-        ctx.lineWidth = isHovered ? 2.5 : 1;
-        const vx = xGenomeCanonical(v.pos, W);
-        const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, W)
-          : xColumn(i, win.length);
-        ctx.beginPath();
-        ctx.moveTo(vx, y0);
-        ctx.lineTo(cx, junctionY);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1.0;
-    }
+    // Per-variant connector line removed: it drew a thin grey 1px vertical line
+    // centred on each variant, over the top of the allele stack (the "vertical
+    // line" the user asked to remove). Allele nodes + indel lollipops remain.
   }
 
   // Helper function to format allele with length suffix
@@ -1295,6 +1223,16 @@ function renderFlowCanvas() {
         ? alleleKeys.filter((k, idx, arr) => typeof k === "string" && arr.indexOf(k) === idx)
         : [];
       if (keys.length === 0) return 0;
+      // At scale the per-sample map is omitted; derive the count from the
+      // shipped aggregate. Exact for a single allele key; a small over-count for
+      // a union of keys (a sample carrying two of them counts twice), which is
+      // acceptable for the node's label.
+      if (variant.perSampleOmitted || !variant.sampleAlleles) {
+        const counts = variant.alleleSampleCounts || {};
+        let total = 0;
+        for (const k of keys) total += (counts[k] || 0);
+        if (total > 0 || variant.perSampleOmitted) return total;
+      }
       if (variant.sampleAlleles) {
         let count = 0;
         for (const sampleAlleles of Object.values(variant.sampleAlleles)) {

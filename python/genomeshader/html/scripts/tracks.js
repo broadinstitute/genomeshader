@@ -83,8 +83,12 @@ function renderTracks() {
     }
   }
   
-  // Draw data bounds overlays across all tracks except ideogram (if data bounds exist and differ from view)
-  if (dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
+  // Draw data bounds overlays across all tracks except ideogram (if data bounds
+  // exist and differ from view). Skip entirely when viewport variant loading is
+  // on — data pages in across the whole contig, so the "out of data" grey is
+  // misleading (and would otherwise linger over freshly-paged-in variants).
+  const _vpOn = !!(window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.viewport_variant_loading);
+  if (!_vpOn && dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
     const dataStartPos = genomePos(dataBounds.start);
     const dataEndPos = genomePos(dataBounds.end);
     
@@ -202,7 +206,8 @@ function renderTracks() {
     }
   }
 
-  if (!ideogramLayout || !genesLayout || !repeatsLayout || !rulerLayout || !referenceLayout || !flowLayout) return;
+  // repeats is optional (dropped when no repeats_data) — don't require it here.
+  if (!ideogramLayout || !genesLayout || !referenceLayout || !flowLayout) return;
 
   // Ideogram layout
   if (!ideogramLayout.track.collapsed) {
@@ -273,7 +278,7 @@ function renderTracks() {
     const bandH = isVertical ? ideogramH : ideogramH;
     
     // Validate band dimensions before using them
-    if (isNaN(bandX) || isNaN(bandY) || isNaN(bandW) || isNaN(bandH) || 
+    if (isNaN(bandX) || isNaN(bandY) || isNaN(bandW) || isNaN(bandH) ||
         bandW <= 0 || bandH <= 0) {
       console.warn('Genomeshader: Invalid band dimensions', { bandX, bandY, bandW, bandH, ideogramX, ideogramY, ideogramW, ideogramH, W, H });
       return;
@@ -281,6 +286,14 @@ function renderTracks() {
 
     // Use global chromosome lengths for mapping cytoband positions
     const chrLength = getChromosomeLength();
+
+    // Publish the ideogram band's screen rect + contig length so the
+    // click-chromosome-to-jump handler can map a click x -> genomic position
+    // across the WHOLE contig (the ideogram is a full-chromosome overview).
+    state.__ideogramHitRect = {
+      x: bandX, y: bandY, w: bandW, h: bandH,
+      len: chrLength, contig: state.contig, vertical: isVertical,
+    };
     
     // Get ideogram data from config (already parsed from JSON in Python)
     let ideogramData = [];
@@ -521,6 +534,37 @@ function renderTracks() {
         stroke: "rgba(255,77,77,0.95)",
         "stroke-width": 1
       }));
+    }
+
+    // Staged chromosome-click target: a differently-coloured (blue) box over the
+    // clicked area. It's a PENDING jump (committed by Go), distinct from the red
+    // current-view box. Same arm-proportional mapping as the view box.
+    const _pl = state.__pendingLocus;
+    if (_pl && _pl.contig === state.contig && chrLength > 0) {
+      const pc = Math.max(1, Math.min(chrLength, (Number(_pl.start) + Number(_pl.end)) / 2));
+      const pIsP = pc <= centromerePos;
+      const spanFrac = Math.max(0, Number(_pl.end) - Number(_pl.start)) / chrLength;
+      if (isVertical) {
+        const armY = pIsP ? pY : qY, armH = pIsP ? pH : qH, armLen = pIsP ? pArmLength : qArmLength;
+        const fr = pIsP ? (pc / armLen) : ((pc - centromerePos) / armLen);
+        const boxH = Math.max(12, spanFrac * armH);
+        const cy = pIsP ? (pY + pH - fr * pH) : (qY + fr * qH);
+        const by = Math.max(armY, Math.min(armY + armH - boxH, cy - boxH / 2));
+        tracksSvg.appendChild(el("rect", {
+          x: (pIsP ? pX : qX) - 1, y: by, width: (pIsP ? pW : qW) + 2, height: boxH,
+          fill: "rgba(80,150,255,0.25)", stroke: "rgba(80,150,255,0.95)", "stroke-width": 1.5,
+        }));
+      } else {
+        const armX = pIsP ? pX : qX, armW = pIsP ? pW : qW, armLen = pIsP ? pArmLength : qArmLength;
+        const fr = pIsP ? (pc / armLen) : ((pc - centromerePos) / armLen);
+        const boxW = Math.max(12, spanFrac * armW);
+        const cx = armX + fr * armW;
+        const bx = Math.max(armX, Math.min(armX + armW - boxW, cx - boxW / 2));
+        tracksSvg.appendChild(el("rect", {
+          x: bx, y: (pIsP ? pY : qY) - 1, width: boxW, height: (pIsP ? pH : qH) + 2,
+          fill: "rgba(80,150,255,0.25)", stroke: "rgba(80,150,255,0.95)", "stroke-width": 1.5,
+        }));
+      }
     }
   }
 
@@ -848,8 +892,8 @@ function renderTracks() {
   }
   }
 
-  // --- RepeatMasker track
-  if (!repeatsLayout.track.collapsed) {
+  // --- RepeatMasker track (skipped entirely when the track was dropped)
+  if (repeatsLayout && !repeatsLayout.track.collapsed) {
     let repeatsX, repeatsY, repeatsW, repeatsH;
     if (isVertical) {
       repeatsX = repeatsLayout.contentLeft + 8;
@@ -1087,132 +1131,148 @@ function renderTracks() {
   }
   }
 
+  // Coordinate axis: base line + major/minor ticks + bp labels + edge
+  // labels. Factored out of the old Indel ruler so it can ride the
+  // Reference track (baseX used in vertical mode, baseY in horizontal).
+  function drawGenomicAxis(baseX, baseY) {
+      // Base line
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: baseX, x2: baseX, y1: 16, y2: H-16,
+          stroke: "rgba(127,127,127,0.70)",
+          "stroke-width": 1.2
+        }));
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: 16, x2: W-16, y1: baseY, y2: baseY,
+          stroke: "rgba(127,127,127,0.70)",
+          "stroke-width": 1.2
+        }));
+      }
+
+      const span = state.endBp - state.startBp;
+      const dim = isVertical ? H : W;
+      const desiredMajorTicks = Math.max(5, Math.min(10, Math.floor((dim - 32) / 140)));
+      const majorBp = chooseNiceTickBp(span, desiredMajorTicks);
+      const minorBp = majorBp / 5;
+
+      const pxPerMajor = (dim - 32) / (span / majorBp);
+      const showLabels = pxPerMajor >= 80;
+
+    const firstMinor = Math.ceil(state.startBp / minorBp) * minorBp;
+
+    // Track major tick label positions to avoid overlap with edge labels
+    const majorTickLabelPositions = [];
+
+    for (let bp = firstMinor; bp <= state.endBp; bp += minorBp) {
+      const pos = genomePos(bp);
+      const isMajor = (Math.round(bp / minorBp) % 5) === 0;
+
+      if (isVertical) {
+        tracksSvg.appendChild(el("line", {
+          x1: baseX - (isMajor ? 9 : 5), x2: baseX + (isMajor ? 9 : 5),
+          y1: pos, y2: pos,
+          stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
+          "stroke-width": isMajor ? 1.1 : 1
+        }));
+
+        if (isMajor && showLabels) {
+          const textEl = el("text", {
+            x: baseX + 26,
+            y: pos,
+            class: "svg-small",
+            "text-anchor": "start",
+            "dominant-baseline": "middle"
+          }, formatBp(Math.round(bp), span));
+          tracksSvg.appendChild(textEl);
+          majorTickLabelPositions.push(pos);
+        }
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: pos, x2: pos,
+          y1: baseY - (isMajor ? 9 : 5), y2: baseY + (isMajor ? 9 : 5),
+          stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
+          "stroke-width": isMajor ? 1.1 : 1
+        }));
+
+        if (isMajor && showLabels) {
+          tracksSvg.appendChild(el("text", {
+            x: pos,
+            y: baseY + 26,
+            class: "svg-small",
+            "text-anchor": "middle"
+          }, formatBp(Math.round(bp), span)));
+          majorTickLabelPositions.push(pos);
+        }
+      }
+    }
+
+    // Only show edge labels if no tick label is too close
+    const edgeThreshold = 100; // pixels
+    if (isVertical) {
+      const bottomEdgeY = H - 16;
+      const topEdgeY = 16;
+      const hasNearbyBottomTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - bottomEdgeY) < edgeThreshold);
+      const hasNearbyTopTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - topEdgeY) < edgeThreshold);
+
+      if (!hasNearbyBottomTick) {
+        const textEl = el("text", {
+          x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
+        }, formatBp(Math.round(state.startBp), span));
+        tracksSvg.appendChild(textEl);
+      }
+      if (!hasNearbyTopTick) {
+        const textEl = el("text", {
+          x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
+        }, formatBp(Math.round(state.endBp), span));
+        tracksSvg.appendChild(textEl);
+      }
+    } else {
+      const leftEdgeX = 16;
+      const rightEdgeX = W - 16;
+      const hasNearbyLeftTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - leftEdgeX) < edgeThreshold);
+      const hasNearbyRightTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - rightEdgeX) < edgeThreshold);
+
+      if (!hasNearbyLeftTick) {
+        tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
+          formatBp(Math.round(state.startBp), span)
+        ));
+      }
+      if (!hasNearbyRightTick) {
+        tracksSvg.appendChild(el("text", {
+          x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
+        }, formatBp(Math.round(state.endBp), span)));
+      }
+    }
+  }
+
   // --- Locus ruler
-  if (!rulerLayout.track.collapsed) {
+  if (flowLayout && !flowLayout.track.collapsed) {
     let rulerX, rulerY, rulerW, rulerH, baseX, baseY;
     if (isVertical) {
-      rulerX = rulerLayout.contentLeft + 8;
+      rulerX = flowLayout.contentLeft + 8;
       rulerW = 56;
       rulerY = 16;
       rulerH = H - 32;
       baseX = rulerX + 14;
     } else {
-      rulerY = rulerLayout.contentTop + 8;
+      rulerY = flowLayout.contentTop + 4;
       rulerH = 56;
       rulerX = 16;
       rulerW = W - 32;
-      baseY = rulerY + 14;
+      // Lollipop head (circle at baseY-18) sits in the blank strip at the top of
+      // the variant track, below the divider; the stem drops toward the nodes.
+      baseY = rulerY + 24;
     }
-
-    // Base line
-    if (isVertical) {
-      tracksSvg.appendChild(el("line", {
-        x1: baseX, x2: baseX, y1: 16, y2: H-16,
-        stroke: "rgba(127,127,127,0.70)",
-        "stroke-width": 1.2
-      }));
-    } else {
-      tracksSvg.appendChild(el("line", {
-        x1: 16, x2: W-16, y1: baseY, y2: baseY,
-        stroke: "rgba(127,127,127,0.70)",
-        "stroke-width": 1.2
-      }));
-    }
-
-    const span = state.endBp - state.startBp;
-    const dim = isVertical ? H : W;
-    const desiredMajorTicks = Math.max(5, Math.min(10, Math.floor((dim - 32) / 140)));
-    const majorBp = chooseNiceTickBp(span, desiredMajorTicks);
-    const minorBp = majorBp / 5;
-
-    const pxPerMajor = (dim - 32) / (span / majorBp);
-    const showLabels = pxPerMajor >= 80;
-
-  const firstMinor = Math.ceil(state.startBp / minorBp) * minorBp;
-
-  // Track major tick label positions to avoid overlap with edge labels
-  const majorTickLabelPositions = [];
-
-  for (let bp = firstMinor; bp <= state.endBp; bp += minorBp) {
-    const pos = genomePos(bp);
-    const isMajor = (Math.round(bp / minorBp) % 5) === 0;
-
-    if (isVertical) {
-      tracksSvg.appendChild(el("line", {
-        x1: baseX - (isMajor ? 9 : 5), x2: baseX + (isMajor ? 9 : 5),
-        y1: pos, y2: pos,
-        stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
-        "stroke-width": isMajor ? 1.1 : 1
-      }));
-
-      if (isMajor && showLabels) {
-        const textEl = el("text", {
-          x: baseX + 26,
-          y: pos,
-          class: "svg-small",
-          "text-anchor": "start",
-          "dominant-baseline": "middle"
-        }, formatBp(Math.round(bp), span));
-        tracksSvg.appendChild(textEl);
-        majorTickLabelPositions.push(pos);
-      }
-    } else {
-      tracksSvg.appendChild(el("line", {
-        x1: pos, x2: pos,
-        y1: baseY - (isMajor ? 9 : 5), y2: baseY + (isMajor ? 9 : 5),
-        stroke: isMajor ? "rgba(127,127,127,0.55)" : "rgba(127,127,127,0.30)",
-        "stroke-width": isMajor ? 1.1 : 1
-      }));
-
-      if (isMajor && showLabels) {
-        tracksSvg.appendChild(el("text", {
-          x: pos,
-          y: baseY + 26,
-          class: "svg-small",
-          "text-anchor": "middle"
-        }, formatBp(Math.round(bp), span)));
-        majorTickLabelPositions.push(pos);
-      }
-    }
-  }
-
-  // Only show edge labels if no tick label is too close
-  const edgeThreshold = 100; // pixels
-  if (isVertical) {
-    const bottomEdgeY = H - 16;
-    const topEdgeY = 16;
-    const hasNearbyBottomTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - bottomEdgeY) < edgeThreshold);
-    const hasNearbyTopTick = majorTickLabelPositions.some(tickY => Math.abs(tickY - topEdgeY) < edgeThreshold);
-
-    if (!hasNearbyBottomTick) {
-      const textEl = el("text", {
-        x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
-      }, formatBp(Math.round(state.startBp), span));
-      tracksSvg.appendChild(textEl);
-    }
-    if (!hasNearbyTopTick) {
-      const textEl = el("text", {
-        x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
-      }, formatBp(Math.round(state.endBp), span));
-      tracksSvg.appendChild(textEl);
-    }
-  } else {
-    const leftEdgeX = 16;
-    const rightEdgeX = W - 16;
-    const hasNearbyLeftTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - leftEdgeX) < edgeThreshold);
-    const hasNearbyRightTick = majorTickLabelPositions.some(tickX => Math.abs(tickX - rightEdgeX) < edgeThreshold);
-
-    if (!hasNearbyLeftTick) {
-      tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
-        formatBp(Math.round(state.startBp), span)
-      ));
-    }
-    if (!hasNearbyRightTick) {
-      tracksSvg.appendChild(el("text", {
-        x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
-      }, formatBp(Math.round(state.endBp), span)));
-    }
-  }
+    // Indel lollipops render into a dedicated overlay ABOVE the variant
+    // (flow) canvas so they sit on the variants — the standalone Indel track
+    // is gone. Full-viewer overlay -> same genome x-mapping as the tracks SVG.
+    const flowIndelOverlay = document.getElementById('flowIndelOverlay');
+    if (!flowIndelOverlay) return;
+    while (flowIndelOverlay.firstChild) flowIndelOverlay.removeChild(flowIndelOverlay.firstChild);
+    flowIndelOverlay.setAttribute('width', W);
+    flowIndelOverlay.setAttribute('height', H);
+    flowIndelOverlay.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
   // Variant marks: use all variant tracks so every track adds a marker to the ruler
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
@@ -1253,28 +1313,21 @@ function renderTracks() {
     } else {
       lineEl = el("line", {
         x1: pos, x2: pos,
-        y1: baseY - 18, y2: baseY + 18,
+        y1: baseY - 18, y2: baseY + 6,
         stroke: strokeColor,
         "stroke-width": strokeWidth,
         style: "cursor: pointer;",
         "data-variant-id": variantId
       });
     }
-    lineEl.addEventListener("mouseenter", () => {
-      state.hoveredVariantIndex = idx;
-      state.hoveredVariantId = variantId;
-      renderHoverOnly();
-    });
-    lineEl.addEventListener("mouseleave", () => {
-      state.hoveredVariantIndex = null;
-      state.hoveredVariantId = null;
-      renderHoverOnly();
-    });
-    
-    // Indels are toggleable on the line itself: insertions expand their gap,
-    // deletions repeat the reference for their deleted bases. A position that is
-    // BOTH (an insertion alt and a deletion alt) cycles off -> ins -> del -> off,
-    // so you can look at either without them fighting over one marker.
+    // The stem is drawn but NOT interactive — only the lollipop head (circle)
+    // toggles the indel, so the stem and the strip below it stay click-through
+    // to the ref/alt allele nodes underneath.
+    lineEl.style.pointerEvents = "none";
+
+    // Indel toggle action (used by the circle head below): insertions expand
+    // their gap, deletions repeat the deleted ref bases; a position that is BOTH
+    // cycles off -> ins -> del -> off.
     const _isIns = isInsertion(v), _isDel = isDeletion(v);
     const _isMixed = _isIns && _isDel;
     const _indelTitle = _isMixed ? "Click to toggle insertion / deletion"
@@ -1286,16 +1339,7 @@ function renderTracks() {
       if (nxt.del) delSet.add(variantId); else delSet.delete(variantId);
       renderAll();
     };
-    if (typeof isIndel === "function" && isIndel(v)) {
-      lineEl.style.pointerEvents = "auto";
-      lineEl.setAttribute("title", _indelTitle);
-      lineEl.addEventListener("pointerdown", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        _toggleIndel();
-      });
-    }
-    tracksSvg.appendChild(lineEl);
+    flowIndelOverlay.appendChild(lineEl);
     
     // Store reference to variant elements for hover updates
     if (!state.locusVariantElements.has(idx)) {
@@ -1303,49 +1347,7 @@ function renderTracks() {
     }
     state.locusVariantElements.get(idx).lineEl = lineEl;
     
-    // Larger invisible clickable area for the indel toggle (easier to hit)
-    if (typeof isIndel === "function" && isIndel(v)) {
-      // Add an invisible wider rectangle for easier clicking
-      let clickArea;
-      if (isVertical) {
-        clickArea = el("rect", {
-          x: baseX - 20,
-          y: pos - 5,
-          width: 40,
-          height: 10,
-          fill: "transparent",
-          style: "cursor: pointer; pointer-events: auto;",
-          "data-variant-id": variantId
-        });
-      } else {
-        clickArea = el("rect", {
-          x: pos - 5,
-          y: baseY - 20,
-          width: 10,
-          height: 40,
-          fill: "transparent",
-          style: "cursor: pointer; pointer-events: auto;",
-          "data-variant-id": variantId
-        });
-      }
-      clickArea.setAttribute("title", _indelTitle);
-      clickArea.addEventListener("mouseenter", () => {
-        state.hoveredVariantIndex = idx;
-        state.hoveredVariantId = variantId;
-        renderHoverOnly();
-      });
-      clickArea.addEventListener("mouseleave", () => {
-        state.hoveredVariantIndex = null;
-        state.hoveredVariantId = null;
-        renderHoverOnly();
-      });
-      clickArea.addEventListener("pointerdown", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        _toggleIndel();
-      });
-      tracksSvg.appendChild(clickArea);
-    }
+    // No wide click target: only the lollipop head (circle) toggles the indel
 
     let circleEl;
     const circleStrokeColor = isHovered ? "var(--blue)" : "rgba(127,127,127,0.5)";
@@ -1368,32 +1370,36 @@ function renderTracks() {
         "data-variant-id": variantId
       });
     }
-    circleEl.addEventListener("mouseenter", () => {
-      state.hoveredVariantIndex = idx;
-      state.hoveredVariantId = variantId;
-      renderHoverOnly();
-    });
-    circleEl.addEventListener("mouseleave", () => {
-      state.hoveredVariantIndex = null;
-      state.hoveredVariantId = null;
-      renderHoverOnly();
-    });
-    // Pointerdown handler to toggle insertion expansion
-    if (isInsertion(v)) {
-      circleEl.style.pointerEvents = "auto";
-      circleEl.setAttribute("title", "Click to expand insertion");
-      circleEl.addEventListener("pointerdown", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (state.expandedInsertions.has(variantId)) {
-          state.expandedInsertions.delete(variantId);
-        } else {
-          state.expandedInsertions.add(variantId);
-        }
-        renderAll();
+    // Only the lollipop HEAD toggles the indel. The visible ring is fill:none
+    // (hollow) and an SVG hollow circle only hit-tests on its painted stroke, so
+    // a click on the centre would fall through. Carry the interaction on a small
+    // TRANSPARENT hit-disc over the head (pointer-events:all = whole disc, not
+    // just the rim), sized to stay in the blank strip ABOVE the allele nodes so
+    // it never covers the ref/alt alleles. The visible ring is non-interactive.
+    circleEl.style.pointerEvents = "none";
+    if (typeof isIndel === "function" && isIndel(v)) {
+      const hcx = isVertical ? (baseX - 18) : pos;
+      const hcy = isVertical ? pos : (baseY - 18);
+      const head = el("circle", {
+        cx: hcx, cy: hcy, r: 8, fill: "transparent",
+        style: "cursor: pointer; pointer-events: all;",
+        "data-variant-id": variantId,
       });
+      head.setAttribute("title", _indelTitle);
+      const _swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
+      head.addEventListener("mouseenter", () => {
+        state.hoveredVariantIndex = idx; state.hoveredVariantId = variantId; renderHoverOnly();
+      });
+      head.addEventListener("mouseleave", () => {
+        state.hoveredVariantIndex = null; state.hoveredVariantId = null; renderHoverOnly();
+      });
+      head.addEventListener("pointerdown", (e) => { _swallow(e); _toggleIndel(); });
+      head.addEventListener("mousedown", _swallow);
+      head.addEventListener("pointerup", _swallow);
+      head.addEventListener("click", _swallow);
+      flowIndelOverlay.appendChild(head);
     }
-    tracksSvg.appendChild(circleEl);
+    flowIndelOverlay.appendChild(circleEl);
     
     // Store reference to circle element for hover updates
     if (!state.locusVariantElements.has(idx)) {
@@ -1410,7 +1416,7 @@ function renderTracks() {
 
       if (isVertical) {
         const gapEndY = nextPosAtVariant;
-        tracksSvg.appendChild(el("rect", {
+        flowIndelOverlay.appendChild(el("rect", {
           x: baseX - 18,
           y: gapEndY,
           width: 36,
@@ -1433,7 +1439,7 @@ function renderTracks() {
         const insertionBandHeight = 24;
         const insertionBandY = baseY - insertionBandHeight / 2;
 
-        tracksSvg.appendChild(el("rect", {
+        flowIndelOverlay.appendChild(el("rect", {
           x: gapStartX,
           y: insertionBandY,
           width: displayedGapSizeX,
@@ -1447,18 +1453,6 @@ function renderTracks() {
     }
   }
 
-    // separator
-    if (isVertical) {
-      tracksSvg.appendChild(el("line", {
-        x1: rulerX + rulerW, x2: rulerX + rulerW, y1: 0, y2: H,
-        stroke: "rgba(127,127,127,0.12)"
-      }));
-    } else {
-      tracksSvg.appendChild(el("line", {
-        x1: 0, x2: W, y1: rulerY + rulerH, y2: rulerY + rulerH,
-        stroke: "rgba(127,127,127,0.12)"
-      }));
-    }
   }
 
   // --- Reference track
@@ -1866,7 +1860,8 @@ function renderTracks() {
         const dels = (typeof getExpandedDeletionsInView === "function") ? getExpandedDeletionsInView() : [];
         const wash = "rgba(70,70,70,0.62)", edge = "rgba(35,35,35,0.9)";
         dels.forEach((d, i) => {
-          const rowTop = referenceY + referenceH + 3 + i * DELETION_ROW_H;
+          // +50 clears the coordinate-axis strip now drawn below the sequence.
+          const rowTop = referenceY + referenceH + 50 + i * DELETION_ROW_H;
           const rowH = DELETION_ROW_H - 5;
           const loBp = Math.max(d.loBp, Math.ceil(state.startBp));
           const hiBp = Math.min(d.hiBp, Math.floor(state.endBp));
@@ -1907,6 +1902,14 @@ function renderTracks() {
             style: "fill: rgba(229,83,75,0.95); font-size:8px; font-weight:bold; letter-spacing:.04em;" }, "DEL"));
         });
       }
+    }
+
+    // Coordinate axis now rides the Reference track (merged from the old
+    // Indel ruler): draw it just below the reference sequence band.
+    if (isVertical) {
+      drawGenomicAxis(referenceX + referenceW + 20, 0);
+    } else {
+      drawGenomicAxis(0, referenceY + referenceH + 22);
     }
 
     // Comment pins (defined in comments.js): comments are a baseline annotation,
