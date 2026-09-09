@@ -76,6 +76,19 @@ def test_reconcile_reads_warns_on_excluded_sample(shader):
         shader._reconcile_read_samples()
 
 
+def test_attach_variants_raises_when_all_headers_fail(shader, monkeypatch):
+    # A Requester Pays (or other) header-read failure used to warn, attach anyway,
+    # and produce a broken empty track. Fail loudly instead.
+    def boom(path, index=None):
+        raise RuntimeError(
+            "Bucket is a requester pays bucket but no user project provided."
+        )
+    monkeypatch.setattr(gs, "_vcf_sample_names", boom)
+    with pytest.raises(RuntimeError, match="could not read VCF/BCF headers"):
+        shader.attach_variants("t", "gs://aou-bucket/callset.vcf.gz")
+    shader._session.attach_variants.assert_not_called()
+
+
 def test_reconcile_noop_without_variants(shader):
     # No variant universe yet -> nothing to reconcile, no warning, no error.
     shader._session.get_bam_sample_names.return_value = ["S1", "S2"]

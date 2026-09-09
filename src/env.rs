@@ -6,11 +6,64 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static GCS_TOKEN_MINTED_AT: AtomicU64 = AtomicU64::new(0);
 const GCS_TOKEN_TTL_SECS: u64 = 45 * 60;
 
+/// Env vars that can supply a GCS Requester Pays billing project, in preference
+/// order. `GOOGLE_PROJECT` is set automatically on Verily Workbench / Terra VMs
+/// — the same value users pass to `gsutil -u $GOOGLE_PROJECT`.
+const GCS_BILLING_PROJECT_ENVS: &[&str] = &[
+    "GENOMESHADER_GCS_BILLING_PROJECT",
+    "GCS_REQUESTER_PAYS_PROJECT",
+    "CLOUDSDK_BILLING_PROJECT",
+    "GOOGLE_PROJECT",
+    "GOOGLE_CLOUD_PROJECT",
+    "GCLOUD_PROJECT",
+    "CLOUDSDK_CORE_PROJECT",
+];
+
 fn now_epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Resolve a GCS billing / Requester Pays project from `get`, which is normally
+/// `std::env::var`. Injected so the preference order is unit-testable without
+/// mutating process env.
+pub fn gcs_billing_project_from<F>(mut get: F) -> Option<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    for key in GCS_BILLING_PROJECT_ENVS {
+        if let Some(v) = get(key) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn gcs_billing_project() -> Option<String> {
+    gcs_billing_project_from(|k| std::env::var(k).ok())
+}
+
+/// Copy a resolved billing project into the env vars htslib (`GCS_REQUESTER_PAYS_PROJECT`
+/// → `X-Goog-User-Project`) and gcloud (`CLOUDSDK_BILLING_PROJECT`) actually
+/// honour. Safe to call on every remote open: no-ops when already set or when
+/// no project can be resolved.
+pub fn ensure_gcs_requester_pays() {
+    let Some(project) = gcs_billing_project() else {
+        return;
+    };
+    let current = std::env::var("GCS_REQUESTER_PAYS_PROJECT").unwrap_or_default();
+    if current.trim().is_empty() {
+        std::env::set_var("GCS_REQUESTER_PAYS_PROJECT", &project);
+    }
+    let current = std::env::var("CLOUDSDK_BILLING_PROJECT").unwrap_or_default();
+    if current.trim().is_empty() {
+        std::env::set_var("CLOUDSDK_BILLING_PROJECT", &project);
+    }
 }
 
 pub fn local_guess_curl_ca_bundle() {
@@ -68,6 +121,7 @@ fn token_is_stale(minted: u64, now: u64) -> bool {
 }
 
 pub fn ensure_gcs_token_fresh() {
+    ensure_gcs_requester_pays();
     let minted = GCS_TOKEN_MINTED_AT.load(Ordering::Relaxed);
     let now = now_epoch_secs();
     if token_is_stale(minted, now) {
@@ -83,12 +137,56 @@ pub fn ensure_gcs_token_fresh() {
 /// Reactive refresh used by the open-with-fallbacks ladders after a failed
 /// request. Now non-panicking (see `refresh_gcs_token`).
 pub fn gcs_authorize_data_access() {
+    ensure_gcs_requester_pays();
     refresh_gcs_token();
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{token_is_stale, GCS_TOKEN_TTL_SECS};
+    use super::{gcs_billing_project_from, token_is_stale, GCS_TOKEN_TTL_SECS};
+    use std::collections::HashMap;
+
+    fn lookup<'a>(map: &'a HashMap<&str, &str>) -> impl FnMut(&str) -> Option<String> + 'a {
+        move |k| map.get(k).map(|s| (*s).to_string())
+    }
+
+    #[test]
+    fn billing_project_prefers_explicit_htslib_env() {
+        let mut env = HashMap::new();
+        env.insert("GCS_REQUESTER_PAYS_PROJECT", "htslib-proj");
+        env.insert("GOOGLE_PROJECT", "workbench-proj");
+        assert_eq!(
+            gcs_billing_project_from(lookup(&env)).as_deref(),
+            Some("htslib-proj")
+        );
+    }
+
+    #[test]
+    fn billing_project_uses_google_project_on_workbench() {
+        let mut env = HashMap::new();
+        env.insert("GOOGLE_PROJECT", "workbench-proj");
+        assert_eq!(
+            gcs_billing_project_from(lookup(&env)).as_deref(),
+            Some("workbench-proj")
+        );
+    }
+
+    #[test]
+    fn billing_project_skips_blank_and_falls_through() {
+        let mut env = HashMap::new();
+        env.insert("GCS_REQUESTER_PAYS_PROJECT", "  ");
+        env.insert("GOOGLE_CLOUD_PROJECT", "gcp-proj");
+        assert_eq!(
+            gcs_billing_project_from(lookup(&env)).as_deref(),
+            Some("gcp-proj")
+        );
+    }
+
+    #[test]
+    fn billing_project_none_when_unset() {
+        let env: HashMap<&str, &str> = HashMap::new();
+        assert_eq!(gcs_billing_project_from(lookup(&env)), None);
+    }
 
     #[test]
     fn token_staleness_timer() {

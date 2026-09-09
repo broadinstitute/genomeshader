@@ -224,26 +224,37 @@ pub fn fetch_reads_from_bam_urls(
     }
 
     // Parallelize per-BAM fetch while preserving deterministic merge order.
-    let mut indexed_dfs: Vec<(usize, DataFrame)> = reads_urls
+    // Track open-failures separately from "opened but no reads in this window"
+    // so a Requester Pays / auth miss isn't returned as an empty (successful)
+    // dataframe — that produced a silent blank reads track.
+    let outcomes: Vec<(usize, Result<DataFrame, String>)> = reads_urls
         .par_iter()
         .enumerate()
-        .filter_map(|(idx, reads_url)| {
+        .map(|(idx, reads_url)| {
             match open_bam(reads_url, cache_path) {
                 Ok(mut bam) => {
                     match extract_reads(&mut bam, reads_url, cohort, chr, start, stop, ref_seq, ref_seq_start) {
-                        Ok(df) if df.height() > 0 => Some((idx, df)),
-                        Ok(_) => None,
+                        Ok(df) => (idx, Ok(df)),
                         Err(e) => {
                             eprintln!("Warning: Failed to extract reads from {}: {}", reads_url, e);
-                            None
+                            (idx, Err(e.to_string()))
                         }
                     }
                 }
                 Err(e) => {
                     eprintln!("Warning: Failed to open BAM file {}: {}", reads_url, e);
-                    None
+                    (idx, Err(e.to_string()))
                 }
             }
+        })
+        .collect();
+
+    let n_open_or_extract_fail = outcomes.iter().filter(|(_, r)| r.is_err()).count();
+    let mut indexed_dfs: Vec<(usize, DataFrame)> = outcomes
+        .into_iter()
+        .filter_map(|(idx, r)| match r {
+            Ok(df) if df.height() > 0 => Some((idx, df)),
+            _ => None,
         })
         .collect();
 
@@ -251,7 +262,18 @@ pub fn fetch_reads_from_bam_urls(
     let all_dfs: Vec<DataFrame> = indexed_dfs.into_iter().map(|(_, df)| df).collect();
 
     if all_dfs.is_empty() {
-        // Return empty DataFrame with correct schema
+        if n_open_or_extract_fail == reads_urls.len() {
+            anyhow::bail!(
+                "Failed to open any of {} BAM/CRAM file(s) for {}:{}-{}. \
+                 If these live in a Requester Pays bucket, set GCS_REQUESTER_PAYS_PROJECT \
+                 (Verily Workbench / Terra already export GOOGLE_PROJECT).",
+                reads_urls.len(),
+                chr,
+                start,
+                stop
+            );
+        }
+        // Opened successfully but no reads in this window.
         return Ok(DataFrame::default());
     }
 

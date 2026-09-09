@@ -1081,17 +1081,22 @@ fn _bam_sample_names(py: Python, bam_urls: Vec<String>) -> PyResult<Vec<(String,
         let cache = std::env::temp_dir();
         let mut out = Vec::with_capacity(bam_urls.len());
         for u in bam_urls {
-            let sms = Url::parse(&u)
-                .ok()
-                .and_then(|url| stage::open_bam(&url, &cache).ok())
-                .map(|bam| {
+            let sms = match Url::parse(&u).ok().and_then(|url| match stage::open_bam(&url, &cache) {
+                Ok(bam) => Some(bam),
+                Err(e) => {
+                    eprintln!("Warning: could not open BAM '{}' for @RG SM: {}", u, e);
+                    None
+                }
+            }) {
+                Some(bam) => {
                     let mut v: Vec<String> =
                         alignment::get_rg_to_sm_mapping(&bam).into_values().collect();
                     v.sort();
                     v.dedup();
                     v
-                })
-                .unwrap_or_default();
+                }
+                None => Vec::new(),
+            };
             out.push((u, sms));
         }
         Ok(out)
