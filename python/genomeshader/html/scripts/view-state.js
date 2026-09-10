@@ -596,6 +596,10 @@ if (typeof window !== "undefined") {
 // (overscanRegion / gsRegionCovered / gsWindowStoreUpdate).
 const GS_VP_OVERSCAN = 0.5;      // fetch viewport ± 50% on each side
 const GS_VP_MAX_SPAN_BP = 1000000; // above this span, skip loading individual variants (zoom gate)
+// Settle window: only load variants after the view has been still (no scroll /
+// zoom / pan) for this long. Every scroll/zoom re-arms the timer, so any motion
+// before it elapses cancels the pending load — nothing fetches mid-motion.
+const GS_VP_SETTLE_MS = 1000;
 let _gsVpRegions = [];           // [{contig,start,end}] currently-loaded windows
 const _gsVpData = new Map();     // regionKey -> variant_tracks[] for that window
 let _gsVpInFlight = null;        // request key currently being fetched (dedupe)
@@ -829,11 +833,15 @@ async function gsLoadVariantsForViewport(force) {
   }
 }
 
-// Debounced trigger — called from the pan/zoom settle points.
+// Debounced trigger — called from the pan/zoom/scroll settle points. Each call
+// re-arms the timer (clearTimeout), so continuous motion never fires a load; the
+// fetch runs only once the view has been still for the settle window. Callers
+// may pass an explicit delay (e.g. 0 for a deliberate region jump); the pan/
+// zoom/scroll callers pass nothing and get GS_VP_SETTLE_MS (1s).
 function gsScheduleViewportVariantLoad(delay) {
   if (_gsVpTimer) clearTimeout(_gsVpTimer);
   _gsVpTimer = setTimeout(() => { _gsVpTimer = null; gsLoadVariantsForViewport(false); },
-    delay == null ? 150 : delay);
+    delay == null ? GS_VP_SETTLE_MS : delay);
 }
 
 // Register the startup region's variants (shipped in config) with the viewport
@@ -992,7 +1000,10 @@ function gsGoToLocus(text) {
   const contig = parsed.contig;
   const haveLens = Object.keys(lens).length > 0;
   if (haveLens && !Object.prototype.hasOwnProperty.call(lens, contig)) {
-    if (window.__GS_STATUS) window.__GS_STATUS(`Unknown contig "${contig}"`, { autoHide: 4000 });
+    gsSeriousFailureModal(
+      `The contig "${contig}" is not in the reference genome. `
+      + `Pick a contig from the dropdown, or enter a coordinate on a contig that exists.`,
+      "Contig not in reference");
     return false;
   }
   const len = Number(lens[contig]) || 0;
@@ -1032,6 +1043,40 @@ if (typeof window !== "undefined") {
   window.gsParseLocusInput = gsParseLocusInput;
   window.gsGoToLocus = gsGoToLocus;
 }
+
+// Resolve a gene name / ID / transcript ID to a locus via the kernel and jump
+// to the best match (with a little flanking padding). Needs a live comm.
+async function gsResolveFeatureAndGo(query) {
+  const q = (query || "").trim();
+  if (!q) return false;
+  if (typeof sendCommMessage !== "function") {
+    if (window.__GS_STATUS) window.__GS_STATUS("Gene search needs a live kernel", { autoHide: 4000 });
+    return false;
+  }
+  if (window.__GS_STATUS) window.__GS_STATUS(`Searching for "${q}"…`, { busy: true });
+  try {
+    const resp = await sendCommMessage("resolve_feature", { query: q });
+    const matches = (resp && resp.matches) || [];
+    if (!matches.length) {
+      if (window.__GS_STATUS) window.__GS_STATUS(`No gene/feature matching "${q}"`, { autoHide: 4000 });
+      return false;
+    }
+    const m = matches[0];
+    const pad = Math.max(50, Math.round((m.end - m.start) * 0.1));
+    const start = Math.max(1, m.start - pad);
+    const end = m.end + pad;
+    gsGoToLocus(`${m.contig}:${start}-${end}`);
+    if (window.__GS_STATUS) {
+      const extra = matches.length > 1 ? ` (+${matches.length - 1} other match${matches.length > 2 ? "es" : ""})` : "";
+      window.__GS_STATUS(`Jumped to ${m.name}${extra}`, { autoHide: 3000 });
+    }
+    return true;
+  } catch (e) {
+    if (window.__GS_STATUS) window.__GS_STATUS("Gene search failed", { autoHide: 4000 });
+    return false;
+  }
+}
+if (typeof window !== "undefined") window.gsResolveFeatureAndGo = gsResolveFeatureAndGo;
 
 // Click on the Chromosome (ideogram) overview to STAGE a jump there — opt-in via
 // the "Click chromosome to jump" setting. Maps the click across the WHOLE contig
@@ -1152,6 +1197,13 @@ function gsInitLocusBar() {
   const submit = () => {
     if (!sel) return;
     const p = pos ? pos.value.trim() : "";
+    // Gene / transcript search: a position box holding letters that isn't a
+    // plain coordinate range ("12,345" or "12345-67890") is treated as a
+    // feature query and resolved to a locus by the kernel.
+    if (p && /[A-Za-z]/.test(p) && !/^\s*[\d,]+\s*(-\s*[\d,]+\s*)?$/.test(p)) {
+      gsResolveFeatureAndGo(p);
+      return;
+    }
     gsGoToLocus(p ? `${sel.value}:${p}` : sel.value);
   };
   if (go && !go.__gsWired) {
@@ -1195,7 +1247,15 @@ async function gsRequestNavigate(contig, start, end) {
       `Loading ${contig}:${start.toLocaleString()}–${end.toLocaleString()}…`, { busy: true });
   }
   try {
-    const resp = await sendCommMessage("navigate", { contig, start, end }, 30000);
+    // A region JUMP builds more than a pan (reference + genes + repeats +
+    // ideogram + a cold variant decode for a brand-new window), so the old 30s
+    // budget reliably timed out on large-cohort / cold regions. Give it a
+    // generous, config-overridable budget — a jump is an explicit user action, so
+    // waiting beats a hard "failed to load". (Speed itself is a separate backend
+    // concern: aggregate decode is already used; deferring UCSC genes/repeats off
+    // the jump hot path + parallel decode are the next levers.)
+    const navTimeout = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.navigate_timeout_ms) || 120000;
+    const resp = await sendCommMessage("navigate", { contig, start, end }, navTimeout);
     if (resp) gsApplyNavigatePayload(resp);
     if (window.__GS_STATUS) window.__GS_STATUS(false);
   } catch (e) {
@@ -1237,7 +1297,16 @@ function gsApplyNavigatePayload(p) {
   if (Array.isArray(p.insertion_variants_lookup)) {
     cfg.insertion_variants_lookup = p.insertion_variants_lookup;
   }
-  if (Array.isArray(p.variant_tracks)) {
+  if (p.variants_deferred) {
+    // Fast jump: the backend returned reference/genes only. Clear stale variants
+    // (old region's coords) and let the viewport loader fetch this window's
+    // variants asynchronously — its own long budget + progress bar means a cold
+    // cohort-scale decode never times out the jump.
+    _gsVpRegions = [];
+    _gsVpData.clear();
+    _gsVpRebuildTracks();
+    if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad(0);
+  } else if (Array.isArray(p.variant_tracks)) {
     // Seed the viewport store with the new window so later pans union/evict off it.
     const region = { contig: state.contig, start: Math.floor(state.startBp), end: Math.ceil(state.endBp) };
     _gsVpRegions = [region];

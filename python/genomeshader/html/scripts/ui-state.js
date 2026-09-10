@@ -1,10 +1,26 @@
 // ViewState
 // -----------------------------
+// A variant/allele point-marker sits at the CENTER of its base cell, matching
+// the reference base tile and the read SNP tile (both span [pos, pos+1], so
+// their letter/center is at pos+0.5). xGenomeCanonical(pos) is the cell's LEFT
+// edge, so variant markers must map (pos + this) to land on the base — otherwise
+// they're half a base off the reads/reference (invisible when zoomed out, a full
+// tick-width off when zoomed to tens of bp). Reads/tiles keep the raw pos.
+const VARIANT_BASE_CENTER_OFFSET_BP = 0.5;
+
 const state = {
   contig: "chr1",
   startBp: 100_000,
   endBp:   100_900,
   pxPerBp: 1,
+
+  // Render overscan (0 = off, identical to the view window). During a live pan
+  // these become >0 so the tracks render a window WIDER than the viewport and
+  // the pan layers are widened + offset by renderPadPx — translating them then
+  // reveals pre-painted content instead of a blank leading edge. Reset on
+  // settle. renderPadPx = renderPadBp * pxPerBp keeps zoom consistent.
+  renderPadBp: 0,
+  renderPadPx: 0,
 
   firstVariantIndex: 0,
   K: 8,
@@ -14,6 +30,10 @@ const state = {
   expandedDeletions: new Set(),  // Set of deletion variant IDs whose deleted ref bases are shown (shaded)
   hoveredRepeatTooltip: null, // { text, x, y } or null
   hoveredVariantLabelTooltip: null, // { text, x, y } or null
+  // Vertical mode: horizontal scroll offset (px) across the side-by-side track
+  // columns, so many expanded sample tracks that exceed the viewport width can
+  // be scrolled into view. 0 in horizontal mode / at rest.
+  vertScrollX: 0,
   locusVariantElements: new Map(), // Map of variant index -> { lineEl, circleEl } for Locus track
 
   // interaction
@@ -435,6 +455,16 @@ function flowWidthPx() {
 }
 function flowHeightPx()  { return rectH(flow); }
 
+// --- Render window (overscan-aware). At rest renderPadBp/Px are 0, so these are
+// identical to the view window / element widths — a strict no-op. During a live
+// pan they widen so tracks draw beyond the viewport (see state.renderPadBp).
+function renderStartBp() { return state.startBp - (state.renderPadBp || 0); }
+function renderEndBp()   { return state.endBp   + (state.renderPadBp || 0); }
+function renderWidthPx()      { return tracksWidthPx()  + 2 * (state.renderPadPx || 0); }
+function renderHeightPx()     { return tracksHeightPx() + 2 * (state.renderPadPx || 0); }
+function renderFlowWidthPx()  { return flowWidthPx()    + 2 * (state.renderPadPx || 0); }
+function renderFlowHeightPx() { return flowHeightPx()   + 2 * (state.renderPadPx || 0); }
+
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
@@ -493,7 +523,8 @@ function xGenomeCanonical(bp, W) {
   if (innerW <= 0) {
     return leftPad;
   }
-  const span = state.endBp - state.startBp;
+  const rStart = renderStartBp(), rEnd = renderEndBp();
+  const span = rEnd - rStart;
   if (span <= 0 || isNaN(span)) {
     return leftPad;
   }
@@ -514,7 +545,7 @@ function xGenomeCanonical(bp, W) {
     ? getAccumulatedGapBp(bp, state.expandedInsertions)
     : (getAccumulatedGapPx(bp, state.expandedInsertions) / (state.pxPerBp || 1));
   
-  const bpOffset = bp - state.startBp;
+  const bpOffset = bp - rStart;
   if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
     return leftPad;
   }
@@ -528,7 +559,7 @@ function xGenomeCanonical(bp, W) {
 }
 
 function xGenome(bp) {
-  return xGenomeCanonical(bp, tracksWidthPx());
+  return xGenomeCanonical(bp, renderWidthPx());
 }
 
 function bpFromXGenome(xPx, W) {
@@ -565,7 +596,8 @@ function yGenomeCanonical(bp, H) {
   if (innerH <= 0) {
     return topPad;
   }
-  const span = state.endBp - state.startBp;
+  const rStart = renderStartBp(), rEnd = renderEndBp();
+  const span = rEnd - rStart;
   if (span <= 0 || isNaN(span)) {
     return topPad;
   }
@@ -586,7 +618,7 @@ function yGenomeCanonical(bp, H) {
     ? getAccumulatedGapBp(bp, state.expandedInsertions)
     : (getAccumulatedGapPx(bp, state.expandedInsertions) / (state.pxPerBp || 1));
   
-  const bpOffset = bp - state.startBp;
+  const bpOffset = bp - rStart;
   if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
     return topPad;
   }
@@ -601,7 +633,7 @@ function yGenomeCanonical(bp, H) {
 }
 
 function yGenome(bp) {
-  return yGenomeCanonical(bp, tracksHeightPx());
+  return yGenomeCanonical(bp, renderHeightPx());
 }
 
 function tracksHeightPx() {

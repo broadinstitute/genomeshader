@@ -4,10 +4,11 @@
   <div id="locusBar" role="toolbar" aria-label="Locus navigation">
     <select id="locusContigSelect" class="locus-contig" title="Contig" aria-label="Contig" data-1p-ignore></select>
     <input id="locusPosInput" class="locus-pos" type="text" spellcheck="false" autocomplete="off"
-           placeholder="position or start-end (e.g. 1,500 or 1,000-2,000)"
-           title="Enter a position (expands ±100 bp) or a start-end range, then press Enter or Go"
+           placeholder="position, start-end, or gene/ID (e.g. 1,000-2,000 or PF3D7_0100100)"
+           title="Enter a position (expands ±100 bp), a start-end range, or a gene name / ID / transcript ID, then press Enter or Go"
            aria-label="Position or range" data-1p-ignore>
     <button id="locusGoBtn" class="locus-go" title="Jump to this locus" disabled>Go</button>
+    <span id="locusReadout" class="locus-readout" aria-live="polite" title="Current view"></span>
   </div>
   <div class="sidebar-left" id="sidebarLeft" style="position: absolute; left: 0; top: 36px; bottom: 0; width: 240px; z-index: 100; pointer-events: auto;">
     <div class="sidebar-left-content">

@@ -32,3 +32,9 @@ genomeshader_debug_*.log
 
 # Path-dep crate; do not commit its local cargo output
 /vendor/rust-htslib/target
+# Build artifacts — wheels/sdists are never checked in (build with maturin)
+/dist/
+/wheels/
+*.whl
+*.tar.gz
+/.venv

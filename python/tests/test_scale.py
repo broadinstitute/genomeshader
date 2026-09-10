@@ -78,6 +78,24 @@ def test_carriers_missing_and_dedup():
     assert "s4" not in out and len(out) == len(set(out))
 
 
+def test_carriers_first_k_short_circuits():
+    # 1000 carriers; the first-K path (rng_sample=None) must return exactly the
+    # first n WITHOUT scanning the rest — and never touch rows past the nth carrier.
+    rows = [{"sample_name": f"s{i}", "genotype": "0/1", "alt_allele": "C", "alt_index": 1}
+            for i in range(1000)]
+    scanned = []
+    class _Row(dict):
+        def get(self, k, d=None):
+            if k == "sample_name":
+                scanned.append(dict.get(self, k))
+            return dict.get(self, k, d)
+    rows = [_Row(r) for r in rows]
+    out = _carriers_from_variant_rows(rows, "A", "C", n=5)  # no rng_sample -> first-K
+    assert out == [f"s{i}" for i in range(5)]
+    # short-circuit: stopped right after the 5th carrier, didn't scan all 1000.
+    assert len(scanned) == 5, f"scanned {len(scanned)} rows (should stop at 5)"
+
+
 from genomeshader.view import _build_variants_data_from_aggregates
 
 
@@ -184,3 +202,106 @@ def test_contig_name_candidates():
     # mito aliases included + deduped
     cands = _contig_name_candidates("chrM")
     assert "chrMT" in cands and len(cands) == len(set(cands))
+
+
+def test_debug_log_resources_emits_snapshot(tmp_path):
+    """Debug mode logs a 'resources' event with memory/thread/cache fields."""
+    import logging, types, json as _json
+    from genomeshader.view import GenomeShader
+
+    logf = tmp_path / "dbg.log"
+    logger = logging.getLogger("gs_res_test")
+    logger.setLevel(logging.INFO)
+    logger.handlers[:] = [logging.FileHandler(str(logf))]
+    logger.propagate = False
+
+    ns = types.SimpleNamespace(
+        _debug_logger=logger,
+        _agg_region_cache=[1, 2, 3],
+        _genes_cache={}, _repeats_cache={}, _reference_cache={},
+    )
+    ns._debug_log = GenomeShader._debug_log.__get__(ns)
+    GenomeShader._debug_log_resources.__get__(ns)("unit-test")
+    for h in logger.handlers:
+        h.flush()
+
+    text = logf.read_text()
+    assert "resources" in text, text
+    line = [l for l in text.splitlines() if l.startswith("resources ") or " resources " in l][-1]
+    payload = _json.loads(line[line.index("{"):])
+    assert payload.get("where") == "unit-test"
+    assert payload.get("agg_cache_n") == 3
+    # at least one memory metric present (platform-dependent)
+    assert ("rss_mb" in payload) or ("max_rss_mb" in payload)
+    assert "threads" in payload
+
+
+def test_attach_variants_debug_logging(tmp_path):
+    """attach_variants emits rich structured debug events (so a failing attach
+    isn't an empty log). Exercise the no-files path (no live Rust session needed)
+    and assert the start/resolved/no-files events land."""
+    import logging, types, json as _json
+    from genomeshader.view import GenomeShader
+
+    logf = tmp_path / "attach.log"
+    logger = logging.getLogger("gs_attach_test")
+    logger.setLevel(logging.INFO)
+    logger.handlers[:] = [logging.FileHandler(str(logf))]
+    logger.propagate = False
+
+    ns = types.SimpleNamespace(_debug_logger=logger, _vcf_sample_universe=set(),
+                               _variant_datasets=[], _agg_region_cache=[],
+                               _genes_cache={}, _repeats_cache={}, _reference_cache={})
+    ns._debug_log = GenomeShader._debug_log.__get__(ns)
+    ns._debug_log_resources = GenomeShader._debug_log_resources.__get__(ns)
+    # empty variant_files -> resolves to nothing, returns after logging (no session)
+    GenomeShader.attach_variants.__get__(ns)("TRK", [])
+    for h in logger.handlers:
+        h.flush()
+
+    events = [l.split(" ", 1)[0] for l in logf.read_text().splitlines()]
+    assert "attach_variants_start" in events, events
+    assert "attach_variants_resolved" in events, events
+    assert "attach_variants_no_files" in events, events
+    # the start line carries the track name
+    start = [l for l in logf.read_text().splitlines() if l.startswith("attach_variants_start")][0]
+    payload = _json.loads(start[start.index("{"):])
+    assert payload.get("track_name") == "TRK"
+
+
+def test_vcf_sample_names_isolated_surfaces_errors_not_crash():
+    """Header reads run in a child process so a native crash can't kill the
+    kernel. A bad path must come back as a catchable RuntimeError (parent
+    survives), not take the process down."""
+    import pytest
+    from genomeshader.view import _vcf_sample_names_isolated
+    with pytest.raises(RuntimeError):
+        _vcf_sample_names_isolated("/tmp/gs_nonexistent_hdr_xyz.vcf.gz", None, timeout=60)
+
+
+def test_dbg_time_logs_start_done_and_error(tmp_path):
+    """_dbg_time logs <event>_start + <event>_done (with ms) on success, and
+    <event>_start + <event>_error (with traceback) on failure. No-op when off is
+    covered elsewhere; here debug is ON."""
+    import logging, types
+    from genomeshader.view import GenomeShader
+    logf = tmp_path / "t.log"
+    lg = logging.getLogger("gs_dbgtime_test"); lg.setLevel(logging.INFO)
+    lg.handlers[:] = [logging.FileHandler(str(logf))]; lg.propagate = False
+    ns = types.SimpleNamespace(_debug_logger=lg)
+    ns._dbg_on = GenomeShader._dbg_on.__get__(ns)
+    ns._debug_log = GenomeShader._debug_log.__get__(ns)
+    ns._dbg_time = GenomeShader._dbg_time.__get__(ns)
+
+    with ns._dbg_time("op", locus="chr1:1-2"):
+        pass
+    try:
+        with ns._dbg_time("bad"):
+            raise ValueError("boom")
+    except ValueError:
+        pass
+    for h in lg.handlers:
+        h.flush()
+    events = [l.split(" ", 1)[0] for l in logf.read_text().splitlines()]
+    assert "op_start" in events and "op_done" in events, events
+    assert "bad_start" in events and "bad_error" in events, events

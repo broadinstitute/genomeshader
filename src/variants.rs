@@ -10,6 +10,7 @@ use rust_htslib::bcf::{
     header::{HeaderRecord, TagType},
     record::{GenotypeAllele, Numeric},
     IndexedReader,
+    Reader,
     Read,
 };
 use rust_htslib::tbx;
@@ -95,19 +96,19 @@ fn open_url_with_fallbacks(url: &Url) -> Result<IndexedReader> {
     }
     let t = Instant::now();
     match IndexedReader::from_url(url) {
-        Ok(r) => { if dbg { eprintln!("[gs] open from_url attempt1 ok {}ms", t.elapsed().as_millis()); } Ok(r) }
+        Ok(r) => { if dbg { eprintln!("[gs {}] open from_url attempt1 ok {}ms", crate::env::gs_ts(), t.elapsed().as_millis()); } Ok(r) }
         Err(e1) => {
-            if dbg { eprintln!("[gs] open from_url attempt1 FAILED {}ms: {}", t.elapsed().as_millis(), e1); }
+            if dbg { eprintln!("[gs {}] open from_url attempt1 FAILED {}ms: {}", crate::env::gs_ts(), t.elapsed().as_millis(), e1); }
             gcs_authorize_data_access();
             let t2 = Instant::now();
             match IndexedReader::from_url(url) {
-                Ok(r) => { if dbg { eprintln!("[gs] open from_url attempt2 ok {}ms", t2.elapsed().as_millis()); } Ok(r) }
+                Ok(r) => { if dbg { eprintln!("[gs {}] open from_url attempt2 ok {}ms", crate::env::gs_ts(), t2.elapsed().as_millis()); } Ok(r) }
                 Err(e2) => {
-                    if dbg { eprintln!("[gs] open from_url attempt2 FAILED {}ms: {}", t2.elapsed().as_millis(), e2); }
+                    if dbg { eprintln!("[gs {}] open from_url attempt2 FAILED {}ms: {}", crate::env::gs_ts(), t2.elapsed().as_millis(), e2); }
                     local_guess_curl_ca_bundle();
                     let t3 = Instant::now();
                     let r = IndexedReader::from_url(url)?;
-                    if dbg { eprintln!("[gs] open from_url attempt3 ok {}ms", t3.elapsed().as_millis()); }
+                    if dbg { eprintln!("[gs {}] open from_url attempt3 ok {}ms", crate::env::gs_ts(), t3.elapsed().as_millis()); }
                     Ok(r)
                 }
             }
@@ -254,14 +255,52 @@ fn extract_info_value(
 }
 
 /// Read the sample names from a VCF/BCF header (indexed open, region-agnostic).
-pub fn vcf_sample_names(bcf_path: &str, index_path: Option<&str>) -> Result<Vec<String>> {
-    let reader = open_indexed_bcf(bcf_path, index_path)?;
-    Ok(reader
+pub fn vcf_sample_names(bcf_path: &str, _index_path: Option<&str>) -> Result<Vec<String>> {
+    let dbg = vdbg();
+    // Sample names live in the header — read it with a NON-INDEXED streaming
+    // reader (bcf::Reader), NOT IndexedReader. IndexedReader forces loading the
+    // .tbi/.csi, and IndexedReader::from_url on a remote bgzf VCF whose index is
+    // missing/unfetchable is a known rust-htslib crash (NULL index -> deref) —
+    // which killed the kernel on AoU with the log stuck at vcf_header_start. A
+    // plain reader streams the header off the front of the file, no index.
+    if dbg { eprintln!("[gs {}] vcf_sample_names OPEN(header, no-index) {}", crate::env::gs_ts(), bcf_path); }
+    let reader = if bcf_path.contains("://") {
+        open_bcf_header_reader(&Url::parse(bcf_path)?)?
+    } else {
+        Reader::from_path(bcf_path)?
+    };
+    let names: Vec<String> = reader
         .header()
         .samples()
         .iter()
         .map(|s| String::from_utf8_lossy(s).to_string())
-        .collect())
+        .collect();
+    if dbg { eprintln!("[gs {}] vcf_sample_names {} -> {} sample(s)", crate::env::gs_ts(), bcf_path, names.len()); }
+    Ok(names)
+}
+
+/// Open a remote VCF/BCF for HEADER-ONLY streaming (no index), with the same
+/// GCS-token / CA-bundle retry ladder as the indexed path. Used for reading
+/// sample names at attach — cheap (reads the front of the file), and avoids the
+/// index-load crash class of IndexedReader::from_url on a missing remote index.
+fn open_bcf_header_reader(url: &Url) -> Result<Reader> {
+    let dbg = vdbg();
+    if url.scheme() != "file" { ensure_gcs_token_fresh(); }
+    match Reader::from_url(url) {
+        Ok(r) => Ok(r),
+        Err(e1) => {
+            if dbg { eprintln!("[gs {}] header open attempt1 FAILED: {}", crate::env::gs_ts(), e1); }
+            gcs_authorize_data_access();
+            match Reader::from_url(url) {
+                Ok(r) => Ok(r),
+                Err(e2) => {
+                    if dbg { eprintln!("[gs {}] header open attempt2 FAILED: {}", crate::env::gs_ts(), e2); }
+                    local_guess_curl_ca_bundle();
+                    Ok(Reader::from_url(url)?)
+                }
+            }
+        }
+    }
 }
 
 pub fn extract_variants(
@@ -283,7 +322,7 @@ pub fn extract_variants(
         Some(r) => r,
         None => open_indexed_bcf(bcf_path, index_path)?,
     };
-    if _dbg { eprintln!("[gs] extract_variants OPEN {}ms {} (cached={})", _to.elapsed().as_millis(), bcf_path, was_cached); }
+    if _dbg { eprintln!("[gs {}] extract_variants OPEN {}ms {} (cached={})", crate::env::gs_ts(), _to.elapsed().as_millis(), bcf_path, was_cached); }
 
     // Get header to extract sample names
     let header = reader.header().clone();
@@ -335,7 +374,7 @@ pub fn extract_variants(
     let mut _n_recs = 0u64;
     if let Ok(rid) = header.name2rid(chr.as_bytes()) {
         reader.fetch(rid, start.saturating_sub(1), Some(*stop))?;
-        if _dbg { eprintln!("[gs] extract_variants FETCH-seek {}ms", _tf.elapsed().as_millis()); }
+        if _dbg { eprintln!("[gs {}] extract_variants FETCH-seek {}ms", crate::env::gs_ts(), _tf.elapsed().as_millis()); }
 
         for record_result in reader.records() {
             let record: rust_htslib::bcf::record::Record = record_result?;
@@ -434,7 +473,7 @@ pub fn extract_variants(
         }
         }
     }
-    if _dbg { eprintln!("[gs] extract_variants DECODE-done {}ms ({} recs scanned)", _tf.elapsed().as_millis(), _n_recs); }
+    if _dbg { eprintln!("[gs {}] extract_variants DECODE-done {}ms ({} recs scanned)", crate::env::gs_ts(), _tf.elapsed().as_millis(), _n_recs); }
 
     let df = DataFrame::new(
         vec![

@@ -600,11 +600,11 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   content: "↻";
 }
 .smart-track-item-btn.shuffle::before {
-  content: "⇄";
+  content: "⇆";  /* match the on-track expanded sample menu's shuffle glyph */
 }
 .smart-track-item-btn.close::before {
-  content: "✕";
-  font-size: 14px;
+  content: "\00D7";  /* U+00D7 MULTIPLICATION SIGN — in every font (U+2715 ✕ tofu'd on some systems) */
+  font-size: 16px;
   line-height: 1;
 }
 
@@ -970,6 +970,18 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   border-color: var(--border2);
   cursor: default;
   filter: none;
+}
+/* Live current-view readout, pinned to the right of the nav bar. */
+#locusBar .locus-readout {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42%;
 }
 
 .main {
@@ -1591,6 +1603,61 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   margin-bottom: 0;
 }
 
+/* Sample (smart) track menus in vertical mode must stay INSIDE their own column
+   so multiple loaded samples don't overlap each other. */
+.main.vertical .track-controls[data-track-id^="smart-track-"] {
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+/* Collapsed track (ANY track, not just samples): the column is a narrow strip,
+   so stack the menu vertically (buttons down the column, label as vertical
+   text). */
+.main.vertical .track-control-container.track-collapsed .track-controls {
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 2px;
+}
+.main.vertical .track-control-container.track-collapsed .track-controls .track-label,
+.main.vertical .track-control-container.track-collapsed .track-controls .smart-track-label-text {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 240px;
+}
+/* Read the vertical label bottom-to-top (tilt head LEFT), not top-to-bottom —
+   rotate 180° from the default vertical-rl. Applied to the label container only
+   (the text span inherits the writing-mode, not a second rotation). */
+.main.vertical .track-control-container.track-collapsed .track-controls .track-label {
+  transform: rotate(180deg);
+}
+/* The smart-track label is pinned to a fixed 90px width for horizontal
+   alignment; in a collapsed vertical column that overflows the narrow strip and
+   clips the sample name. Let it size to the (now vertical) text so the whole
+   name fits inside its own column. */
+.main.vertical .track-control-container.track-collapsed .track-controls[data-track-id^="smart-track-"] .track-label {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  display: block;
+}
+/* Expanded sample track: horizontal menu that spans (and is clipped to) the
+   track's own width, with the label ellipsised — never bleeds into neighbors. */
+.main.vertical .track-control-container:not(.track-collapsed) .track-controls[data-track-id^="smart-track-"] {
+  width: 100%;
+}
+.main.vertical .track-control-container:not(.track-collapsed) .track-controls[data-track-id^="smart-track-"] .track-label,
+.main.vertical .track-control-container:not(.track-collapsed) .track-controls[data-track-id^="smart-track-"] .smart-track-label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 /* Smart track controls */
 .smart-track-label-input {
   font-size: 12px;
@@ -1957,7 +2024,28 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
    wheel/drag chaining) so the outer bar isn't lost among a column of inner bars. */
 #smartScroll .smart-track-container { scrollbar-width: none; }
 #smartScroll .smart-track-container::-webkit-scrollbar { width: 0; height: 0; }
-#smartScroll { overflow-y: auto; }
+/* Force a classic, always-visible scrollbar. macOS defaults to an OVERLAY
+   scrollbar that auto-hides — leaving no way to scroll the sample-track stack
+   once it fades. An explicit ::-webkit-scrollbar width makes it non-overlay and
+   permanent (Chrome/Safari); scrollbar-width:auto pins it on Firefox. */
+#smartScroll { overflow-y: auto; scrollbar-width: auto; }
+#smartScroll::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+#smartScroll::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+#smartScroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 7px;
+  border: 2px solid rgba(0, 0, 0, 0.1);
+  min-height: 20px;
+}
+#smartScroll::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.5); }
+#smartScroll::-webkit-scrollbar-thumb:active { background: rgba(0, 0, 0, 0.6); }
 
 /* Centered blocking modal dialog (window.__GS_MODAL) */
 .gs-modal-backdrop {

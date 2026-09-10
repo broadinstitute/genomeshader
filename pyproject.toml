@@ -13,6 +13,9 @@ dependencies = [
     "ipywidgets>=8.0.0",
     "anywidget>=0.9.0",
     "google-cloud-storage",
+    # Pin JupyterLab to match the AoU / Verily Workbench environment so the
+    # widget renders against the same lab version the users run.
+    "jupyterlab==4.5.6",
 ]
 
 [project.optional-dependencies]

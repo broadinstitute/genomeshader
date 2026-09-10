@@ -66,6 +66,12 @@ pub fn ensure_gcs_requester_pays() {
     }
 }
 
+/// Local wall-clock timestamp for the stderr `[gs]` debug lines, matching the
+/// Python debug-log format (`%Y-%m-%d %H:%M:%S,mmm`) so the two streams line up.
+pub fn gs_ts() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+}
+
 pub fn local_guess_curl_ca_bundle() {
     // See https://github.com/rust-bio/rust-htslib/issues/404
     let ca_file = "/etc/ssl/certs/ca-certificates.crt";

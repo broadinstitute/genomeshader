@@ -1297,6 +1297,15 @@ if (typeof window !== "undefined") {
     return { startBp: state.startBp, endBp: state.endBp };
   };
 
+  // Test seam: switch orientation at runtime (mirrors the settings toggle:
+  // setOrientation + renderAll) so a pixel test can exercise the vert<->horiz
+  // switch path (#bug5: stale smart-canvas CSS box after a flip).
+  window.__GS_TEST_setOrientation = function (o) {
+    if (typeof setOrientation === "function") setOrientation(o);
+    renderAll();
+    return isVerticalMode();
+  };
+
   // Test seam: run the REAL read-fetch path for a fresh track, so a test can mock
   // __GS_SEND to fail and assert the error handling (track removed + modal shown).
   // Resolves to the trackId whether the fetch succeeds or fails.

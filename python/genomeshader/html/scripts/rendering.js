@@ -1,6 +1,17 @@
 // SVG helpers
 // -----------------------------
 const SVGNS = "http://www.w3.org/2000/svg";
+
+// Vertical mode reserves a fixed left gutter for the genomic coordinate ruler
+// (the y-axis). Tracks start after it so tick labels ("100.00 kb") sit in the
+// gutter instead of bleeding over the neighbouring track column. Shared with the
+// axis renderer in tracks.js (same module scope at render time). Wide enough for
+// a full "100.00 kb" label clear of the collapsed 8px sidebar rail.
+const GS_VERT_RULER_GUTTER_PX = 92;
+// Collapsed sample-track column width in vertical mode. The closed reads strip is
+// only ~22px, too narrow to fit the collapsed menu (buttons + vertical sample
+// name) — widen the column so the whole menu box fits inside its own track.
+const GS_VERT_COLLAPSED_MENU_W = 34;
 function clearSvg(svg) { while (svg.firstChild) svg.removeChild(svg.firstChild); }
 function el(tag, attrs = {}, text = null) {
   const n = document.createElementNS(SVGNS, tag);
@@ -137,8 +148,11 @@ function getTrackLayout() {
   }
 
   if (isVertical) {
-    // Vertical mode: tracks side-by-side (left/width based)
-    let currentX = 0;
+    // Vertical mode: tracks side-by-side (left/width based). Start past the
+    // reserved coordinate-ruler gutter (drawn by drawGenomicAxis in tracks.js),
+    // shifted left by the horizontal scroll offset so columns beyond the viewport
+    // can be scrolled into view (the gutter itself is drawn fixed, not from here).
+    let currentX = GS_VERT_RULER_GUTTER_PX - (state.vertScrollX || 0);
     const mainHeight = rectH(main);
     // Ensure mainHeight is valid
     const safeMainHeight = (isNaN(mainHeight) || mainHeight <= 0) ? 0 : mainHeight;
@@ -163,10 +177,11 @@ function getTrackLayout() {
       
       if (track.collapsed) {
         if (isSmartTrack && track.closedHeight) {
-          // Smart Track closed state: use closedHeight (single read)
-          // Don't include header space - controls will overlay on top of content
-          effectiveWidth = track.closedHeight;
-          safeContentWidth = track.closedHeight;
+          // Smart Track closed state: widen the column so the collapsed menu
+          // (buttons + vertical sample name) fits inside its own track instead of
+          // being clipped to the ~22px reads strip.
+          effectiveWidth = Math.max(track.closedHeight, GS_VERT_COLLAPSED_MENU_W);
+          safeContentWidth = effectiveWidth;
           safeContentLeft = currentX; // Content starts at left, no gap for header
         } else {
           // Standard track collapsed: reserve the full header so the label +
@@ -250,9 +265,13 @@ function getTrackLayout() {
         const _refExtra = (track.id === "reference" && typeof getExpandedDeletionsInView === "function")
           ? getExpandedDeletionsInView().length * DELETION_ROW_H : 0;
         const _openH = (track.height || 0) + _refExtra;
-        effectiveHeight = usesHeaderSpace ? headerH + _openH : _openH;
+        // Smart tracks: don't reserve a header strip — the name/menu overlay the
+        // canvas top so the aggregate OVERVIEW row renders at the very top of the
+        // track, BEHIND the sample name (not on a separate line below it).
+        const reserve = usesHeaderSpace && !isSmartTrack;
+        effectiveHeight = reserve ? headerH + _openH : _openH;
         safeContentHeight = _openH;
-        safeContentTop = usesHeaderSpace ? currentY + headerH : currentY;
+        safeContentTop = reserve ? currentY + headerH : currentY;
       }
       
       // Validate all values are numbers

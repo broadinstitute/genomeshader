@@ -179,6 +179,7 @@ function getStoredOrientation() {
 }
 function setOrientation(o) {
   gsLocalStorage.setItem("genomeshader.orientation", o);
+  try { if (typeof state !== "undefined" && state) state.vertScrollX = 0; } catch (e) {}
   updateOrientationState();
 }
 function updateOrientationState() {
@@ -504,7 +505,7 @@ if (loadReadsItem) {
         setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
       })
       .catch((err) => {
-        loadReadsLabel.textContent = "✗";
+        loadReadsLabel.textContent = "\u00D7";  // U+00D7 (U+2717 tofu'd on some fonts)
         console.error("Failed to load reads:", err);
         setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
       });
@@ -614,7 +615,7 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     `;
 
     const closeBtn = document.createElement('button');
-    closeBtn.textContent = '✕';
+    closeBtn.textContent = '\u00D7';  // U+00D7 (U+2715 tofu'd on some fonts)
     closeBtn.setAttribute('aria-label', 'Close full screen');
     closeBtn.style.cssText = `
       width: 32px;
@@ -940,7 +941,7 @@ const handleSettingsHotkeys = (e) => {
         setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
       })
       .catch((err) => {
-        loadReadsLabel.textContent = "✗";
+        loadReadsLabel.textContent = "\u00D7";  // U+00D7 (U+2717 tofu'd on some fonts)
         console.error("Failed to load reads:", err);
         setTimeout(() => { loadReadsLabel.textContent = "▶"; }, 2000);
       });

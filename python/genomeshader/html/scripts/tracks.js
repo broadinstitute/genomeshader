@@ -15,7 +15,7 @@ function renderTracks() {
   repeatHitTestData = [];
   
   const isVertical = isVerticalMode();
-  const W = isVertical ? tracksHeightPx() : tracksWidthPx();
+  const W = isVertical ? renderHeightPx() : renderWidthPx();
   const H = isVertical ? tracksWidthPx() : tracksHeightPx();
   
   // Guard against invalid dimensions - retry if dimensions are not ready
@@ -65,7 +65,19 @@ function renderTracks() {
   const rulerLayout = layout.find(l => l.track.id === "ruler");
   const referenceLayout = layout.find(l => l.track.id === "reference");
   const flowLayout = layout.find(l => l.track.id === "flow") || layout.find(l => l.track.id && l.track.id.startsWith("flow-"));
-  
+
+  // Clear the two overlays that are drawn INSIDE per-track blocks (indel
+  // lollipops on the VCF/variant track, comment pins on the reference track).
+  // Their draw + clear only run when the owning track is expanded, so a
+  // COLLAPSED (or absent) track would otherwise leave stale marks on screen.
+  // Clear up front; the blocks below repopulate only when their track is open.
+  {
+    const _io = document.getElementById("flowIndelOverlay");
+    if (_io) { while (_io.firstChild) _io.removeChild(_io.firstChild); }
+    const _co = document.getElementById("commentPinOverlay");
+    if (_co) { while (_co.firstChild) _co.removeChild(_co.firstChild); }
+  }
+
   // Calculate ideogram track bounds to exclude from shading (including track controls header)
   let ideogramTrackStart = 0;
   let ideogramTrackEnd = 0;
@@ -88,7 +100,7 @@ function renderTracks() {
   // on — data pages in across the whole contig, so the "out of data" grey is
   // misleading (and would otherwise linger over freshly-paged-in variants).
   const _vpOn = !!(window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.viewport_variant_loading);
-  if (!_vpOn && dataBounds && (dataBounds.start > state.startBp || dataBounds.end < state.endBp)) {
+  if (!_vpOn && dataBounds && (dataBounds.start > renderStartBp() || dataBounds.end < renderEndBp())) {
     const dataStartPos = genomePos(dataBounds.start);
     const dataEndPos = genomePos(dataBounds.end);
     
@@ -117,10 +129,10 @@ function renderTracks() {
         // dataEndPos = Y position of dataBounds.end (larger bp → lower Y, near top)
         
         // Out-of-bounds region below data (smaller bp than dataBounds.start)
-        // dataBounds.start > state.startBp means view extends to show bp < dataBounds.start
+        // dataBounds.start > renderStartBp() means view extends to show bp < dataBounds.start
         // In vertical mode: smaller bp → higher Y → bottom of screen
         // So out-of-bounds is from dataStartPos to H (bottom)
-        if (dataBounds.start > state.startBp) {
+        if (dataBounds.start > renderStartBp()) {
           const overlayY1 = Math.max(dataStartPos, 0);
           const overlayY2 = H;
           if (overlayY2 > overlayY1) {
@@ -141,10 +153,10 @@ function renderTracks() {
         }
         
         // Out-of-bounds region above data (larger bp than dataBounds.end)
-        // dataBounds.end < state.endBp means view extends to show bp > dataBounds.end
+        // dataBounds.end < renderEndBp() means view extends to show bp > dataBounds.end
         // In vertical mode: larger bp → lower Y → top of screen
         // So out-of-bounds is from 0 to dataEndPos (top)
-        if (dataBounds.end < state.endBp) {
+        if (dataBounds.end < renderEndBp()) {
           const overlayY1 = 0;
           const overlayY2 = Math.min(dataEndPos, H);
           if (overlayY2 > overlayY1) {
@@ -166,7 +178,7 @@ function renderTracks() {
       } else {
         // Horizontal mode - exclude ideogram track area
         // Region before data start (out-of-bounds, darker)
-        if (dataBounds.start > state.startBp) {
+        if (dataBounds.start > renderStartBp()) {
           const overlayX1 = 0;
           const overlayX2 = dataStartPos;
           if (ideogramTrackEnd > 0) {
@@ -185,7 +197,7 @@ function renderTracks() {
         }
         
         // Region after data end (out-of-bounds, darker)
-        if (dataBounds.end < state.endBp) {
+        if (dataBounds.end < renderEndBp()) {
           const overlayX1 = dataEndPos;
           const overlayX2 = W;
           if (ideogramTrackEnd > 0) {
@@ -472,7 +484,7 @@ function renderTracks() {
     }
 
     // Locus highlight - small red rectangle showing current view position
-    const locusCenter = (state.startBp + state.endBp) / 2;
+    const locusCenter = (renderStartBp() + renderEndBp()) / 2;
     const locusFrac = locusCenter / chrLength;
     
     // Determine if locus is on p-arm or q-arm
@@ -674,9 +686,9 @@ function renderTracks() {
 
   // Iterate over gene models (transcripts variable now contains gene models)
   for (const gene of transcripts) {
-    const s = Math.max(gene.start, state.startBp);
-    const e = Math.min(gene.end,   state.endBp);
-    if (e <= state.startBp || s >= state.endBp) continue;
+    const s = Math.max(gene.start, renderStartBp());
+    const e = Math.min(gene.end,   renderEndBp());
+    if (e <= renderStartBp() || s >= renderEndBp()) continue;
 
     let perpPos;
     if (isVertical) {
@@ -733,9 +745,9 @@ function renderTracks() {
       const ee0 = exon[1];
       const isUniversal = exon[2] === true || exon[2] === undefined; // Default to universal if not specified
       
-      const es = Math.max(es0, state.startBp);
-      const ee = Math.min(ee0, state.endBp);
-      if (ee <= state.startBp || es >= state.endBp) continue;
+      const es = Math.max(es0, renderStartBp());
+      const ee = Math.min(ee0, renderEndBp());
+      if (ee <= renderStartBp() || es >= renderEndBp()) continue;
       const exPos1 = genomePos(es);
       const exPos2 = genomePos(ee);
 
@@ -956,9 +968,9 @@ function renderTracks() {
   // Filter and prepare visible repeats
   const visibleRepeats = [];
   for (const r of repeats) {
-    if (r.end <= state.startBp || r.start >= state.endBp) continue;
-    const rs = Math.max(r.start, state.startBp);
-    const re = Math.min(r.end, state.endBp);
+    if (r.end <= renderStartBp() || r.start >= renderEndBp()) continue;
+    const rs = Math.max(r.start, renderStartBp());
+    const re = Math.min(r.end, renderEndBp());
     
     const pos1 = genomePos(rs);
     const pos2 = genomePos(re);
@@ -1150,7 +1162,7 @@ function renderTracks() {
         }));
       }
 
-      const span = state.endBp - state.startBp;
+      const span = renderEndBp() - renderStartBp();
       const dim = isVertical ? H : W;
       const desiredMajorTicks = Math.max(5, Math.min(10, Math.floor((dim - 32) / 140)));
       const majorBp = chooseNiceTickBp(span, desiredMajorTicks);
@@ -1159,12 +1171,12 @@ function renderTracks() {
       const pxPerMajor = (dim - 32) / (span / majorBp);
       const showLabels = pxPerMajor >= 80;
 
-    const firstMinor = Math.ceil(state.startBp / minorBp) * minorBp;
+    const firstMinor = Math.ceil(renderStartBp() / minorBp) * minorBp;
 
     // Track major tick label positions to avoid overlap with edge labels
     const majorTickLabelPositions = [];
 
-    for (let bp = firstMinor; bp <= state.endBp; bp += minorBp) {
+    for (let bp = firstMinor; bp <= renderEndBp(); bp += minorBp) {
       const pos = genomePos(bp);
       const isMajor = (Math.round(bp / minorBp) % 5) === 0;
 
@@ -1177,11 +1189,12 @@ function renderTracks() {
         }));
 
         if (isMajor && showLabels) {
+          // Labels sit LEFT of the axis line, inside the ruler gutter.
           const textEl = el("text", {
-            x: baseX + 26,
+            x: baseX - 14,
             y: pos,
             class: "svg-small",
-            "text-anchor": "start",
+            "text-anchor": "end",
             "dominant-baseline": "middle"
           }, formatBp(Math.round(bp), span));
           tracksSvg.appendChild(textEl);
@@ -1217,14 +1230,14 @@ function renderTracks() {
 
       if (!hasNearbyBottomTick) {
         const textEl = el("text", {
-          x: baseX + 26, y: bottomEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
-        }, formatBp(Math.round(state.startBp), span));
+          x: baseX - 14, y: bottomEdgeY, class:"svg-small", "text-anchor":"end", "dominant-baseline":"middle"
+        }, formatBp(Math.round(renderStartBp()), span));
         tracksSvg.appendChild(textEl);
       }
       if (!hasNearbyTopTick) {
         const textEl = el("text", {
-          x: baseX + 26, y: topEdgeY, class:"svg-small", "text-anchor":"start", "dominant-baseline":"middle"
-        }, formatBp(Math.round(state.endBp), span));
+          x: baseX - 14, y: topEdgeY, class:"svg-small", "text-anchor":"end", "dominant-baseline":"middle"
+        }, formatBp(Math.round(renderEndBp()), span));
         tracksSvg.appendChild(textEl);
       }
     } else {
@@ -1235,13 +1248,13 @@ function renderTracks() {
 
       if (!hasNearbyLeftTick) {
         tracksSvg.appendChild(el("text", { x: 16, y: baseY + 26, class:"svg-small" },
-          formatBp(Math.round(state.startBp), span)
+          formatBp(Math.round(renderStartBp()), span)
         ));
       }
       if (!hasNearbyRightTick) {
         tracksSvg.appendChild(el("text", {
           x: W - 16, y: baseY + 26, class:"svg-small", "text-anchor":"end"
-        }, formatBp(Math.round(state.endBp), span)));
+        }, formatBp(Math.round(renderEndBp()), span)));
       }
     }
   }
@@ -1270,9 +1283,16 @@ function renderTracks() {
     const flowIndelOverlay = document.getElementById('flowIndelOverlay');
     if (!flowIndelOverlay) return;
     while (flowIndelOverlay.firstChild) flowIndelOverlay.removeChild(flowIndelOverlay.firstChild);
-    flowIndelOverlay.setAttribute('width', W);
-    flowIndelOverlay.setAttribute('height', H);
-    flowIndelOverlay.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    // The overlay is a SCREEN-space SVG over #main, and the lollipop coords
+    // (baseX = contentLeft, cy = genomePos) are screen pixels — so its
+    // width/height/viewBox must be the true screen dims, NOT the genomic-axis
+    // W/H (which are SWAPPED in vertical mode: W=height, H=width). Using the
+    // swapped values rescaled the lollipops rightward into the read tracks.
+    const _ovW = isVertical ? H : W;
+    const _ovH = isVertical ? W : H;
+    flowIndelOverlay.setAttribute('width', _ovW);
+    flowIndelOverlay.setAttribute('height', _ovH);
+    flowIndelOverlay.setAttribute('viewBox', `0 0 ${_ovW} ${_ovH}`);
 
   // Variant marks: use all variant tracks so every track adds a marker to the ruler
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
@@ -1290,10 +1310,10 @@ function renderTracks() {
   for (let idx = 0; idx < rulerVariants.length; idx++) {
     const v = rulerVariants[idx];
     const variantId = String(v.id);
-    if (v.pos < state.startBp || v.pos > state.endBp) continue;
+    if (v.pos < renderStartBp() || v.pos > renderEndBp()) continue;
     // Indel track: only positions with an insertion or deletion.
     if (typeof isIndel === "function" && !isIndel(v)) continue;
-    const pos = genomePos(v.pos);
+    const pos = genomePos(v.pos + VARIANT_BASE_CENTER_OFFSET_BP);
     const isHovered = (state.hoveredVariantId != null && variantId === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
     const strokeWidth = isHovered ? 2.5 : 1.2;
     const circleStrokeWidth = isHovered ? 2.2 : 1.4;
@@ -1411,7 +1431,7 @@ function renderTracks() {
     if (state.expandedInsertions.has(variantId) && isInsertion(v)) {
       const gapSize = getGapAfterBpPx(v.pos, state.expandedInsertions);
       if (!(gapSize > 0)) continue;
-      const nextBpAtVariant = Math.min(state.endBp, Number(v.pos) + 1);
+      const nextBpAtVariant = Math.min(renderEndBp(), Number(v.pos) + 1);
       const nextPosAtVariant = genomePosCanonical(nextBpAtVariant);
 
       if (isVertical) {
@@ -1428,6 +1448,9 @@ function renderTracks() {
         }));
       } else {
         const gapEndX = nextPosAtVariant;
+        // Anchor the gap to the base cell's left edge (integer pos), not the
+        // marker center (pos+0.5): the gap accumulates for coords > pos, so a
+        // +0.5 anchor sits inside the opened gap and collapses it to a half-cell.
         const variantPosAtVariant = genomePosCanonical(Number(v.pos));
         const rawSegmentSizeAtVariant = Math.abs(gapEndX - variantPosAtVariant);
         const renderedRefBaseSizeAtVariant = Math.max(1, rawSegmentSizeAtVariant - gapSize);
@@ -1500,9 +1523,9 @@ function renderTracks() {
       return { sequence: [], startBp: startBp };
     }
 
-    const span = state.endBp - state.startBp;
-    const startBpInt = Math.floor(state.startBp);
-    const endBpInt = Math.floor(state.endBp);
+    const span = renderEndBp() - renderStartBp();
+    const startBpInt = Math.floor(renderStartBp());
+    const endBpInt = Math.floor(renderEndBp());
     const refSeqData = getReferenceSequence(startBpInt, endBpInt);
     const refSeq = refSeqData.sequence;
     const refSeqStartBp = refSeqData.startBp;
@@ -1587,12 +1610,12 @@ function renderTracks() {
         const bp = refSeqStartBp + i + 1;
         
         // Only render bases that are within the visible view
-        if (bp < state.startBp || bp > state.endBp) continue;
+        if (bp < renderStartBp() || bp > renderEndBp()) continue;
         
         // Use genomePosCanonical to account for insertion gaps
         const pos = genomePosCanonical(bp);
         const nextBp = bp + 1;
-        const nextPos = nextBp <= state.endBp ? genomePosCanonical(nextBp) : genomePosCanonical(state.endBp);
+        const nextPos = nextBp <= renderEndBp() ? genomePosCanonical(nextBp) : genomePosCanonical(renderEndBp());
         const gapAfterPx = getGapAfterBpPx(bp, state.expandedInsertions);
         const rawSegmentSize = Math.abs(nextPos - pos);
         const actualSize = Math.max(0, rawSegmentSize - gapAfterPx);
@@ -1846,26 +1869,49 @@ function renderTracks() {
           const delLen = (typeof getMaxDeletionLength === "function") ? getMaxDeletionLength(v) : 0;
           if (!(delLen > 0)) continue;
           const key = String(v.id); if (seenDel.has(key)) continue; seenDel.add(key);
-          const loBp = Math.max(Number(v.pos) + 1, state.startBp);
-          const hiBp = Math.min(Number(v.pos) + delLen, state.endBp);
+          const loBp = Math.max(Number(v.pos) + 1, renderStartBp());
+          const hiBp = Math.min(Number(v.pos) + delLen, renderEndBp());
           if (hiBp < loBp) continue;
           const a = genomePos(loBp), b = genomePos(hiBp + 1);
           const lo = Math.min(a, b), hi = Math.max(a, b), mid = (lo + hi) / 2;
-          tracksSvg.appendChild(el("rect", { x: referenceX, y: lo, width: referenceW, height: Math.max(1, hi - lo),
+          // Clickable group: click the deleted bases to dismiss (un-expand) the deletion.
+          const g = el("g", { "class": "gs-del-dismiss", "data-vid": String(v.id),
+            style: "cursor:pointer; pointer-events:auto;" });
+          g.appendChild(el("title", {}, "Click to dismiss deletion"));
+          g.addEventListener("click", (ev) => {
+            ev.stopPropagation(); ev.preventDefault();
+            if (state.expandedDeletions) state.expandedDeletions.delete(String(v.id));
+            renderAll();
+          });
+          g.appendChild(el("rect", { x: referenceX, y: lo, width: referenceW, height: Math.max(1, hi - lo),
             fill: fill, stroke: edge, "stroke-width": 1 }));
-          tracksSvg.appendChild(el("line", { x1: referenceX, x2: referenceX + referenceW, y1: mid, y2: mid,
+          g.appendChild(el("line", { x1: referenceX, x2: referenceX + referenceW, y1: mid, y2: mid,
             stroke: edge, "stroke-width": 1 }));
+          tracksSvg.appendChild(g);
         }
       } else {
         const dels = (typeof getExpandedDeletionsInView === "function") ? getExpandedDeletionsInView() : [];
         const wash = "rgba(70,70,70,0.62)", edge = "rgba(35,35,35,0.9)";
+        const refSvg = tracksSvg;   // real SVG; the loop body shadows tracksSvg -> g
         dels.forEach((d, i) => {
           // +50 clears the coordinate-axis strip now drawn below the sequence.
           const rowTop = referenceY + referenceH + 50 + i * DELETION_ROW_H;
           const rowH = DELETION_ROW_H - 5;
-          const loBp = Math.max(d.loBp, Math.ceil(state.startBp));
-          const hiBp = Math.min(d.hiBp, Math.floor(state.endBp));
+          const loBp = Math.max(d.loBp, Math.ceil(renderStartBp()));
+          const hiBp = Math.min(d.hiBp, Math.floor(renderEndBp()));
           if (hiBp < loBp) return;
+          // Click the displayed deleted bases to DISMISS the deletion (un-expand)
+          // — the whole row is a clickable group over the otherwise click-through
+          // tracks SVG. Children append to `g`, not tracksSvg.
+          const g = el("g", { "class": "gs-del-dismiss", "data-vid": String(d.v.id),
+            style: "cursor:pointer; pointer-events:auto;" });
+          g.appendChild(el("title", {}, "Click to dismiss deletion"));
+          g.addEventListener("click", (ev) => {
+            ev.stopPropagation(); ev.preventDefault();
+            if (state.expandedDeletions) state.expandedDeletions.delete(String(d.v.id));
+            renderAll();
+          });
+          const tracksSvg = g;   // shadow so the per-base appends below land in g
           for (let bp = loBp; bp <= hiBp; bp++) {
             // Use the SAME position + base indexing as the main reference row so
             // the deleted bases line up under it: genomePosCanonical (gap-aware)
@@ -1900,6 +1946,7 @@ function renderTracks() {
           tracksSvg.appendChild(el("text", { x: 4, y: rowTop + rowH / 2,
             "text-anchor": "start", "dominant-baseline": "middle",
             style: "fill: rgba(229,83,75,0.95); font-size:8px; font-weight:bold; letter-spacing:.04em;" }, "DEL"));
+          refSvg.appendChild(g);   // attach the clickable group to the real SVG
         });
       }
     }
@@ -1907,7 +1954,9 @@ function renderTracks() {
     // Coordinate axis now rides the Reference track (merged from the old
     // Indel ruler): draw it just below the reference sequence band.
     if (isVertical) {
-      drawGenomicAxis(referenceX + referenceW + 20, 0);
+      // Vertical: the coordinate ruler lives in the reserved left gutter, not
+      // riding the reference track (whose right edge butts the next column).
+      drawGenomicAxis(GS_VERT_RULER_GUTTER_PX - 10, 0);
     } else {
       drawGenomicAxis(0, referenceY + referenceH + 22);
     }
@@ -1918,7 +1967,11 @@ function renderTracks() {
       try {
         window.__GS_renderCommentPins({
           svg: tracksSvg, el: el, genomePos: genomePos,
-          baseX: referenceX + referenceW, baseY: referenceY, isVertical: isVertical,
+          // Vertical: anchor pins at the reference column's LEFT edge and stick
+          // them out to the left (toward the ruler gutter, away from the data
+          // tracks) — mirrors horizontal, where they sit above the band.
+          baseX: isVertical ? referenceX : (referenceX + referenceW),
+          baseY: referenceY, isVertical: isVertical,
         });
       } catch (e) {}
     }
@@ -1940,9 +1993,9 @@ function renderTracks() {
       const h = Math.max(6, (item.contentHeight || 20) - 6);
       const yTop = item.contentTop + 3;
       for (const f of entry.features) {
-        if (f.end <= state.startBp || f.start >= state.endBp) continue;
-        const a = genomePos(Math.max(f.start, state.startBp));
-        const b = genomePos(Math.min(f.end, state.endBp));
+        if (f.end <= renderStartBp() || f.start >= renderEndBp()) continue;
+        const a = genomePos(Math.max(f.start, renderStartBp()));
+        const b = genomePos(Math.min(f.end, renderEndBp()));
         if (isVertical) {
           const y0 = Math.min(a, b), y1 = Math.max(a, b);
           const x = item.contentLeft + 4, w = Math.max(6, (item.contentWidth || 20) - 8), hh = Math.max(1, y1 - y0);

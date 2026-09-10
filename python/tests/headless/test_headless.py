@@ -601,12 +601,12 @@ def test_clear_cache_button_dispatches_comm(browser, tmp_path):
 
 
 def test_hud_stays_visible(browser, tmp_path):
-    """The coordinate HUD is persistently visible (it used to auto-hide 3s
-    after a render)."""
+    """The current-position indicator now lives in the top nav bar (#locusReadout)
+    and shows the current contig:start-end (the floating HUD is hidden)."""
     page, _ = _open(browser, tmp_path, "horizontal")
     _wait_ready(page)
-    assert page.evaluate(
-        "() => document.getElementById('hud').classList.contains('visible')")
+    txt = page.evaluate("() => (document.getElementById('locusReadout')||{}).textContent || ''")
+    assert ":" in txt and "-" in txt, f"nav-bar position readout not populated: {txt!r}"
     page.close()
 
 
@@ -626,3 +626,114 @@ def test_data_bounds_overlay_suppressed_when_viewport_loading(browser, tmp_path)
     p2.close()
     assert off > 0, "overlay should draw when the view exceeds data bounds"
     assert on == 0, "overlay must be suppressed when viewport variant loading is on"
+
+
+def test_expanded_insertion_bases_render(browser, tmp_path):
+    """Expanding an insertion opens a gap and the INSERTED bases paint as colored
+    tiles (A green, C blue, G orange, T red). Regression: the marker-center
+    (pos+0.5) gap anchor sat inside the opened gap and collapsed the after-variant
+    segment to a half-cell, squashing the inserted bases into an invisible sliver
+    (only the ref base's green showed; blue/orange/red were absent)."""
+    page, errors = _open(browser, tmp_path)
+    # Act on the FIRST render (before the init settle) so the expand is part of a
+    # real flow render — a later renderAll() coalesces/dedups and won't re-invoke
+    # the insertion strip. (This is only a harness timing quirk; users expand
+    # interactively well after load.)
+    page.wait_for_function("() => window.__GS_READY === true", timeout=20000)
+    r = page.evaluate(
+        """() => { const s = window.__GS_STATE; const vs = window.__GS_variants || [];
+             const ins = vs.find(v => v.refAllele && v.altAlleles
+               && v.altAlleles.some(a => a.length > v.refAllele.length));
+             if (!ins) return null;
+             s.startBp = ins.pos - 4; s.endBp = ins.pos + 4;   // zoom onto the insertion
+             s.expandedInsertions = s.expandedInsertions || new Set();
+             s.expandedInsertions.add(String(ins.id));
+             if (typeof renderAll === 'function') renderAll();
+             return { id: ins.id }; }""")
+    assert r, "no insertion variant in demo data"
+    page.wait_for_timeout(400)
+    px = page.evaluate(
+        """() => { const fc = document.getElementById('flowCanvas')
+                 || document.getElementById('flowCanvas-0');
+             const ctx = fc.getContext('2d'); const w = fc.width, h = fc.height;
+             const d = ctx.getImageData(0, 0, w, h).data;
+             let green = 0, blue = 0, orange = 0, red = 0;
+             for (let i = 0; i < d.length; i += 4) {
+               const r = d[i], g = d[i+1], b = d[i+2], a = d[i+3];
+               if (a < 10) continue;
+               if (g > 150 && r < 120 && b < 120) green++;
+               else if (b > 150 && r < 120 && g < 120) blue++;
+               else if (r > 180 && g > 110 && g < 200 && b < 90) orange++;
+               else if (r > 180 && g < 90 && b < 90) red++;
+             }
+             return { green, blue, orange, red }; }""")
+    # The inserted sequence (ATCG...) contains all four bases; each must paint as
+    # a visible tile. Before the fix, blue/orange/red were 0 (sliver-thin gap).
+    assert px["green"] > 50 and px["blue"] > 50 and px["orange"] > 50 and px["red"] > 50, \
+        f"inserted bases not rendered as colored tiles: {px} errors={errors}"
+    page.close()
+
+
+def test_all_tracks_load_only_after_1s_settle(browser, tmp_path):
+    """ALL viewport-driven track data (variants + the reference/genes/repeats/
+    ideogram that ride the same fetch_variants response) must load only after the
+    view is still for ~1s; any motion re-arms the timer and cancels the pending
+    load. Records EVERY comm type: none may fire during motion, and after the
+    settle exactly one fetch_variants fires (carrying all the tracks) and no
+    other track fetch (navigate / fetch_reads / ucsc_track)."""
+    cfg = {"region": "chr1:1-1000", "viewport_variant_loading": True,
+           "chrom_lengths": {"chr1": 2000000}}
+    page, _ = _open(browser, tmp_path, "horizontal", config=cfg)
+    _wait_ready(page)
+    page.evaluate("""() => {
+        window.__comm = [];
+        window.__GS_SEND = (type) => {
+            window.__comm.push(type);
+            return Promise.resolve({ type: type + '_response', variant_tracks: [] });
+        };
+        const s = window.__GS_STATE; s.contig = 'chr1'; s.startBp = 500000; s.endBp = 501000;
+    }""")
+    # Flush any startup/pending load, then move to a FRESH uncovered window and
+    # clear the log so only our motion is measured.
+    page.wait_for_timeout(1500)
+    page.evaluate("""() => { const s = window.__GS_STATE;
+        s.contig = 'chr1'; s.startBp = 800000; s.endBp = 801000; window.__comm = []; }""")
+
+    # Continuous scroll/zoom: re-arm every 200ms for ~1.2s (< settle each time).
+    for _ in range(6):
+        page.evaluate("() => window.gsScheduleViewportVariantLoad()")
+        page.wait_for_timeout(200)
+    during = page.evaluate("() => window.__comm.slice()")
+    assert during == [], f"a track fetched during motion (should wait 1s): {during}"
+
+    # Hold still past the settle -> exactly one fetch_variants, nothing else.
+    page.wait_for_timeout(1400)
+    after = page.evaluate("() => window.__comm.slice()")
+    assert after == ["fetch_variants"], \
+        f"expected a single settled fetch_variants (carrying all tracks), got {after}"
+    page.close()
+
+
+def test_progress_bar_shows_while_genotypes_load(browser, tmp_path):
+    """While genotype (carrier) data loads via fetch_carriers, the bottom status
+    bar must show a busy indicator, then clear when done."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    page.evaluate("""() => {
+        // fetch_carriers resolves after a delay so we can observe the busy bar.
+        window.__GS_SEND = (type) => (type === 'fetch_carriers')
+            ? new Promise(r => setTimeout(() => r({ carriers: ['S1', 'S2'] }), 500))
+            : Promise.resolve({});
+        window.__cp = window.__GS_TEST_fetchCarriers(
+            [{ variant: { pos: 100, refAllele: 'A', altAlleles: ['G'], trackId: 0,
+                          perSampleOmitted: true }, alleleKeys: ['a1'] }], 'OR');
+    }""")
+    def bar_busy():
+        return page.evaluate(
+            "() => { const b = document.getElementById('statusBar'); return !!(b && b.classList.contains('indeterminate')); }")
+    page.wait_for_timeout(150)
+    assert bar_busy(), "status bar not busy while genotypes load"
+    page.wait_for_function("() => window.__cp", timeout=3000)  # ensure the call exists
+    page.wait_for_timeout(700)  # past the 500ms mock delay
+    assert not bar_busy(), "status bar still busy after genotypes finished loading"
+    page.close()
