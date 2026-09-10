@@ -287,6 +287,18 @@ class GenomeShader:
             self._publish_gcs_billing_project(self._gcs_billing_project)
             self._debug_log("gcs_billing_project", project=self._gcs_billing_project)
 
+        # rust-htslib/libcurl on Workbench/Terra needs an explicit CA bundle or
+        # gs:// opens fail (and in some builds, abort the kernel). Set it before
+        # any remote htslib open, not only as a third-retry fallback.
+        if not os.environ.get("CURL_CA_BUNDLE"):
+            for cand in (
+                "/etc/ssl/certs/ca-certificates.crt",
+                "/etc/pki/tls/certs/ca-bundle.crt",
+            ):
+                if os.path.exists(cand):
+                    os.environ["CURL_CA_BUNDLE"] = cand
+                    break
+
         # Network/render safety defaults must be available before validation calls.
         self._http_timeout = (10, 30)  # connect timeout, read timeout (seconds)
         self._track_load_timeout_s = 45
