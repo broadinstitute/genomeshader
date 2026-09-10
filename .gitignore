@@ -29,3 +29,6 @@ fiss_downloads/
 # Debug logs (GenomeShader debug=True)
 genomeshader_logs/
 genomeshader_debug_*.log
+
+# Path-dep crate; do not commit its local cargo output
+/vendor/rust-htslib/target

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 
-use crate::env::gcs_authorize_data_access;
+use crate::env::{gcs_authorize_data_access, gcs_billing_project};
 
 pub fn gcs_split_path(path: &String) -> (String, String) {
     let re = regex::Regex::new(r"^gs://").unwrap();
@@ -18,6 +18,35 @@ pub fn gcs_split_path(path: &String) -> (String, String) {
     let prefix = split[1..].join("/");
 
     (bucket_name, prefix)
+}
+
+/// `gcloud [--quiet] [--billing-project=P] storage <subargs…>`
+fn gcloud_storage_args(subargs: &[&str], quiet: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if quiet {
+        args.push("--quiet".to_string());
+    }
+    if let Some(p) = gcs_billing_project() {
+        args.push(format!("--billing-project={}", p));
+    }
+    args.push("storage".to_string());
+    args.extend(subargs.iter().map(|s| (*s).to_string()));
+    args
+}
+
+/// `gsutil [-u P] [-q] <subargs…>` — `-u` is the Requester Pays billing project,
+/// the same flag as `gsutil -u $GOOGLE_PROJECT cp …` on a Workbench VM.
+fn gsutil_args(subargs: &[&str], quiet: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(p) = gcs_billing_project() {
+        args.push("-u".to_string());
+        args.push(p);
+    }
+    if quiet {
+        args.push("-q".to_string());
+    }
+    args.extend(subargs.iter().map(|s| (*s).to_string()));
+    args
 }
 
 /// Recursively list objects under a gs:// prefix by shelling out to the gcloud
@@ -46,8 +75,11 @@ fn gcs_list_uris(path: &str) -> Result<Vec<String>> {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     };
 
-    let stdout = run("gcloud", &["storage", "ls", &glob])
-        .or_else(|_| run("gsutil", &["ls", &glob]))?;
+    let gcloud_args = gcloud_storage_args(&["ls", &glob], false);
+    let gsutil_ls = gsutil_args(&["ls", &glob], false);
+    let gcloud_ref: Vec<&str> = gcloud_args.iter().map(|s| s.as_str()).collect();
+    let gsutil_ref: Vec<&str> = gsutil_ls.iter().map(|s| s.as_str()).collect();
+    let stdout = run("gcloud", &gcloud_ref).or_else(|_| run("gsutil", &gsutil_ref))?;
 
     Ok(stdout
         .lines()
@@ -115,8 +147,9 @@ pub fn gcs_upload_file(local_path: &PathBuf, path: &str) -> Result<()> {
 
 fn run_gcs_cp(src: &str, dst: &str, quiet: bool) -> bool {
     gcs_authorize_data_access();
+    let gcloud_args = gcloud_storage_args(&["cp", src, dst], quiet);
     let mut gcloud_cmd = Command::new("gcloud");
-    gcloud_cmd.args(["storage", "cp", src, dst]);
+    gcloud_cmd.args(&gcloud_args);
     if quiet {
         gcloud_cmd.stdout(Stdio::null()).stderr(Stdio::null());
     }
@@ -128,8 +161,9 @@ fn run_gcs_cp(src: &str, dst: &str, quiet: bool) -> bool {
         return true;
     }
 
+    let gsutil_cp = gsutil_args(&["cp", src, dst], quiet);
     let mut gsutil_cmd = Command::new("gsutil");
-    gsutil_cmd.args(["cp", src, dst]);
+    gsutil_cmd.args(&gsutil_cp);
     if quiet {
         gsutil_cmd.stdout(Stdio::null()).stderr(Stdio::null());
     }
@@ -142,8 +176,9 @@ fn run_gcs_cp(src: &str, dst: &str, quiet: bool) -> bool {
 fn gcs_object_exists(path: &str) -> bool {
     gcs_authorize_data_access();
 
+    let gcloud_args = gcloud_storage_args(&["ls", path], true);
     let gcloud_exists = Command::new("gcloud")
-        .args(["storage", "ls", path])
+        .args(&gcloud_args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -153,8 +188,9 @@ fn gcs_object_exists(path: &str) -> bool {
         return true;
     }
 
+    let gsutil_ls = gsutil_args(&["ls", path], true);
     Command::new("gsutil")
-        .args(["ls", path])
+        .args(&gsutil_ls)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -217,9 +253,19 @@ fn _cloud_storage_client_upload_fallback(local_path: &PathBuf, path: &str) -> Re
 /// Heuristic: does a `gcloud`/`gsutil` error string look like an auth failure
 /// (rather than a missing CLI or a genuinely absent path)? Used to lead the
 /// user-facing message with the exact fix.
+fn looks_like_requester_pays_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("requester pays")
+        || lower.contains("requester-pays")
+        || lower.contains("userprojectmissing")
+        || lower.contains("user project")
+        || lower.contains("no billing project")
+}
+
 fn looks_like_auth_error(msg: &str) -> bool {
     let lower = msg.to_lowercase();
-    msg.contains("401")
+    looks_like_requester_pays_error(msg)
+        || msg.contains("401")
         || msg.contains("403")
         || lower.contains("credential")
         || lower.contains("anonymous")
@@ -236,7 +282,12 @@ pub fn _gcs_list_files_of_type(path: String, suffix: &str) -> PyResult<Vec<Strin
         // When the failure looks like an auth problem, lead with the exact fix
         // rather than the generic "is it installed?" note — this is almost
         // always an expired/absent gcloud login, not a missing CLI.
-        let hint = if looks_auth {
+        let hint = if looks_like_requester_pays_error(&msg) {
+            "This looks like a Requester Pays bucket. Set a billing project \
+             (Verily Workbench / Terra: $GOOGLE_PROJECT is already set — Genomeshader \
+             should pick it up automatically; otherwise export \
+             GCS_REQUESTER_PAYS_PROJECT=<your-project>) and retry."
+        } else if looks_auth {
             "This looks like an authentication problem (not a code change). Run \
              `gcloud auth application-default login` (and, if listing still fails, \
              `gcloud auth login`), then retry. Or pass explicit file paths instead \
@@ -257,7 +308,34 @@ pub fn _gcs_list_files_of_type(path: String, suffix: &str) -> PyResult<Vec<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::looks_like_auth_error;
+    use super::{gcloud_storage_args, gsutil_args, looks_like_auth_error, looks_like_requester_pays_error};
+
+    #[test]
+    fn gcloud_storage_args_include_storage_subcommand() {
+        let args = gcloud_storage_args(&["ls", "gs://b/p"], false);
+        assert!(args.windows(2).any(|w| w == ["storage", "ls"]));
+        assert!(args.contains(&"gs://b/p".to_string()));
+    }
+
+    #[test]
+    fn gsutil_args_include_subcommand() {
+        let args = gsutil_args(&["cp", "gs://b/a", "dst"], true);
+        assert!(args.contains(&"-q".to_string()));
+        assert!(args.windows(2).any(|w| w == ["cp", "gs://b/a"]));
+    }
+
+    #[test]
+    fn requester_pays_errors_are_detected() {
+        assert!(looks_like_requester_pays_error(
+            "Bucket is a requester pays bucket but no user project provided."
+        ));
+        assert!(looks_like_requester_pays_error(
+            "ERROR: (gcloud.storage.ls) Bucket is a requester pays bucket but no user project provided."
+        ));
+        assert!(looks_like_auth_error(
+            "Bucket is a requester pays bucket but no user project provided."
+        ));
+    }
 
     #[test]
     fn auth_errors_are_detected() {

@@ -24,8 +24,9 @@ maturin develop --release      # builds the Rust extension in-place
 ## Authentication & GCS access
 
 Data (BAM/CRAM/VCF) and the session dir usually live on Google Cloud Storage.
-Reads go through htslib (which honours `GCS_OAUTH_TOKEN`); listing and the
-comment store shell out to `gcloud`/`gsutil`.
+Reads go through htslib (which honours `GCS_OAUTH_TOKEN` and, for Requester
+Pays buckets, `GCS_REQUESTER_PAYS_PROJECT`); listing and the comment store shell
+out to `gcloud`/`gsutil`.
 
 **It's automatic for `gs://` sessions.** Constructing
 `GenomeShader(gcs_session_dir="gs://…")` starts a background credential
@@ -44,6 +45,15 @@ and re-mints ~5 min before each expiry so tokens don't lapse mid-session.
   opt out of auto-start with `GENOMESHADER_NO_CRED_REFRESH=1`.
 - **Public buckets:** `stage_reference(...)` falls back to the anonymous public
   HTTPS endpoint, so staging a public reference works even without credentials.
+- **Requester Pays buckets (All of Us / AoU, some Terra workspaces):** GCS
+  requires a billing project on every request (`gsutil -u $GOOGLE_PROJECT` /
+  `gcloud --billing-project=…`). Genomeshader does this programmatically:
+  it reads `$GOOGLE_PROJECT` (Verily Workbench / Terra), `$GOOGLE_CLOUD_PROJECT`,
+  or an explicit `gcs_billing_project=` / `GCS_REQUESTER_PAYS_PROJECT`, and
+  publishes it to `GCS_REQUESTER_PAYS_PROJECT` (htslib BAM/VCF) and
+  `CLOUDSDK_BILLING_PROJECT` (gcloud). No `gsutil -u` needed in the notebook.
+  Without a billing project those opens used to fail quietly and produce an
+  empty variant/reads track.
 
 ## Comments
 

@@ -242,11 +242,25 @@ from . import staging
 
 
 class GenomeShader:
+    # Env vars that can supply a GCS Requester Pays billing project, in
+    # preference order. `GOOGLE_PROJECT` is set automatically on Verily
+    # Workbench / Terra VMs — the same value passed to `gsutil -u $GOOGLE_PROJECT`.
+    _GCS_BILLING_PROJECT_ENVS = (
+        "GENOMESHADER_GCS_BILLING_PROJECT",
+        "GCS_REQUESTER_PAYS_PROJECT",
+        "CLOUDSDK_BILLING_PROJECT",
+        "GOOGLE_PROJECT",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCLOUD_PROJECT",
+        "CLOUDSDK_CORE_PROJECT",
+    )
+
     def __init__(
         self,
         genome_build: str = 'hg38',
         gcs_session_dir: str = None,
         debug: bool = False,
+        gcs_billing_project: Optional[str] = None,
     ):
         # Debug logging: off by default. When on, timing/sizing + an event log
         # (server + frontend) are written to a per-session log file, and data
@@ -262,6 +276,28 @@ class GenomeShader:
         self._debug_logger = None
         self._debug_log_path = None
         self._setup_debug_logging()
+
+        # Requester Pays: htslib (BAM/VCF) honours GCS_REQUESTER_PAYS_PROJECT
+        # (X-Goog-User-Project); gcloud honours CLOUDSDK_BILLING_PROJECT. On a
+        # Workbench VM this is $GOOGLE_PROJECT — the same project `gsutil -u`
+        # needs. Publish before any gs:// open so a missing billing project
+        # doesn't look like an empty VCF / blank reads track.
+        self._gcs_billing_project = self._resolve_gcs_billing_project(gcs_billing_project)
+        if self._gcs_billing_project:
+            self._publish_gcs_billing_project(self._gcs_billing_project)
+            self._debug_log("gcs_billing_project", project=self._gcs_billing_project)
+
+        # rust-htslib/libcurl on Workbench/Terra needs an explicit CA bundle or
+        # gs:// opens fail (and in some builds, abort the kernel). Set it before
+        # any remote htslib open, not only as a third-retry fallback.
+        if not os.environ.get("CURL_CA_BUNDLE"):
+            for cand in (
+                "/etc/ssl/certs/ca-certificates.crt",
+                "/etc/pki/tls/certs/ca-bundle.crt",
+            ):
+                if os.path.exists(cand):
+                    os.environ["CURL_CA_BUNDLE"] = cand
+                    break
 
         # Network/render safety defaults must be available before validation calls.
         self._http_timeout = (10, 30)  # connect timeout, read timeout (seconds)
@@ -391,6 +427,10 @@ class GenomeShader:
         # Optional native GCS client; falls back to CLI cp/ls if unavailable.
         self._gcs_client = None
         self._gcs_client_init_attempted = False
+        # Billing project is resolved earlier in __init__; keep a default so
+        # helpers are safe if called from a partially-constructed instance.
+        if not hasattr(self, "_gcs_billing_project"):
+            self._gcs_billing_project = None
 
         # Keep GCS credentials fresh automatically for gs:// sessions so tokens
         # don't lapse mid-session. Opt out with GENOMESHADER_NO_CRED_REFRESH=1;
@@ -659,6 +699,84 @@ class GenomeShader:
     def _cache_id(self, s: str) -> str:
         return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 
+    _GCS_BILLING_UNSET = object()
+
+    @staticmethod
+    def _resolve_gcs_billing_project(explicit=None, environ=None):
+        """Pick a GCS Requester Pays billing project.
+
+        Preference: constructor arg, then GENOMESHADER_GCS_BILLING_PROJECT /
+        GCS_REQUESTER_PAYS_PROJECT / CLOUDSDK_BILLING_PROJECT, then the
+        Workbench/Terra `GOOGLE_PROJECT` (and other standard GCP project
+        envs). Returns None if nothing is set.
+        """
+        if explicit is not None and str(explicit).strip():
+            return str(explicit).strip()
+        env = os.environ if environ is None else environ
+        for key in GenomeShader._GCS_BILLING_PROJECT_ENVS:
+            val = env.get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+        return None
+
+    @staticmethod
+    def _publish_gcs_billing_project(project: str) -> None:
+        """Publish a billing project to the env vars htslib and gcloud read."""
+        os.environ["GCS_REQUESTER_PAYS_PROJECT"] = project
+        os.environ["CLOUDSDK_BILLING_PROJECT"] = project
+
+    @staticmethod
+    def _gcloud_storage_cmd(*subargs, billing_project=_GCS_BILLING_UNSET, quiet: bool = False):
+        """`gcloud [--quiet] [--billing-project=P] storage <subargs>`.
+
+        ``billing_project=None`` means omit the flag. Omit the kwarg to resolve
+        from the environment (Workbench ``$GOOGLE_PROJECT``, etc.).
+        """
+        project = (
+            GenomeShader._resolve_gcs_billing_project()
+            if billing_project is GenomeShader._GCS_BILLING_UNSET
+            else billing_project
+        )
+        cmd = ["gcloud"]
+        if quiet:
+            cmd.append("--quiet")
+        if project:
+            cmd.append(f"--billing-project={project}")
+        cmd.append("storage")
+        cmd.extend(subargs)
+        return cmd
+
+    @staticmethod
+    def _gsutil_cmd(*subargs, billing_project=_GCS_BILLING_UNSET, quiet: bool = False):
+        """`gsutil [-u P] [-q] <subargs>` — `-u` is the Requester Pays project.
+
+        ``billing_project=None`` means omit ``-u``. Omit the kwarg to resolve
+        from the environment.
+        """
+        project = (
+            GenomeShader._resolve_gcs_billing_project()
+            if billing_project is GenomeShader._GCS_BILLING_UNSET
+            else billing_project
+        )
+        cmd = ["gsutil"]
+        if project:
+            cmd.extend(["-u", project])
+        if quiet:
+            cmd.append("-q")
+        cmd.extend(subargs)
+        return cmd
+
+    @staticmethod
+    def _looks_like_requester_pays(msg: str) -> bool:
+        low = (msg or "").lower()
+        return (
+            "requester pays" in low
+            or "requester-pays" in low
+            or "userprojectmissing" in low
+            or "user project" in low
+            or "no billing project" in low
+        )
+
     def _parse_gcs_uri(self, uri: str) -> Tuple[str, str]:
         prefix = "gs://"
         if not isinstance(uri, str) or not uri.startswith(prefix):
@@ -720,77 +838,81 @@ class GenomeShader:
         self._gcs_client_init_attempted = True
         try:
             from google.cloud import storage
-            self._gcs_client = storage.Client()
+            kwargs = {}
+            if self._gcs_billing_project:
+                kwargs["project"] = self._gcs_billing_project
+            self._gcs_client = storage.Client(**kwargs)
         except Exception:
             self._gcs_client = None
         return self._gcs_client
 
-    def _gcs_cp(self, src: str, dst: str, quiet: bool = True) -> bool:
-        gcloud_cmd = ["gcloud", "storage", "cp", src, dst]
-        if quiet:
-            gcloud_cmd.insert(2, "--quiet")
-        try:
-            rc = subprocess.run(
-                gcloud_cmd,
-                stdout=subprocess.DEVNULL if quiet else None,
-                stderr=subprocess.DEVNULL if quiet else None,
-                check=False,
-            ).returncode
-            if rc == 0:
-                return True
-        except FileNotFoundError:
-            pass
+    def _gcs_bucket(self, client, bucket_name: str):
+        """A bucket handle with `user_project` set for Requester Pays."""
+        return client.bucket(bucket_name, user_project=self._gcs_billing_project or None)
 
-        gsutil_cmd = ["gsutil", "-q", "cp", src, dst] if quiet else ["gsutil", "cp", src, dst]
-        try:
-            rc = subprocess.run(
-                gsutil_cmd,
-                stdout=subprocess.DEVNULL if quiet else None,
-                stderr=subprocess.DEVNULL if quiet else None,
-                check=False,
-            ).returncode
-            return rc == 0
-        except FileNotFoundError:
-            return False
+    def _gcs_cp(self, src: str, dst: str, quiet: bool = True) -> bool:
+        project = self._gcs_billing_project
+        cmds = [
+            self._gcloud_storage_cmd("cp", src, dst, billing_project=project, quiet=quiet),
+            self._gsutil_cmd("cp", src, dst, billing_project=project, quiet=quiet),
+        ]
+        last_err = ""
+        for cmd in cmds:
+            try:
+                p = subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL if quiet else None,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                if p.returncode == 0:
+                    return True
+                last_err = (p.stderr or b"").decode("utf-8", "replace")
+            except FileNotFoundError:
+                continue
+        if last_err and self._looks_like_requester_pays(last_err):
+            print(
+                f"GenomeShader: GCS copy failed (Requester Pays): {last_err.strip()}\n"
+                f"  -> {self._fetch_failure_hint('gcs', last_err)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return False
 
     def _gcs_exists(self, uri: str) -> bool:
         client = self._get_gcs_client()
         if client is not None:
             try:
                 bucket_name, blob_name = self._parse_gcs_uri(uri)
-                bucket = client.bucket(bucket_name)
+                bucket = self._gcs_bucket(client, bucket_name)
                 return bucket.blob(blob_name).exists(client=client)
             except Exception:
                 pass
 
-        try:
-            rc = subprocess.run(
-                ["gcloud", "storage", "ls", uri],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            ).returncode
-            if rc == 0:
-                return True
-        except FileNotFoundError:
-            pass
-        try:
-            rc = subprocess.run(
-                ["gsutil", "ls", uri],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            ).returncode
-            return rc == 0
-        except FileNotFoundError:
-            return False
+        project = self._gcs_billing_project
+        for cmd in (
+            self._gcloud_storage_cmd("ls", uri, billing_project=project),
+            self._gsutil_cmd("ls", uri, billing_project=project),
+        ):
+            try:
+                rc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                ).returncode
+                if rc == 0:
+                    return True
+            except FileNotFoundError:
+                continue
+        return False
 
     def _gcs_read_json(self, uri: str):
         client = self._get_gcs_client()
         if client is not None:
             try:
                 bucket_name, blob_name = self._parse_gcs_uri(uri)
-                bucket = client.bucket(bucket_name)
+                bucket = self._gcs_bucket(client, bucket_name)
                 blob = bucket.blob(blob_name)
                 if not blob.exists(client=client):
                     return None
@@ -821,7 +943,7 @@ class GenomeShader:
         if client is not None:
             try:
                 bucket_name, blob_name = self._parse_gcs_uri(uri)
-                bucket = client.bucket(bucket_name)
+                bucket = self._gcs_bucket(client, bucket_name)
                 blob = bucket.blob(blob_name)
                 blob.upload_from_string(
                     json.dumps(payload),
@@ -1189,11 +1311,21 @@ class GenomeShader:
               f"{len(paths_to_attach)} file(s)…", flush=True)
         _t_hdr = time.perf_counter()
         header_samples: set = set()
+        header_errors: List[str] = []
         for p, idx in zip(paths_to_attach, indexes_to_attach):
             try:
                 header_samples.update(gs._vcf_sample_names(p, idx))
             except Exception as e:
+                header_errors.append(f"{p}: {e}")
                 warnings.warn(f"could not read samples from '{p}': {e}")
+        if not header_samples and header_errors:
+            first = header_errors[0]
+            hint = self._fetch_failure_hint("variants", first)
+            raise RuntimeError(
+                f"attach_variants: could not read VCF/BCF headers from any of "
+                f"{len(paths_to_attach)} file(s); attaching would produce an empty "
+                f"track. First error: {first}\n  -> {hint}"
+            )
         print(f"GenomeShader:   {len(header_samples):,} sample(s) across header(s) "
               f"({time.perf_counter() - _t_hdr:.1f}s)", flush=True)
 
@@ -1554,6 +1686,13 @@ class GenomeShader:
     def _fetch_failure_hint(kind: str, msg: str) -> str:
         """Map a failure to a plain-language workaround based on the error text."""
         low = (msg or "").lower()
+        if GenomeShader._looks_like_requester_pays(msg):
+            return ("This GCS bucket has Requester Pays enabled, so every request "
+                    "needs a billing project. On a Verily Workbench / Terra VM, "
+                    "$GOOGLE_PROJECT is already set and Genomeshader should pick it "
+                    "up automatically; otherwise export "
+                    "GCS_REQUESTER_PAYS_PROJECT=<your-gcp-project> (or pass "
+                    "gcs_billing_project=...) and retry.")
         if "timeout" in low or "timed out" in low:
             return ("The request exceeded the 30s kernel timeout — usually a cold, "
                     "large-cohort window. Zoom to a smaller region, or re-run once the "
@@ -3261,10 +3400,11 @@ class GenomeShader:
         (GCS_OAUTH_TOKEN) and gcloud (CLOUDSDK_AUTH_ACCESS_TOKEN) read. Returns
         (seconds_until_next_refresh, ok)."""
         token, expiry_secs, errs = None, None, []
+        adc_project = None
         try:  # pythonic path — no CLI, refreshes from the stored refresh token
             import google.auth
             from google.auth.transport.requests import Request
-            creds, _ = google.auth.default(scopes=scopes or self._GCS_TOKEN_SCOPES)
+            creds, adc_project = google.auth.default(scopes=scopes or self._GCS_TOKEN_SCOPES)
             creds.refresh(Request())
             token = creds.token
             if getattr(creds, "expiry", None):
@@ -3272,6 +3412,12 @@ class GenomeShader:
                 expiry_secs = (creds.expiry - datetime.datetime.utcnow()).total_seconds()
         except Exception as e:
             errs.append(f"google-auth: {e}")
+        if adc_project and not self._gcs_billing_project:
+            self._gcs_billing_project = str(adc_project).strip()
+            self._publish_gcs_billing_project(self._gcs_billing_project)
+            self._gcs_client = None
+            self._gcs_client_init_attempted = False
+            self._debug_log("gcs_billing_project", project=self._gcs_billing_project, source="adc")
         if not token:  # CLI fallback (same ADC)
             token = self._mint_token_subprocess()
             if not token:
@@ -3363,7 +3509,12 @@ class GenomeShader:
     def _list_comment_uris(self) -> List[str]:
         d = self._comments_dir()
         if d.startswith("gs://"):
-            for cmd in (["gcloud", "storage", "ls", d + "/"], ["gsutil", "ls", d + "/"]):
+            project = self._gcs_billing_project
+            cmds = (
+                self._gcloud_storage_cmd("ls", d + "/", billing_project=project),
+                self._gsutil_cmd("ls", d + "/", billing_project=project),
+            )
+            for cmd in cmds:
                 try:
                     out = subprocess.run(cmd, capture_output=True, text=True, check=False)
                     if out.returncode == 0:
@@ -3481,7 +3632,10 @@ class GenomeShader:
     def delete_comment(self, comment_id: str, author: Optional[str] = None) -> bool:
         uri = f"{self._comments_dir()}/{comment_id}.json"
         if uri.startswith("gs://"):
-            for cmd in (["gcloud", "storage", "rm", uri], ["gsutil", "rm", uri]):
+            for cmd in (
+                self._gcloud_storage_cmd("rm", uri, billing_project=self._gcs_billing_project),
+                self._gsutil_cmd("rm", uri, billing_project=self._gcs_billing_project),
+            ):
                 try:
                     rc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
                                         stderr=subprocess.DEVNULL, check=False).returncode

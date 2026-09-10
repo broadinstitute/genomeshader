@@ -46,6 +46,7 @@ fn reader_cache_key(bcf_path: &str, index_path: Option<&str>) -> String {
 fn open_tbx_with_fallbacks(url: &Url) -> Result<tbx::Reader> {
     if url.scheme() != "file" {
         ensure_gcs_token_fresh();
+        local_guess_curl_ca_bundle();
     }
     match tbx::Reader::from_url(url) {
         Ok(r) => Ok(r),
@@ -90,6 +91,7 @@ fn open_url_with_fallbacks(url: &Url) -> Result<IndexedReader> {
     let dbg = vdbg();
     if url.scheme() != "file" {
         ensure_gcs_token_fresh(); // proactive 45-min refresh before a gs:// open
+        local_guess_curl_ca_bundle();
     }
     let t = Instant::now();
     match IndexedReader::from_url(url) {
@@ -732,6 +734,17 @@ mod tests {
         // An explicit index isn't derivable via the tabix reader -> Err, so the
         // caller always-queries that file.
         assert!(vcf_index_contigs(&fixture(), Some("x.tbi")).is_err());
+    }
+
+    #[test]
+    fn missing_file_url_is_error_not_segfault() {
+        // rust-htslib 0.44.1 treated bcf_sr_add_reader's 0 (failure) as success
+        // (`>= 0`) and then SIGSEGV'd on a NULL header. tbx::Reader did the same
+        // via hts_get_format(NULL). A missing file:// URL must be a Rust error so
+        // a Jupyter kernel survives a failed gs:// open.
+        let url = Url::parse("file:///definitely/not/a/genomeshader/file.vcf.gz").unwrap();
+        assert!(IndexedReader::from_url(&url).is_err());
+        assert!(tbx::Reader::from_url(&url).is_err());
     }
 
     #[test]

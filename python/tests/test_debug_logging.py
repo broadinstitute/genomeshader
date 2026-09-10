@@ -82,6 +82,7 @@ def test_on_writes_events_and_failure(tmp_path, monkeypatch, capsys):
     ("file not found", "index"),
     ("comm transport not ready", "connection"),
     ("something weird", "debug"),
+    ("Bucket is a requester pays bucket but no user project provided.", "billing project"),
 ])
 def test_hint_matches_error(msg, needle):
     assert needle in GenomeShader._fetch_failure_hint("variants", msg).lower()

@@ -110,7 +110,12 @@ def _fetch_to_local(session, uri: Optional[str], tmpdir: str) -> Optional[str]:
             except Exception as e:
                 # Only now (total failure) pay for a captured gcloud run so the
                 # real reason is in the message instead of being swallowed.
-                rc, out = _run_capture(["gcloud", "storage", "cp", uri, dst])
+                try:
+                    from genomeshader.view import GenomeShader
+                    cmd = GenomeShader._gcloud_storage_cmd("cp", uri, dst)
+                except Exception:
+                    cmd = ["gcloud", "storage", "cp", uri, dst]
+                rc, out = _run_capture(cmd)
                 raise RuntimeError(
                     f"failed to fetch {uri}"
                     f"\n  gcloud: {out or ('exit ' + str(rc))}"
