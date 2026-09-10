@@ -61,9 +61,15 @@ def _container_override_css(cid: str) -> str:
         # overlap — main flexes to fill whatever the panels leave, so expanding a
         # panel narrows the tracks instead of occluding them. Overrides the inline
         # position:absolute on each element.
+        # padding-top reserves the always-visible top locus bar's height: the flex
+        # row (sidebars + main) lays out in the content box below the padding, while
+        # the absolute #locusBar (top:0) fills the padding strip -> no overlap. The
+        # inline top:36px on the panels is overridden to top:auto by the flex rules
+        # below, so the offset must live here.
         f"{c} .app {{ height:100% !important; width:100% !important; display:flex !important;"
         f" flex-direction:row !important; align-items:stretch !important;"
-        f" position:relative !important; overflow:hidden !important; }}",
+        f" position:relative !important; overflow:hidden !important;"
+        f" padding-top:36px !important; box-sizing:border-box !important; }}",
         # overflow MUST stay visible on both axes so the protruding expand tab
         # (.sidebar-left::after, at left:100%) isn't clipped. overflow-y:auto
         # here would force overflow-x to compute to auto (CSS spec) and eat the
@@ -284,14 +290,27 @@ class GenomeShaderWidget(anywidget.AnyWidget):
             # ideogram, repeats, variants) for a new locus, since those are
             # per-window and static in the initial config.
             try:
+                # with_variants=False: a jump returns reference/genes fast and
+                # defers the (slow, cohort-scale) variant decode to the frontend
+                # viewport loader so navigation never times out on it.
                 payload = self._shader.navigate_payload(
-                    content.get("contig"), content.get("start"), content.get("end"))
+                    content.get("contig"), content.get("start"), content.get("end"),
+                    with_variants=False)
                 self.send({"type": "navigate_response", "request_id": request_id, **payload})
             except Exception as e:
                 hint = self._shader._report_fetch_failure(
                     "region", e, region=f"{content.get('contig')}:{content.get('start')}-{content.get('end')}")
                 self.send({"type": "navigate_error", "request_id": request_id,
                            "error": str(e), "hint": hint})
+        elif msg_type == "resolve_feature":
+            # Gene / transcript search-to-jump from the locus bar.
+            try:
+                matches = self._shader.resolve_feature(content.get("query"))
+                self.send({"type": "resolve_feature_response",
+                           "request_id": request_id, "matches": matches})
+            except Exception as e:
+                self.send({"type": "resolve_feature_response",
+                           "request_id": request_id, "matches": [], "error": str(e)})
         elif msg_type == "debug_log":
             # Frontend event log (loader decisions, fetch lifecycle) forwarded to
             # the server-side debug file so timing/sizing/skip reasons land in one
@@ -412,3 +431,12 @@ class GenomeShaderWidget(anywidget.AnyWidget):
             except Exception as e:
                 self.send({"type": "comments_changed", "request_id": request_id,
                            "action": "delete", "id": content.get("id"), "error": str(e)})
+
+        # Resource-usage snapshot after every comm (debug mode only; no-op when
+        # debug is off). Lands next to the fetch timings so a memory/thread/cache
+        # trend across a session is visible in the debug log.
+        if msg_type and msg_type != "debug_log":
+            try:
+                self._shader._debug_log_resources(msg_type)
+            except Exception:
+                pass

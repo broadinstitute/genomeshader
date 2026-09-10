@@ -721,6 +721,12 @@ impl Session {
                 );
             }
         }
+        let dbg = gs_debug();
+        if dbg {
+            eprintln!("[gs {}] attach_variants: {} file(s), samples_subset={}", crate::env::gs_ts(),
+                      variant_files.len(),
+                      samples.as_ref().map(|s| s.len().to_string()).unwrap_or_else(|| "all".into()));
+        }
         self.variant_file_groups.push(
             variant_files.into_iter().zip(index_files.into_iter()).collect()
         );
@@ -735,12 +741,31 @@ impl Session {
         for (i, (file, idx)) in group.iter().enumerate() {
             match variants::vcf_index_contigs(file, idx.as_deref()) {
                 Ok(contigs) => {
+                    if dbg {
+                        eprintln!("[gs {}] attach_variants: '{}' index -> {} contig(s)", crate::env::gs_ts(),
+                                  file, contigs.len());
+                    }
                     for c in contigs {
                         routing.by_contig.entry(c).or_default().push(i);
                     }
                 }
-                Err(_) => routing.always.push(i),
+                // The index couldn't be read (missing/unreadable .tbi/.csi, auth,
+                // wrong path). We fall back to always-querying this file so nothing
+                // is dropped — but that error was previously SWALLOWED, hiding the
+                // root cause of a later fetch failure. Surface it in debug mode.
+                Err(e) => {
+                    if dbg {
+                        eprintln!("[gs {}] attach_variants: '{}' index read FAILED ({}) \
+                                   -> always-query (idx hint: {:?})", crate::env::gs_ts(),
+                                  file, e, idx);
+                    }
+                    routing.always.push(i);
+                }
             }
+        }
+        if dbg {
+            eprintln!("[gs {}] attach_variants: routing {} contig-mapped, {} always-query", crate::env::gs_ts(),
+                      routing.by_contig.len(), routing.always.len());
         }
         self.variant_group_contigs.push(routing);
 
@@ -783,13 +808,13 @@ impl Session {
                 if let Ok(filtered) =
                     self.read_parquet_uri_filtered(&remote_uri, l_fmt.1, l_fmt.2)
                 {
-                    if dbg { eprintln!("[gs] {} staged-parquet hit {}ms", locus, _t.elapsed().as_millis()); }
+                    if dbg { eprintln!("[gs {}] {} staged-parquet hit {}ms", crate::env::gs_ts(), locus, _t.elapsed().as_millis()); }
                     self.variant_df_cache.insert(cache_key.clone(), filtered.clone());
                     return Ok(PyDataFrame(filtered));
                 }
             }
         }
-        if dbg { eprintln!("[gs] {} staged-parquet miss {}ms", locus, _t.elapsed().as_millis()); }
+        if dbg { eprintln!("[gs {}] {} staged-parquet miss {}ms", crate::env::gs_ts(), locus, _t.elapsed().as_millis()); }
 
         // Per-request GCS parquet cache read (opt-in): a remote round-trip per
         // window that, on a miss, still pays the open/HEAD cost — a prime stall.
@@ -799,17 +824,17 @@ impl Session {
                 self.gcs_cache_uri_for_variant_request(&l_fmt.0, l_fmt.1, l_fmt.2, dataset_hash)
             {
                 if let Ok(cached_df) = self.read_parquet_uri(&remote_uri) {
-                    if dbg { eprintln!("[gs] {} reqcache hit {}ms", locus, _t.elapsed().as_millis()); }
+                    if dbg { eprintln!("[gs {}] {} reqcache hit {}ms", crate::env::gs_ts(), locus, _t.elapsed().as_millis()); }
                     self.variant_df_cache.insert(cache_key.clone(), cached_df.clone());
                     return Ok(PyDataFrame(cached_df));
                 }
             }
-            if dbg { eprintln!("[gs] {} reqcache miss {}ms", locus, _t.elapsed().as_millis()); }
+            if dbg { eprintln!("[gs {}] {} reqcache miss {}ms", crate::env::gs_ts(), locus, _t.elapsed().as_millis()); }
         }
 
         let _tc = Instant::now();
         let df = self.compute_variants_for_locus(&l_fmt.0, &l_fmt.1, &l_fmt.2, &locus)?;
-        if dbg { eprintln!("[gs] {} compute {}ms ({} rows)", locus, _tc.elapsed().as_millis(), df.height()); }
+        if dbg { eprintln!("[gs {}] {} compute {}ms ({} rows)", crate::env::gs_ts(), locus, _tc.elapsed().as_millis(), df.height()); }
 
         // Write-back to the GCS request cache (opt-in): a remote WRITE per window
         // on the hot path — off by default so a pan can't stall on the upload.
@@ -825,7 +850,7 @@ impl Session {
                     );
                 }
             }
-            if dbg { eprintln!("[gs] {} reqcache-write {}ms", locus, _tw.elapsed().as_millis()); }
+            if dbg { eprintln!("[gs {}] {} reqcache-write {}ms", crate::env::gs_ts(), locus, _tw.elapsed().as_millis()); }
         }
 
         if !self.staged_tree.contains_key(&l_fmt.0) {

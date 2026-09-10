@@ -20,10 +20,12 @@ function ensureSmartScrollWrapper() {
     spacer.id = "smartScrollSpacer";
     spacer.style.cssText = "position:relative;width:1px;pointer-events:none;";
     w.appendChild(spacer);
-    // Wheel over the reads region scrolls the stack (native, with inner->outer
-    // chaining) instead of zooming the genome — stop it reaching the main wheel
-    // handler, but don't preventDefault so native scrolling still happens.
-    w.addEventListener("wheel", (e) => { e.stopPropagation(); }, { passive: true });
+    // A PLAIN wheel must reach the main handler to ZOOM the genome — even over
+    // the reads region (and in vertical mode this wrapper is a full-size
+    // transparent passthrough, so an unconditional stopPropagation killed zoom
+    // everywhere). Only SHIFT+wheel scrolls the reads stack natively; stop that
+    // from bubbling so it doesn't also zoom.
+    w.addEventListener("wheel", (e) => { if (e.shiftKey) e.stopPropagation(); }, { passive: true });
     tracksContainer.appendChild(w);
   }
   return w;
@@ -53,7 +55,21 @@ function positionSmartScrollWrapper() {
   state._readsHeaderTop = headerTop;
   w.style.display = "block";
   w.style.top = headerTop + "px";
-  w.style.bottom = "0";
+  // Bound the wrapper to the actual viewport, NOT bottom:0. #tracksContainer is
+  // grown to the FULL stack height by updateTracksHeight (--tracks-h), so a
+  // bottom:0 wrapper would fill it and never overflow — the sample stack would
+  // just be clipped by #main (overflow:hidden) with no way to scroll. Sizing to
+  // (viewportH - headerTop) makes the wrapper viewport-tall so the spacer (full
+  // stack) overflows it → the IGV-style scroll engages.
+  const mainEl = tracksContainer.parentElement;
+  const viewportH = mainEl ? mainEl.clientHeight : 0;
+  if (viewportH > 0) {
+    w.style.bottom = "auto";
+    w.style.height = Math.max(0, viewportH - headerTop) + "px";
+  } else {
+    w.style.bottom = "0";
+    w.style.height = "auto";
+  }
   w.style.overflowY = "auto";
   w.style.overflowX = "hidden";
   w.style.background = (typeof cssVar === "function" && cssVar("--bg")) || "#0b0d10";
@@ -154,8 +170,10 @@ function renderSmartTrack(trackId) {
   // per-track scrollbar makes the container narrower and would desync the read
   // coordinates from every other track (reads land at the wrong x and pan at a
   // different rate).
-  const genomeW = isVertical ? W
-    : ((typeof tracksWidthPx === "function" && tracksWidthPx() > 0) ? tracksWidthPx() : W);
+  // Overscan: widen the genomic-axis mapping dim by the pad (0 at rest) so reads
+  // translate in lockstep with the tracks/flow, which also map over renderWidthPx.
+  const genomeW = isVertical ? (W + 2 * (state.renderPadPx || 0))
+    : ((typeof renderWidthPx === "function" && renderWidthPx() > 0) ? renderWidthPx() : W);
   
   // Fallback to layout dimensions if container has no dimensions yet
   if (W <= 0 || isNaN(W)) {
@@ -172,9 +190,12 @@ function renderSmartTrack(trackId) {
     const top = track.collapsed ? 2 : 8;
     const bottom = track.collapsed ? 2 : 12;
     const rowH = 18;
+    // Expanded tracks keep a pinned aggregate-overview row at the top (the same
+    // sample-wide summary the collapsed view shows), so reserve a row + gap.
+    const overviewH = track.collapsed ? 0 : (rowH + 4);
     // If collapsed (closed state), limit to single row; otherwise use all rows
     const maxRows = track.collapsed ? 1 : (track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1);
-    totalContentHeight = top + maxRows * rowH + bottom;
+    totalContentHeight = top + overviewH + maxRows * rowH + bottom;
     
     // Set up grid layout for scrolling
     // CRITICAL: Set explicit height FIRST (this overrides the CSS height: 100%)
@@ -201,26 +222,32 @@ function renderSmartTrack(trackId) {
     // so an arbitrarily deep pileup never exceeds the ~16384px canvas limit (this
     // is what lifts the read cap). H here is the container/viewport height.
     const viewportH = Math.max(1, Math.min(H, trackLayout.contentHeight));
+    // Overscan (horizontal only): widen the reads canvas along the genomic axis
+    // (width) by the pad and shift it left by the pad, so the pre-painted margin
+    // is revealed as the drag translates it. 0 at rest, and 0 in vertical (which
+    // pans by full re-render). Keeps the reads in lockstep with the tracks/flow.
+    const rdPad = isVertical ? 0 : (state.renderPadPx || 0);
+    const canvasW = W + 2 * rdPad;
     if (spacer) spacer.style.height = totalContentHeight + 'px';
     canvas.height = viewportH * dpr;
     canvas.style.height = viewportH + 'px';
-    canvas.style.width = W + 'px';
+    canvas.style.width = canvasW + 'px';
     canvas.style.gridRow = '';
     canvas.style.gridColumn = '';
     canvas.style.position = 'sticky';
     canvas.style.top = '0';
     canvas.style.left = '0';
     canvas.style.zIndex = '1';
-    canvas.width = W * dpr;
+    canvas.width = canvasW * dpr;
 
     // Set WebGPU canvas dimensions to match regular canvas (viewport-sized)
     const prevWebGpuWidth = webgpuCanvas.width;
     const prevWebGpuHeight = webgpuCanvas.height;
 
-    webgpuCanvas.width = W * dpr;
+    webgpuCanvas.width = canvasW * dpr;
     webgpuCanvas.height = viewportH * dpr;
     webgpuCanvas.style.height = viewportH + 'px';
-    webgpuCanvas.style.width = W + 'px';
+    webgpuCanvas.style.width = canvasW + 'px';
     webgpuCanvas.style.gridRow = '';
     webgpuCanvas.style.gridColumn = '';
     webgpuCanvas.style.position = 'sticky';
@@ -233,9 +260,9 @@ function renderSmartTrack(trackId) {
 
     // Text overlay: viewport-sized + sticky, stacked above WebGPU (for SNP letters).
     if (textCanvas) {
-      textCanvas.width = W * dpr;
+      textCanvas.width = canvasW * dpr;
       textCanvas.height = viewportH * dpr;
-      textCanvas.style.width = W + 'px';
+      textCanvas.style.width = canvasW + 'px';
       textCanvas.style.height = viewportH + 'px';
       textCanvas.style.marginTop = (-viewportH) + 'px';
     }
@@ -243,7 +270,7 @@ function renderSmartTrack(trackId) {
     // Notify WebGPU core of resize if dimensions changed
     // Compare against PREVIOUS dimensions, not current (which we just set)
     // Defer to next frame to ensure layout has settled (prevents flickering in overlay mode)
-    if (webgpuCore && (prevWebGpuWidth !== W * dpr || prevWebGpuHeight !== viewportH * dpr)) {
+    if (webgpuCore && (prevWebGpuWidth !== canvasW * dpr || prevWebGpuHeight !== viewportH * dpr)) {
       // Use requestAnimationFrame to ensure container dimensions have settled
       // This is especially important in overlay mode where layout may be changing
       requestAnimationFrame(() => {
@@ -326,11 +353,28 @@ function renderSmartTrack(trackId) {
     resizeCanvasTo(container, canvas);
     const rect = container.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
+      // Reset the horizontal virtualized-path inline styles (sticky position,
+      // negative marginTop, and the fixed px width/height) — otherwise a
+      // horizontal->vertical switch leaves the canvas with a horizontal CSS box
+      // over a vertical backing store, which renders zoomed/pixelated and breaks
+      // scrolling. Fill the container cleanly for the vertical/no-reads path.
+      for (const cv of [canvas, webgpuCanvas, textCanvas].filter(Boolean)) {
+        cv.style.position = '';
+        cv.style.top = '';
+        cv.style.left = '';
+        cv.style.marginTop = '';
+        cv.style.width = rect.width + 'px';
+        cv.style.height = rect.height + 'px';
+      }
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
       // Also set WebGPU canvas dimensions
       webgpuCanvas.width = rect.width * dpr;
       webgpuCanvas.height = rect.height * dpr;
+      if (textCanvas) {
+        textCanvas.width = rect.width * dpr;
+        textCanvas.height = rect.height * dpr;
+      }
       if (webgpuCore) {
         // Defer resize to next frame to ensure layout has settled (prevents flickering in overlay mode)
         requestAnimationFrame(() => {
@@ -415,7 +459,7 @@ function renderSmartTrack(trackId) {
       seenExpandedIds.add(id);
       const pos = Number(entryPos);
       if (!Number.isFinite(pos)) return;
-      if (pos < state.startBp || pos > state.endBp) return;
+      if (pos < renderStartBp() || pos > renderEndBp()) return;
       const gapPx = getGapAfterBpPx(pos, state.expandedInsertions);
       if (!(gapPx > 0)) return;
       const afterBaseX = xGenomeCanonical(pos + 1, genomeW);
@@ -459,7 +503,7 @@ function renderSmartTrack(trackId) {
     // (length H = container width). Everything genomic (read y1/y2, markers,
     // variant guides) maps over W; everything column-wise (count, grid-line x)
     // uses H. Mixing these crammed the reads + grid into the top H px (#80).
-    const coordHeight = W;             // genomic-axis length for yGenomeCanonical
+    const coordHeight = W + 2 * (state.renderPadPx || 0);  // genomic-axis length (overscan-padded) for yGenomeCanonical
     const left = 8;
     const colW = 18;
     const cols = Math.floor((H - left - 12) / colW);  // columns fit across the cross axis
@@ -479,10 +523,13 @@ function renderSmartTrack(trackId) {
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
       const maxCols = Math.floor((H - left - 12) / colW);
       for (const read of track.readsLayout.reads) {
-        // When collapsed (closed state), only show first row/column
-        if (track.collapsed && read.row !== 0) continue;
-        if (read.row >= maxCols) continue;
-        if (read.end < state.startBp || read.start > state.endBp) continue;
+        // Collapsed (closed): aggregate the WHOLE sample onto a single column —
+        // draw every read's body + variant/SNP markers at column 0 (like the
+        // horizontal collapsed branch stacks all reads on row 0). Previously the
+        // vertical branch skipped every read but row 0, so a collapsed track
+        // showed only one read's variants instead of the sample-wide summary.
+        if (!track.collapsed && read.row >= maxCols) continue;
+        if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
         
         let color, alpha;
         if (read.haplotype === 1) {
@@ -499,7 +546,8 @@ function renderSmartTrack(trackId) {
         
         const y1 = yGenomeCanonical(read.start, coordHeight);
         const y2 = yGenomeCanonical(read.end, coordHeight);
-        const x = left + read.row * colW + 2;
+        const col = track.collapsed ? 0 : read.row;   // collapsed => all reads on col 0
+        const x = left + col * colW + 2;
         const w = colW - 4;
         const y = Math.min(y1, y2);
         const h = Math.max(4, Math.abs(y2 - y1));
@@ -516,10 +564,41 @@ function renderSmartTrack(trackId) {
           roundRect(ctx, x, y, w, h, 3);
           ctx.fill();
         }
+
+        // Strand direction arrow (the read orientation / pair indicator that the
+        // horizontal branch draws). The genome axis is Y here (higher bp = up), so
+        // a forward read's 3' end points UP, a reverse read's DOWN. Base spans the
+        // read column width; must be on the SAME layer as the body (WebGPU triangle
+        // when active, else the Canvas2D fallback). Skip when collapsed — the
+        // aggregate stacks every read on one column, so per-read arrows just clutter.
+        if (h >= 6 && !track.collapsed) {
+          const arrowSize = Math.max(3, Math.min(7, h * 0.5));
+          const acx = x + w / 2;
+          let tx0, ty0, tx1, ty1, tx2, ty2;
+          if (read.isForward) {
+            tx0 = x + 1;     ty0 = y + arrowSize + 1;
+            tx1 = acx;       ty1 = y + 1;
+            tx2 = x + w - 1; ty2 = y + arrowSize + 1;
+          } else {
+            tx0 = x + 1;     ty0 = y + h - arrowSize - 1;
+            tx1 = acx;       ty1 = y + h - 1;
+            tx2 = x + w - 1; ty2 = y + h - arrowSize - 1;
+          }
+          if (instancedRenderer && webgpuSupported) {
+            instancedRenderer.addTriangle(
+              tx0 * dpr, (ty0 - _scrollOffset) * dpr, tx1 * dpr, (ty1 - _scrollOffset) * dpr,
+              tx2 * dpr, (ty2 - _scrollOffset) * dpr, [1, 1, 1], 0.95);
+          } else {
+            ctx.fillStyle = `rgba(255,255,255,0.9)`;
+            ctx.beginPath();
+            ctx.moveTo(tx0, ty0); ctx.lineTo(tx1, ty1); ctx.lineTo(tx2, ty2);
+            ctx.fill();
+          }
+        }
         // Draw insertion/deletion/diff markers (vertical mode)
         if (read.elements && read.elements.length > 0) {
           for (const elem of read.elements) {
-            if (elem.start < state.startBp || elem.start > state.endBp) continue;
+            if (elem.start < renderStartBp() || elem.start > renderEndBp()) continue;
             const ey = yGenomeCanonical(elem.start, coordHeight);
             const ex = x;
             const ew = w;
@@ -535,7 +614,7 @@ function renderSmartTrack(trackId) {
             } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
               // Calculate actual base height
               const nextBp = elem.start + 1;
-              const nextY = (nextBp <= state.endBp ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(state.endBp, coordHeight));
+              const nextY = (nextBp <= renderEndBp() ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(renderEndBp(), coordHeight));
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
               const actualBaseHeight = Math.max(1, Math.abs(nextY - ey) - gapAfterPx);
 
@@ -578,7 +657,12 @@ function renderSmartTrack(trackId) {
     const top = track.collapsed ? 2 : 8;
     const bottom = track.collapsed ? 2 : 12;
     const rowH = 18;
-    
+    // Pinned aggregate-overview strip at the top of an expanded track (0 when
+    // collapsed, since the whole track already IS the overview). Reads render
+    // below it and scroll under it. See drawSampleOverview() below.
+    const overviewH = track.collapsed ? 0 : (rowH + 4);
+    const readsTop = top + overviewH;
+
     let totalRows = Math.floor((H - top - bottom) / rowH);
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
       // When collapsed (closed state), limit to single row
@@ -591,7 +675,7 @@ function renderSmartTrack(trackId) {
       ctx.strokeStyle = grid;
       ctx.lineWidth = 1;
       for (let i = startRow; i < endRow; i++) {
-        const y = top + i*rowH + rowH/2;
+        const y = readsTop + i*rowH + rowH/2;
         if (y >= -rowH && y <= totalContentHeight + rowH) {
           ctx.beginPath();
           ctx.moveTo(16, y);
@@ -626,18 +710,18 @@ function renderSmartTrack(trackId) {
       if (track.collapsed) {
         // Build overlap map for CIGAR elements
         for (const read of track.readsLayout.reads) {
-          if (read.end < state.startBp || read.start > state.endBp) continue;
+          if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
           
           // Track CIGAR element overlaps
           if (read.elements && read.elements.length > 0) {
             for (const elem of read.elements) {
-              if (elem.start < state.startBp || elem.start > state.endBp) continue;
+              if (elem.start < renderStartBp() || elem.start > renderEndBp()) continue;
               
               if (elem.type === 2) { // Insertion - single position
                 elementOverlapMap.set(elem.start, (elementOverlapMap.get(elem.start) || 0) + 1);
               } else if (elem.type === 3) { // Deletion - span from start to end
                 for (let bp = elem.start; bp <= elem.end; bp++) {
-                  if (bp >= state.startBp && bp <= state.endBp) {
+                  if (bp >= renderStartBp() && bp <= renderEndBp()) {
                     elementOverlapMap.set(bp, (elementOverlapMap.get(bp) || 0) + 1);
                   }
                 }
@@ -652,7 +736,7 @@ function renderSmartTrack(trackId) {
         let minStart = Infinity;
         let maxEnd = -Infinity;
         for (const read of track.readsLayout.reads) {
-          if (read.end < state.startBp || read.start > state.endBp) continue;
+          if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
           minStart = Math.min(minStart, read.start);
           maxEnd = Math.max(maxEnd, read.end);
         }
@@ -692,7 +776,7 @@ function renderSmartTrack(trackId) {
         for (const read of track.readsLayout.reads) {
           // Only show reads in visible rows
           if (read.row < startRow || read.row > endRow) continue;
-          if (read.end < state.startBp || read.start > state.endBp) continue;
+          if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
           
           let color, baseAlpha;
           if (read.haplotype === 1) {
@@ -711,9 +795,9 @@ function renderSmartTrack(trackId) {
           const x1 = xGenomeCanonical(read.start, genomeW);
           const x2 = xGenomeCanonical(read.end, genomeW);
           
-          const y = top + read.row * rowH + 2;
+          const y = readsTop + read.row * rowH + 2;
           const h = rowH - 4;
-          
+
           // Calculate drawing position and width
           const x = x1;
           const w = Math.max(4, x2 - x1);
@@ -773,17 +857,17 @@ function renderSmartTrack(trackId) {
       for (const read of track.readsLayout.reads) {
         // When collapsed, process all reads; when expanded, only visible rows
         if (!track.collapsed && (read.row < startRow || read.row > endRow)) continue;
-        if (read.end < state.startBp || read.start > state.endBp) continue;
+        if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
         
         // When collapsed, draw all elements at the same y position (row 0)
         // When expanded, use the read's assigned row
-        const y = track.collapsed ? (top + 0 * rowH + 2) : (top + read.row * rowH + 2);
+        const y = track.collapsed ? (top + 0 * rowH + 2) : (readsTop + read.row * rowH + 2);
         const h = rowH - 4;
         
         // Draw insertion/deletion/diff markers (horizontal mode)
         if (read.elements && read.elements.length > 0) {
           for (const elem of read.elements) {
-            if (elem.start < state.startBp || elem.start > state.endBp) continue;
+            if (elem.start < renderStartBp() || elem.start > renderEndBp()) continue;
             const ex = xGenomeCanonical(elem.start, genomeW);
             const ey = y;
             const eh = h;
@@ -809,7 +893,7 @@ function renderSmartTrack(trackId) {
                 let totalOverlap = 0;
                 let count = 0;
                 for (let bp = elem.start; bp <= elem.end; bp++) {
-                  if (bp >= state.startBp && bp <= state.endBp) {
+                  if (bp >= renderStartBp() && bp <= renderEndBp()) {
                     totalOverlap += (elementOverlapMap.get(bp) || 0);
                     count++;
                   }
@@ -829,7 +913,7 @@ function renderSmartTrack(trackId) {
             } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
               // Calculate actual base width
               const nextBp = elem.start + 1;
-              const nextX = nextBp <= state.endBp ? xGenomeCanonical(nextBp, genomeW) : xGenomeCanonical(state.endBp, genomeW);
+              const nextX = nextBp <= renderEndBp() ? xGenomeCanonical(nextBp, genomeW) : xGenomeCanonical(renderEndBp(), genomeW);
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
               const actualBaseWidth = Math.max(1, Math.abs(nextX - ex) - gapAfterPx);
 
@@ -882,6 +966,101 @@ function renderSmartTrack(trackId) {
           ctx.strokeRect(x, gapOverlayY, width, gapOverlayHeight);
         }
         ctx.restore();
+      }
+
+      // Aggregate OVERVIEW row: the sample-wide SNP/indel/deletion summary the
+      // collapsed track shows, kept as the first row of the EXPANDED track so
+      // the overview stays available once reads are displayed. Reads sit below
+      // it (readsTop). ponytail: mirrors the collapsed aggregation rather than
+      // refactoring the entangled collapsed passes; drawMarkerRect handles the
+      // WebGPU layer + scroll offset, so it stays aligned with the pileup.
+      if (!track.collapsed && overviewH > 0) {
+        const oReads = track.readsLayout.reads;
+        // Pin the overview to the track's viewport top so it stays in-line with
+        // the (pinned) sample name as the read pileup scrolls under it. World-Y =
+        // top + scrollOffset makes screen-Y = top after drawMarkerRect/ctx
+        // subtract the scroll offset.
+        const so = _scrollOffset || 0;
+        const oy = top + 2 + so;
+        const oh = rowH - 4;
+        // Opaque occluder on the SAME (WebGPU) layer as the reads, so rows
+        // scrolled up behind the pinned overview don't bleed through. Use the
+        // pane bg (--bg is opaque; --smart-track-bg may be a translucent tint).
+        (function () {
+          const c = (typeof cssVar === "function" && (cssVar("--bg") || "")) || "#ffffff";
+          let r = 255, g = 255, b = 255;
+          const s = String(c).trim();
+          if (s[0] === "#") {
+            const h = s.slice(1); const f = h.length === 3;
+            r = parseInt(f ? h[0] + h[0] : h.slice(0, 2), 16);
+            g = parseInt(f ? h[1] + h[1] : h.slice(2, 4), 16);
+            b = parseInt(f ? h[2] + h[2] : h.slice(4, 6), 16);
+          } else {
+            const m = s.match(/rgba?\(([^)]+)\)/);
+            if (m) { const p = m[1].split(",").map(v => parseFloat(v)); r = p[0] || 0; g = p[1] || 0; b = p[2] || 0; }
+          }
+          if ([r, g, b].every(Number.isFinite)) {
+            drawMarkerRect(16, top + so, Math.max(0, W - 32), overviewH - 1, r, g, b, 1);
+          }
+        })();
+        const ovMap = new Map();
+        let mn = Infinity, mx = -Infinity;
+        for (const read of oReads) {
+          if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+          mn = Math.min(mn, read.start); mx = Math.max(mx, read.end);
+          if (!read.elements) continue;
+          for (const el of read.elements) {
+            if (el.start < renderStartBp() || el.start > renderEndBp()) continue;
+            if (el.type === 3) {
+              for (let bp = el.start; bp <= el.end; bp++)
+                if (bp >= renderStartBp() && bp <= renderEndBp())
+                  ovMap.set(bp, (ovMap.get(bp) || 0) + 1);
+            } else {
+              ovMap.set(el.start, (ovMap.get(el.start) || 0) + 1);
+            }
+          }
+        }
+        if (mn !== Infinity) {
+          const bx1 = xGenomeCanonical(mn, genomeW), bx2 = xGenomeCanonical(mx, genomeW);
+          drawMarkerRect(bx1, oy, Math.max(4, bx2 - bx1), oh, 150, 150, 150, 0.15);
+          for (const read of oReads) {
+            if (read.end < renderStartBp() || read.start > renderEndBp() || !read.elements) continue;
+            for (const el of read.elements) {
+              if (el.start < renderStartBp() || el.start > renderEndBp()) continue;
+              const ex = xGenomeCanonical(el.start, genomeW);
+              const base = el.type === 2 ? 0.25 : (el.type === 3 ? 0.2 : 0.25);
+              let ov;
+              if (el.type === 3) {
+                let t = 0, c = 0;
+                for (let bp = el.start; bp <= el.end; bp++)
+                  if (bp >= renderStartBp() && bp <= renderEndBp()) { t += ovMap.get(bp) || 0; c++; }
+                ov = c ? t / c : 0;
+              } else {
+                ov = ovMap.get(el.start) || 0;
+              }
+              const a = Math.min(0.8, base * (1 + (ov - 1) * 0.25));
+              if (el.type === 2) {           // insertion tick
+                drawMarkerRect(ex - variantMarkerW / 2, oy, variantMarkerW, oh, 200, 100, 255, a);
+              } else if (el.type === 3) {    // deletion gap
+                const ex2 = xGenomeCanonical(el.end, genomeW);
+                drawMarkerRect(ex, oy + oh / 4, ex2 - ex, oh / 2, 0, 0, 0, a);
+              } else {                        // SNP tile (reference base palette)
+                const nuc = el.sequence ? el.sequence.toUpperCase() : '?';
+                const [r, g, b] = BASE_RGB[nuc] || [156, 39, 176];
+                const nextX = xGenomeCanonical(el.start + 1, genomeW);
+                const bw = Math.max(1, Math.abs(nextX - ex));
+                drawMarkerRect(ex + bw / 2 - variantMarkerW / 2, oy + 1, variantMarkerW, oh - 2, r, g, b, 1);
+              }
+            }
+          }
+          // Separator line under the overview row (pinned with the strip).
+          ctx.strokeStyle = cssVar("--border2") || grid;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(16, top + overviewH - 2 + so);
+          ctx.lineTo(W - 16, top + overviewH - 2 + so);
+          ctx.stroke();
+        }
       }
     } else if (track.loading) {
       ctx.fillStyle = cssVar("--muted");
@@ -1069,9 +1248,12 @@ function renderTrackControls() {
       container.style.left = `${item.left}px`;
       container.style.width = `${item.width}px`;
       container.style.top = "0";
-      // Container should cover full track height to allow resize handle at bottom
-      // Controls are positioned absolutely at top, so they only occupy their space
-      container.style.height = track.collapsed ? "24px" : "100%";
+      // A vertical track is a full-height COLUMN — the control menu lives at its
+      // top and (when collapsed) stacks down the narrow column, so give the
+      // container the full column height regardless of collapsed state.
+      container.style.height = "100%";
+      // Bound the menu to this column so multiple loaded samples never overlap.
+      container.style.overflow = "hidden";
     } else {
       container.style.position = "absolute";
       container.style.left = "0";
@@ -1082,6 +1264,11 @@ function renderTrackControls() {
       container.style.height = track.collapsed ? "24px" : `${item.height}px`;
     }
     container.dataset.trackId = track.id;
+    // Mark collapsed containers (incl. smart tracks) so the collapsed CSS applies
+    // — e.g. the vertical-mode rotate that stacks a collapsed sample menu down its
+    // narrow column. (Standard tracks re-add this below with an expand handler;
+    // smart tracks previously never got the class -> stayed horizontal/clipped.)
+    if (track.collapsed) container.classList.add("track-collapsed");
 
     const controls = document.createElement("div");
     controls.className = "track-controls";
@@ -1173,6 +1360,14 @@ function renderTrackControls() {
         if (labelTextSpan) {
           labelTextSpan.addEventListener("click", (e) => {
             e.stopPropagation();
+            // Collapsed: clicking the name EXPANDS the track (same as the arrow),
+            // matching standard tracks — you only rename while expanded.
+            if (track.collapsed) {
+              track.collapsed = false;
+              updateTracksHeight();
+              renderAll();
+              return;
+            }
             label.style.display = "none"; // Hide label
             labelSpacer.style.display = "block"; // Show spacer to maintain flex space
             labelInput.style.display = "block"; // Show input
@@ -1353,7 +1548,7 @@ function renderTrackControls() {
       // Close button
       const closeBtn = document.createElement("button");
       closeBtn.className = "smart-track-close-btn";
-      closeBtn.textContent = "✕";  // Use heavy multiplication x for better centering
+      closeBtn.textContent = "×";  // U+00D7 × — universally present (U+2715 ✕ tofu'd on some fonts)
       closeBtn.title = "Close track";
       closeBtn.type = "button";
       closeBtn.style.fontSize = "16px";
@@ -1617,20 +1812,39 @@ function renderGenesPanel() {
 // -----------------------------
 function renderHUD() {
   const locusText = `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
-  hud.textContent = locusText;
-  // Keep the coordinate readout persistently visible (it used to auto-hide 3s
-  // after a render, so at rest it vanished and only flashed while panning).
-  hud.classList.add('visible');
+  // The current-position indicator now lives in the top nav bar (right side).
+  const readout = document.getElementById('locusReadout');
+  if (readout) {
+    readout.textContent = locusText;
+    if (hud) hud.style.display = 'none';   // hide the old floating HUD
+    return;
+  }
+  // Fallback (no nav bar, e.g. bare harness): keep the floating HUD.
+  if (hud) {
+    hud.textContent = locusText;
+    hud.classList.add('visible');
+  }
 }
 
 function updateTooltip() {
-  // Variant/allele hover is shown by the on-canvas label drawn at the node
-  // (which also stays while selected/pinned), so we do NOT also show the
-  // near-cursor #tooltip for those — only the RepeatMasker hover uses it.
+  // HORIZONTAL: variant/allele hover is shown by the on-canvas label at the node.
+  // VERTICAL: the flow band is a narrow column, so the on-canvas box overlapped
+  // the variant — instead show the allele hover as a DOM tooltip placed OUTSIDE
+  // the flow band (to its right), clear of the node. RepeatMasker hover uses the
+  // near-cursor tooltip in both modes.
   if (state.hoveredRepeatTooltip) {
     tooltip.textContent = state.hoveredRepeatTooltip.text;
     tooltip.style.left = state.hoveredRepeatTooltip.x + 'px';
     tooltip.style.top = state.hoveredRepeatTooltip.y + 'px';
+    tooltip.classList.add('visible');
+  } else if (isVerticalMode() && state.hoveredAlleleNodeTooltip) {
+    const t = state.hoveredAlleleNodeTooltip;
+    tooltip.textContent = t.text;
+    const flowEl = document.getElementById('flow');
+    const fr = flowEl ? flowEl.getBoundingClientRect() : null;
+    // Sit just right of the flow band (never over the variant), at the hover row.
+    tooltip.style.left = ((fr && fr.width > 0 ? fr.right + 8 : t.x)) + 'px';
+    tooltip.style.top = (t.y - 12) + 'px';
     tooltip.classList.add('visible');
   } else {
     tooltip.classList.remove('visible');
@@ -1884,10 +2098,14 @@ function setupVariantHoverAreas() {
   // Clear existing hover areas
   clearSvg(flowOverlay);
   
-  // Set overlay dimensions to match containers
-  const flowW = flowWidthPx();
-  const flowH = flowHeightPx();
-  
+  // Set overlay dimensions to match containers. During overscan the flow layers
+  // are widened along the genomic axis, so size the overlay's viewBox to the
+  // RENDER width too — otherwise the viewBox stays viewport-width while the
+  // element is widened, stretching everything drawn on it. (0 pad => unchanged.)
+  const _ovIsVertical = isVerticalMode();
+  const flowW = _ovIsVertical ? flowWidthPx() : renderFlowWidthPx();
+  const flowH = _ovIsVertical ? renderFlowHeightPx() : flowHeightPx();
+
   flowOverlay.setAttribute("width", flowW);
   flowOverlay.setAttribute("height", flowH);
   flowOverlay.setAttribute("viewBox", `0 0 ${flowW} ${flowH}`);
@@ -1969,7 +2187,7 @@ function setupVariantHoverAreas() {
         for (let i = 0; i < win.length; i++) {
           const v = win[i];
           const cy = variantMode === "genomic"
-            ? yGenomeCanonical(v.pos, flowH)
+            ? yGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, flowH)
             : yColumn(i, win.length);
           const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
           hoverRect.setAttribute("x", labelX);
@@ -1988,7 +2206,7 @@ function setupVariantHoverAreas() {
         for (let i = 0; i < win.length; i++) {
           const v = win[i];
           const cx = variantMode === "genomic"
-            ? xGenomeCanonical(v.pos, flowW)
+            ? xGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, flowW)
             : xColumn(i, win.length);
           const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
           hoverRect.setAttribute("x", cx - 8);
@@ -2044,7 +2262,7 @@ function setupVariantHoverAreas() {
         const variantIdx = variants.findIndex(v2 => v2.id === v.id);
         if (variantIdx === -1) continue;
         const cy = variantMode === "genomic"
-          ? yGenomeCanonical(v.pos, flowH)
+          ? yGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, flowH)
           : yColumn(i, win.length);
         const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
         hoverRect.setAttribute("x", labelX);
@@ -2066,7 +2284,7 @@ function setupVariantHoverAreas() {
         if (variantIdx >= variants.length) continue;
         const variant = variants[variantIdx];
         const cx = variantMode === "genomic"
-          ? xGenomeCanonical(v.pos, flowW)
+          ? xGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, flowW)
           : xColumn(i, win.length);
         const hoverRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
         hoverRect.setAttribute("x", cx - 8);
@@ -2332,7 +2550,7 @@ function setupCanvasHover() {
         for (let i = 0; i < sortedWin.length; i++) {
           const v = sortedWin[i];
           const cy = variantMode === "genomic"
-            ? yGenomeCanonical(v.pos, H)
+            ? yGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, H)
             : yColumn(i, sortedWin.length);
           const variantIdx = getRulerVariantIndex(v.id);
           if (variantIdx == null) continue;
@@ -2350,9 +2568,9 @@ function setupCanvasHover() {
         for (let i = 0; i < sortedWin.length; i++) {
           const v = sortedWin[i];
           if (v.pos < state.startBp || v.pos > state.endBp) continue;
-          const vy = yGenomeCanonical(v.pos, H);
+          const vy = yGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, H);
           const cy = variantMode === "genomic"
-            ? yGenomeCanonical(v.pos, H)
+            ? yGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, H)
             : yColumn(i, sortedWin.length);
           const variantIdx = getRulerVariantIndex(v.id);
           if (variantIdx == null) continue;
@@ -2409,7 +2627,7 @@ function setupCanvasHover() {
         for (let i = 0; i < win.length; i++) {
           const v = win[i];
           const cx = variantMode === "genomic"
-            ? xGenomeCanonical(v.pos, W)
+            ? xGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, W)
             : xColumn(i, win.length);
           const variantIdx = getRulerVariantIndex(v.id);
           if (variantIdx == null) continue;
@@ -2428,9 +2646,9 @@ function setupCanvasHover() {
         for (let i = 0; i < win.length; i++) {
           const v = win[i];
           if (v.pos < state.startBp || v.pos > state.endBp) continue;
-          const vx = xGenomeCanonical(v.pos, W);
+          const vx = xGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, W);
           const cx = variantMode === "genomic"
-            ? xGenomeCanonical(v.pos, W)
+            ? xGenomeCanonical(v.pos + VARIANT_BASE_CENTER_OFFSET_BP, W)
             : xColumn(i, win.length);
           const variantIdx = getRulerVariantIndex(v.id);
           if (variantIdx == null) continue;
@@ -4048,6 +4266,17 @@ function setupCanvasHover() {
     const sl = gsSampleSliderState(pool);
     if (sliderEl) sliderEl.disabled = sl.disabled;
     if (inputEl) inputEl.disabled = sl.disabled;
+    // The slider's virtual stops track the number of samples that support the
+    // selection (the loadable pool) — not the hardcoded 20 from the HTML.
+    const sliderMax = Math.max(1, pool);
+    if (sliderEl) sliderEl.max = sliderMax;
+    if (inputEl) inputEl.max = sliderMax;
+    // Clamp a now-out-of-range count down to the new max.
+    if (state.sampleSelection.numSamples > sliderMax) {
+      state.sampleSelection.numSamples = sliderMax;
+      if (sliderEl) sliderEl.value = sliderMax;
+      if (inputEl) inputEl.value = sliderMax;
+    }
     if (sl.pinToOne) {
       state.sampleSelection.numSamples = 1;
       if (sliderEl) sliderEl.value = 1;
@@ -4196,33 +4425,76 @@ function setupCanvasHover() {
     }).filter((s) => s != null);
   }
 
+  // Session cache of carrier lists per (contig, pos, ref, allele, track, n).
+  // Carriers are immutable for a dataset, so a variant fetched once is instant
+  // on every later click. Stores the in-flight Promise so rapid re-clicks (or a
+  // re-selection while the first fetch is still running) share ONE comm instead
+  // of firing a duplicate kernel decode. Failures aren't cached (retryable).
+  const _carrierCache = new Map();
+  function _fetchCarriersForAllele(contig, pos, ref, allele, trackId, n) {
+    const key = `${contig}|${pos}|${ref}|${allele}|${trackId}|${n}`;
+    let p = _carrierCache.get(key);
+    if (!p) {
+      // "first" (not "random") so the backend short-circuits after n carriers —
+      // the matching-samples list only needs the first few names, so it doesn't
+      // decode+scan every sample's genotype just to sample them.
+      p = window.__GS_SEND("fetch_carriers", {
+        contig: contig, pos: pos, ref: ref, allele: allele,
+        track_id: trackId, strategy: "first", n: n,
+      }, 60000)
+        .then((resp) => (resp && Array.isArray(resp.carriers)) ? resp.carriers : [])
+        .catch(() => { _carrierCache.delete(key); return []; });  // don't cache failures
+      _carrierCache.set(key, p);
+    }
+    return p;
+  }
+
+  // Show the bottom progress bar while genotype (carrier) data loads — the
+  // fetch_carriers comm decodes per-sample GTs on the kernel and can take a
+  // beat at cohort scale, so the user needs a "something's happening" cue.
+  // Counter so overlapping selections don't clear the bar early.
+  let _carrierStatusN = 0;
+  function _endCarrierStatus() {
+    _carrierStatusN = Math.max(0, _carrierStatusN - 1);
+    if (_carrierStatusN === 0 && typeof window.__GS_STATUS === "function") {
+      const bar = document.getElementById("statusBar");
+      if (!bar || bar.classList.contains("indeterminate")) window.__GS_STATUS(false);
+    }
+  }
+
   async function _fetchCarriersForSelection(pairs, combineMode) {
     const n = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.carrier_fetch_n) || 500;
-    const perPairSets = [];
-    for (const pair of pairs) {
-      const v = pair.variant || {};
-      const trackId = (v.trackId != null) ? v.trackId : (pair.trackId != null ? pair.trackId : null);
-      const union = new Set();
-      for (const allele of _alleleStringsForPair(pair)) {
-        const resp = await window.__GS_SEND("fetch_carriers", {
-          contig: state.contig, pos: v.pos, ref: v.refAllele, allele: allele,
-          track_id: trackId, strategy: "random", n: n,
-        }, 60000).catch(() => null);
-        if (resp && Array.isArray(resp.carriers)) resp.carriers.forEach((s) => union.add(s));
+    _carrierStatusN++;
+    if (typeof window.__GS_STATUS === "function") {
+      window.__GS_STATUS("Loading genotypes…", { busy: true });
+    }
+    try {
+      const perPairSets = [];
+      for (const pair of pairs) {
+        const v = pair.variant || {};
+        const trackId = (v.trackId != null) ? v.trackId : (pair.trackId != null ? pair.trackId : null);
+        const union = new Set();
+        for (const allele of _alleleStringsForPair(pair)) {
+          const carriers = await _fetchCarriersForAllele(state.contig, v.pos, v.refAllele, allele, trackId, n);
+          carriers.forEach((s) => union.add(s));
+        }
+        perPairSets.push(union);
       }
-      perPairSets.push(union);
+      if (perPairSets.length === 0) return [];
+      let result;
+      if (combineMode === "AND") {
+        result = [...perPairSets[0]].filter((s) => perPairSets.every((set) => set.has(s)));
+      } else {
+        const u = new Set();
+        perPairSets.forEach((set) => set.forEach((s) => u.add(s)));
+        result = [...u];
+      }
+      return result.sort();
+    } finally {
+      _endCarrierStatus();
     }
-    if (perPairSets.length === 0) return [];
-    let result;
-    if (combineMode === "AND") {
-      result = [...perPairSets[0]].filter((s) => perPairSets.every((set) => set.has(s)));
-    } else {
-      const u = new Set();
-      perPairSets.forEach((set) => set.forEach((s) => u.add(s)));
-      result = [...u];
-    }
-    return result.sort();
   }
+  if (typeof window !== "undefined") window.__GS_TEST_fetchCarriers = (pairs, mode) => _fetchCarriersForSelection(pairs, mode);
   
   // Helper: Convert allele index to genotype index
   // The labels array from getFormattedLabelsForVariant has:
@@ -5115,7 +5387,8 @@ function setupCanvasHover() {
   
   if (sampleCountInputEl) {
     sampleCountInputEl.addEventListener('change', (e) => {
-      const value = Math.max(1, Math.min(20, parseInt(e.target.value) || 1));
+      const maxV = parseInt(sampleCountInputEl.max) || 20;
+      const value = Math.max(1, Math.min(maxV, parseInt(e.target.value) || 1));
       if (sliderEl) sliderEl.value = value;
       sampleCountInputEl.value = value;
       state.sampleSelection.numSamples = value;
@@ -5506,6 +5779,26 @@ function panByPixels(dxPx, dyPx) {
   scheduleRender();
 }
 
+// Vertical mode: scroll the side-by-side track columns horizontally by dxPx (the
+// genomic axis is vertical, so this is the cross-axis "scroll between samples").
+// Clamped so you can't scroll past the last column. getTrackLayout bakes
+// state.vertScrollX into every column's left, so one offset moves them all while
+// the genomic ruler gutter stays fixed.
+function scrollVertTracksBy(dxPx) {
+  if (!isVerticalMode()) return;
+  const layout = (typeof getTrackLayout === "function") ? getTrackLayout() : [];
+  let maxRight = GS_VERT_RULER_GUTTER_PX;
+  for (const it of layout) maxRight = Math.max(maxRight, (it.left || 0) + (it.width || 0));
+  const cur = state.vertScrollX || 0;
+  const totalW = maxRight + cur;                       // rightmost column edge, unscrolled
+  const avail = (typeof rectW === "function" ? rectW(main) : 0);
+  const maxScroll = Math.max(0, totalW - avail + 8);   // +8 so the last column is fully reachable
+  const next = Math.min(maxScroll, Math.max(0, cur + dxPx));
+  if (next === cur) return;
+  state.vertScrollX = next;
+  scheduleRender();
+}
+
 // --- Live pan: translate the rendered layers during a drag instead of
 // rebuilding every frame (rebuild is the dominant pan cost). state.startBp/endBp
 // stay the source of truth; the full re-render happens once on drag end. ---
@@ -5515,7 +5808,7 @@ function _panLayers() {
   // reads pan in lockstep with the header. (Translating each container inside the
   // scroll wrapper individually did not move them in step during a live drag,
   // which made reads drift proportionally to the pan distance.)
-  ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay", "commentPinOverlay", "smartScroll"].forEach(id => {
+  ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay", "flowIndelOverlay", "commentPinOverlay", "smartScroll"].forEach(id => {
     const e = (typeof byId === "function" && typeof root !== "undefined" ? byId(root, id) : null)
       || document.getElementById(id);
     if (e) out.push(e);
@@ -5527,30 +5820,88 @@ function _panLayers() {
   scope.querySelectorAll(".flow-track").forEach(e => out.push(e));
   return out;
 }
-// Horizontal only (callers gate on !isVerticalMode).
+// Paint layers that must WIDEN for overscan (the reads canvas widens itself in
+// renderSmartTrack). Genomic axis is X — overscan is horizontal-only; vertical
+// pans by full re-render (panByPixels), so pad stays 0 there.
+function _overscanPaintLayers() {
+  const out = [];
+  ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay", "flowIndelOverlay", "commentPinOverlay"].forEach(id => {
+    const e = (typeof byId === "function" && typeof root !== "undefined" ? byId(root, id) : null)
+      || document.getElementById(id);
+    if (e) out.push(e);
+  });
+  const scope = (typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document;
+  scope.querySelectorAll(".flow-track").forEach(e => out.push(e));
+  return out;
+}
+// Widen (on) / restore (off) the paint layers along x so the render paints
+// renderPadPx of margin on each side. .main clips the overflow. The layers stay
+// anchored at their normal left; the -pad centering lives in the transform
+// baseline (_applyPanTransform) so it works for sticky layers (the reads canvas)
+// too — `left` is only a threshold on position:sticky, not a shift. No-op off.
+function _setPanLayerOverscan(on) {
+  const pad = on ? (state.renderPadPx || 0) : 0;
+  _overscanPaintLayers().forEach(e => {
+    if (pad > 0) e.style.width = "calc(100% + " + (2 * pad) + "px)";
+    else e.style.removeProperty("width");
+  });
+}
+// Translate every pan layer by the overscan baseline (-pad, to center the wider
+// paint on the viewport) plus the live drag offset. transform works uniformly on
+// absolute AND sticky layers, unlike `left`.
+function _applyPanTransform() {
+  const tx = (state.livePanOffset || 0) - (state.renderPadPx || 0);
+  _panLayers().forEach(e => { e.style.transform = "translateX(" + tx + "px)"; });
+}
+// Enter/re-center overscan: pad the render window half a viewport each side,
+// widen + repaint the layers CENTERED on the current view window, and reset the
+// translate baseline. The repaint draws the same content re-centered (no snap).
+// Horizontal only; returns false if it can't run (no scale / vertical).
+function _beginPanOverscan() {
+  if (!state.pxPerBp || isVerticalMode()) return false;
+  const viewSpan = state.endBp - state.startBp;
+  if (!(viewSpan > 0)) return false;
+  state.renderPadBp = 0.5 * viewSpan;
+  state.renderPadPx = state.renderPadBp * state.pxPerBp;
+  _setPanLayerOverscan(true);   // widen BEFORE render so backing stores pick up the size
+  state.livePanOffset = 0;
+  renderAll();                  // paints [renderStart, renderEnd] across the widened layers
+  _applyPanTransform();         // shift left by pad so the viewport shows the center
+  return true;
+}
+// Horizontal live pan with overscan (callers gate on !isVerticalMode). The wider
+// pre-painted layers translate at 60fps; the view window is baked into
+// startBp/endBp each move (source of truth), repainted only on re-center/settle.
 function livePanBy(dxPx) {
   if (!state.pxPerBp) { panByPixels(dxPx, 0); return; }  // no scale yet: fall back
+  if (!state.renderPadPx && !_beginPanOverscan()) { panByPixels(dxPx, 0); return; }
   const deltaBp = dxPx / state.pxPerBp;
   state.startBp -= deltaBp;
   state.endBp -= deltaBp;
   state.livePanOffset = (state.livePanOffset || 0) + dxPx;
-  _panLayers().forEach(e => { e.style.transform = "translateX(" + state.livePanOffset + "px)"; });
+  _applyPanTransform();
 
-  // The transform alone leaves newly-exposed edges empty; a rebuild refills them.
-  // Rebuild when the drag PAUSES (debounced), NOT on a fixed timer: a periodic
-  // rebuild clears+redraws the whole view ~12x/sec, which flickers badly in
-  // fullscreen (a redraw is costly there) and makes static tracks (chromosome,
-  // genes) visibly snap. Pure transform stays 60fps while the pointer moves; the
-  // single refill lands once motion settles.
+  // Re-center before the pre-painted margin runs out — infrequent (once per
+  // ~0.3 viewport of pan), so no per-frame flicker; the repaint is the same
+  // content re-centered, and the static tracks don't snap because startBp/endBp
+  // already reflect the pan (renderStart/End derive from them).
+  if (Math.abs(state.livePanOffset) > 0.6 * state.renderPadPx) {
+    _beginPanOverscan();
+  }
+
+  // Settle: bake the pan + one normal repaint once motion pauses.
   if (state._livePanRebuildTimer) clearTimeout(state._livePanRebuildTimer);
-  state._livePanRebuildTimer = setTimeout(_commitLivePan, 110);
+  state._livePanRebuildTimer = setTimeout(_commitLivePan, 140);
 }
 function _commitLivePan() {
   if (state._livePanRebuildTimer) { clearTimeout(state._livePanRebuildTimer); state._livePanRebuildTimer = null; }
-  if (!state.livePanOffset) { return; }
+  if (!state.livePanOffset && !state.renderPadPx) { return; }
   clampToChromosomeBounds();
   _panLayers().forEach(e => { e.style.transform = ""; });
   state.livePanOffset = 0;
+  state.renderPadBp = 0;
+  state.renderPadPx = 0;
+  _setPanLayerOverscan(false);   // restore layer geometry (width/left) to the view window
   renderAll();
   // Viewport-driven variant loading (#71): fetch the new window ± overscan if it
   // isn't already covered by a loaded window. No-op unless enabled in config.
@@ -5678,9 +6029,9 @@ function bindInteractions(root, state, main) {
       // Check if event target is within reads container (including canvas children)
       const target = e.target;
       if (readsEl.contains(target) || path.includes(readsEl)) {
-        // Check if reads container is scrollable and has overflow
-        if (readsEl.scrollHeight > readsEl.clientHeight) {
-          // Allow native scrolling - don't prevent default
+        // Allow native reads scrolling only on shift+wheel; a plain wheel falls
+        // through to zoom the genome (the whole point of scrolling over reads).
+        if (e.shiftKey && readsEl.scrollHeight > readsEl.clientHeight) {
           return;
         }
       }
@@ -5708,19 +6059,45 @@ function bindInteractions(root, state, main) {
         const renderer = state.smartTrackRenderers.get(track.id);
         if (!renderer || !renderer.container) continue;
         const container = renderer.container;
-        if (!container.classList.contains('scrollable')) continue;
+        // NB: don't skip non-'scrollable' tracks here. A shallow track still
+        // needs shift+wheel to scroll the GROUP (#smartScroll) between tracks;
+        // skipping it left the loop with no match (when no track is deep) and
+        // the wheel fell through to zoom instead.
 
-        // Scroll the Smart Track container directly
+        // A PLAIN wheel over the samples track zooms the genome (fall through);
+        // scroll the read pileup only on shift+wheel. Otherwise the wheel got
+        // swallowed here and never zoomed.
+        if (!e.shiftKey) break;
+
+        // shift+wheel scrolls the sample-track stack. Scroll THIS pileup first;
+        // when it's at its bound, chain to the group wrapper (#smartScroll) so
+        // you can reach the next sample track. The group's macOS overlay
+        // scrollbar auto-hides, so the wheel is the only reliable scroll path —
+        // previously we scrolled only the (scrollbar-hidden, often-non-
+        // overflowing) inner container and preventDefault'd, which killed the
+        // native group scroll entirely.
         e.preventDefault();
         e.stopPropagation();
-        const delta = isVertical ? e.deltaX : e.deltaY;
-        const maxScroll = container.scrollHeight - container.clientHeight;
-        if (maxScroll > 0) {
-          const next = Math.max(0, Math.min(maxScroll, container.scrollTop + delta));
-          if (next !== container.scrollTop) {
-            container.scrollTop = next;
-            renderSmartTrack(track.id);
-          }
+        const delta = e.deltaY || e.deltaX;
+        const scrollEl = (el) => {
+          if (!el) return false;
+          const maxS = el.scrollHeight - el.clientHeight;
+          if (maxS <= 0) return false;
+          const next = Math.max(0, Math.min(maxS, el.scrollTop + delta));
+          if (next === el.scrollTop) return false;
+          el.scrollTop = next;
+          return true;
+        };
+        // Only a genuinely deep pileup (the 'scrollable' marker) may consume the
+        // wheel for its own reads; every shallow track marginally overflows its
+        // bounded height, which would otherwise silently eat the scroll and
+        // never reach the group.
+        if (container.classList.contains('scrollable') && scrollEl(container)) {
+          renderSmartTrack(track.id);
+        } else {
+          // Group scroll: children are positioned inside #smartScroll, so the
+          // browser repaints them natively — no per-track redraw needed.
+          scrollEl(document.getElementById("smartScroll"));
         }
         return;
       }
@@ -5731,8 +6108,9 @@ function bindInteractions(root, state, main) {
     for (const [trackId, renderer] of state.smartTrackRenderers.entries()) {
       const smartContainer = renderer.container;
       if (smartContainer && (smartContainer.contains(target) || path.includes(smartContainer))) {
-        // If smart track is scrollable, allow native scrolling
-        if (smartContainer.classList.contains('scrollable')) {
+        // Allow native pileup scroll only on shift+wheel; a plain wheel falls
+        // through to zoom the genome.
+        if (smartContainer.classList.contains('scrollable') && e.shiftKey) {
           return;
         }
       }
@@ -5758,21 +6136,28 @@ function bindInteractions(root, state, main) {
     }
     
     if (isVertical) {
-      // In vertical mode: vertical wheel = pan, horizontal wheel = zoom
-      const wantPan = e.shiftKey || Math.abs(dy) > Math.abs(dx);
-      
-      if (wantPan) {
+      // Genomic axis is vertical here. Wheel semantics:
+      //  - shift+wheel  -> pan the genomic (vertical) axis
+      //  - horizontal wheel (dx, trackpad two-finger) -> scroll ACROSS the track
+      //    columns (see the side-by-side sample tracks that overflow the width)
+      //  - plain vertical wheel -> zoom
+      if (e.shiftKey) {
         e.preventDefault();
-        e.stopPropagation(); // Prevent bubbling to window/document
-        const panDy = e.shiftKey ? dx : dy;
-        panByPixels(0, panDy);
+        e.stopPropagation();
+        panByPixels(0, dy);
+        return;
+      }
+      if (Math.abs(dx) > Math.abs(dy)) {
+        e.preventDefault();
+        e.stopPropagation();
+        scrollVertTracksBy(dx);
         return;
       }
 
       e.preventDefault();
       e.stopPropagation(); // Prevent bubbling to window/document
       const zoomIntensity = 0.0018;
-      const factor = Math.exp(-dx * zoomIntensity);
+      const factor = Math.exp(-dy * zoomIntensity);
 
       const anchorBp = anchorBpFromClientY(e.clientY);
       zoomByFactor(factor, anchorBp);
@@ -5857,7 +6242,7 @@ function bindInteractions(root, state, main) {
     if (e.pointerType === "mouse" && !(e.buttons & 1) &&
         (state.dragging || state.pointers.size || state.pendingFlowDrag || state.livePanOffset)) {
       state.pendingFlowDrag = null;
-      if (state.livePanOffset) endLivePan();
+      if (state.livePanOffset || state.renderPadPx) endLivePan();
       state.pointers.clear();
       state.dragging = false;
       return;
@@ -5925,9 +6310,19 @@ function bindInteractions(root, state, main) {
       // Accumulate travel so a select handler can tell a click from a pan drag.
       state.gestureMovedPx = (state.gestureMovedPx || 0) + Math.abs(dx) + Math.abs(dy);
       if (isVertical) {
-        panByPixels(0, -dy);   // vertical still full-renders (less common)
+        // Grab-drag: content follows the finger (matches horizontal). The
+        // vertical axis is y-inverted (bottom=start), so drag-down = +dy moves
+        // the content down with the pointer. (Negating dy scrolled backwards.)
+        panByPixels(0, dy);   // vertical: full-render per frame
       } else {
-        livePanBy(dx);         // horizontal: translate now, rebuild on drag end
+        // Full-render per frame (rAF-coalesced). The overscan transform path
+        // (livePanBy/_beginPanOverscan) is kept but DISABLED here: on real data it
+        // painted a misaligned "second set" of variants and left the static tracks
+        // half-painted mid-drag (issues that don't reproduce in the variant-less
+        // demo, so they can't be verified-fixed here). Full-render has a slight
+        // stutter on heavy views but is always correct. Re-enable overscan only
+        // once it's validated against real variant/gene data.
+        panByPixels(dx, 0);
       }
     }
   };
@@ -5941,7 +6336,7 @@ function bindInteractions(root, state, main) {
     if (state.pendingFlowDrag && state.pendingFlowDrag.pointerId === e.pointerId) {
       state.pendingFlowDrag = null;   // was a click, not a drag
     }
-    if (state.livePanOffset) endLivePan();   // commit a live pan with one rebuild
+    if (state.livePanOffset || state.renderPadPx) endLivePan();   // commit a live pan with one rebuild
     state.pointers.delete(e.pointerId);
     if (state.pointers.size < 2) {
       state.pinchStartDist = null;

@@ -233,12 +233,98 @@ def _carriers_from_variant_rows(rows, ref_allele, allele, n=None, rng_sample=Non
         if carries:
             seen.add(sname)
             carriers.append(sname)
+            # First-K fast path: when NOT random-sampling (rng_sample is None, e.g.
+            # strategy="first" for the matching-samples preview) stop as soon as we
+            # have n carriers — no need to scan every remaining sample's genotype.
+            if rng_sample is None and n is not None and n >= 0 and len(carriers) >= n:
+                return carriers
     if n is not None and n >= 0 and len(carriers) > n:
         carriers = rng_sample(carriers, n) if rng_sample is not None else carriers[:n]
     return carriers
 
 import genomeshader.genomeshader as gs
 from . import staging
+
+
+# --- Native-crash isolation ---------------------------------------------------
+# Some remote htslib opens can SEGFAULT/abort the whole process (a NULL index
+# deref, a libcurl/GCS fault) — a C crash that NO Python try/except or Rust
+# catch_unwind can rescue in-process. Run the risky header read in a child
+# process: if the child dies by signal, the parent survives and turns the crash
+# into a normal Python error, which the caller downgrades to a warning + skip.
+def _vcf_sample_names_worker(path, idx, q):
+    """Child-process entry: read the VCF header sample names and hand them back.
+    A native crash here kills only this child (parent sees the signal)."""
+    try:
+        import genomeshader.genomeshader as _gs
+        q.put(("ok", list(_gs._vcf_sample_names(path, idx))))
+    except BaseException as e:  # a normal (non-crash) error — report it cleanly
+        import traceback
+        q.put(("err", f"{type(e).__name__}: {e}", traceback.format_exc()))
+
+
+def _vcf_sample_names_isolated(path, idx, timeout=180):
+    """Read VCF header sample names in a spawned child so a NATIVE crash becomes
+    a catchable RuntimeError instead of a dead kernel. Raises on crash (signal),
+    timeout (network hang), or a normal reader error; returns the list on success.
+
+    Opt-in (GENOMESHADER_ISOLATE_HEADER_READS=1) — the underlying crash is fixed
+    at the source, so this is a belt-and-suspenders path, not the default.
+    """
+    import multiprocessing as mp
+    import signal as _signal
+    import queue as _queue
+    ctx = mp.get_context("spawn")  # spawn (not fork): fork in a threaded kernel deadlocks
+    q = ctx.Queue()
+    p = ctx.Process(target=_vcf_sample_names_worker, args=(path, idx, q), daemon=True)
+    p.start()
+    # DRAIN the queue while the child runs — do NOT join() first. A header can
+    # carry tens of thousands of sample names; the child can't exit until that
+    # payload is flushed through the pipe, so join-before-get deadlocks until the
+    # timeout. Poll get() (which drains the pipe, letting the child finish) and
+    # watch is_alive() so a crash is caught promptly instead of waiting the full
+    # timeout.
+    deadline = time.monotonic() + timeout
+    result = None
+    while True:
+        try:
+            result = q.get(timeout=0.2)
+            break
+        except _queue.Empty:
+            if not p.is_alive():
+                break                       # exited (crashed, or done w/o put)
+            if time.monotonic() >= deadline:
+                break                       # genuine hang
+    p.join(5)
+    if result is not None:
+        if result[0] == "ok":
+            return result[1]
+        raise RuntimeError(result[1] if len(result) > 1 else "unknown reader error")
+    # No result: either a native crash or a hang.
+    if p.is_alive():
+        p.terminate()
+        p.join(5)
+        raise RuntimeError(f"timed out after {timeout}s reading the VCF header "
+                           f"(network hang / auth stall?)")
+    if p.exitcode is not None and p.exitcode < 0:
+        sig = -p.exitcode
+        try:
+            name = _signal.Signals(sig).name
+        except ValueError:
+            name = str(sig)
+        raise RuntimeError(
+            f"the native VCF reader CRASHED (signal {name}) — usually a "
+            f"missing/unreadable .tbi/.csi index, or a GCS auth / requester-pays "
+            f"problem opening the remote file")
+    raise RuntimeError(f"the VCF reader exited (code {p.exitcode}) without "
+                       f"returning sample names")
+
+
+class ContigNotFoundError(ValueError):
+    """Requested contig isn't in the reference genome. Carries a clean,
+    user-facing message so setup fails with an explanation, not a traceback
+    from deep inside the reference/variant fetch."""
+    pass
 
 
 class GenomeShader:
@@ -851,13 +937,16 @@ class GenomeShader:
         return client.bucket(bucket_name, user_project=self._gcs_billing_project or None)
 
     def _gcs_cp(self, src: str, dst: str, quiet: bool = True) -> bool:
+        # Requester-Pays aware (billing project on the gcloud/gsutil command) +
+        # debug-logged timing / outcome per tool.
+        _t0 = time.perf_counter()
         project = self._gcs_billing_project
         cmds = [
-            self._gcloud_storage_cmd("cp", src, dst, billing_project=project, quiet=quiet),
-            self._gsutil_cmd("cp", src, dst, billing_project=project, quiet=quiet),
+            ("gcloud", self._gcloud_storage_cmd("cp", src, dst, billing_project=project, quiet=quiet)),
+            ("gsutil", self._gsutil_cmd("cp", src, dst, billing_project=project, quiet=quiet)),
         ]
         last_err = ""
-        for cmd in cmds:
+        for tool, cmd in cmds:
             try:
                 p = subprocess.run(
                     cmd,
@@ -866,8 +955,12 @@ class GenomeShader:
                     check=False,
                 )
                 if p.returncode == 0:
+                    self._debug_log("gcs_cp", tool=tool, src=src, dst=dst, ok=True,
+                                    ms=round((time.perf_counter() - _t0) * 1000, 1))
                     return True
                 last_err = (p.stderr or b"").decode("utf-8", "replace")
+                self._debug_log("gcs_cp", tool=tool, src=src, dst=dst, ok=False,
+                                rc=p.returncode, ms=round((time.perf_counter() - _t0) * 1000, 1))
             except FileNotFoundError:
                 continue
         if last_err and self._looks_like_requester_pays(last_err):
@@ -1064,6 +1157,32 @@ class GenomeShader:
             start, end = end, start
         return contig, start, end
 
+    def _known_contigs(self) -> set:
+        """The genome's contig set (reference / chrom_sizes keys). Non-empty for
+        staged references (PlasmoDB etc.); empty for UCSC-backed builds with no
+        staged chrom_sizes, in which case contig validation is skipped."""
+        try:
+            sizes = self._chrom_sizes() or {}
+        except Exception:
+            sizes = {}
+        return set(sizes.keys())
+
+    def _require_known_contig(self, contig: str) -> None:
+        """Raise a clean error (not a deep traceback) when the requested contig
+        isn't in the genome. No-op when the contig set is unknown."""
+        known = self._known_contigs()
+        if known and contig not in known:
+            avail = ", ".join(sorted(known)[:24])
+            more = "" if len(known) <= 24 else f" (+{len(known) - 24} more)"
+            msg = (f"Contig '{contig}' is not in the reference genome "
+                   f"'{self.genome_build}'. Available contigs: {avail}{more}.")
+            self._debug_log("contig_not_found", contig=contig,
+                            genome_build=str(self.genome_build), n_known=len(known))
+            # Print so the message is visible even where a raised exception's
+            # traceback is collapsed/hidden, then fail.
+            print(f"GenomeShader ERROR: {msg}", file=sys.stderr, flush=True)
+            raise ContigNotFoundError(msg)
+
     def _variant_payload_cache_uri(self, dataset_sig: str, contig: str, start: int, end: int) -> str:
         token = self._cache_id(f"{contig}:{start}:{end}")
         return (
@@ -1178,20 +1297,48 @@ class GenomeShader:
             cohort (str, optional): An optional cohort label for the dataset.
                 Defaults to 'all'.
         """
+        import traceback
+        _cap = lambda seq, n=25: list(seq)[:n]
+
         if isinstance(gcs_paths, str):
             gcs_paths = [gcs_paths]  # Convert single string to list
 
+        self._debug_log("attach_reads_start", cohort=cohort, n_paths=len(gcs_paths),
+                        paths=_cap([str(p) for p in gcs_paths]))
+
+        n_direct, n_dirs = 0, 0
         for gcs_path in gcs_paths:
             if gcs_path.endswith(".bam") or gcs_path.endswith(".cram"):
-                self._session.attach_reads([gcs_path], cohort)
+                # Direct read file: the Rust attach is a likely failure point
+                # (bad path / missing index / auth) — log + re-raise.
+                _t = time.perf_counter()
+                try:
+                    self._session.attach_reads([gcs_path], cohort)
+                except Exception as e:
+                    self._debug_log("session_attach_reads_error", path=gcs_path, cohort=cohort,
+                                    error=str(e), error_type=type(e).__name__,
+                                    traceback=traceback.format_exc(),
+                                    ms=round((time.perf_counter() - _t) * 1000, 1))
+                    print(f"GenomeShader ERROR: attach_reads '{gcs_path}' failed: {e}",
+                          file=sys.stderr, flush=True)
+                    raise
+                n_direct += 1
+                self._debug_log("session_attach_reads_done", path=gcs_path, cohort=cohort,
+                                ms=round((time.perf_counter() - _t) * 1000, 1))
             else:
                 # Defer the (potentially tens-of-thousands-of-objects) directory
                 # listing to the background read-index thread so it never blocks
                 # attach/show. The index lists + maps sample->file there, once
                 # variants are also attached (see _build_read_index).
                 self._pending_read_dirs.append((gcs_path, cohort))
+                n_dirs += 1
+                self._debug_log("attach_reads_dir_deferred", dir=gcs_path, cohort=cohort)
 
+        self._debug_log("attach_reads_resolved", n_direct=n_direct, n_dirs_deferred=n_dirs,
+                        n_pending_dirs=len(self._pending_read_dirs),
+                        vcf_universe_size=len(self._vcf_sample_universe))
         self._reconcile_read_samples()
+        self._debug_log("attach_reads_done", cohort=cohort)
 
     def _reconcile_read_samples(self):
         """Kick off the background VCF-sample -> read-file index once BOTH
@@ -1265,21 +1412,43 @@ class GenomeShader:
                 VCF header are dropped with a warning. Omit to include all samples.
         """
         import genomeshader.genomeshader as gs
+        import traceback
+
+        _cap = lambda seq, n=25: list(seq)[:n]  # cap long lists in the debug log
 
         if isinstance(variant_files, (str, Path)):
             variant_files = [variant_files]
+
+        self._debug_log("attach_variants_start", track_name=str(track_name),
+                        n_files_arg=len(variant_files),
+                        files_arg=_cap([os.fspath(f) for f in variant_files]),
+                        index_arg=(None if index is None else (
+                            "single" if isinstance(index, (str, Path)) else f"list[{len(list(index))}]")),
+                        samples_arg=(None if samples is None else len(samples)))
+        # Memory baseline. If the kernel DIES here (OOM-kill or a native
+        # htslib/libcurl crash — neither raises a Python exception), the debug log
+        # flushes per line, so the LAST line + these resource snapshots pinpoint
+        # the step and show any memory climb that preceded the death.
+        self._debug_log_resources("attach_variants_start")
 
         # Normalize `index` to a list parallel to variant_files.
         if index is None:
             index_list: List[Optional[str]] = [None] * len(variant_files)
         elif isinstance(index, (str, Path)):
             if len(variant_files) != 1:
+                self._debug_log("attach_variants_error", track_name=str(track_name),
+                                stage="index_normalize",
+                                error="single index requires a single variant file")
                 raise ValueError("a single index requires a single variant file; "
                                  "pass a list of indexes parallel to variant_files")
             index_list = [index]
         else:
             index_list = list(index)
             if len(index_list) != len(variant_files):
+                self._debug_log("attach_variants_error", track_name=str(track_name),
+                                stage="index_normalize",
+                                error=f"index list ({len(index_list)}) not parallel to "
+                                      f"variant_files ({len(variant_files)})")
                 raise ValueError("index list must be parallel to variant_files")
 
         paths_to_attach: List[str] = []
@@ -1291,15 +1460,35 @@ class GenomeShader:
                 indexes_to_attach.append(os.fspath(idx) if idx is not None else None)
             else:
                 if idx is not None:
+                    self._debug_log("attach_variants_error", track_name=str(track_name),
+                                    stage="dir_index", path=p,
+                                    error="cannot specify an index for a directory")
                     raise ValueError(f"cannot specify an index for directory '{p}'")
-                bcfs = gs._gcs_list_files_of_type(p, ".bcf")
-                vcfs = gs._gcs_list_files_of_type(p, ".vcf")
-                vcf_gzs = gs._gcs_list_files_of_type(p, ".vcf.gz")
+                # Directory: list variant files. Log the counts/errors — a common
+                # failure is an empty/mis-typed dir or a listing auth error.
+                _t_ls = time.perf_counter()
+                try:
+                    bcfs = gs._gcs_list_files_of_type(p, ".bcf")
+                    vcfs = gs._gcs_list_files_of_type(p, ".vcf")
+                    vcf_gzs = gs._gcs_list_files_of_type(p, ".vcf.gz")
+                except Exception as e:
+                    self._debug_log("attach_variants_dir_list_error", track_name=str(track_name),
+                                    dir=p, error=str(e), traceback=traceback.format_exc())
+                    raise
+                self._debug_log("attach_variants_dir_list", track_name=str(track_name), dir=p,
+                                n_bcf=len(bcfs), n_vcf=len(vcfs), n_vcf_gz=len(vcf_gzs),
+                                ms=round((time.perf_counter() - _t_ls) * 1000, 1))
                 for found in (*bcfs, *vcfs, *vcf_gzs):
                     paths_to_attach.append(found)
                     indexes_to_attach.append(None)
 
+        self._debug_log("attach_variants_resolved", track_name=str(track_name),
+                        n_paths=len(paths_to_attach), paths=_cap(paths_to_attach),
+                        indexes=_cap([i for i in indexes_to_attach]))
+
         if not paths_to_attach:
+            self._debug_log("attach_variants_no_files", track_name=str(track_name),
+                            note="no .bcf/.vcf/.vcf.gz resolved — nothing attached")
             return
 
         # Reconcile the requested sample subset against the VCF headers, and
@@ -1309,14 +1498,36 @@ class GenomeShader:
         # report progress so the setup isn't a silent wait.
         print(f"GenomeShader: attach_variants '{track_name}': reading headers of "
               f"{len(paths_to_attach)} file(s)…", flush=True)
+        self._debug_log("attach_variants_headers_start", track_name=str(track_name),
+                        n_files=len(paths_to_attach))
         _t_hdr = time.perf_counter()
         header_samples: set = set()
         header_errors: List[str] = []
+        # Header read is DIRECT by default (fast). The earlier native crash is
+        # fixed at the source (non-indexed header read + hidden OpenSSL symbols),
+        # so subprocess isolation is now an opt-in belt-and-suspenders — it also
+        # spawns+imports the extension per file, which is slow for a per-contig
+        # callset. Enable with GENOMESHADER_ISOLATE_HEADER_READS=1 if a native
+        # crash ever resurfaces.
+        _isolate = os.environ.get("GENOMESHADER_ISOLATE_HEADER_READS", "0").strip().lower() \
+            in {"1", "true", "yes"}
         for p, idx in zip(paths_to_attach, indexes_to_attach):
+            _t_one = time.perf_counter()
+            # Flushed BEFORE the native open: if the read still crashes (isolation
+            # off), this is the last surviving log line.
+            self._debug_log("vcf_header_start", path=p, index=idx, isolated=_isolate)
             try:
-                header_samples.update(gs._vcf_sample_names(p, idx))
+                names = (_vcf_sample_names_isolated(p, idx) if _isolate
+                         else gs._vcf_sample_names(p, idx))
+                header_samples.update(names)
+                self._debug_log("vcf_header_read", path=p, index=idx, n_samples=len(names),
+                                sample_head=_cap(names, 5),
+                                ms=round((time.perf_counter() - _t_one) * 1000, 1))
             except Exception as e:
                 header_errors.append(f"{p}: {e}")
+                self._debug_log("vcf_header_error", path=p, index=idx, error=str(e),
+                                traceback=traceback.format_exc(),
+                                ms=round((time.perf_counter() - _t_one) * 1000, 1))
                 warnings.warn(f"could not read samples from '{p}': {e}")
         if not header_samples and header_errors:
             first = header_errors[0]
@@ -1328,11 +1539,17 @@ class GenomeShader:
             )
         print(f"GenomeShader:   {len(header_samples):,} sample(s) across header(s) "
               f"({time.perf_counter() - _t_hdr:.1f}s)", flush=True)
+        self._debug_log("attach_variants_headers_done", track_name=str(track_name),
+                        n_header_samples=len(header_samples),
+                        ms=round((time.perf_counter() - _t_hdr) * 1000, 1))
 
         subset: Optional[List[str]] = None
         if samples is not None:
             present = [s for s in samples if s in header_samples]
             absent = [s for s in samples if s not in header_samples]
+            self._debug_log("attach_variants_subset", track_name=str(track_name),
+                            requested=len(samples), present=len(present),
+                            absent=len(absent), absent_head=_cap(sorted(absent), 20))
             if absent:
                 warnings.warn(
                     f"attach_variants: {len(absent)} requested sample(s) not in the "
@@ -1345,11 +1562,33 @@ class GenomeShader:
             self._vcf_sample_universe.update(header_samples)
 
         self._variant_datasets.append((str(track_name), paths_to_attach))
+        # The Rust indexing call: the most likely failure point (bad/missing
+        # index, unreadable BCF, auth). Log the attempt + outcome and re-raise so
+        # the traceback lands in the debug log instead of an empty one.
+        self._debug_log_resources("before_session_attach_variants")
+        self._debug_log("session_attach_variants_start", track_name=str(track_name),
+                        n_paths=len(paths_to_attach), n_subset=(None if subset is None else len(subset)))
         _t_idx = time.perf_counter()
-        self._session.attach_variants(paths_to_attach, indexes_to_attach, subset)
+        try:
+            self._session.attach_variants(paths_to_attach, indexes_to_attach, subset)
+        except Exception as e:
+            self._debug_log("session_attach_variants_error", track_name=str(track_name),
+                            error=str(e), error_type=type(e).__name__,
+                            paths=_cap(paths_to_attach), indexes=_cap(indexes_to_attach),
+                            traceback=traceback.format_exc(),
+                            ms=round((time.perf_counter() - _t_idx) * 1000, 1))
+            print(f"GenomeShader ERROR: attach_variants '{track_name}' failed during "
+                  f"indexing: {e}", file=sys.stderr, flush=True)
+            raise
         print(f"GenomeShader:   indexed {len(paths_to_attach)} file(s) for contig routing "
               f"({time.perf_counter() - _t_idx:.1f}s)", flush=True)
+        self._debug_log("session_attach_variants_done", track_name=str(track_name),
+                        n_paths=len(paths_to_attach),
+                        vcf_universe_size=len(self._vcf_sample_universe),
+                        n_datasets=len(self._variant_datasets),
+                        ms=round((time.perf_counter() - _t_idx) * 1000, 1))
         self._reconcile_read_samples()
+        self._debug_log("attach_variants_done", track_name=str(track_name))
 
     def set_sample_mapping(self, mapping: dict):
         """
@@ -1458,17 +1697,27 @@ class GenomeShader:
         and read @RG SM headers for the leftovers (authoritative)."""
         import genomeshader.genomeshader as gs
         t0 = time.perf_counter()
+        # Runs on a daemon THREAD — an unlogged failure here silently breaks the
+        # sample->read mapping (reads won't load) without touching the main flow.
+        # Log each step + the outcome so a stuck/failed index is diagnosable.
+        self._debug_log("read_index_start", n_pending_dirs=len(self._pending_read_dirs),
+                        vcf_universe=len(self._vcf_sample_universe))
         try:
             urls = []
             try:
                 urls.extend(self._session.get_attached_reads())
-            except Exception:
-                pass
+            except Exception as e:
+                self._debug_log("read_index_attached_error", error=str(e))
             for path, _cohort in list(self._pending_read_dirs):
                 try:
-                    urls.extend(gs._gcs_list_files_of_type(path, ".bam"))
-                    urls.extend(gs._gcs_list_files_of_type(path, ".cram"))
+                    with self._dbg_time("read_index_dir_list", dir=path):
+                        b = gs._gcs_list_files_of_type(path, ".bam")
+                        c = gs._gcs_list_files_of_type(path, ".cram")
+                    urls.extend(b); urls.extend(c)
+                    self._debug_log("read_index_dir_counts", dir=path, n_bam=len(b), n_cram=len(c))
                 except Exception as e:
+                    self._debug_log("read_index_dir_error", dir=path, error=str(e),
+                                    traceback=__import__("traceback").format_exc())
                     warnings.warn(f"read-index: could not list '{path}': {e}")
             urls = list(dict.fromkeys(str(u) for u in urls))  # de-dup, keep order
             samples = set(self._vcf_sample_universe)
@@ -1484,19 +1733,34 @@ class GenomeShader:
             print(f"GenomeShader: read-index: {len(urls):,} file(s); "
                   f"{len(index):,} matched by name, reading @RG SM for "
                   f"{len(unmatched):,}…", flush=True)
+            self._debug_log("read_index_name_pass", n_urls=len(urls),
+                            matched_by_name=len(index), unmatched=len(unmatched))
             if unmatched:                                    # authoritative: by SM
                 try:
-                    for u, sms in gs._bam_sample_names(unmatched):
+                    with self._dbg_time("read_index_rg_sm", n_files=len(unmatched)):
+                        rg = gs._bam_sample_names(unmatched)
+                    matched_sm = 0
+                    for u, sms in rg:
                         for sm in sms:
                             if sm in samples:
                                 index.setdefault(sm, []).append(u)
+                                matched_sm += 1
+                    self._debug_log("read_index_rg_sm_done", matched_by_sm=matched_sm)
                 except Exception as e:
+                    self._debug_log("read_index_rg_sm_error", error=str(e),
+                                    traceback=__import__("traceback").format_exc())
                     warnings.warn(f"read-index: header read failed: {e}")
 
             with self._read_index_lock:
                 self._read_index = index
             print(f"GenomeShader: read-index ready: {len(index):,}/{len(samples):,} "
                   f"sample(s) mapped ({time.perf_counter() - t0:.1f}s)", flush=True)
+            self._debug_log("read_index_ready", mapped=len(index), universe=len(samples),
+                            ms=round((time.perf_counter() - t0) * 1000, 1))
+        except BaseException as e:
+            self._debug_log("read_index_fatal", error=str(e), error_type=type(e).__name__,
+                            traceback=__import__("traceback").format_exc())
+            raise
         finally:
             self._read_index_done.set()
 
@@ -1539,6 +1803,8 @@ class GenomeShader:
         sample mapping) -> fetched reads. Raises ValueError on bad input.
         """
         locus = locus or self._last_locus
+        self._debug_log("reads_payload_start", locus=locus, sample_id=sample_id,
+                        n_samples=(len(samples) if samples else (1 if sample_id else 0)))
         if not locus:
             raise ValueError("No locus available; render a locus first")
 
@@ -1547,6 +1813,8 @@ class GenomeShader:
             raise ValueError("No sample_id or samples provided")
 
         bam_urls = self.get_bam_samples_for_vcf_samples(vcf_samples)
+        self._debug_log("reads_bam_resolve", locus=locus, n_vcf_samples=len(vcf_samples),
+                        n_bams=len(bam_urls), bam_urls=list(bam_urls)[:20])
         if not bam_urls:
             raise ValueError(f"No BAM files found for sample(s): {vcf_samples}")
 
@@ -1572,6 +1840,8 @@ class GenomeShader:
             except Exception:
                 reads_dict = None
         source = "disk" if reads_dict is not None else "fetch"
+        self._debug_log("reads_cache_lookup", locus=locus, hit=(source == "disk"),
+                        count=count, cache=str(cache_path), use_cache=use_cache)
         if reads_dict is None:
             # Fetch the staged reference for this window so the Rust extractor can
             # diff M-run read bases against it and surface SNPs even on BAMs that
@@ -1582,15 +1852,23 @@ class GenomeShader:
             ref_start = 0
             try:
                 _contig, _lstart, _lend = self._parse_locus(str(locus))
-                ref_seq = self.reference(_contig, _lstart - 1, _lend) or ""
+                with self._dbg_time("reads_reference_fetch", locus=locus):
+                    ref_seq = self.reference(_contig, _lstart - 1, _lend) or ""
                 ref_start = _lstart
             except Exception:
                 ref_seq, ref_start = "", 0
-            reads_df = self._session.fetch_reads_for_locus(
-                locus, bam_urls, ref_seq or None, int(ref_start)
-            )
+            # The native (Rust/htslib) BAM fetch: heaviest step and a remote-IO
+            # crash risk. Timed + start/done/error-logged so a stall or a native
+            # failure is pinpointed to this call with the locus + bam count.
+            with self._dbg_time("reads_rust_fetch", locus=locus, n_bams=len(bam_urls),
+                                ref_len=len(ref_seq or "")):
+                reads_df = self._session.fetch_reads_for_locus(
+                    locus, bam_urls, ref_seq or None, int(ref_start)
+                )
             reads_dict = reads_df.to_dict(as_series=False)
             count = len(reads_df)
+            self._debug_log("reads_fetched", locus=locus, n_reads=count,
+                            n_bams=len(bam_urls))
             if use_cache:
                 try:
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1601,6 +1879,9 @@ class GenomeShader:
         if self._timing_enabled():
             print(f"[timing] reads {locus} x{len(bam_urls)} bam "
                   f"({source}): {(time.perf_counter() - t0) * 1000:.0f} ms, {count} reads")
+        self._debug_log("reads_payload_done", locus=locus, source=source, count=count,
+                        n_bams=len(bam_urls),
+                        ms=round((time.perf_counter() - t0) * 1000, 1))
         return {
             "reads": reads_dict,
             "count": count,
@@ -1662,6 +1943,87 @@ class GenomeShader:
             self._debug_logger.info(f"{event} {payload}")
         except Exception:
             pass
+
+    def _debug_log_resources(self, where: str):
+        """Log process resource usage + cache sizes (debug mode only). Called
+        after fetches so a memory/thread/cache trend is visible in the log next to
+        the fetch timings. No-op when debug is off; never raises."""
+        if not getattr(self, "_debug_logger", None):
+            return
+        fields = {"where": where}
+        try:
+            import resource
+            ru = resource.getrusage(resource.RUSAGE_SELF)
+            # ru_maxrss: KB on Linux, bytes on macOS.
+            rss_kb = ru.ru_maxrss if sys.platform != "darwin" else ru.ru_maxrss // 1024
+            fields["max_rss_mb"] = round(rss_kb / 1024, 1)
+            fields["cpu_s"] = round(ru.ru_utime + ru.ru_stime, 2)
+        except Exception:
+            pass
+        try:  # current (not peak) RSS from /proc, when available
+            with open("/proc/self/statm") as f:
+                resident_pages = int(f.read().split()[1])
+            fields["rss_mb"] = round(
+                resident_pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024), 1)
+        except Exception:
+            pass
+        try:
+            import threading
+            fields["threads"] = threading.active_count()
+        except Exception:
+            pass
+        for attr, key in (("_agg_region_cache", "agg_cache_n"),
+                          ("_genes_cache", "genes_cache_n"),
+                          ("_repeats_cache", "repeats_cache_n"),
+                          ("_reference_cache", "ref_cache_n")):
+            try:
+                c = getattr(self, attr, None)
+                if c is not None:
+                    fields[key] = len(c)
+            except Exception:
+                pass
+        self._debug_log("resources", **fields)
+
+    def _dbg_on(self) -> bool:
+        """Cheap check: is debug logging active? Use to GUARD building expensive
+        log payloads on hot paths so there's zero cost when debug is off."""
+        return getattr(self, "_debug_logger", None) is not None
+
+    def _dbg_time(self, event: str, **fields):
+        """Context manager that logs `<event>_start` then `<event>_done` (with
+        elapsed ms) — or `<event>_error` (with the exception + traceback) if the
+        block raises. No-op with zero overhead when debug is off. Use to wrap any
+        critical or performance-sensitive section so the log shows exactly which
+        step ran, how long it took, and how it failed."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def _noop():
+            yield
+
+        if not self._dbg_on():
+            return _noop()
+
+        shader = self
+
+        @contextlib.contextmanager
+        def _timed():
+            import traceback
+            t0 = time.perf_counter()
+            shader._debug_log(event + "_start", **fields)
+            try:
+                yield
+            except BaseException as e:
+                shader._debug_log(event + "_error",
+                                  ms=round((time.perf_counter() - t0) * 1000, 1),
+                                  error=str(e), error_type=type(e).__name__,
+                                  traceback=traceback.format_exc(), **fields)
+                raise
+            else:
+                shader._debug_log(event + "_done",
+                                  ms=round((time.perf_counter() - t0) * 1000, 1), **fields)
+
+        return _timed()
 
     def _report_fetch_failure(self, kind: str, error, **context):
         """A data-fetch failure (variants/reads/region/navigate). Always log it
@@ -1821,7 +2183,16 @@ class GenomeShader:
                 - variant_id: Unique variant identifier (internal index)
                 - vcf_id: VCF/BCF ID field from the variant record (None if not present)
         """
-        return self._session.get_locus_variants(locus)
+        # Native (Rust/htslib) region seek+decode: a perf-sensitive hot path and a
+        # remote-IO crash risk. Timed start/done/error with the row count.
+        with self._dbg_time("get_locus_variants", locus=locus):
+            df = self._session.get_locus_variants(locus)
+        if self._dbg_on():
+            try:
+                self._debug_log("get_locus_variants_rows", locus=locus, n_rows=len(df))
+            except Exception:
+                pass
+        return df
 
     def fetch_carriers(self, contig, pos, ref, allele, track_id=None,
                        strategy="random", n=200):
@@ -1833,6 +2204,24 @@ class GenomeShader:
         region-seek and filters genotypes; samples the result to `n`. `allele`
         is the ref or an ALT allele string.
         """
+        # Session cache: carriers are immutable for a dataset, and the cost here
+        # is the per-position genotype decode. Memoize by (dataset, position,
+        # ref, allele, track, strategy, n) so a re-clicked variant (or a fresh
+        # client that lost its own cache) skips the decode entirely. Bounded LRU.
+        _t0 = time.perf_counter()
+        try:
+            sig = self._variant_dataset_signature()
+        except Exception:
+            sig = ""
+        ckey = (sig, contig, int(pos), ref, allele, track_id, strategy, int(n))
+        cache = getattr(self, "_carrier_cache", None)
+        if cache is None:
+            cache = self._carrier_cache = {}
+        if ckey in cache:
+            self._debug_log("fetch_carriers", locus=f"{contig}:{pos}", allele=allele,
+                            n=len(cache[ckey]), cached=True,
+                            ms=round((time.perf_counter() - _t0) * 1000, 1))
+            return cache[ckey]
         try:
             df = self.get_locus_variants(f"{contig}:{int(pos)}-{int(pos)}")
         except Exception:
@@ -1848,26 +2237,48 @@ class GenomeShader:
         except Exception:
             pass
         rng = (lambda lst, k: random.sample(lst, k)) if strategy == "random" else None
-        return _carriers_from_variant_rows(
+        carriers = _carriers_from_variant_rows(
             list(df.iter_rows(named=True)), ref, allele, n=n, rng_sample=rng)
+        # Store + cap the cache (drop oldest — insertion-ordered dict).
+        cache[ckey] = carriers
+        if len(cache) > 4096:
+            for k in list(cache.keys())[:len(cache) - 4096]:
+                del cache[k]
+        self._debug_log("fetch_carriers", locus=f"{contig}:{pos}", allele=allele,
+                        n=len(carriers), cached=False,
+                        ms=round((time.perf_counter() - _t0) * 1000, 1))
+        return carriers
 
-    def navigate_payload(self, contig, start, end):
+    def navigate_payload(self, contig, start, end, with_variants=True):
         """Full per-window render payload for jumping to a new contig/region:
-        reference sequence, genes, ideogram, repeats, and variants. The frontend
-        contig switcher applies it in place (reference/genes/etc. are per-window
-        and otherwise static in the initial config). Reuses the same per-region
-        builders as `render` so the result matches a fresh render at that locus.
-        Each piece is fetched defensively — a missing track yields an empty
-        default rather than failing the whole jump.
+        reference sequence, genes, ideogram, repeats, and (optionally) variants.
+        The frontend contig switcher applies it in place (reference/genes/etc.
+        are per-window and otherwise static in the initial config). Reuses the
+        same per-region builders as `render` so the result matches a fresh
+        render at that locus. Each piece is fetched defensively — a missing
+        track yields an empty default rather than failing the whole jump.
+
+        ``with_variants=False`` returns the region FAST (reference/genes/
+        ideogram/repeats only) and defers variants to the frontend viewport
+        loader. A cold cohort-scale VCF decode (thousands of samples, remote)
+        takes seconds-to-minutes; bundling it into the jump made the whole
+        navigation time out. The viewport loader has its own long budget +
+        progress bar, so variants stream in without blocking the jump.
         """
         start, end = int(start), int(end)
         span = max(0, end - start)
+        self._debug_log("navigate_start", contig=contig, start=start, end=end, span_bp=span)
 
-        def _safe(fn, *args, default):
+        def _safe(fn, *args, default, label=None):
+            # Time each per-track fetch (genes/repeats/ideogram are UCSC-backed and
+            # can each block for seconds) so a slow jump names the culprit track.
             try:
-                out = fn(*args)
+                with self._dbg_time("navigate_" + (label or getattr(fn, "__name__", "piece"))):
+                    out = fn(*args)
                 return out if out is not None else default
-            except Exception:
+            except Exception as e:
+                self._debug_log("navigate_piece_error", label=(label or getattr(fn, "__name__", "?")),
+                                error=str(e))
                 return default
 
         # Large-window guard: a jump to a very wide region must NOT pull the whole
@@ -1882,31 +2293,53 @@ class GenomeShader:
         too_wide = span > var_cap
 
         if too_wide:
+            self._debug_log("navigate_too_wide", span_bp=span, cap=var_cap)
             variant_tracks, ins_lookup, reference_data = [], [], ""
+        elif not with_variants:
+            # Deferred: return the region fast; the frontend viewport loader
+            # fetches variants (its own budget + progress) so a cold VCF decode
+            # never times out the jump. Reference stays — it's cheap for a jump-
+            # sized window and wanted immediately.
+            self._debug_log("navigate_defer_variants", contig=contig, start=start, end=end)
+            variant_tracks, ins_lookup = [], []
+            reference_data = _safe(self.reference, contig, start, end, default="", label="reference")
         else:
-            vp = self.fetch_variants_payload(contig, start, end)
+            with self._dbg_time("navigate_variants", contig=contig, start=start, end=end):
+                vp = self.fetch_variants_payload(contig, start, end)
             variant_tracks = vp.get("variant_tracks", [])
             ins_lookup = vp.get("insertion_variants_lookup", [])
             # reference() is 1-based [start, end] like render()'s reference track.
-            reference_data = _safe(self.reference, contig, start, end, default="")
+            reference_data = _safe(self.reference, contig, start, end, default="", label="reference")
 
-        return {
+        payload = {
             "contig": contig,
             "start": start,
             "end": end,
             "region": f"{contig}:{start}-{end}",
             "reference_data": reference_data,
-            "ideogram_data": _safe(self.ideogram, contig, default=[]),
-            "transcripts_data": _safe(self.genes, contig, start, end, default=[]),
-            "repeats_data": _safe(self.repeats, contig, start, end, default=[]),
+            "ideogram_data": _safe(self.ideogram, contig, default=[], label="ideogram"),
+            "transcripts_data": _safe(self.genes, contig, start, end, default=[], label="genes"),
+            "repeats_data": _safe(self.repeats, contig, start, end, default=[], label="repeats"),
             "variant_tracks": variant_tracks,
             "insertion_variants_lookup": ins_lookup,
             # Signals the frontend to show the "region too wide" banner and not to
             # expect variants/reference for this window.
             "too_wide_for_variants": too_wide,
+            # Variants intentionally left out for speed; the frontend loads them
+            # via the viewport path. (Not set when the region is too wide — that
+            # path shows the "zoom in" banner instead.)
+            "variants_deferred": (not too_wide) and (not with_variants),
             "span_bp": span,
             "variant_max_span_bp": var_cap,
         }
+        if self._dbg_on():
+            self._debug_log("navigate_done", contig=contig, start=start, end=end,
+                            n_variant_tracks=len(payload.get("variant_tracks") or []),
+                            ref_len=len(payload.get("reference_data") or ""),
+                            n_genes=len(payload.get("transcripts_data") or []),
+                            n_repeats=len(payload.get("repeats_data") or []),
+                            too_wide=too_wide)
+        return payload
 
     def fetch_variants_payload(self, contig, start, end):
         """Viewport variant fetch (P2): build the variant payload for one window,
@@ -2867,6 +3300,67 @@ class GenomeShader:
             )
         return copy.deepcopy(gene_models)
 
+    @staticmethod
+    def _rank_feature_matches(index, query, limit=25):
+        """Rank (name, contig, start, end) tuples against a query: exact name
+        first, then prefix, then substring — each in genomic order. Pure so it's
+        unit-testable without a staged reference."""
+        ql = (query or "").strip().lower()
+        if not ql:
+            return []
+        exact, prefix, sub = [], [], []
+        for name, contig, start, end in index:
+            nl = name.lower()
+            if nl == ql:
+                exact.append((name, contig, start, end))
+            elif nl.startswith(ql):
+                prefix.append((name, contig, start, end))
+            elif ql in nl:
+                sub.append((name, contig, start, end))
+        ordered = exact + prefix + sub
+        return [{"name": n, "contig": c, "start": int(s), "end": int(e)}
+                for (n, c, s, e) in ordered[:limit]]
+
+    def _gene_name_index(self):
+        """Genome-wide (name -> locus) list built once from the staged gene
+        blobs. Cheap for staged references (local cached blobs, one read per
+        contig); empty for UCSC-backed builds that have no _chrom_sizes (they'd
+        need an unbounded whole-genome API sweep — deferred)."""
+        cached = getattr(self, "_gene_index_memo", None)
+        if cached is not None:
+            return cached
+        index = []
+        sizes = self._chrom_sizes() or {}
+        for contig, length in sizes.items():
+            try:
+                models = self.genes(contig, 1, int(length))
+            except Exception:
+                models = []
+            for g in models:
+                start, end = int(g.get("start", 1)), int(g.get("end", 1))
+                # Index the display name, the systematic gene ID, and every
+                # transcript ID — all resolving to the gene's span — so a search
+                # by any of the three lands here. (UCSC models only have `name`.)
+                keys = set()
+                for k in (g.get("name"), g.get("id")):
+                    if k:
+                        keys.add(str(k).strip())
+                for t in (g.get("transcripts") or []):
+                    if t.get("id"):
+                        keys.add(str(t["id"]).strip())
+                for name in keys:
+                    if name and name != "Unknown":
+                        index.append((name, contig, start, end))
+        self._gene_index_memo = index
+        return index
+
+    def resolve_feature(self, query, limit=25):
+        """Resolve a gene name / ID / transcript ID to loci for the search box.
+        Returns [{name, contig, start, end}] best-first, or [] when no gene
+        index is available or nothing matches."""
+        with self._dbg_time("resolve_feature", query=query):
+            return self._rank_feature_matches(self._gene_name_index(), query, limit)
+
     def repeats(self, contig: str, start: int, end: int, track: str = "rmsk") -> List[dict]:
         """
         Fetches RepeatMasker repeat data from UCSC for a given genomic region.
@@ -3801,6 +4295,13 @@ class GenomeShader:
                 requested_region = self._parse_locus(locus_or_dataframe)  # (contig, start, end)
             except Exception:
                 requested_region = None
+            # Fail FAST + CLEAN on a contig the genome doesn't have. Otherwise the
+            # downstream reference/variant fetch throws a deep, cryptic traceback
+            # (e.g. an unknown-contig error mid-decode) instead of telling the
+            # user the contig simply isn't there. Only when we actually know the
+            # contig set (staged reference / chrom_sizes); skip when unknown.
+            if requested_region is not None:
+                self._require_known_contig(requested_region[0])
             self._progress(f"Fetching variants for {locus_or_dataframe} …", 1, 4)
             try:
                 # Scale path: for very large cohorts the per-sample long format

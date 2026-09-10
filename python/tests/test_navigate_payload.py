@@ -11,10 +11,19 @@ import types
 from genomeshader.view import GenomeShader
 
 
+class _NullTimer:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
 def _stub(**methods):
     o = types.SimpleNamespace()
     for name, fn in methods.items():
         setattr(o, name, fn)
+    # No-op debug hooks (navigate_payload logs + times its per-track fetches).
+    o._debug_log = lambda *a, **k: None
+    o._dbg_on = lambda: False
+    o._dbg_time = lambda *a, **k: _NullTimer()
     o.navigate_payload = types.MethodType(GenomeShader.navigate_payload, o)
     return o
 

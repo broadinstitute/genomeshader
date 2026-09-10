@@ -926,8 +926,14 @@
     if (!ov) {
       ov = document.createElementNS("http://www.w3.org/2000/svg", "svg");
       ov.setAttribute("id", "commentPinOverlay");
-      ov.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;"
-        + "pointer-events:none;z-index:300;";
+      // Size via ATTRIBUTES, not inline style: the overscan live-pan sets an
+      // inline style.width while dragging and clears it (removeProperty) on
+      // settle — an inline width:100% here would get wiped too, collapsing the
+      // overlay so the pins vanish. The attribute survives that and the inline
+      // style still overrides it during the pan.
+      ov.setAttribute("width", "100%");
+      ov.setAttribute("height", "100%");
+      ov.style.cssText = "position:absolute;top:0;left:0;pointer-events:none;z-index:300;";
       container.appendChild(ov);
     }
     // Match tracksSvg's coordinate system (viewBox if any).
@@ -960,11 +966,13 @@
       const n = group.items.length;
       let g;
       if (isVertical) {
-        const cx = ctx.baseX + 24;
+        // Stick out to the LEFT of the reference column (baseX = its left edge),
+        // toward the ruler gutter — away from the data tracks on the right.
+        const cx = ctx.baseX - 24;
         // pointer-events:auto so the pin is clickable — #tracksSvg is otherwise
         // click-through (pans pass to the layer below), like the Indel markers.
         g = el("g", { "class": "gs-comment-pin", style: "cursor:pointer; pointer-events: auto;" });
-        g.appendChild(el("rect", { x: ctx.baseX - 2, y: pos - 10, width: 38, height: 20, fill: "transparent" }));  // generous hit target
+        g.appendChild(el("rect", { x: cx - 8, y: pos - 10, width: 38, height: 20, fill: "transparent" }));  // generous hit target
         g.appendChild(el("line", { x1: ctx.baseX, x2: cx, y1: pos, y2: pos, stroke: "var(--blue)", "stroke-width": 1 }));
         g.appendChild(el("circle", { cx: cx, cy: pos, r: 5.5, fill: "var(--blue)", stroke: "var(--panel)", "stroke-width": 1 }));
       } else {
@@ -978,7 +986,7 @@
         g.appendChild(el("rect", { x: pos - 5.5, y: cy - 5.5, width: 11, height: 11, rx: 2.5, fill: "var(--blue)", stroke: "var(--panel)", "stroke-width": 1 }));
       }
       if (n > 1) {
-        const tx = isVertical ? ctx.baseX + 24 : pos;
+        const tx = isVertical ? ctx.baseX - 24 : pos;
         const ty = isVertical ? pos + 3 : ctx.baseY - 24 + 3;
         g.appendChild(el("text", { x: tx, y: ty, "text-anchor": "middle", "font-size": "8px", fill: "#fff", style: "pointer-events:none;" }, String(n)));
       }

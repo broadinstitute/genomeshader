@@ -1,0 +1,15 @@
+# The extension bundles a STATIC OpenSSL (hts-sys -> curl-sys "static-ssl" ->
+# openssl-sys "vendored") for htslib's libcurl TLS. Without this flag, that
+# static OpenSSL's symbols (SSL_*, EVP_*, …) leak into the extension's dynamic
+# symbol table and get interposed against the SYSTEM OpenSSL that CPython
+# (ssl / cryptography / google-cloud-storage) has loaded — two OpenSSLs sharing
+# symbols in one process -> the first TLS handshake in a gs:// open SEGFAULTS
+# (kernel death on AoU/Verily).
+#
+# --exclude-libs,ALL makes every static-archive symbol LOCAL, so the bundled
+# OpenSSL is fully PRIVATE to the extension: htslib binds to its own copy, and
+# Python's OpenSSL is untouched. No collision, and — unlike linking the system
+# OpenSSL — no dependency on the runtime's OpenSSL version (which we can't know
+# for a distributed wheel). Only PyInit_genomeshader stays exported.
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-arg=-Wl,--exclude-libs,ALL"]

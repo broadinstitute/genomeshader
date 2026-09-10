@@ -29,7 +29,16 @@ humansize = "*"
 indicatif = { version = "*", features = ["rayon"] }
 iset = "0.2.2"
 lazy_static = "*"
-openssl = { version = "0.10", features = ["vendored"] }
+# htslib's libcurl TLS pulls in a STATIC OpenSSL (hts-sys -> curl-sys
+# "static-ssl" -> openssl-sys "vendored"). That's fine for a self-contained
+# wheel, BUT its symbols must be HIDDEN or they collide with the system OpenSSL
+# CPython already loaded (ssl / cryptography / google-cloud-storage) -> the
+# first gs:// TLS handshake SEGFAULTS the kernel on AoU/Verily. The hiding is
+# done in .cargo/config.toml (--exclude-libs,ALL), which makes the bundled
+# OpenSSL private to this extension — no collision, and no dependency on the
+# runtime's OpenSSL version (we can't know it for a distributed wheel). This
+# `openssl` dep itself is unused in our code; leave it WITHOUT "vendored".
+openssl = { version = "0.10" }
 polars = { version = "0.36.2", features = ["performant", "parquet", "dtype-categorical", "fmt", "rows", "lazy", "horizontal_concat", "gcp", "cloud_write"] }
 pyo3 = { version = "*", features = ["abi3-py37", "extension-module"] }
 pyo3-polars = "0.10.0"

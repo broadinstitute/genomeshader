@@ -23,6 +23,14 @@ def _obj(universe, pending):
     o._read_index_done = threading.Event()
     o._read_index_lock = threading.Lock()
     o._session = types.SimpleNamespace(get_attached_reads=lambda: [])
+    # No-op debug hooks (index build logs progress + times the listing).
+    o._debug_log = lambda *a, **k: None
+    o._dbg_on = lambda: False
+
+    class _NullTimer:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    o._dbg_time = lambda *a, **k: _NullTimer()
     for name in ("_build_read_index", "_maybe_start_read_index"):
         setattr(o, name, types.MethodType(getattr(GenomeShader, name), o))
     o._read_stem = GenomeShader._read_stem  # staticmethod -> plain function
