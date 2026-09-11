@@ -789,3 +789,41 @@ def test_progress_bar_shows_while_genotypes_load(browser, tmp_path):
     page.wait_for_timeout(700)  # past the 500ms mock delay
     assert not bar_busy(), "status bar still busy after genotypes finished loading"
     page.close()
+
+
+def _svg_text_fills(page):
+    return page.evaluate(r"""() => {
+        const root = document.querySelector('[id^=genomeshader-root-]');
+        const parse = s => { const m=(s||'').match(/rgba?\(([^)]+)\)/); return m?m[1].split(',').map(parseFloat):null; };
+        const out = [];
+        root.querySelectorAll('text, tspan').forEach(el => {
+            if (!(el.textContent||'').trim()) return;
+            const c = parse(getComputedStyle(el).fill);
+            if (c) out.push(c);
+        });
+        return out;
+    }""")
+
+
+@pytest.mark.parametrize("theme,bad", [("light", "near_white"), ("dark", "near_black")])
+def test_svg_text_is_themed(browser, tmp_path, theme, bad):
+    """SVG <text> must carry a themed fill in both modes. An unthemed <text>
+    inherits the SVG UA default (black) — invisible on dark; and any fixed light
+    fill is invisible on light. Guards that labels/glyphs swap with the palette."""
+    page = browser.new_page(viewport=VIEWPORT)
+    page.add_init_script(
+        "try{localStorage.setItem('genomeshader.theme',%r);"
+        "localStorage.setItem('genomeshader.orientation','horizontal');}catch(e){}" % theme)
+    uri = harness.write_page(tmp_path, harness.build_page())
+    page.goto(uri, wait_until="load")
+    page.wait_for_function("() => window.__GS_READY === true", timeout=20000)
+    page.wait_for_timeout(400)
+    fills = _svg_text_fills(page)
+    assert fills, "no SVG text found to check"
+    if bad == "near_white":
+        offenders = [c for c in fills if c[0] > 200 and c[1] > 200 and c[2] > 200 and (len(c) < 4 or c[3] > 0.3)]
+        assert not offenders, f"near-white SVG text in light mode (won't read): {offenders[:5]}"
+    else:
+        offenders = [c for c in fills if c[0] < 70 and c[1] < 70 and c[2] < 70 and (len(c) < 4 or c[3] > 0.3)]
+        assert not offenders, f"near-black SVG text in dark mode (won't read): {offenders[:5]}"
+    page.close()

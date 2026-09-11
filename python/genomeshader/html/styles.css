@@ -1845,9 +1845,9 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 }
 .smart-track-container.scrollable {
   pointer-events: none;
-  /* Firefox scrollbar styling */
+  /* Firefox scrollbar styling (themed so it swaps light/dark) */
   scrollbar-width: thin;
-  scrollbar-color: rgba(0, 0, 0, 0.2) rgba(0, 0, 0, 0.05);
+  scrollbar-color: var(--muted2) var(--panel2);
   /* Ensure scrollbar is always visible when scrollable */
   overflow-y: auto !important;
   overflow-x: hidden !important;
@@ -1863,21 +1863,24 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   height: 14px;
 }
 .smart-track-container.scrollable::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--panel2);
   border-radius: 7px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
+  border: 1px solid var(--border2);
 }
 .smart-track-container.scrollable::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--muted2);
   border-radius: 7px;
-  border: 2px solid rgba(0, 0, 0, 0.1);
+  border: 2px solid transparent;
+  background-clip: padding-box;
   min-height: 20px;
 }
 .smart-track-container.scrollable::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--muted);
+  background-clip: padding-box;
 }
 .smart-track-container.scrollable::-webkit-scrollbar-thumb:active {
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--muted);
+  background-clip: padding-box;
 }
 .smart-track-container canvas {
   pointer-events: none;
@@ -2074,18 +2077,19 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   height: 14px;
 }
 #smartScroll::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--panel2);
   border-radius: 7px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
+  border: 1px solid var(--border2);
 }
 #smartScroll::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--muted2);
   border-radius: 7px;
-  border: 2px solid rgba(0, 0, 0, 0.1);
+  border: 2px solid transparent;
+  background-clip: padding-box;
   min-height: 20px;
 }
-#smartScroll::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.5); }
-#smartScroll::-webkit-scrollbar-thumb:active { background: rgba(0, 0, 0, 0.6); }
+#smartScroll::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
+#smartScroll::-webkit-scrollbar-thumb:active { background: var(--muted); background-clip: padding-box; }
 
 /* Centered blocking modal dialog (window.__GS_MODAL) */
 .gs-modal-backdrop {

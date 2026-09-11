@@ -2342,9 +2342,12 @@ function renderFlowCanvas() {
   ctx.font = "11px ui-monospace, 'SF Mono', Monaco, 'Consolas', 'Courier New', monospace";
   const labelPadding = 6;
   const labelBorderRadius = 4;
-  const labelBgColor = "rgba(0, 0, 0, 0.85)";
-  const labelBorderColor = "rgba(255, 255, 255, 0.2)";
-  const labelTextColor = "rgba(255, 255, 255, 0.95)";
+  // Themed so the hover label box swaps with light/dark (was a fixed dark box +
+  // white text, which floated black over the light palette). Fall back only if
+  // the var can't resolve.
+  const labelBgColor = cssVar("--panel") || "rgba(0, 0, 0, 0.85)";
+  const labelBorderColor = cssVar("--border") || "rgba(255, 255, 255, 0.2)";
+  const labelTextColor = cssVar("--text") || "rgba(255, 255, 255, 0.95)";
   
   for (const labelInfo of allLabelsToDraw) {
     const text = labelInfo.text || labelInfo.label;
