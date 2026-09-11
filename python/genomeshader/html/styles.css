@@ -943,6 +943,19 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   background: var(--panel2);
   border-bottom: 1px solid var(--border);
 }
+/* In full screen the locus bar is relocated into the modal topbar, inline with
+   the title. Drop its absolute-strip positioning and bar chrome so it flows as a
+   plain inline control cluster; the topbar supplies the background/border. */
+#locusBar.locus-in-topbar {
+  position: static;
+  height: auto;
+  z-index: auto;
+  padding: 0;
+  background: none;
+  border-bottom: none;
+  flex: 1 1 auto;
+  min-width: 0;
+}
 #locusBar .locus-contig,
 #locusBar .locus-pos {
   height: 24px;

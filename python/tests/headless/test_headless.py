@@ -171,6 +171,39 @@ def test_fullscreen_cycle_keeps_tracks(browser, tmp_path):
     page.close()
 
 
+def test_fullscreen_relocates_locus_bar_to_topbar(browser, tmp_path):
+    """In full screen the locus bar (contig/jump/load controls) moves into the
+    modal topbar inline with the title (frees the 36px strip); exiting restores it
+    into the viewer with its controls intact."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+
+    def where():
+        return page.evaluate("""() => {
+            const lb = document.getElementById('locusBar');
+            if (!lb) return null;
+            const tb = document.querySelector('[id^=genomeshader-topbar-]');
+            return { inTopbar: !!(tb && tb.contains(lb)),
+                     hasClass: lb.classList.contains('locus-in-topbar'),
+                     goBtn: !!document.getElementById('locusGoBtn'),
+                     loadBtn: !!document.getElementById('loadInViewBtn') };
+        }""")
+    def toggle_fs():
+        page.evaluate("() => { const e=document.getElementById('fullscreenItem'); if(e) e.click(); }")
+        page.wait_for_timeout(400)
+
+    assert where()["inTopbar"] is False, "locus bar should start in the viewer"
+    toggle_fs()  # enter
+    w = where()
+    assert w["inTopbar"] and w["hasClass"], f"locus bar not relocated to topbar: {w}"
+    assert w["goBtn"] and w["loadBtn"], "locus controls lost in fullscreen"
+    toggle_fs()  # exit
+    w = where()
+    assert not w["inTopbar"] and not w["hasClass"], f"locus bar not restored: {w}"
+    assert w["goBtn"] and w["loadBtn"], "locus controls lost after exit"
+    page.close()
+
+
 def test_double_click_coalesces_renders(browser, tmp_path):
     """Double-clicking an allele opens both panels + switches tab. That must
     coalesce to a single render, not the 6-renderAll storm that froze the UI."""

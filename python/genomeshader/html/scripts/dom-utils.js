@@ -606,13 +606,29 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
       flex-shrink: 0;
     `;
 
+    // Left cluster: the title, then the relocated locus bar (contig / jump /
+    // load-in-view) so those controls sit inline with the title in full screen —
+    // frees the viewer's 36px locus-bar strip for tracks. enter() moves #locusBar
+    // in here; exit() moves it back before this topbar is destroyed.
+    const topbarLeft = document.createElement('div');
+    topbarLeft.style.cssText = `
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-width: 0;
+      flex: 1 1 auto;
+    `;
+    topbar._leftGroup = topbarLeft;
+
     const title = document.createElement('div');
     title.textContent = 'Genomeshader — Full screen';
     title.style.cssText = `
       font-size: 14px;
       font-weight: 600;
       color: var(--text, rgba(255,255,255,0.92));
+      flex: 0 0 auto;
     `;
+    topbarLeft.appendChild(title);
 
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '\u00D7';  // U+00D7 (U+2715 tofu'd on some fonts)
@@ -640,7 +656,7 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     });
     closeBtn.addEventListener('click', exit);
 
-    topbar.appendChild(title);
+    topbar.appendChild(topbarLeft);
     topbar.appendChild(closeBtn);
 
     const modalBody = document.createElement('div');
@@ -732,6 +748,20 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     prevViewerStyle = viewerEl.getAttribute('style');
     viewerEl.style.width = '100%';
     viewerEl.style.height = '100%';
+
+    // Relocate the locus bar (contig dropdown / jump box / Load-in-view) into the
+    // fullscreen topbar, inline with the title. Its controls use getElementById +
+    // persistent __gsWired handlers, so they keep working outside the container.
+    // Frees the viewer's 36px top strip for more track vertical space. exit()
+    // restores it before this topbar is destroyed.
+    const lb = viewerEl.querySelector('#locusBar');
+    if (lb && topbar && topbar._leftGroup) {
+      lb._fsParent = lb.parentNode;
+      lb._fsNext = lb.nextSibling;
+      lb.classList.add('locus-in-topbar');
+      topbar._leftGroup.appendChild(lb);
+    }
+
     document.body.appendChild(overlay);
 
     const originalOverflow = document.body.style.overflow;
@@ -776,6 +806,23 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     // Remove menu close handler from modal body
     if (overlay && overlay._menuCloseHandler && overlay._modalBody) {
       overlay._modalBody.removeEventListener('click', overlay._menuCloseHandler, true);
+    }
+
+    // Move the locus bar back into the viewer BEFORE the overlay (and its topbar)
+    // is removed — otherwise it'd be destroyed with the topbar.
+    const lb = document.getElementById('locusBar');
+    if (lb && lb._fsParent) {
+      lb.classList.remove('locus-in-topbar');
+      try {
+        if (lb._fsNext && lb._fsNext.parentNode === lb._fsParent) {
+          lb._fsParent.insertBefore(lb, lb._fsNext);
+        } else {
+          lb._fsParent.appendChild(lb);
+        }
+      } catch (e) {
+        try { lb._fsParent.appendChild(lb); } catch (e2) {}
+      }
+      lb._fsParent = null; lb._fsNext = null;
     }
 
     if (prevViewerStyle !== null) {
