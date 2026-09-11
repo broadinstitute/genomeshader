@@ -180,13 +180,46 @@ function renderFlowCanvas() {
     const { track, flowLayout, bandOffset, bandHeight } = band;
     const variants = track.variants_data || [];
     const expandedInsertions = state.expandedInsertions || new Set();
-    const win = variants.filter(v => {
+    let win = variants.filter(v => {
       const pos = Number(v && v.pos);
       const inViewport = Number.isFinite(pos) && pos >= renderStartBp() && pos <= renderEndBp();
       if (inViewport) return true;
       const id = String(v && v.id);
       return !!id && expandedInsertions.has(id) && isInsertion(v);
     });
+    // LOD downsample: when zoomed out, many variants collapse onto the same pixel
+    // column — drawing them all (nodes + labels + ribbons) makes pan/zoom crawl.
+    // In genomic mode keep ~one variant per MIN_VARIANT_PX column, plus the
+    // hovered variant, any with a selected allele, and any expanded insertion.
+    // (Equidistant mode already spaces nodes evenly, so it's left alone.)
+    const MIN_VARIANT_PX = 3;
+    const _axisLenForLod = isVertical ? totalFlowH : W;
+    // Only downsample when variants actually outnumber the available pixel
+    // columns (genuinely zoomed out / dense) — sparse views render every variant.
+    if (variantMode === "genomic" && win.length > 2
+        && win.length > (_axisLenForLod / MIN_VARIANT_PX)) {
+      const axisPx = (v) => isVertical
+        ? yGenomeCanonical(Number(v.pos) + VARIANT_BASE_CENTER_OFFSET_BP, totalFlowH)
+        : xGenomeCanonical(Number(v.pos) + VARIANT_BASE_CENTER_OFFSET_BP, W);
+      const keepIds = new Set();
+      if (state.hoveredVariantId != null) keepIds.add(String(state.hoveredVariantId));
+      try {
+        state.selectedAlleles.forEach((k) => {
+          const p = (typeof parseAlleleSelectionKey === "function") ? parseAlleleSelectionKey(k) : null;
+          if (p && p.variantId != null) keepIds.add(String(p.variantId));
+        });
+      } catch (e) {}
+      const sorted = [...win].sort((a, b) => Number(a.pos) - Number(b.pos));
+      const kept = [];
+      let lastPx = -Infinity;
+      for (const v of sorted) {
+        const id = String(v.id);
+        if (keepIds.has(id) || expandedInsertions.has(id)) { kept.push(v); continue; }
+        const px = axisPx(v);
+        if (px - lastPx >= MIN_VARIANT_PX) { kept.push(v); lastPx = px; }
+      }
+      if (kept.length < win.length) win = kept;
+    }
     const variantsPhased = track.variants_phased !== false;
     const H = bandHeight;
 

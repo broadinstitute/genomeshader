@@ -893,3 +893,10 @@ def test_load_in_view_button_force_loads(browser, tmp_path):
     page.wait_for_function("() => window.__vfetch >= 1", timeout=3000)
     assert page.evaluate("() => window.__vfetch") >= 1, "button did not trigger a viewport load"
     page.close()
+
+
+# NOTE: the zoomed-out variant LOD downsample (interaction.js, `win` coalescing)
+# has no automated test — the harness can't feed many variants into the live
+# flow render (the module `variants`/flow-band source isn't reachable via the
+# comm-mock or gsApplyNavigatePayload), and the GPU pixel harness is required to
+# see painted output. Verified manually; see docs/MANUAL_TEST_PROCEDURES.md MT-2.
