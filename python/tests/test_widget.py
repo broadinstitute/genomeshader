@@ -86,21 +86,52 @@ def test_show_widget_wires_inlined_config(tmp_path, monkeypatch):
     s.render = fake_render
 
     fake_widget = Mock()
-    with patch("genomeshader.widget.GenomeShaderWidget", return_value=fake_widget) as WCls, \
-         patch("IPython.display.clear_output") as clr, \
+    order = []
+
+    def _clear(*_a, **k):
+        order.append("clear")
+
+    def _make_widget(*_a, **k):
+        order.append("widget")
+        return fake_widget
+
+    with patch("genomeshader.widget.GenomeShaderWidget", side_effect=_make_widget) as WCls, \
+         patch("IPython.display.clear_output", side_effect=_clear) as clr, \
          patch("IPython.display.display") as disp:
         result = s.show_widget("Pf3D7_01_v3:1-100")
 
     # Widget built from the inlined config and RETURNED (the notebook displays the
     # return value once). It must NOT also be display()'d — a second mount would
-    # run a second viewer that collides over shared globals. clear_output(wait=True)
-    # un-buries the progress bar/stdout.
+    # run a second viewer that collides over shared globals. Progress output is
+    # cleared immediately, and *before* the anywidget comm opens — a deferred
+    # clear_output(wait=True) races show()'s timing print and destroys the model.
     _, kwargs = WCls.call_args
     assert kwargs["config"] == {"genome_build": "X", "region": "Pf3D7_01_v3:1-100"}
     assert kwargs["view_id"] == "vid123"
     clr.assert_called_once()
+    assert clr.call_args.kwargs.get("wait") is not True
+    assert order == ["clear", "widget"]
     assert result is fake_widget
     assert not any(c.args and c.args[0] is fake_widget for c in disp.call_args_list)
+
+
+def test_show_widget_closes_previous_widget(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+
+    def fake_render(locus, inline_payload=False, **k):
+        s._last_config = {"region": locus}
+        s._last_view_id = "v"
+        return ""
+    s.render = fake_render
+    first, second = Mock(), Mock()
+    s._active_widget = first
+    with patch("genomeshader.widget.GenomeShaderWidget", return_value=second), \
+         patch("IPython.display.clear_output"), \
+         patch("IPython.display.display"):
+        result = s.show_widget("chr20:1-100")
+    first.close.assert_called_once()
+    assert result is second
+    assert s._active_widget is second
 
 
 def test_show_delegates_to_widget(tmp_path, monkeypatch):
@@ -371,6 +402,17 @@ def test_staged_reference_forwarded_to_fetch(tmp_path, monkeypatch):
         "Pf3D7_01_v3:100-200", ["gs://b/S1.bam"], "ACGTACGT", 100)
 
 
+def test_reads_payload_skips_sample_without_bam(tmp_path, monkeypatch):
+    # VCF-only samples must not raise — Load draws only from attached BAMs.
+    s = _shader(tmp_path, monkeypatch)
+    s._last_locus = "chr20:32005000-32006800"
+    s._session.get_attached_reads = Mock(return_value=["gs://b/HG001.bam"])
+    s._session.fetch_reads_for_locus = Mock()
+    p = s._fetch_reads_payload(sample_id="HG005")
+    assert p["count"] == 0 and p["bam_urls"] == [] and p["sample_id"] == "HG005"
+    s._session.fetch_reads_for_locus.assert_not_called()
+
+
 def test_fetch_carriers_comm_handler(tmp_path, monkeypatch):
     # fetch_carriers message -> GenomeShader.fetch_carriers -> carriers response.
     from unittest.mock import Mock
@@ -418,3 +460,77 @@ def test_fetch_variants_comm_handler(tmp_path, monkeypatch):
     assert sent[0]["type"] == "fetch_variants_response"
     assert sent[0]["aggregate"] is True and sent[0]["region"]["end"] == 9
     s.fetch_variants_payload.assert_called_once_with("c", 1, 9)
+
+
+def test_fetch_track_data_comm_handler_offloads(tmp_path, monkeypatch):
+    """fetch_track_data is submitted to a thread pool (not run on the comm thread)."""
+    import threading
+    import time
+    from unittest.mock import Mock
+    import genomeshader.widget as W
+
+    s = _shader(tmp_path, monkeypatch)
+    saw_worker = threading.Event()
+    main_ident = threading.get_ident()
+
+    def _payload(track_id, contig, start, end, max_points=2000):
+        if threading.get_ident() != main_ident:
+            saw_worker.set()
+        return {
+            "track_id": track_id,
+            "style": "line",
+            "y_scale": "linear",
+            "y_min": None,
+            "y_max": None,
+            "series": [{"name": "value", "color": "#2b6fff", "features": []}],
+        }
+
+    s.fetch_track_data_payload = Mock(side_effect=_payload)
+    s._report_fetch_failure = Mock(return_value="hint")
+    w = GenomeShaderWidget(s, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+
+    # Force send path to be direct (no tornado) so the test can observe messages.
+    monkeypatch.setattr(W, "_send_on_ioloop", lambda widget, msg: widget.send(msg))
+
+    w._on_custom_msg(w, {
+        "type": "fetch_track_data", "request_id": "td1",
+        "track_id": "data-gwas", "contig": "chr1", "start": 1, "end": 100,
+        "max_points": 500,
+    }, [])
+    # Handler returned without blocking — wait briefly for the worker.
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not sent:
+        time.sleep(0.02)
+    assert sent, "expected fetch_track_data_response from worker"
+    assert sent[0]["type"] == "fetch_track_data_response"
+    assert sent[0]["request_id"] == "td1"
+    assert sent[0]["track_id"] == "data-gwas"
+    assert saw_worker.is_set(), "fetch should run off the comm thread"
+    s.fetch_track_data_payload.assert_called_once()
+
+
+def test_fetch_track_data_comm_handler_error(tmp_path, monkeypatch):
+    import time
+    from unittest.mock import Mock
+    import genomeshader.widget as W
+
+    s = _shader(tmp_path, monkeypatch)
+    s.fetch_track_data_payload = Mock(side_effect=RuntimeError("boom"))
+    s._report_fetch_failure = Mock(return_value="try again")
+    w = GenomeShaderWidget(s, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+    monkeypatch.setattr(W, "_send_on_ioloop", lambda widget, msg: widget.send(msg))
+
+    w._on_custom_msg(w, {
+        "type": "fetch_track_data", "request_id": "td2",
+        "track_id": "data-x", "contig": "chr1", "start": 1, "end": 9,
+    }, [])
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not sent:
+        time.sleep(0.02)
+    assert sent[0]["type"] == "fetch_track_data_error"
+    assert "boom" in sent[0]["error"]
+    assert sent[0]["hint"] == "try again"

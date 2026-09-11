@@ -13,7 +13,7 @@ import time
 import sys
 import logging
 from datetime import datetime, timezone
-from typing import Union, List, Optional, Tuple
+from typing import Union, List, Optional, Tuple, Sequence, Callable, Any
 from pathlib import Path
 import importlib.resources
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -24,6 +24,8 @@ import polars as pl
 
 from IPython.display import display, HTML
 import json
+
+from . import data_tracks as _data_tracks
 
 # Try to import Comm for Jupyter comms
 try:
@@ -343,10 +345,12 @@ class GenomeShader:
 
     def __init__(
         self,
-        genome_build: str = 'hg38',
+        genome_build: Optional[str] = None,
         gcs_session_dir: str = None,
         debug: bool = False,
         gcs_billing_project: Optional[str] = None,
+        allow_ucsc_api: Optional[bool] = None,
+        genome: Optional[str] = None,
     ):
         # Debug logging: off by default. When on, timing/sizing + an event log
         # (server + frontend) are written to a per-session log file, and data
@@ -388,7 +392,11 @@ class GenomeShader:
         # Network/render safety defaults must be available before validation calls.
         self._http_timeout = (10, 30)  # connect timeout, read timeout (seconds)
         self._track_load_timeout_s = 45
-        self._allow_ucsc_api = os.environ.get("GENOMESHADER_ALLOW_UCSC_API", "").strip().lower() in {"1", "true", "yes"}
+        # None = auto: a named UCSC assembly (genome='hg38') fetches cytoband/
+        # genes/RepeatMasker from UCSC; omit genome and later stage_genome(fasta)
+        # to stay on the local FASTA. Constructor allow_ucsc_api wins over env.
+        self._allow_ucsc_api = self._resolve_allow_ucsc_api(allow_ucsc_api)
+        self._genome_from_fasta = False
 
         if gcs_session_dir is None:
             if "GOOGLE_BUCKET" in os.environ:
@@ -404,6 +412,8 @@ class GenomeShader:
         self._validate_gcs_session_dir(gcs_session_dir)
         self.gcs_session_dir = gcs_session_dir
 
+        if genome is not None:
+            genome_build = genome
         self._validate_genome_build(genome_build)
         self.genome_build = genome_build
 
@@ -446,6 +456,13 @@ class GenomeShader:
 
         # One entry per variant track: (track_name, list of paths). Order matches session's variant_file_groups.
         self._variant_datasets: List[Tuple[str, List[str]]] = []
+
+        # Software-defined tracks from attach_data(): track_name -> TrackSpec.
+        self._data_tracks: dict = {}
+        self._data_track_fetch_cache: dict = {}  # (track_id, contig, start, end, max_points) -> payload
+        self._data_track_palette_offset: int = 0
+        # Live widget handle so attach_data() after show() can push data_tracks_changed.
+        self._active_widget = None
         
         # In-memory caches to avoid repeated template assembly and UCSC transformations.
         self._template_html_cache: Optional[str] = None
@@ -539,19 +556,60 @@ class GenomeShader:
         if not gcs_pattern.match(gcs_session_dir):
             raise ValueError("Invalid GCS path")
 
-    def _validate_genome_build(self, genome_build: str):
-        if not self._allow_ucsc_api:
-            # Offline/local-first mode: avoid UCSC network validation.
-            if not genome_build or not isinstance(genome_build, str):
-                raise ValueError("Genome build must be a non-empty string.")
+    @staticmethod
+    def _resolve_allow_ucsc_api(explicit: Optional[bool]) -> Optional[bool]:
+        """Tri-state: True/False force, None = auto (UCSC unless a local genome is staged).
+
+        ``GENOMESHADER_ALLOW_UCSC_API=0/1`` still works as a process-wide override
+        when the constructor argument is omitted.
+        """
+        if explicit is not None:
+            return bool(explicit)
+        raw = os.environ.get("GENOMESHADER_ALLOW_UCSC_API", "").strip().lower()
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        return None
+
+    def _ucsc_api_enabled(self) -> bool:
+        """Whether ideogram/genes/repeats/reference may hit the UCSC REST API.
+
+        Named assemblies (``genome='hg38'``) fetch from UCSC. An omitted genome
+        plus ``stage_genome(fasta)`` stays on the staged FASTA.
+        """
+        if self._allow_ucsc_api is False:
+            return False
+        if self._allow_ucsc_api is True:
+            return True
+        if getattr(self, "_genome_from_fasta", False):
+            return False
+        # Second session after stage_genome: chrom_sizes in the local cache.
+        memo = getattr(self, "_chrom_sizes_memo", None)
+        if isinstance(memo, dict) and memo:
+            return False
+        try:
+            if self.genome_build:
+                uri = (
+                    f"{self.gcs_session_dir.rstrip('/')}/cache/ucsc/chrom_sizes/"
+                    f"{self.genome_build}.json"
+                )
+                payload = self._local_read_json(uri)
+                if isinstance(payload, dict) and payload:
+                    self._chrom_sizes_memo = payload
+                    self._genome_from_fasta = True
+                    return False
+        except Exception:
+            pass
+        return bool(self.genome_build)
+
+    def _validate_genome_build(self, genome_build: Optional[str]):
+        # Don't ping UCSC at init. None means "no named assembly — use
+        # stage_genome(fasta) for a local reference."
+        if genome_build is None:
             return
-        response = requests.get("https://api.genome.ucsc.edu/list/ucscGenomes", timeout=self._http_timeout)
-        if response.status_code == 200:
-            ucsc_genomes = response.json().get('ucscGenomes', {})
-            if genome_build not in ucsc_genomes:
-                raise ValueError(f"The genome build '{genome_build}' is not available from UCSC.")
-        else:
-            raise ConnectionError("Failed to retrieve genome builds from UCSC REST API.")
+        if not isinstance(genome_build, str) or not genome_build.strip():
+            raise ValueError("Genome build must be a non-empty string.")
 
     def _http_get_json(self, url: str, context: str):
         try:
@@ -1381,6 +1439,28 @@ class GenomeShader:
                 parsed = self._parse_locus(str(locus))
                 self._attached_loci.add((parsed[0], int(parsed[1]), int(parsed[2])))
 
+    def stage_genome(
+        self,
+        fasta: str,
+        gff: Optional[str] = None,
+        name: Optional[str] = None,
+        contig_rename: Optional[Union[dict, Callable]] = None,
+        verbose: bool = True,
+        force: bool = False,
+    ) -> dict:
+        """Ingest a local (or remote) FASTA as this session's reference.
+
+        Use this instead of ``genome='hg38'`` when the assembly is not a UCSC
+        name. Cytoband / genes / RepeatMasker then come from the FASTA (+ optional
+        GFF), not api.genome.ucsc.edu. If ``genome`` was omitted at init, the
+        assembly name is ``name`` or the FASTA filename stem.
+        """
+        from .plasmodb import stage_reference
+        return stage_reference(
+            self, fasta, gff=gff, name=name, contig_rename=contig_rename,
+            verbose=verbose, force=force,
+        )
+
     def attach_variants(
         self,
         track_name: str,
@@ -1590,6 +1670,157 @@ class GenomeShader:
         self._reconcile_read_samples()
         self._debug_log("attach_variants_done", track_name=str(track_name))
 
+    def attach_data(
+        self,
+        track_name: str,
+        data: Union[dict, Any, Callable],
+        *,
+        style: str = "line",
+        chrom_col: str = "chrom",
+        start_col: str = "start",
+        end_col: Optional[str] = None,
+        value_col: Optional[Union[str, Sequence[str]]] = "value",
+        label_col: Optional[str] = None,
+        y_scale: str = "linear",
+        y_min: Optional[float] = None,
+        y_max: Optional[float] = None,
+        color: Optional[Union[str, Sequence[str]]] = None,
+        track_height: Optional[int] = None,
+        downsample: str = "mean",
+    ):
+        """Register a software-defined track (line / bar / scatter / interval).
+
+        ``data`` may be a dict, pandas.DataFrame, polars.DataFrame, or a
+        ``Callable[[str, int, int], DataFrame-like]`` invoked per visible region.
+        Column-name overrides let existing frames be used without renaming.
+        Multiple ``value_col`` names become overlaid series in one track.
+        """
+        offset = self._data_track_palette_offset
+        spec = _data_tracks.build_track_spec(
+            track_name,
+            data,
+            style=style,
+            chrom_col=chrom_col,
+            start_col=start_col,
+            end_col=end_col,
+            value_col=value_col,
+            label_col=label_col,
+            y_scale=y_scale,
+            y_min=y_min,
+            y_max=y_max,
+            color=color,
+            track_height=track_height,
+            downsample=downsample,
+            palette_offset=offset,
+        )
+        n_series = max(1, len(spec.value_cols)) if spec.value_cols else 1
+        if color is None:
+            self._data_track_palette_offset = (
+                offset + n_series
+            ) % len(_data_tracks.DEFAULT_PALETTE)
+
+        tid = spec.track_id
+        self._data_track_fetch_cache = {
+            k: v for k, v in self._data_track_fetch_cache.items() if k[0] != tid
+        }
+        self._data_tracks[str(track_name)] = spec
+        self._debug_log(
+            "attach_data",
+            track_name=str(track_name),
+            style=spec.style,
+            callable=spec.is_callable,
+            n_series=n_series,
+        )
+        self._push_data_tracks_changed()
+
+    def _resolve_data_track(self, track_id: Optional[str]):
+        if not track_id:
+            raise KeyError("track_id is required")
+        name = str(track_id)
+        if name.startswith("data-"):
+            name = name[5:]
+        spec = self._data_tracks.get(name)
+        if spec is None:
+            for s in self._data_tracks.values():
+                if s.track_id == track_id:
+                    return s
+            raise KeyError(f"unknown data track {track_id!r}")
+        return spec
+
+    def fetch_track_data_payload(
+        self,
+        track_id: str,
+        contig: str,
+        start: int,
+        end: int,
+        max_points: int = 2000,
+    ) -> dict:
+        """Region payload for one software-defined track (features + style meta)."""
+        spec = self._resolve_data_track(track_id)
+        start_i, end_i = int(start), int(end)
+        max_p = int(max_points) if max_points is not None else 2000
+        cache_key = (spec.track_id, str(contig), start_i, end_i, max_p)
+        hit = self._data_track_fetch_cache.get(cache_key)
+        if hit is not None:
+            return dict(hit)
+        payload = _data_tracks.build_payload(
+            spec, str(contig), start_i, end_i, max_points=max_p
+        )
+        if len(self._data_track_fetch_cache) >= 64:
+            try:
+                oldest = next(iter(self._data_track_fetch_cache))
+                del self._data_track_fetch_cache[oldest]
+            except StopIteration:
+                pass
+        self._data_track_fetch_cache[cache_key] = payload
+        return dict(payload)
+
+    def _data_tracks_config_entries(
+        self,
+        contig: Optional[str] = None,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+    ) -> List[dict]:
+        """Metadata (+ optional first-window series for static tracks) for config."""
+        entries = []
+        for spec in self._data_tracks.values():
+            series = None
+            if (
+                not spec.is_callable
+                and contig is not None
+                and start is not None
+                and end is not None
+            ):
+                try:
+                    payload = self.fetch_track_data_payload(
+                        spec.track_id, contig, start, end
+                    )
+                    series = payload.get("series")
+                except Exception:
+                    series = []
+            entries.append(_data_tracks.track_metadata(spec, include_series=series))
+        return entries
+
+    def _push_data_tracks_changed(self) -> None:
+        """Notify a live widget that attach_data() changed the track list."""
+        w = getattr(self, "_active_widget", None)
+        if w is None:
+            return
+        try:
+            contig = start = end = None
+            locus = getattr(self, "_last_locus", None)
+            if locus and ":" in str(locus):
+                try:
+                    c, rest = str(locus).split(":", 1)
+                    a, b = rest.replace(",", "").split("-", 1)
+                    contig, start, end = c, int(a), int(b)
+                except Exception:
+                    pass
+            tracks = self._data_tracks_config_entries(contig, start, end)
+            w.send({"type": "data_tracks_changed", "tracks": tracks})
+        except Exception:
+            pass
+
     def set_sample_mapping(self, mapping: dict):
         """
         Sets the mapping between VCF sample names and BAM file paths.
@@ -1779,6 +2010,26 @@ class GenomeShader:
         except Exception:
             pass
         return out
+
+    def _samples_with_reads(self) -> List[str]:
+        """Sample names that have attached BAM/CRAM (the loadable read set).
+
+        The viewer should only offer these for Load / sample search. VCF-only
+        samples stay in the callset but cannot be drawn as read tracks.
+        """
+        names = set()
+        if self._sample_mapping:
+            names.update(self._sample_mapping.keys())
+        try:
+            names.update(self._attached_reads_by_stem().keys())
+        except Exception:
+            pass
+        try:
+            with self._read_index_lock:
+                names.update(self._read_index.keys())
+        except Exception:
+            pass
+        return sorted(names)
     
     def get_bam_sample_names(self) -> List[str]:
         """
@@ -1816,7 +2067,17 @@ class GenomeShader:
         self._debug_log("reads_bam_resolve", locus=locus, n_vcf_samples=len(vcf_samples),
                         n_bams=len(bam_urls), bam_urls=list(bam_urls)[:20])
         if not bam_urls:
-            raise ValueError(f"No BAM files found for sample(s): {vcf_samples}")
+            # VCF-only sample (or name not in the attached BAM set). Nothing to
+            # draw — return an empty payload instead of erroring. The UI only
+            # offers attached reads, but an explicit id can still arrive.
+            self._debug_log("reads_skipped_no_bam", locus=locus, samples=list(vcf_samples)[:20])
+            return {
+                "reads": {},
+                "count": 0,
+                "bam_urls": [],
+                "vcf_samples": vcf_samples,
+                "sample_id": sample_id,
+            }
 
         # Reads for a (locus, bam set) are deterministic (BAM content is
         # immutable in practice), but fetching them re-parses remote BAMs every
@@ -2311,6 +2572,8 @@ class GenomeShader:
             # reference() is 1-based [start, end] like render()'s reference track.
             reference_data = _safe(self.reference, contig, start, end, default="", label="reference")
 
+        genes_list = _safe(self.genes, contig, start, end, default=[], label="genes")
+        repeats_list = _safe(self.repeats, contig, start, end, default=[], label="repeats")
         payload = {
             "contig": contig,
             "start": start,
@@ -2318,8 +2581,8 @@ class GenomeShader:
             "region": f"{contig}:{start}-{end}",
             "reference_data": reference_data,
             "ideogram_data": _safe(self.ideogram, contig, default=[], label="ideogram"),
-            "transcripts_data": _safe(self.genes, contig, start, end, default=[], label="genes"),
-            "repeats_data": _safe(self.repeats, contig, start, end, default=[], label="repeats"),
+            "genes_track": _data_tracks.wrap_genes_track(genes_list),
+            "repeats_track": _data_tracks.wrap_repeats_track(repeats_list),
             "variant_tracks": variant_tracks,
             "insertion_variants_lookup": ins_lookup,
             # Signals the frontend to show the "region too wide" banner and not to
@@ -2336,8 +2599,8 @@ class GenomeShader:
             self._debug_log("navigate_done", contig=contig, start=start, end=end,
                             n_variant_tracks=len(payload.get("variant_tracks") or []),
                             ref_len=len(payload.get("reference_data") or ""),
-                            n_genes=len(payload.get("transcripts_data") or []),
-                            n_repeats=len(payload.get("repeats_data") or []),
+                            n_genes=len(_data_tracks.annotation_features(payload.get("genes_track"))),
+                            n_repeats=len(_data_tracks.annotation_features(payload.get("repeats_track"))),
                             too_wide=too_wide)
         return payload
 
@@ -2449,9 +2712,11 @@ class GenomeShader:
         }
         if light:
             return meta
+        genes_models = _safe(self.genes, contig, start, end, default=[])
+        repeats_rows = _safe(self.repeats, contig, start, end, default=[])
         meta.update({
-            "transcripts_data": _safe(self.genes, contig, start, end, default=[]),
-            "repeats_data": _safe(self.repeats, contig, start, end, default=[]),
+            "genes_track": _data_tracks.wrap_genes_track(genes_models),
+            "repeats_track": _data_tracks.wrap_repeats_track(repeats_rows),
             "ideogram_data": _safe(self.ideogram, contig, default=[]),
         })
         return meta
@@ -2936,7 +3201,7 @@ class GenomeShader:
                 self._ideogram_cache[cache_key] = cached_payload
                 return copy.deepcopy(cached_payload)
 
-        if not self._allow_ucsc_api:
+        if not self._ucsc_api_enabled():
             return []
 
         # Define the API endpoint with the contig parameter
@@ -3009,7 +3274,7 @@ class GenomeShader:
                 self._genes_cache[cache_key] = subset
                 return copy.deepcopy(subset)
 
-        if not self._allow_ucsc_api:
+        if not self._ucsc_api_enabled():
             return []
 
         # Try the contig as given, then normalized spellings (chr1<->1, etc.) so
@@ -3391,7 +3656,7 @@ class GenomeShader:
                 self._repeats_cache[cache_key] = subset
                 return copy.deepcopy(subset)
 
-        if not self._allow_ucsc_api:
+        if not self._ucsc_api_enabled():
             return []
 
         # Define the API endpoint with the track, contig, start, end parameters
@@ -3605,7 +3870,7 @@ class GenomeShader:
                     self._reference_cache[cache_key] = subset
                     return subset
 
-        if not self._allow_ucsc_api:
+        if not self._ucsc_api_enabled():
             return ""
 
         # Define the API endpoint with the track, contig, start, end parameters
@@ -4602,8 +4867,8 @@ class GenomeShader:
             'genome_build': self.genome_build,
             'chrom_lengths': self._chrom_sizes(),  # non-empty for staged non-UCSC genomes (e.g. PlasmoDB)
             'ideogram_data': ideogram_data,
-            'transcripts_data': transcripts_data,
-            'repeats_data': repeats_data,
+            'genes_track': _data_tracks.wrap_genes_track(transcripts_data),
+            'repeats_track': _data_tracks.wrap_repeats_track(repeats_data),
             'reference_data': reference_sequence,
             # Keep config small; detailed variant payload is loaded from URL when available.
             'variant_tracks': variant_tracks_meta if use_payload_url else variant_tracks,
@@ -4622,8 +4887,15 @@ class GenomeShader:
             'variant_max_span_bp': int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "1000000")),
             'debug': bool(getattr(self, "_debug", False)),  # frontend event logging -> debug_log comm
             'sample_mapping': self._sample_mapping,  # Sample mapping: VCF sample names -> BAM sample names
+            # VCF samples that have attached BAM/CRAM. Load / sample search draw
+            # only from this set so VCF-only carriers don't raise a modal.
+            'read_samples': self._samples_with_reads(),
             'cache_debug': self._cache_debug_delta(cache_debug_start),
             'ucsc_warm_debug': self._last_ucsc_warm_stats,
+            # Software-defined tracks from attach_data(); static tracks include
+            # first-window series so show() does not flash empty. Callables are
+            # metadata-only — JS fetches after mount.
+            'data_tracks': self._data_tracks_config_entries(ref_chr, ref_start, ref_end),
         }
         if show_timing:
             timing_debug.update(show_timing)
@@ -4775,9 +5047,9 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             '<style>',
             styles,  # Insert styles directly (no f-string interpolation)
             f'/* Override html/body height rules for container embedding */\n#{container_id} {{\n  height: 600px;\n  display: block;\n  position: relative;\n}}',
-            f'/* Reset html/body styles within container - use :root for CSS variables */\n#{container_id} {{\n  --sidebar-w: 240px;\n  --tracks-h: 280px;\n  --flow-h: 500px;\n  --reads-h: 220px;\n}}',
+            f'/* Reset html/body styles within container - use :root for CSS variables */\n#{container_id} {{\n  --sidebar-w: 360px;\n  --tracks-h: 280px;\n  --flow-h: 500px;\n  --reads-h: 220px;\n}}',
             f'/* Use explicit positioning instead of grid for better Jupyter compatibility */\n#{container_id} .app {{\n  height: 100% !important;\n  width: 100% !important;\n  display: block !important;\n  position: relative !important;\n  overflow: hidden;\n}}',
-            f'/* Sidebar: overlays on top of main content */\n#{container_id} .sidebar-left {{\n  position: absolute !important;\n  left: 0 !important;\n  top: 0 !important;\n  bottom: 0 !important;\n  width: var(--sidebar-w, 240px) !important;\n  z-index: 100 !important;\n  overflow-y: auto !important;\n  overflow-x: visible !important;\n  pointer-events: auto !important;\n  transition: width 0.2s ease;\n}}',
+            f'/* Sidebar: overlays on top of main content */\n#{container_id} .sidebar-left {{\n  position: absolute !important;\n  left: 0 !important;\n  top: 0 !important;\n  bottom: 0 !important;\n  width: var(--sidebar-w, 360px) !important;\n  z-index: 100 !important;\n  overflow-y: auto !important;\n  overflow-x: visible !important;\n  pointer-events: auto !important;\n  transition: width 0.2s ease;\n}}',
             f'/* Sidebar collapsed state */\n#{container_id} .app.sidebar-collapsed .sidebar-left {{\n  width: 8px !important;\n  padding: 0 !important;\n}}\n#{container_id} .app.sidebar-collapsed .sidebar-left > * {{\n  opacity: 0 !important;\n  pointer-events: none !important;\n}}\n#{container_id} .app.sidebar-collapsed .sidebar-left::after {{\n  pointer-events: auto !important;\n  opacity: 1 !important;\n  width: 8px !important;\n}}',
             f'/* Main: always starts at left: 0, sidebar overlays on top */\n#{container_id} .main {{\n  position: absolute !important;\n  left: 0 !important;\n  top: 0 !important;\n  right: 0 !important;\n  bottom: 0 !important;\n  z-index: 1 !important;\n  overflow: hidden;\n}}',
             f'/* Right sidebar: fixed position on the right, always visible */\n#{container_id} .sidebar-right {{\n  position: absolute !important;\n  right: 0 !important;\n  top: 0 !important;\n  bottom: 0 !important;\n  width: 8px !important;\n  z-index: 100 !important;\n  overflow: hidden !important;\n  pointer-events: auto !important;\n  transition: width 0.2s ease, opacity 0.2s ease !important;\n  display: flex !important;\n  flex-direction: column !important;\n  background: var(--panel, #11151b) !important;\n  border-left: 1px solid var(--border2, rgba(255,255,255,0.08)) !important;\n}}\n#{container_id} .sidebar-right .sidebarContent {{\n  flex: 1 !important;\n  overflow-y: auto !important;\n  overflow-x: visible !important;\n  padding: 12px !important;\n  opacity: 1 !important;\n  pointer-events: auto !important;\n}}\n#{container_id} .app.sidebar-right-collapsed .sidebar-right {{\n  width: 8px !important;\n  padding: 0 !important;\n}}\n#{container_id} .app.sidebar-right-collapsed .sidebar-right > * {{\n  opacity: 0 !important;\n  pointer-events: none !important;\n}}\n#{container_id} .app.sidebar-right-collapsed .sidebar-right .sidebarContent {{\n  opacity: 0 !important;\n  pointer-events: none !important;\n}}\n#{container_id} .app:not(.sidebar-right-collapsed) .sidebar-right {{\n  width: 240px !important;\n}}\n#{container_id} .app:not(.sidebar-right-collapsed) .sidebar-right .sidebarContent {{\n  opacity: 1 !important;\n  pointer-events: auto !important;\n}}\n#{container_id} .app:not(.sidebar-right-collapsed) .sidebar-right > * {{\n  opacity: 1 !important;\n  pointer-events: auto !important;\n}}\n/* Ensure right sidebar content is visible when expanded, regardless of left sidebar state */\n#{container_id} .app.sidebar-collapsed:not(.sidebar-right-collapsed) .sidebar-right .sidebarContent,\n#{container_id} .app:not(.sidebar-right-collapsed) .sidebar-right .sidebarContent {{\n  opacity: 1 !important;\n  pointer-events: auto !important;\n  visibility: visible !important;\n}}\n#{container_id} .sidebar-right::before {{\n  content: "" !important;\n  position: absolute !important;\n  left: 0 !important;\n  top: 0 !important;\n  bottom: 0 !important;\n  width: 4px !important;\n  cursor: pointer !important;\n  z-index: 10 !important;\n  pointer-events: auto !important;\n}}\n#{container_id} .app.sidebar-right-collapsed .sidebar-right::before {{\n  width: 8px !important;\n  pointer-events: auto !important;\n  opacity: 1 !important;\n}}',
@@ -4888,26 +5160,36 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             print("[timing] 'api' = live UCSC fetch (slow); 'gcs' = network cache; "
                   "'mem'/'gcs_write' local. Reads timing prints on sample load.")
 
+        old = getattr(self, "_active_widget", None)
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        # Wipe the progress bar *before* opening the anywidget comm. JupyterLab
+        # 4.5 treats clear_output(wait=True) as "close widgets in this cell on
+        # the next display" — and show() prints a timing line right after we
+        # return, so the deferred clear destroyed GenomeShaderWidget's model
+        # and the frontend showed "Error displaying widget: model not found".
+        try:
+            clear_output()
+        except Exception:
+            # No IPython display context (e.g. plain Python).
+            pass
         widget = GenomeShaderWidget(
             self,
             config=self._last_config,
             view_id=self._last_view_id or "gswidget",
         )
+        self._active_widget = widget
         # Return the widget so callers can keep a handle, and let the notebook
         # display it EXACTLY ONCE via its result hook. We must NOT also call
         # display(widget): an unassigned `show()` would then mount the same model
         # twice (explicit display + auto-display of the returned value), and two
         # anywidget views both run the viewer over shared globals / first-match
         # DOM — they collide, causing blank or misaligned tracks and a sluggish,
-        # stuttering UI. clear_output(wait=True) un-buries the progress bar /
-        # piled-up stdout: the wipe is deferred until the widget actually renders,
-        # so nothing flickers. If the caller assigns the result, it isn't
+        # stuttering UI. If the caller assigns the result, it isn't
         # auto-displayed (keep a handle without re-displaying).
-        try:
-            clear_output(wait=True)
-        except Exception:
-            # No IPython display context (e.g. plain Python).
-            pass
         return widget
 
     def show(
@@ -4977,12 +5259,28 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         self._session.print()
 
 
-def init(gcs_session_dir: str = None) -> GenomeShader:
-    session = GenomeShader(
-        gcs_session_dir=gcs_session_dir,
-    )
+def init(
+    gcs_session_dir: str = None,
+    genome: Optional[str] = None,
+    genome_build: Optional[str] = None,
+    allow_ucsc_api: Optional[bool] = None,
+    debug: bool = False,
+    gcs_billing_project: Optional[str] = None,
+) -> GenomeShader:
+    """Start a session.
 
-    return session
+    ``genome='hg38'`` (or another UCSC assembly) fetches cytoband, genes, and
+    RepeatMasker from UCSC. Omit it and call ``stage_genome(fasta)`` for a
+    local FASTA instead.
+    """
+    gb = genome if genome is not None else genome_build
+    return GenomeShader(
+        genome_build=gb,
+        gcs_session_dir=gcs_session_dir,
+        allow_ucsc_api=allow_ucsc_api,
+        debug=debug,
+        gcs_billing_project=gcs_billing_project,
+    )
 
 
 def version():

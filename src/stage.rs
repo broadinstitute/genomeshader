@@ -14,23 +14,44 @@ use crate::alignment::extract_reads;
 use crate::env::{ ensure_gcs_token_fresh, gcs_authorize_data_access, local_guess_curl_ca_bundle };
 
 pub fn open_bam(reads_url: &Url, cache_path: &PathBuf) -> Result<IndexedReader> {
-    env::set_current_dir(cache_path).unwrap();
-
     if reads_url.scheme() != "file" {
         ensure_gcs_token_fresh(); // proactive 45-min refresh before a gs:// open
     }
 
-    let bam = match IndexedReader::from_url(reads_url) {
+    let url_str = reads_url.as_str();
+    let pinned = if url_str.starts_with("gs://") {
+        let exts: &[&str] = if url_str.contains(".cram") {
+            &[".crai"]
+        } else {
+            &[".bai"]
+        };
+        crate::storage_gcs::pin_remote_htslib_index(url_str, exts)
+    } else {
+        None
+    };
+
+    // Pinning a local sidecar via `data##idx##index` is the source of truth;
+    // skip chdir so parallel BAM opens cannot race on process cwd. Fall back
+    // to the cache-dir chdir for local/unpinned opens (htslib still looks for
+    // a basename `.bai` there).
+    let open_url = if let Some(idx) = pinned.as_ref() {
+        Url::parse(&format!("{}##idx##{}", url_str, idx))?
+    } else {
+        env::set_current_dir(cache_path).unwrap();
+        reads_url.clone()
+    };
+
+    let bam = match IndexedReader::from_url(&open_url) {
         Ok(bam) => bam,
         Err(_) => {
             gcs_authorize_data_access();
 
-            match IndexedReader::from_url(reads_url) {
+            match IndexedReader::from_url(&open_url) {
                 Ok(bam) => bam,
                 Err(_) => {
                     local_guess_curl_ca_bundle();
 
-                    IndexedReader::from_url(reads_url)?
+                    IndexedReader::from_url(&open_url)?
                 }
             }
         }

@@ -4,6 +4,664 @@
 let renderTracksRetryCount = 0;
 const MAX_RETRY_ATTEMPTS = 10;
 
+/** Parse CSS/hex color to [r,g,b] floats in 0..1 for WebGPU. */
+function _gsParseColorRgb(color, fallback) {
+  if (Array.isArray(color) && color.length >= 3) {
+    const a = color;
+    // Already 0..1 floats if all <= 1, else 0..255
+    if (a[0] <= 1 && a[1] <= 1 && a[2] <= 1) return [a[0], a[1], a[2]];
+    return [a[0] / 255, a[1] / 255, a[2] / 255];
+  }
+  if (typeof color === "string") {
+    const hex = color.trim();
+    const m = hex.match(/^#([0-9a-fA-F]{6})$/);
+    if (m) {
+      const n = parseInt(m[1], 16);
+      return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+    }
+  }
+  return fallback || [0.169, 0.435, 1.0];
+}
+
+function _gsCssColor(color, fallback) {
+  if (typeof color === "string" && color.trim()) return color.trim();
+  if (Array.isArray(color) && color.length >= 3) {
+    const rgb = _gsParseColorRgb(color);
+    return `rgb(${Math.round(rgb[0] * 255)},${Math.round(rgb[1] * 255)},${Math.round(rgb[2] * 255)})`;
+  }
+  return fallback || "var(--blue,#2b6fff)";
+}
+
+/**
+ * Draw interval / bar / line / scatter features for one layout track.
+ * UCSC call sites pass style "interval" with the historical boxColor so boxes
+ * stay pixel-identical to the pre-extraction renderer.
+ *
+ * entry: { features? } for UCSC, or { series: [{color, features}], style, y_scale, y_min, y_max, color }
+ * item: layout item from getTrackLayout()
+ * genomePos: coordinate mapper from renderTracks (xGenome or yGenome bind)
+ */
+function repeatColor(cls) {
+  switch (cls) {
+    case "SINE": return "rgba(255, 206, 86, 0.35)";
+    case "LINE": return "rgba(75, 192, 192, 0.28)";
+    case "LTR":  return "rgba(153, 102, 255, 0.28)";
+    case "DNA":  return "rgba(255, 99, 132, 0.22)";
+    default:     return "rgba(201, 203, 207, 0.22)";
+  }
+}
+
+function repeatColorToRgba(cls) {
+  const rgbaStr = repeatColor(cls);
+  const match = rgbaStr.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/);
+  if (match) {
+    return [
+      parseInt(match[1]) / 255,
+      parseInt(match[2]) / 255,
+      parseInt(match[3]) / 255,
+      parseFloat(match[4])
+    ];
+  }
+  return [0.5, 0.5, 0.5, 0.5];
+}
+
+/** Phase 2: gene models through drawTrackFeatures(style: "gene"). Pixel-identical to prior bespoke loop. */
+function _drawGeneStyleFeatures(features, item, genomePos, opts) {
+  opts = opts || {};
+  const isVertical = isVerticalMode();
+  const W = opts.layoutW;
+  const H = opts.layoutH;
+  const genesLayout = item;
+  if (!features || !features.length) return;
+
+  let geneStartX, geneStartY, laneDim, lanes, genesDim;
+  if (isVertical) {
+    geneStartX = genesLayout.contentLeft + 8;
+    laneDim = 30;
+    lanes = 3;
+    genesDim = lanes * laneDim;
+    geneStartY = 16;
+  } else {
+    geneStartY = genesLayout.contentTop + 8;
+    laneDim = 30;
+    lanes = 3;
+    genesDim = lanes * laneDim;
+    geneStartX = 16;
+  }
+
+  const devicePixelRatio = window.devicePixelRatio || 1;
+  const useWebGPU = webgpuSupported && instancedRenderer && !window.__GS_FORCE_SVG_TRACKS;
+
+  for (let lane=0; lane<lanes; lane++) {
+    if (isVertical) {
+      const x = geneStartX + lane*laneDim + laneDim/2;
+      if (useWebGPU) {
+        instancedRenderer.addLine(
+          x * devicePixelRatio, 16 * devicePixelRatio,
+          x * devicePixelRatio, (H-16) * devicePixelRatio,
+          0x7F7F7F, 0.14
+        );
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: x, x2: x, y1: 16, y2: H-16,
+          stroke: "rgba(127,127,127,0.14)"
+        }));
+      }
+    } else {
+      const y = geneStartY + lane*laneDim + laneDim/2;
+      if (useWebGPU) {
+        instancedRenderer.addLine(
+          16 * devicePixelRatio, y * devicePixelRatio,
+          (W-16) * devicePixelRatio, y * devicePixelRatio,
+          0x7F7F7F, 0.14
+        );
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: 16, x2: W-16, y1: y, y2: y,
+          stroke: "rgba(127,127,127,0.14)"
+        }));
+      }
+    }
+  }
+
+  // Place arrows on a genomic lattice (~24px spacing) so they glide with the
+  // gene under zoom instead of appearing/disappearing at fixed pixel offsets.
+  function drawStrandArrows(geneStartBp, geneEndBp, perpPos, strand, isVert) {
+    const dir = strand === "-" ? -1 : 1;
+    const pos1 = genomePos(geneStartBp);
+    const pos2 = genomePos(geneEndBp);
+    const start = Math.min(pos1, pos2), end = Math.max(pos1, pos2);
+    if (end - start < 20) return;
+    const minPx = 24;
+    const ppb = (typeof getDisplayPxPerBp === "function")
+      ? getDisplayPxPerBp()
+      : ((state && state.pxPerBp > 0) ? state.pxPerBp : 1);
+    const genomicStep = Math.max(1, Math.round(minPx / Math.max(ppb, 1e-12)));
+    let bp = Math.ceil(geneStartBp / genomicStep) * genomicStep;
+    if (bp <= geneStartBp) bp += genomicStep;
+    for (; bp < geneEndBp; bp += genomicStep) {
+      const p = genomePos(bp);
+      if (p < start + 8 || p > end - 8) continue;
+      const size = 5;
+      if (isVert) {
+        const cy = p;
+        if (useWebGPU) {
+          instancedRenderer.addTriangle(
+            perpPos * devicePixelRatio, cy * devicePixelRatio,
+            (perpPos - dir*size*0.8) * devicePixelRatio, (cy + dir*size) * devicePixelRatio,
+            (perpPos + dir*size*0.8) * devicePixelRatio, (cy + dir*size) * devicePixelRatio,
+            0x78B4FF, 0.50
+          );
+        } else {
+          const p1 = `${perpPos},${cy}`;
+          const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
+          const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
+          tracksSvg.appendChild(el("polygon", {
+            points: `${p1} ${p2} ${p3}`,
+            fill: "rgba(120,180,255,0.50)"
+          }));
+        }
+      } else {
+        const cx = p;
+        if (useWebGPU) {
+          instancedRenderer.addTriangle(
+            cx * devicePixelRatio, perpPos * devicePixelRatio,
+            (cx - dir*size) * devicePixelRatio, (perpPos - size*0.8) * devicePixelRatio,
+            (cx - dir*size) * devicePixelRatio, (perpPos + size*0.8) * devicePixelRatio,
+            0x78B4FF, 0.50
+          );
+        } else {
+          const p1 = `${cx},${perpPos}`;
+          const p2 = `${cx - dir*size},${perpPos - size*0.8}`;
+          const p3 = `${cx - dir*size},${perpPos + size*0.8}`;
+          tracksSvg.appendChild(el("polygon", {
+            points: `${p1} ${p2} ${p3}`,
+            fill: "rgba(120,180,255,0.50)"
+          }));
+        }
+      }
+    }
+  }
+
+  for (const gene of features) {
+    const s = Math.max(gene.start, renderStartBp());
+    const e = Math.min(gene.end,   renderEndBp());
+    if (e <= renderStartBp() || s >= renderEndBp()) continue;
+
+    let perpPos;
+    if (isVertical) {
+      perpPos = geneStartX + gene.lane*laneDim + laneDim/2;
+    } else {
+      perpPos = geneStartY + gene.lane*laneDim + laneDim/2;
+    }
+
+    const pos1 = genomePos(s);
+    const pos2 = genomePos(e);
+
+    if (isVertical) {
+      if (useWebGPU) {
+        instancedRenderer.addLine(
+          perpPos * devicePixelRatio, pos1 * devicePixelRatio,
+          perpPos * devicePixelRatio, pos2 * devicePixelRatio,
+          0x78B4FF, 0.45
+        );
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: perpPos, x2: perpPos, y1: pos1, y2: pos2,
+          stroke: "rgba(120,180,255,0.45)",
+          "stroke-width": 1
+        }));
+      }
+      drawStrandArrows(s, e, perpPos, gene.strand, true);
+    } else {
+      if (useWebGPU) {
+        instancedRenderer.addLine(
+          pos1 * devicePixelRatio, perpPos * devicePixelRatio,
+          pos2 * devicePixelRatio, perpPos * devicePixelRatio,
+          0x78B4FF, 0.45
+        );
+      } else {
+        tracksSvg.appendChild(el("line", {
+          x1: pos1, x2: pos2, y1: perpPos, y2: perpPos,
+          stroke: "rgba(120,180,255,0.45)",
+          "stroke-width": 1
+        }));
+      }
+      drawStrandArrows(s, e, perpPos, gene.strand, false);
+    }
+
+    let firstExonY = null;
+    let firstExonX = null;
+    for (const exon of (gene.exons || [])) {
+      const es0 = exon[0];
+      const ee0 = exon[1];
+      const isUniversal = exon[2] === true || exon[2] === undefined;
+      const es = Math.max(es0, renderStartBp());
+      const ee = Math.min(ee0, renderEndBp());
+      if (ee <= renderStartBp() || es >= renderEndBp()) continue;
+      const exPos1 = genomePos(es);
+      const exPos2 = genomePos(ee);
+      const fillColor = isUniversal
+        ? [120/255, 180/255, 255/255, 0.18]
+        : [120/255, 180/255, 255/255, 0.05];
+      const strokeColor = isUniversal
+        ? [120/255, 180/255, 255/255, 0.9]
+        : [120/255, 180/255, 255/255, 0.4];
+
+      if (isVertical) {
+        const yMin = Math.min(exPos1, exPos2);
+        const yMax = Math.max(exPos1, exPos2);
+        if (firstExonY === null || yMax > firstExonY) firstExonY = yMax;
+        const exonX = perpPos - 6;
+        const exonY = yMin;
+        const exonW = 12;
+        const exonH = Math.max(2, yMax - yMin);
+        if (useWebGPU) {
+          if (isUniversal || fillColor[3] > 0) {
+            instancedRenderer.addRect(exonX * devicePixelRatio, exonY * devicePixelRatio, exonW * devicePixelRatio, exonH * devicePixelRatio, fillColor);
+          }
+          instancedRenderer.addRect(exonX * devicePixelRatio, exonY * devicePixelRatio, exonW * devicePixelRatio, exonH * devicePixelRatio, strokeColor);
+        } else {
+          const rectAttrs = {
+            x: exonX, y: exonY, width: exonW, height: exonH, rx: 4,
+            stroke: isUniversal ? "var(--blue)" : "rgba(120,180,255,0.4)",
+            "stroke-width": 1
+          };
+          rectAttrs.fill = isUniversal ? "var(--blueFill)" : "rgba(120,180,255,0.05)";
+          tracksSvg.appendChild(el("rect", rectAttrs));
+        }
+      } else {
+        if (firstExonX === null) firstExonX = exPos1;
+        const exonX = exPos1;
+        const exonY = perpPos - 6;
+        const exonW = Math.max(2, exPos2 - exPos1);
+        const exonH = 12;
+        if (useWebGPU) {
+          if (isUniversal || fillColor[3] > 0) {
+            instancedRenderer.addRect(exonX * devicePixelRatio, exonY * devicePixelRatio, exonW * devicePixelRatio, exonH * devicePixelRatio, fillColor);
+          }
+          instancedRenderer.addRect(exonX * devicePixelRatio, exonY * devicePixelRatio, exonW * devicePixelRatio, exonH * devicePixelRatio, strokeColor);
+        } else {
+          const rectAttrs = {
+            x: exonX, y: exonY, width: exonW, height: exonH, rx: 4,
+            stroke: isUniversal ? "var(--blue)" : "rgba(120,180,255,0.4)",
+            "stroke-width": 1
+          };
+          rectAttrs.fill = isUniversal ? "var(--blueFill)" : "rgba(120,180,255,0.05)";
+          tracksSvg.appendChild(el("rect", rectAttrs));
+        }
+      }
+    }
+
+    if (isVertical) {
+      const geneNameY = firstExonY !== null ? firstExonY : pos1;
+      tracksSvg.appendChild(el("text", {
+        x: perpPos - 8, y: geneNameY, class:"svg-geneName",
+        "text-anchor": "middle", "dominant-baseline": "middle"
+      }, `${gene.name}`));
+      tracksSvg.appendChild(el("text", {
+        x: perpPos + 8, y: pos1, class:"svg-small",
+        "text-anchor": "start", "dominant-baseline": "middle"
+      }, gene.strand === "+" ? "↑" : "↓"));
+    } else {
+      const geneNameX = firstExonX !== null ? firstExonX : pos1;
+      tracksSvg.appendChild(el("text", {
+        x: geneNameX, y: perpPos - 12, class:"svg-geneName"
+      }, `${gene.name}`));
+      tracksSvg.appendChild(el("text", {
+        x: pos1 + 2, y: perpPos + 16, class:"svg-small"
+      }, gene.strand === "+" ? "→" : "←"));
+    }
+  }
+}
+
+/** Phase 2: RepeatMasker via drawTrackFeatures interval + cluster/hitTest opts. */
+function _drawRepeatStyleFeatures(features, item, genomePos, opts) {
+  opts = opts || {};
+  const isVertical = isVerticalMode();
+  const W = opts.layoutW;
+  const H = opts.layoutH;
+  const repeatsLayout = item;
+  const clusterThreshold = (opts.clusterBp != null) ? opts.clusterBp : 5;
+  const maxRepeatsToRender = (opts.maxFeatures != null) ? opts.maxFeatures : 5000;
+  const barH = (opts.barHeight != null) ? opts.barHeight : 22;
+
+  let repeatsX, repeatsY, repeatsW, repeatsH;
+  if (isVertical) {
+    repeatsX = repeatsLayout.contentLeft + 8;
+    repeatsW = barH;
+    repeatsY = 16;
+    repeatsH = W - 32;
+  } else {
+    repeatsY = repeatsLayout.contentTop + 8;
+    repeatsH = barH;
+    repeatsX = 16;
+    repeatsW = W - 32;
+  }
+
+  if (isVertical) {
+    tracksSvg.appendChild(el("line", {
+      x1: repeatsX + repeatsW/2, x2: repeatsX + repeatsW/2, y1: 16, y2: W-16,
+      stroke: "rgba(127,127,127,0.16)"
+    }));
+  } else {
+    tracksSvg.appendChild(el("line", {
+      x1: 16, x2: W-16, y1: repeatsY + repeatsH/2, y2: repeatsY + repeatsH/2,
+      stroke: "rgba(127,127,127,0.16)"
+    }));
+  }
+
+  const minPixelWidth = 1;
+  const visibleRepeats = [];
+  for (const r of (features || [])) {
+    if (r.end <= renderStartBp() || r.start >= renderEndBp()) continue;
+    const rs = Math.max(r.start, renderStartBp());
+    const re = Math.min(r.end, renderEndBp());
+    const pos1 = genomePos(rs);
+    const pos2 = genomePos(re);
+    const width = Math.abs(pos2 - pos1);
+    if (width < minPixelWidth) continue;
+    visibleRepeats.push({
+      start: rs, end: re,
+      originalStart: r.start, originalEnd: r.end,
+      cls: r.cls, pos1, pos2, width
+    });
+  }
+  visibleRepeats.sort((a, b) => a.start - b.start);
+
+  const clusteredRepeats = [];
+  let currentCluster = null;
+  for (const r of visibleRepeats) {
+    if (currentCluster &&
+        r.cls === currentCluster.cls &&
+        r.start - currentCluster.end <= clusterThreshold) {
+      currentCluster.end = Math.max(currentCluster.end, r.end);
+      currentCluster.originalEnd = Math.max(currentCluster.originalEnd, r.originalEnd);
+      currentCluster.pos2 = genomePos(currentCluster.end);
+      currentCluster.width = Math.abs(currentCluster.pos2 - currentCluster.pos1);
+    } else {
+      if (currentCluster) clusteredRepeats.push(currentCluster);
+      currentCluster = {
+        start: r.start, end: r.end,
+        originalStart: r.originalStart, originalEnd: r.originalEnd,
+        cls: r.cls, pos1: r.pos1, pos2: r.pos2, width: r.width
+      };
+    }
+  }
+  if (currentCluster) clusteredRepeats.push(currentCluster);
+
+  const repeatsToRender = clusteredRepeats.slice(0, maxRepeatsToRender);
+  if (clusteredRepeats.length > maxRepeatsToRender) {
+    console.warn(`Too many repeats (${clusteredRepeats.length}), rendering only first ${maxRepeatsToRender}`);
+  }
+
+  if (opts.hitTest === "repeats") repeatHitTestData = [];
+
+  const useWebGPU = webgpuSupported && instancedRenderer && !window.__GS_FORCE_SVG_TRACKS;
+  if (useWebGPU) {
+    const dpr = window.devicePixelRatio || 1;
+    for (const r of repeatsToRender) {
+      const pos1 = r.pos1, pos2 = r.pos2;
+      const width = Math.max(1, pos2 - pos1);
+      const height = repeatsH - 8;
+      let x, y, w, h;
+      if (isVertical) {
+        const yMin = Math.min(pos1, pos2), yMax = Math.max(pos1, pos2);
+        x = repeatsX + 4; y = yMin; w = repeatsW - 8; h = Math.max(1, yMax - yMin);
+      } else {
+        x = pos1; y = repeatsY + 4; w = width; h = height;
+      }
+      instancedRenderer.addRect(x * dpr, y * dpr, w * dpr, h * dpr, repeatColorToRgba(r.cls));
+      if (opts.hitTest === "repeats") {
+        repeatHitTestData.push({ start: r.originalStart, end: r.originalEnd, cls: r.cls });
+      }
+    }
+  } else {
+    const fragment = document.createDocumentFragment();
+    for (const r of repeatsToRender) {
+      const pos1 = r.pos1, pos2 = r.pos2;
+      const isSmall = r.width < 3;
+      const tooltipText = `${r.cls} repeat\n${Math.floor(r.originalStart).toLocaleString()} - ${Math.floor(r.originalEnd).toLocaleString()}`;
+      let rect;
+      if (isVertical) {
+        const yMin = Math.min(pos1, pos2), yMax = Math.max(pos1, pos2);
+        rect = el("rect", {
+          x: repeatsX + 4, y: yMin, width: repeatsW - 8, height: Math.max(1, yMax - yMin),
+          rx: isSmall ? 0 : 6, fill: repeatColor(r.cls), style: "cursor: pointer;"
+        });
+      } else {
+        rect = el("rect", {
+          x: pos1, y: repeatsY + 4, width: Math.max(1, pos2 - pos1), height: repeatsH - 8,
+          rx: isSmall ? 0 : 6, fill: repeatColor(r.cls), style: "cursor: pointer;"
+        });
+      }
+      if (!isSmall) rect.setAttribute("stroke", "rgba(127,127,127,0.20)");
+      rect.addEventListener("mousemove", (e) => {
+        state.hoveredRepeatTooltip = { text: tooltipText, x: e.clientX + 10, y: e.clientY + 10 };
+        updateTooltip();
+      });
+      rect.addEventListener("mouseleave", () => {
+        state.hoveredRepeatTooltip = null;
+        updateTooltip();
+      });
+      fragment.appendChild(rect);
+    }
+    tracksSvg.appendChild(fragment);
+  }
+}
+
+function drawTrackFeatures(entry, item, genomePos, opts) {
+  opts = opts || {};
+  const style = opts.style || entry.style || "interval";
+  // Phase 2: gene models / RepeatMasker specialized paths
+  if (style === "gene") {
+    let feats = [];
+    if (Array.isArray(entry.series) && entry.series[0] && Array.isArray(entry.series[0].features)) {
+      feats = entry.series[0].features;
+    } else if (Array.isArray(entry.features)) {
+      feats = entry.features;
+    }
+    _drawGeneStyleFeatures(feats, item, genomePos, opts);
+    return;
+  }
+  if (opts.hitTest === "repeats" || opts.clusterBp != null) {
+    let feats = [];
+    if (Array.isArray(entry.series) && entry.series[0] && Array.isArray(entry.series[0].features)) {
+      feats = entry.series[0].features;
+    } else if (Array.isArray(entry.features)) {
+      feats = entry.features;
+    }
+    _drawRepeatStyleFeatures(feats, item, genomePos, opts);
+    return;
+  }
+  const useWebGPU = webgpuSupported && instancedRenderer && !window.__GS_FORCE_SVG_TRACKS;
+  const dpr = window.devicePixelRatio || 1;
+  const isVertical = isVerticalMode();
+  const boxColor = opts.boxColor || _gsParseColorRgb(opts.color || entry.color, [0.169, 0.435, 1.0]);
+  const boxAlpha = (opts.boxAlpha != null) ? opts.boxAlpha : 0.55;
+  const cssFill = opts.cssFill || _gsCssColor(opts.color || entry.color, "var(--blue,#2b6fff)");
+
+  // Normalize to series list
+  let seriesList;
+  if (Array.isArray(entry.series) && entry.series.length) {
+    seriesList = entry.series;
+  } else if (Array.isArray(entry.features)) {
+    seriesList = [{ name: "features", color: cssFill, features: entry.features }];
+  } else {
+    return;
+  }
+
+  const h = Math.max(6, (item.contentHeight || 20) - 6);
+  const yTop = item.contentTop + 3;
+  const contentLeft = item.contentLeft + 4;
+  const contentW = Math.max(6, (item.contentWidth || 20) - 8);
+
+  // Y-scale for quantitative styles
+  const yScale = opts.yScale || entry.y_scale || "linear";
+  let yMin = (opts.yMin != null) ? opts.yMin : entry.y_min;
+  let yMax = (opts.yMax != null) ? opts.yMax : entry.y_max;
+  const needY = style === "bar" || style === "line" || style === "scatter";
+  if (needY && (yMin == null || yMax == null)) {
+    let vmin = Infinity, vmax = -Infinity;
+    for (const s of seriesList) {
+      for (const f of (s.features || [])) {
+        if (f.end <= renderStartBp() || f.start >= renderEndBp()) continue;
+        const v = f.value;
+        if (v == null || !isFinite(v)) continue;
+        if (yScale === "log" && !(v > 0)) continue;
+        const vv = (yScale === "log") ? Math.log10(v) : v;
+        if (vv < vmin) vmin = vv;
+        if (vv > vmax) vmax = vv;
+      }
+    }
+    if (!isFinite(vmin) || !isFinite(vmax)) { vmin = 0; vmax = 1; }
+    if (vmin === vmax) { vmin -= 1; vmax += 1; }
+    if (yMin == null) yMin = vmin;
+    if (yMax == null) yMax = vmax;
+  }
+
+  function mapY(value) {
+    let v = value;
+    if (yScale === "log") {
+      if (!(v > 0)) return null;
+      v = Math.log10(v);
+    }
+    const t = (v - yMin) / (yMax - yMin || 1);
+    const clamped = Math.max(0, Math.min(1, t));
+    // Horizontal: y grows downward; baseline at bottom of track content
+    return yTop + h * (1 - clamped);
+  }
+
+  function mapXVert(value) {
+    let v = value;
+    if (yScale === "log") {
+      if (!(v > 0)) return null;
+      v = Math.log10(v);
+    }
+    const t = (v - yMin) / (yMax - yMin || 1);
+    const clamped = Math.max(0, Math.min(1, t));
+    return contentLeft + contentW * clamped;
+  }
+
+  // 2-tick gutter for quantitative tracks (SVG only)
+  if (needY && !isVertical && isFinite(yMin) && isFinite(yMax)) {
+    const lo = (yScale === "log") ? Math.pow(10, yMin) : yMin;
+    const hi = (yScale === "log") ? Math.pow(10, yMax) : yMax;
+    const fmt = (n) => {
+      if (!isFinite(n)) return "";
+      const a = Math.abs(n);
+      if (a >= 1000 || (a > 0 && a < 0.01)) return n.toExponential(1);
+      return (Math.round(n * 100) / 100).toString();
+    };
+    tracksSvg.appendChild(el("text", {
+      x: 2, y: yTop + 9, fill: "var(--muted,#888)", "font-size": "8px",
+    }, fmt(hi)));
+    tracksSvg.appendChild(el("text", {
+      x: 2, y: yTop + h - 2, fill: "var(--muted,#888)", "font-size": "8px",
+    }, fmt(lo)));
+  }
+
+  for (const series of seriesList) {
+    const feats = series.features || [];
+    const sColorArr = _gsParseColorRgb(series.color || cssFill, boxColor);
+    const sCss = _gsCssColor(series.color || cssFill, cssFill);
+    const points = []; // for line polyline
+
+    for (const f of feats) {
+      if (f.end <= renderStartBp() || f.start >= renderEndBp()) continue;
+      const a = genomePos(Math.max(f.start, renderStartBp()));
+      const b = genomePos(Math.min(f.end, renderEndBp()));
+      const mid = genomePos((Math.max(f.start, renderStartBp()) + Math.min(f.end, renderEndBp())) / 2);
+      const label = f.label || f.name;
+
+      if (style === "interval") {
+        if (isVertical) {
+          const y0 = Math.min(a, b), y1 = Math.max(a, b);
+          const x = contentLeft, w = contentW, hh = Math.max(1, y1 - y0);
+          if (useWebGPU) instancedRenderer.addRect(x * dpr, y0 * dpr, w * dpr, hh * dpr, sColorArr, boxAlpha);
+          else tracksSvg.appendChild(el("rect", { x: x, y: y0, width: w, height: hh,
+            rx: 2, fill: sCss, "fill-opacity": 0.5, stroke: sCss }));
+        } else {
+          const x0 = Math.min(a, b), w = Math.max(1, Math.abs(b - a));
+          if (useWebGPU) instancedRenderer.addRect(x0 * dpr, yTop * dpr, w * dpr, h * dpr, sColorArr, boxAlpha);
+          else tracksSvg.appendChild(el("rect", { x: x0, y: yTop, width: w, height: h,
+            rx: 2, fill: sCss, "fill-opacity": 0.5, stroke: sCss }));
+          if (label && w > 30) {
+            tracksSvg.appendChild(el("text", { x: x0 + 4, y: yTop + h / 2 + 3,
+              fill: "var(--text)", "font-size": "9px" }, String(label).slice(0, 24)));
+          }
+        }
+      } else if (style === "bar") {
+        const val = f.value;
+        if (val == null || !isFinite(val)) continue;
+        if (isVertical) {
+          const y0 = Math.min(a, b), hh = Math.max(1, Math.abs(b - a));
+          const x1 = mapXVert(val);
+          if (x1 == null) continue;
+          const x0 = contentLeft;
+          const ww = Math.max(1, x1 - x0);
+          if (useWebGPU) instancedRenderer.addRect(x0 * dpr, y0 * dpr, ww * dpr, hh * dpr, sColorArr, 0.7);
+          else tracksSvg.appendChild(el("rect", { x: x0, y: y0, width: ww, height: hh,
+            fill: sCss, "fill-opacity": 0.7 }));
+        } else {
+          const x0 = Math.min(a, b), w = Math.max(1, Math.abs(b - a));
+          const yVal = mapY(val);
+          if (yVal == null) continue;
+          const baseline = yTop + h;
+          const top = Math.min(yVal, baseline);
+          const bh = Math.max(1, Math.abs(baseline - yVal));
+          if (useWebGPU) instancedRenderer.addRect(x0 * dpr, top * dpr, w * dpr, bh * dpr, sColorArr, 0.7);
+          else tracksSvg.appendChild(el("rect", { x: x0, y: top, width: w, height: bh,
+            fill: sCss, "fill-opacity": 0.7 }));
+        }
+      } else if (style === "line" || style === "scatter") {
+        const val = f.value;
+        if (val == null || !isFinite(val)) continue;
+        if (isVertical) {
+          const y = mid;
+          const x = mapXVert(val);
+          if (x == null) continue;
+          if (style === "scatter") {
+            const r = 2.5;
+            if (useWebGPU) instancedRenderer.addRect((x - r) * dpr, (y - r) * dpr, (r * 2) * dpr, (r * 2) * dpr, sColorArr, 0.9);
+            else tracksSvg.appendChild(el("circle", { cx: x, cy: y, r: r, fill: sCss, "fill-opacity": 0.9 }));
+          } else {
+            points.push([x, y]);
+          }
+        } else {
+          const x = mid;
+          const y = mapY(val);
+          if (y == null) continue;
+          if (style === "scatter") {
+            const r = 2.5;
+            if (useWebGPU) instancedRenderer.addRect((x - r) * dpr, (y - r) * dpr, (r * 2) * dpr, (r * 2) * dpr, sColorArr, 0.9);
+            else tracksSvg.appendChild(el("circle", { cx: x, cy: y, r: r, fill: sCss, "fill-opacity": 0.9 }));
+          } else {
+            points.push([x, y]);
+          }
+        }
+      }
+    }
+
+    if (style === "line" && points.length >= 2) {
+      // Sort along the genomic axis
+      if (isVertical) points.sort((p, q) => p[1] - q[1]);
+      else points.sort((p, q) => p[0] - q[0]);
+      if (useWebGPU) {
+        for (let i = 1; i < points.length; i++) {
+          const [x0, y0] = points[i - 1], [x1, y1] = points[i];
+          instancedRenderer.addLine(x0 * dpr, y0 * dpr, x1 * dpr, y1 * dpr, sColorArr, 0.95);
+        }
+      } else {
+        const pts = points.map(p => p[0] + "," + p[1]).join(" ");
+        tracksSvg.appendChild(el("polyline", {
+          points: pts, fill: "none", stroke: sCss, "stroke-width": 1.5, "stroke-opacity": 0.95,
+        }));
+      }
+    }
+  }
+}
+
 function renderTracks() {
   clearSvg(tracksSvg);
   // Clear variant element references
@@ -218,7 +876,7 @@ function renderTracks() {
     }
   }
 
-  // repeats is optional (dropped when no repeats_data) — don't require it here.
+  // repeats is optional (dropped when no repeats_track features) — don't require it here.
   if (!ideogramLayout || !genesLayout || !referenceLayout || !flowLayout) return;
 
   // Ideogram layout
@@ -580,567 +1238,21 @@ function renderTracks() {
     }
   }
 
-  // --- Genes track (exons/introns/strand)
-  if (!genesLayout.track.collapsed) {
-    let geneStartX, geneStartY, laneDim, lanes, genesDim;
-    if (isVertical) {
-      geneStartX = genesLayout.contentLeft + 8;
-      laneDim = 30;
-      lanes = 3;
-      genesDim = lanes * laneDim;
-      geneStartY = 16;
-    } else {
-      geneStartY = genesLayout.contentTop + 8;
-      laneDim = 30;
-      lanes = 3;
-      genesDim = lanes * laneDim;
-      geneStartX = 16;
-    }
-
-    // Use WebGPU for lane separator lines if available
-    const devicePixelRatio = window.devicePixelRatio || 1;
-    const useWebGPU = webgpuSupported && instancedRenderer;
-    
-    for (let lane=0; lane<lanes; lane++) {
-      if (isVertical) {
-        const x = geneStartX + lane*laneDim + laneDim/2;
-        if (useWebGPU) {
-          instancedRenderer.addLine(
-            x * devicePixelRatio, 16 * devicePixelRatio,
-            x * devicePixelRatio, (H-16) * devicePixelRatio,
-            0x7F7F7F, 0.14
-          );
-        } else {
-          tracksSvg.appendChild(el("line", {
-            x1: x, x2: x, y1: 16, y2: H-16,
-            stroke: "rgba(127,127,127,0.14)"
-          }));
-        }
-      } else {
-        const y = geneStartY + lane*laneDim + laneDim/2;
-        if (useWebGPU) {
-          instancedRenderer.addLine(
-            16 * devicePixelRatio, y * devicePixelRatio,
-            (W-16) * devicePixelRatio, y * devicePixelRatio,
-            0x7F7F7F, 0.14
-          );
-        } else {
-          tracksSvg.appendChild(el("line", {
-            x1: 16, x2: W-16, y1: y, y2: y,
-            stroke: "rgba(127,127,127,0.14)"
-          }));
-        }
-      }
-    }
-
-    function drawStrandArrows(pos1, pos2, perpPos, strand, isVert) {
-      const dir = strand === "-" ? -1 : 1;
-      const step = 24;
-      const start = Math.min(pos1, pos2), end = Math.max(pos1, pos2);
-      const devicePixelRatio = window.devicePixelRatio || 1;
-      const useWebGPU = webgpuSupported && instancedRenderer;
-      
-      for (let p = start + 10; p < end - 10; p += step) {
-        const size = 5;
-        if (isVert) {
-          const cy = p;
-          if (useWebGPU) {
-            // Triangle: tip at (perpPos, cy), base at (perpPos ± size*0.8, cy + dir*size)
-            instancedRenderer.addTriangle(
-              perpPos * devicePixelRatio, cy * devicePixelRatio,
-              (perpPos - dir*size*0.8) * devicePixelRatio, (cy + dir*size) * devicePixelRatio,
-              (perpPos + dir*size*0.8) * devicePixelRatio, (cy + dir*size) * devicePixelRatio,
-              0x78B4FF, 0.50
-            );
-          } else {
-            const p1 = `${perpPos},${cy}`;
-            const p2 = `${perpPos - dir*size*0.8},${cy + dir*size}`;
-            const p3 = `${perpPos + dir*size*0.8},${cy + dir*size}`;
-            tracksSvg.appendChild(el("polygon", {
-              points: `${p1} ${p2} ${p3}`,
-              fill: "rgba(120,180,255,0.50)"
-            }));
-          }
-        } else {
-          const cx = p;
-          if (useWebGPU) {
-            // Triangle: tip at (cx, perpPos), base at (cx - dir*size, perpPos ± size*0.8)
-            instancedRenderer.addTriangle(
-              cx * devicePixelRatio, perpPos * devicePixelRatio,
-              (cx - dir*size) * devicePixelRatio, (perpPos - size*0.8) * devicePixelRatio,
-              (cx - dir*size) * devicePixelRatio, (perpPos + size*0.8) * devicePixelRatio,
-              0x78B4FF, 0.50
-            );
-          } else {
-            const p1 = `${cx},${perpPos}`;
-            const p2 = `${cx - dir*size},${perpPos - size*0.8}`;
-            const p3 = `${cx - dir*size},${perpPos + size*0.8}`;
-            tracksSvg.appendChild(el("polygon", {
-              points: `${p1} ${p2} ${p3}`,
-              fill: "rgba(120,180,255,0.50)"
-            }));
-          }
-        }
-      }
-    }
-
-  // Iterate over gene models (transcripts variable now contains gene models)
-  for (const gene of transcripts) {
-    const s = Math.max(gene.start, renderStartBp());
-    const e = Math.min(gene.end,   renderEndBp());
-    if (e <= renderStartBp() || s >= renderEndBp()) continue;
-
-    let perpPos;
-    if (isVertical) {
-      perpPos = geneStartX + gene.lane*laneDim + laneDim/2;
-    } else {
-      perpPos = geneStartY + gene.lane*laneDim + laneDim/2;
-    }
-
-    // intron baseline (full gene span)
-    const pos1 = genomePos(s);
-    const pos2 = genomePos(e);
-    
-    const devicePixelRatio = window.devicePixelRatio || 1;
-    const useWebGPU = webgpuSupported && instancedRenderer;
-    
-    if (isVertical) {
-      if (useWebGPU) {
-        instancedRenderer.addLine(
-          perpPos * devicePixelRatio, pos1 * devicePixelRatio,
-          perpPos * devicePixelRatio, pos2 * devicePixelRatio,
-          0x78B4FF, 0.45
-        );
-      } else {
-        tracksSvg.appendChild(el("line", {
-          x1: perpPos, x2: perpPos, y1: pos1, y2: pos2,
-          stroke: "rgba(120,180,255,0.45)",
-          "stroke-width": 1
-        }));
-      }
-      drawStrandArrows(pos1, pos2, perpPos, gene.strand, true);
-    } else {
-      if (useWebGPU) {
-        instancedRenderer.addLine(
-          pos1 * devicePixelRatio, perpPos * devicePixelRatio,
-          pos2 * devicePixelRatio, perpPos * devicePixelRatio,
-          0x78B4FF, 0.45
-        );
-      } else {
-        tracksSvg.appendChild(el("line", {
-          x1: pos1, x2: pos2, y1: perpPos, y2: perpPos,
-          stroke: "rgba(120,180,255,0.45)",
-          "stroke-width": 1
-        }));
-      }
-      drawStrandArrows(pos1, pos2, perpPos, gene.strand, false);
-    }
-
-    // exons - now with union model and universal/partial distinction
-    let firstExonY = null; // Track bottom-most exon Y position for gene name alignment in vertical mode
-    let firstExonX = null; // Track first exon X position for gene name alignment in horizontal mode
-    for (const exon of gene.exons) {
-      // Exon format: [start, end, is_universal]
-      const es0 = exon[0];
-      const ee0 = exon[1];
-      const isUniversal = exon[2] === true || exon[2] === undefined; // Default to universal if not specified
-      
-      const es = Math.max(es0, renderStartBp());
-      const ee = Math.min(ee0, renderEndBp());
-      if (ee <= renderStartBp() || es >= renderEndBp()) continue;
-      const exPos1 = genomePos(es);
-      const exPos2 = genomePos(ee);
-
-      const devicePixelRatio = window.devicePixelRatio || 1;
-      const useWebGPU = webgpuSupported && instancedRenderer;
-      
-      // Determine colors based on universal vs partial
-      // Universal: solid fill + full opacity stroke
-      // Partial: very light fill + reduced opacity stroke
-      const fillColor = isUniversal 
-        ? [120/255, 180/255, 255/255, 0.18]  // Full opacity fill for universal
-        : [120/255, 180/255, 255/255, 0.05]; // Very light fill for partial
-      const strokeColor = isUniversal
-        ? [120/255, 180/255, 255/255, 0.9]   // Full opacity stroke for universal
-        : [120/255, 180/255, 255/255, 0.4]; // Reduced opacity stroke for partial
-      
-      if (isVertical) {
-        // In vertical mode, exons are horizontal bars
-        // exPos1 and exPos2 are Y coordinates, need to ensure correct ordering
-        const yMin = Math.min(exPos1, exPos2);
-        const yMax = Math.max(exPos1, exPos2);
-        // Track the bottom-most exon's bottom Y position for gene name alignment
-        // (yMax is the bottom of the exon in vertical mode where higher Y = bottom)
-        // We want the highest Y value (bottom-most exon)
-        if (firstExonY === null || yMax > firstExonY) {
-          firstExonY = yMax;
-        }
-        
-        const exonX = perpPos - 6;
-        const exonY = yMin;
-        const exonW = 12;
-        const exonH = Math.max(2, yMax - yMin);
-        
-        if (useWebGPU) {
-          // Draw fill (only if universal or very light for partial)
-          if (isUniversal || fillColor[3] > 0) {
-            instancedRenderer.addRect(
-              exonX * devicePixelRatio,
-              exonY * devicePixelRatio,
-              exonW * devicePixelRatio,
-              exonH * devicePixelRatio,
-              fillColor
-            );
-          }
-          // Draw stroke on top
-          instancedRenderer.addRect(
-            exonX * devicePixelRatio,
-            exonY * devicePixelRatio,
-            exonW * devicePixelRatio,
-            exonH * devicePixelRatio,
-            strokeColor
-          );
-        } else {
-          // SVG fallback
-          const rectAttrs = {
-            x: exonX, y: exonY,
-            width: exonW, height: exonH,
-            rx: 4,
-            stroke: isUniversal ? "var(--blue)" : "rgba(120,180,255,0.4)",
-            "stroke-width": 1
-          };
-          // Only add fill for universal exons
-          if (isUniversal) {
-            rectAttrs.fill = "var(--blueFill)";
-          } else {
-            rectAttrs.fill = "rgba(120,180,255,0.05)";
-          }
-          tracksSvg.appendChild(el("rect", rectAttrs));
-        }
-      } else {
-        // Track the first exon's X position for gene name alignment
-        if (firstExonX === null) {
-          firstExonX = exPos1;
-        }
-        
-        const exonX = exPos1;
-        const exonY = perpPos - 6;
-        const exonW = Math.max(2, exPos2 - exPos1);
-        const exonH = 12;
-        
-        if (useWebGPU) {
-          // Draw fill (only if universal or very light for partial)
-          if (isUniversal || fillColor[3] > 0) {
-            instancedRenderer.addRect(
-              exonX * devicePixelRatio,
-              exonY * devicePixelRatio,
-              exonW * devicePixelRatio,
-              exonH * devicePixelRatio,
-              fillColor
-            );
-          }
-          // Draw stroke on top
-          instancedRenderer.addRect(
-            exonX * devicePixelRatio,
-            exonY * devicePixelRatio,
-            exonW * devicePixelRatio,
-            exonH * devicePixelRatio,
-            strokeColor
-          );
-        } else {
-          // SVG fallback
-          const rectAttrs = {
-            x: exonX, y: exonY,
-            width: exonW, height: exonH,
-            rx: 4,
-            stroke: isUniversal ? "var(--blue)" : "rgba(120,180,255,0.4)",
-            "stroke-width": 1
-          };
-          // Only add fill for universal exons
-          if (isUniversal) {
-            rectAttrs.fill = "var(--blueFill)";
-          } else {
-            rectAttrs.fill = "rgba(120,180,255,0.05)";
-          }
-          tracksSvg.appendChild(el("rect", rectAttrs));
-        }
-      }
-    }
-
-    // gene label near gene start
-    if (isVertical) {
-      // Gene name to the left of the gene track
-      // Y position should match the bottom of the bottom-most exon
-      const geneNameY = firstExonY !== null ? firstExonY : pos1;
-      tracksSvg.appendChild(el("text", {
-        x: perpPos - 8,
-        y: geneNameY,
-        class:"svg-geneName",
-        "text-anchor": "middle",
-        "dominant-baseline": "middle"
-      }, `${gene.name}`));
-      // Strand indicator to the right of the gene track (just a bit to the right)
-      tracksSvg.appendChild(el("text", {
-        x: perpPos + 8,
-        y: pos1,
-        class:"svg-small",
-        "text-anchor": "start",
-        "dominant-baseline": "middle"
-      }, gene.strand === "+" ? "↑" : "↓"));
-    } else {
-      // In horizontal mode, X position should match the first exon's X position
-      const geneNameX = firstExonX !== null ? firstExonX : pos1;
-      tracksSvg.appendChild(el("text", {
-        x: geneNameX,
-        y: perpPos - 12,
-        class:"svg-geneName"
-      }, `${gene.name}`));
-      tracksSvg.appendChild(el("text", {
-        x: pos1 + 2,
-        y: perpPos + 16,
-        class:"svg-small"
-      }, gene.strand === "+" ? "→" : "←"));
-    }
+  // --- Genes / RepeatMasker via shared drawTrackFeatures (Phase 2)
+  if (genesLayout && !genesLayout.track.collapsed) {
+    const entry = (state.annotationTracks || []).find(a => a.id === "genes")
+      || { id: "genes", style: "gene",
+           series: [{ name: "genes", features: (typeof gsAnnotationFeatures === "function" ? gsAnnotationFeatures("genes") : []) }] };
+    drawTrackFeatures(entry, genesLayout, genomePos, { style: "gene", layoutW: W, layoutH: H });
   }
-  }
-
-  // --- RepeatMasker track (skipped entirely when the track was dropped)
   if (repeatsLayout && !repeatsLayout.track.collapsed) {
-    let repeatsX, repeatsY, repeatsW, repeatsH;
-    if (isVertical) {
-      repeatsX = repeatsLayout.contentLeft + 8;
-      repeatsW = 22;
-      repeatsY = 16;
-      // In vertical mode, repeatsH should use W (genomic axis dimension), not H
-      repeatsH = W - 32;
-    } else {
-      repeatsY = repeatsLayout.contentTop + 8;
-      repeatsH = 22;
-      repeatsX = 16;
-      repeatsW = W - 32;
-    }
-
-    // background guide line
-    if (isVertical) {
-      tracksSvg.appendChild(el("line", {
-        x1: repeatsX + repeatsW/2, x2: repeatsX + repeatsW/2, y1: 16, y2: W-16,
-        stroke: "rgba(127,127,127,0.16)"
-      }));
-    } else {
-      tracksSvg.appendChild(el("line", {
-        x1: 16, x2: W-16, y1: repeatsY + repeatsH/2, y2: repeatsY + repeatsH/2,
-        stroke: "rgba(127,127,127,0.16)"
-      }));
-    }
-
-  function repeatColor(cls) {
-    // simple palette-ish mapping; kept subtle
-    switch (cls) {
-      case "SINE": return "rgba(255, 206, 86, 0.35)";
-      case "LINE": return "rgba(75, 192, 192, 0.28)";
-      case "LTR":  return "rgba(153, 102, 255, 0.28)";
-      case "DNA":  return "rgba(255, 99, 132, 0.22)";
-      default:     return "rgba(201, 203, 207, 0.22)";
-    }
-  }
-
-  function repeatColorToRgba(cls) {
-    const rgbaStr = repeatColor(cls);
-    // Parse "rgba(255, 206, 86, 0.35)" to [r, g, b, a] normalized
-    const match = rgbaStr.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/);
-    if (match) {
-      return [
-        parseInt(match[1]) / 255,
-        parseInt(match[2]) / 255,
-        parseInt(match[3]) / 255,
-        parseFloat(match[4])
-      ];
-    }
-    return [0.5, 0.5, 0.5, 0.5]; // fallback
-  }
-
-  // Optimize repeat rendering: filter, cluster, and batch DOM operations
-  // Calculate minimum pixel width (don't render repeats smaller than 1 pixel)
-  const minPixelWidth = 1;
-  const clusterThreshold = 5; // Cluster repeats within 5bp of each other
-  const maxRepeatsToRender = 5000; // Safety limit to prevent crashes
-
-  // Filter and prepare visible repeats
-  const visibleRepeats = [];
-  for (const r of repeats) {
-    if (r.end <= renderStartBp() || r.start >= renderEndBp()) continue;
-    const rs = Math.max(r.start, renderStartBp());
-    const re = Math.min(r.end, renderEndBp());
-    
-    const pos1 = genomePos(rs);
-    const pos2 = genomePos(re);
-    const width = Math.abs(pos2 - pos1);
-    
-    // Skip repeats that are too small to render
-    if (width < minPixelWidth) continue;
-    
-    visibleRepeats.push({
-      start: rs,  // Clamped start for rendering
-      end: re,   // Clamped end for rendering
-      originalStart: r.start,  // Original RepeatMasker start coordinate
-      originalEnd: r.end,     // Original RepeatMasker end coordinate
-      cls: r.cls,
-      pos1: pos1,
-      pos2: pos2,
-      width: width
+    const entry = (state.annotationTracks || []).find(a => a.id === "repeats")
+      || { id: "repeats", style: "interval",
+           series: [{ name: "repeats", features: (typeof gsAnnotationFeatures === "function" ? gsAnnotationFeatures("repeats") : []) }] };
+    drawTrackFeatures(entry, repeatsLayout, genomePos, {
+      style: "interval", layoutW: W, layoutH: H,
+      clusterBp: 5, maxFeatures: 5000, hitTest: "repeats", barHeight: 22,
     });
-  }
-
-  // Sort by position for clustering
-  visibleRepeats.sort((a, b) => a.start - b.start);
-
-  // Cluster nearby repeats of the same class to reduce DOM elements
-  const clusteredRepeats = [];
-  let currentCluster = null;
-  
-  for (const r of visibleRepeats) {
-    if (currentCluster && 
-        r.cls === currentCluster.cls &&
-        r.start - currentCluster.end <= clusterThreshold) {
-      // Merge into current cluster
-      currentCluster.end = Math.max(currentCluster.end, r.end);
-      currentCluster.originalEnd = Math.max(currentCluster.originalEnd, r.originalEnd);
-      currentCluster.pos2 = genomePos(currentCluster.end);
-      currentCluster.width = Math.abs(currentCluster.pos2 - currentCluster.pos1);
-    } else {
-      // Start new cluster
-      if (currentCluster) {
-        clusteredRepeats.push(currentCluster);
-      }
-      currentCluster = {
-        start: r.start,
-        end: r.end,
-        originalStart: r.originalStart,
-        originalEnd: r.originalEnd,
-        cls: r.cls,
-        pos1: r.pos1,
-        pos2: r.pos2,
-        width: r.width
-      };
-    }
-  }
-  if (currentCluster) {
-    clusteredRepeats.push(currentCluster);
-  }
-
-  // Limit the number of elements to render (take first N if too many)
-  const repeatsToRender = clusteredRepeats.slice(0, maxRepeatsToRender);
-  
-  if (clusteredRepeats.length > maxRepeatsToRender) {
-    console.warn(`Too many repeats (${clusteredRepeats.length}), rendering only first ${maxRepeatsToRender}`);
-  }
-
-  // Store repeat data for hit testing
-  repeatHitTestData = [];
-  
-  // Use WebGPU if available, otherwise fall back to SVG
-  if (webgpuSupported && instancedRenderer) {
-    // Add rectangles to WebGPU renderer
-    // Scale by devicePixelRatio since WebGPU canvas uses physical pixels
-    const dpr = window.devicePixelRatio || 1;
-    
-    for (const r of repeatsToRender) {
-      const pos1 = r.pos1;
-      const pos2 = r.pos2;
-      const width = Math.max(1, pos2 - pos1);
-      const height = repeatsH - 8;
-      
-      let x, y, w, h;
-      if (isVertical) {
-        const yMin = Math.min(pos1, pos2);
-        const yMax = Math.max(pos1, pos2);
-        x = repeatsX + 4;
-        y = yMin;
-        w = repeatsW - 8;
-        h = Math.max(1, yMax - yMin);
-      } else {
-        x = pos1;
-        y = repeatsY + 4;
-        w = width;
-        h = height;
-      }
-      
-      const rgba = repeatColorToRgba(r.cls);
-      // Scale coordinates by DPR to match physical pixel canvas
-      instancedRenderer.addRect(x * dpr, y * dpr, w * dpr, h * dpr, rgba);
-      
-      // Store for hit testing (use original RepeatMasker coordinates, not clamped/clustered)
-      repeatHitTestData.push({
-        start: r.originalStart,
-        end: r.originalEnd,
-        cls: r.cls
-      });
-    }
-  } else {
-    // Fallback to SVG rendering
-    const fragment = document.createDocumentFragment();
-    
-    for (const r of repeatsToRender) {
-      const pos1 = r.pos1;
-      const pos2 = r.pos2;
-      const isSmall = r.width < 3; // Don't add stroke for very small elements
-      
-      // Format tooltip text with repeat class and original coordinates
-      const tooltipText = `${r.cls} repeat\n${Math.floor(r.originalStart).toLocaleString()} - ${Math.floor(r.originalEnd).toLocaleString()}`;
-      
-      // Create rect element
-      let rect;
-      if (isVertical) {
-        const yMin = Math.min(pos1, pos2);
-        const yMax = Math.max(pos1, pos2);
-        rect = el("rect", {
-          x: repeatsX + 4,
-          y: yMin,
-          width: repeatsW - 8,
-          height: Math.max(1, yMax - yMin),
-          rx: isSmall ? 0 : 6,
-          fill: repeatColor(r.cls),
-          style: "cursor: pointer;"
-        });
-        if (!isSmall) {
-          rect.setAttribute("stroke", "rgba(127,127,127,0.20)");
-        }
-      } else {
-        rect = el("rect", {
-          x: pos1,
-          y: repeatsY + 4,
-          width: Math.max(1, pos2 - pos1),
-          height: repeatsH - 8,
-          rx: isSmall ? 0 : 6,
-          fill: repeatColor(r.cls),
-          style: "cursor: pointer;"
-        });
-        if (!isSmall) {
-          rect.setAttribute("stroke", "rgba(127,127,127,0.20)");
-        }
-      }
-      
-      // Add mouse event handlers for tooltip
-      rect.addEventListener("mousemove", (e) => {
-        state.hoveredRepeatTooltip = {
-          text: tooltipText,
-          x: e.clientX + 10,
-          y: e.clientY + 10
-        };
-        updateTooltip();
-      });
-      
-      rect.addEventListener("mouseleave", () => {
-        state.hoveredRepeatTooltip = null;
-        updateTooltip();
-      });
-      
-      fragment.appendChild(rect);
-    }
-    
-    // Append all elements at once (single DOM operation)
-    tracksSvg.appendChild(fragment);
-  }
   }
 
   // Coordinate axis: base line + major/minor ticks + bp labels + edge
@@ -1980,9 +2092,9 @@ function renderTracks() {
   // UCSC interval tracks (added on demand via the UCSC Tracks tab). Boxes go on
   // the WebGPU instanced renderer when available (fast for many features), with
   // an SVG-rect fallback; labels stay on SVG (bounded count, text-only).
+  // Drawn via drawTrackFeatures with the historical color/alpha so pixels stay
+  // identical to the pre-extraction loop.
   if (Array.isArray(state.ucscTracks) && state.ucscTracks.length) {
-    const useWebGPU = webgpuSupported && instancedRenderer;
-    const dpr = window.devicePixelRatio || 1;
     const boxColor = [0.169, 0.435, 1.0];   // ~#2b6fff
     const boxAlpha = 0.55;
     for (const item of layout) {
@@ -1990,29 +2102,29 @@ function renderTracks() {
       if (!t.id || t.id.indexOf("ucsc-") !== 0 || t.collapsed) continue;
       const entry = state.ucscTracks.find(u => u.id === t.id);
       if (!entry || !Array.isArray(entry.features)) continue;
-      const h = Math.max(6, (item.contentHeight || 20) - 6);
-      const yTop = item.contentTop + 3;
-      for (const f of entry.features) {
-        if (f.end <= renderStartBp() || f.start >= renderEndBp()) continue;
-        const a = genomePos(Math.max(f.start, renderStartBp()));
-        const b = genomePos(Math.min(f.end, renderEndBp()));
-        if (isVertical) {
-          const y0 = Math.min(a, b), y1 = Math.max(a, b);
-          const x = item.contentLeft + 4, w = Math.max(6, (item.contentWidth || 20) - 8), hh = Math.max(1, y1 - y0);
-          if (useWebGPU) instancedRenderer.addRect(x * dpr, y0 * dpr, w * dpr, hh * dpr, boxColor, boxAlpha);
-          else tracksSvg.appendChild(el("rect", { x: x, y: y0, width: w, height: hh,
-            rx: 2, fill: "var(--blue,#2b6fff)", "fill-opacity": 0.5, stroke: "var(--blue,#2b6fff)" }));
-        } else {
-          const x0 = Math.min(a, b), w = Math.max(1, Math.abs(b - a));
-          if (useWebGPU) instancedRenderer.addRect(x0 * dpr, yTop * dpr, w * dpr, h * dpr, boxColor, boxAlpha);
-          else tracksSvg.appendChild(el("rect", { x: x0, y: yTop, width: w, height: h,
-            rx: 2, fill: "var(--blue,#2b6fff)", "fill-opacity": 0.5, stroke: "var(--blue,#2b6fff)" }));
-          if (f.name && w > 30) {
-            tracksSvg.appendChild(el("text", { x: x0 + 4, y: yTop + h / 2 + 3,
-              fill: "var(--text)", "font-size": "9px" }, String(f.name).slice(0, 24)));
-          }
-        }
-      }
+      drawTrackFeatures(entry, item, genomePos, {
+        style: "interval",
+        boxColor: boxColor,
+        boxAlpha: boxAlpha,
+        cssFill: "var(--blue,#2b6fff)",
+      });
+    }
+  }
+
+  // Software-defined tracks (attach_data): line / bar / scatter / interval.
+  if (Array.isArray(state.dataTracks) && state.dataTracks.length) {
+    for (const item of layout) {
+      const t = item.track;
+      if (!t.id || t.id.indexOf("data-") !== 0 || t.collapsed) continue;
+      const entry = state.dataTracks.find(d => d.id === t.id);
+      if (!entry) continue;
+      drawTrackFeatures(entry, item, genomePos, {
+        style: entry.style || "line",
+        color: entry.color,
+        yScale: entry.y_scale,
+        yMin: entry.y_min,
+        yMax: entry.y_max,
+      });
     }
   }
 

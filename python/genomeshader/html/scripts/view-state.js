@@ -448,36 +448,41 @@ function getAccumulatedGapBp(bp, expandedInsertions) {
   return accumulatedGapBp;
 }
 
-// Genes: load from config or use empty array as fallback
-// Note: transcripts_data now contains gene models (exon union) instead of individual transcripts
-let transcripts = [];
-if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.transcripts_data) {
-  const data = window.GENOMESHADER_CONFIG.transcripts_data;
-  // Data should already be an array of gene model objects
-  if (Array.isArray(data)) {
-    transcripts = data;
-    console.log(`Loaded ${transcripts.length} gene models for genes track`);
-  } else {
-    console.warn("Gene models data is not in expected array format:", data);
-  }
-} else {
-  console.warn("No transcripts_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
+// Genes / repeats: Phase 2 shared envelope (genes_track / repeats_track).
+function gsAnnotationFeatures(trackId) {
+  const t = (state.annotationTracks || []).find(a => a && a.id === trackId);
+  if (!t || !Array.isArray(t.series) || !t.series[0]) return [];
+  return Array.isArray(t.series[0].features) ? t.series[0].features : [];
 }
 
-// RepeatMasker: load from config or use empty array as fallback
-let repeats = [];
-if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.repeats_data) {
-  const data = window.GENOMESHADER_CONFIG.repeats_data;
-  // Data should already be an array of repeat objects with start, end, cls
-  if (Array.isArray(data)) {
-    repeats = data;
-    console.log(`Loaded ${repeats.length} repeats for RepeatMasker track`);
-  } else {
-    console.warn("Repeats data is not in expected array format:", data);
-  }
-} else {
-  console.warn("No repeats_data found in GENOMESHADER_CONFIG:", window.GENOMESHADER_CONFIG);
+function gsSetAnnotationTrack(track) {
+  if (!track || !track.id) return;
+  if (!state.annotationTracks) state.annotationTracks = [];
+  const i = state.annotationTracks.findIndex(a => a.id === track.id);
+  if (i >= 0) state.annotationTracks[i] = track;
+  else state.annotationTracks.push(track);
 }
+
+function gsApplyAnnotationTrackFromConfig(key, fallbackId, fallbackLabel, fallbackStyle) {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const track = cfg[key];
+  if (track && typeof track === "object" && track.id) {
+    gsSetAnnotationTrack(track);
+    return;
+  }
+  // Empty placeholder so consumers always find an entry
+  gsSetAnnotationTrack({
+    id: fallbackId,
+    label: fallbackLabel,
+    style: fallbackStyle,
+    series: [{ name: fallbackId, features: [] }],
+  });
+}
+
+gsApplyAnnotationTrackFromConfig("genes_track", "genes", "Genes", "gene");
+gsApplyAnnotationTrackFromConfig("repeats_track", "repeats", "RepeatMasker", "interval");
+console.log(`Loaded ${gsAnnotationFeatures("genes").length} gene models for genes track`);
+console.log(`Loaded ${gsAnnotationFeatures("repeats").length} repeats for RepeatMasker track`);
 
 // Reference sequence: load from config or use empty string as fallback
 let referenceSequence = "";
@@ -795,11 +800,13 @@ async function gsLoadVariantsForViewport(force) {
       if (typeof resp.reference_data === "string") {
         cfg.reference_data = resp.reference_data; referenceSequence = resp.reference_data;
       }
-      if (Array.isArray(resp.transcripts_data)) {
-        cfg.transcripts_data = resp.transcripts_data; transcripts = resp.transcripts_data;
+      if (resp.genes_track && typeof resp.genes_track === "object") {
+        cfg.genes_track = resp.genes_track;
+        gsSetAnnotationTrack(resp.genes_track);
       }
-      if (Array.isArray(resp.repeats_data)) {
-        cfg.repeats_data = resp.repeats_data; repeats = resp.repeats_data;
+      if (resp.repeats_track && typeof resp.repeats_track === "object") {
+        cfg.repeats_track = resp.repeats_track;
+        gsSetAnnotationTrack(resp.repeats_track);
       }
       if (Array.isArray(resp.ideogram_data)) cfg.ideogram_data = resp.ideogram_data;
       if (resp.data_bounds && typeof resp.data_bounds.start === "number") {
@@ -840,8 +847,11 @@ async function gsLoadVariantsForViewport(force) {
 // zoom/scroll callers pass nothing and get GS_VP_SETTLE_MS (1s).
 function gsScheduleViewportVariantLoad(delay) {
   if (_gsVpTimer) clearTimeout(_gsVpTimer);
-  _gsVpTimer = setTimeout(() => { _gsVpTimer = null; gsLoadVariantsForViewport(false); },
-    delay == null ? GS_VP_SETTLE_MS : delay);
+  _gsVpTimer = setTimeout(() => {
+    _gsVpTimer = null;
+    gsLoadVariantsForViewport(false);
+    if (typeof gsLoadDataTracksForViewport === "function") gsLoadDataTracksForViewport();
+  }, delay == null ? GS_VP_SETTLE_MS : delay);
 }
 
 // Register the startup region's variants (shipped in config) with the viewport
@@ -875,6 +885,162 @@ if (typeof window !== "undefined") {
     windowKeys: [..._gsVpData.keys()],
   });
 }
+
+// ---------------------------------------------------------------------------
+// Software-defined tracks (attach_data) — fetch features for the visible window
+// ---------------------------------------------------------------------------
+const _gsDataTrackInFlight = new Map(); // trackId -> reqKey
+
+function fetchTrackData(trackId, contig, start, end) {
+  if (typeof sendCommMessage !== "function") {
+    return Promise.reject(new Error("sendCommMessage not available"));
+  }
+  return sendCommMessage("fetch_track_data", {
+    track_id: trackId,
+    contig: contig,
+    start: Math.floor(start),
+    end: Math.ceil(end),
+    max_points: 2000,
+  }, 120000);
+}
+
+function _gsApplyTrackDataResponse(resp) {
+  if (!resp || !resp.track_id) return;
+  const entry = (state.dataTracks || []).find(d => d.id === resp.track_id);
+  if (!entry) return;
+  // Replace features only — preserve local settings (y_scale, y_min/max, color).
+  if (Array.isArray(resp.series)) {
+    const prevByName = {};
+    (entry.series || []).forEach(s => { if (s && s.name) prevByName[s.name] = s; });
+    entry.series = resp.series.map(s => {
+      const prev = prevByName[s.name];
+      return {
+        name: s.name,
+        // Prefer local color override if the user set one on the series
+        color: (prev && prev._userColor) ? prev.color : (s.color || (prev && prev.color) || entry.color),
+        features: Array.isArray(s.features) ? s.features : [],
+        _userColor: prev && prev._userColor,
+      };
+    });
+  }
+}
+
+async function gsLoadDataTracksForViewport() {
+  if (!Array.isArray(state.dataTracks) || !state.dataTracks.length) return;
+  if (typeof sendCommMessage !== "function") return;
+  const contig = state.contig;
+  const start = Math.floor(state.startBp);
+  const end = Math.ceil(state.endBp);
+  if (!(end > start) || !contig) return;
+
+  const jobs = state.dataTracks.map(async (entry) => {
+    const reqKey = `${entry.id}:${contig}:${start}-${end}`;
+    if (_gsDataTrackInFlight.get(entry.id) === reqKey) return;
+    _gsDataTrackInFlight.set(entry.id, reqKey);
+    try {
+      const resp = await fetchTrackData(entry.id, contig, start, end);
+      if (resp && (resp.error || (resp.type && String(resp.type).endsWith("_error")))) {
+        throw new Error(resp.error || "track data fetch failed");
+      }
+      if (_gsDataTrackInFlight.get(entry.id) !== reqKey) return; // stale
+      _gsApplyTrackDataResponse(resp);
+    } catch (e) {
+      console.warn("data track fetch failed:", entry.id, e);
+    } finally {
+      if (_gsDataTrackInFlight.get(entry.id) === reqKey) {
+        _gsDataTrackInFlight.delete(entry.id);
+      }
+    }
+  });
+  await Promise.all(jobs);
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderAll === "function") renderAll();
+}
+
+function gsEnsureDataTrackLayout(meta) {
+  if (!meta || !meta.id) return;
+  const existing = (state.dataTracks || []).find(d => d.id === meta.id);
+  if (existing) {
+    // Update metadata but keep local settings + series until next fetch
+    existing.label = meta.label || existing.label;
+    if (meta.style) existing.style = meta.style;
+    if (existing.y_min == null && meta.y_min != null) existing.y_min = meta.y_min;
+    if (existing.y_max == null && meta.y_max != null) existing.y_max = meta.y_max;
+    if (existing.color == null && meta.color != null) existing.color = meta.color;
+    if (Array.isArray(meta.series) && meta.series.length && !(existing.series && existing.series.length)) {
+      existing.series = meta.series;
+    }
+  } else {
+    if (!state.dataTracks) state.dataTracks = [];
+    state.dataTracks.push({
+      id: meta.id,
+      label: meta.label || meta.id,
+      style: meta.style || "line",
+      color: meta.color,
+      y_scale: meta.y_scale || "linear",
+      y_min: (meta.y_min != null) ? meta.y_min : null,
+      y_max: (meta.y_max != null) ? meta.y_max : null,
+      series: Array.isArray(meta.series) ? meta.series : [],
+      callable: !!meta.callable,
+    });
+  }
+  if (!state.tracks.some(tr => tr.id === meta.id)) {
+    const trackDef = {
+      id: meta.id,
+      label: meta.label || meta.id,
+      collapsed: false,
+      height: meta.height || 80,
+      minHeight: meta.minHeight || 40,
+    };
+    const at = state.tracks.findIndex(tr => tr.id === "flow" || (typeof tr.id === "string" && tr.id.startsWith("flow-")));
+    if (at >= 0) state.tracks.splice(at, 0, trackDef); else state.tracks.push(trackDef);
+  } else {
+    const tr = state.tracks.find(t => t.id === meta.id);
+    if (tr && meta.label) tr.label = meta.label;
+    if (tr && meta.height) tr.height = meta.height;
+  }
+}
+
+function gsOnDataTracksChanged(tracks) {
+  if (!Array.isArray(tracks)) return;
+  const ids = new Set(tracks.map(t => t.id));
+  // Remove tracks that are no longer attached
+  state.dataTracks = (state.dataTracks || []).filter(d => ids.has(d.id));
+  state.tracks = state.tracks.filter(tr => {
+    if (typeof tr.id === "string" && tr.id.indexOf("data-") === 0) return ids.has(tr.id);
+    return true;
+  });
+  for (const meta of tracks) gsEnsureDataTrackLayout(meta);
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  gsLoadDataTracksForViewport().then(() => {
+    if (typeof renderTrackControls === "function") renderTrackControls();
+    if (typeof renderAll === "function") renderAll();
+  });
+}
+
+// Live attach_data() after show() arrives as an unmatched custom message.
+if (typeof document !== "undefined") {
+  document.addEventListener("genomeshader_msg", function (ev) {
+    const msg = ev && ev.detail;
+    if (msg && msg.type === "data_tracks_changed") {
+      gsOnDataTracksChanged(msg.tracks || []);
+    }
+  });
+}
+
+if (typeof window !== "undefined") {
+  window.fetchTrackData = fetchTrackData;
+  window.gsLoadDataTracksForViewport = gsLoadDataTracksForViewport;
+  window.gsOnDataTracksChanged = gsOnDataTracksChanged;
+}
+
+// Kick an initial fetch for callable tracks (static ones may already have series).
+setTimeout(function () {
+  if (typeof gsLoadDataTracksForViewport === "function") {
+    const need = (state.dataTracks || []).some(d => d.callable || !(d.series && d.series.length));
+    if (need) gsLoadDataTracksForViewport();
+  }
+}, 0);
 
 // ---------------------------------------------------------------------------
 // Contig switcher (sidebar "Region" dropdown). Reference / genes / ideogram /
@@ -914,11 +1080,15 @@ function gsPopulateContigSelect() {
 function gsResetRegionData() {
   const cfg = window.GENOMESHADER_CONFIG || (window.GENOMESHADER_CONFIG = {});
   referenceSequence = "";
-  transcripts = [];
-  repeats = [];
+  const emptyGenes = { id: "genes", label: "Genes", style: "gene",
+    series: [{ name: "genes", features: [] }] };
+  const emptyRepeats = { id: "repeats", label: "RepeatMasker", style: "interval",
+    series: [{ name: "repeats", features: [] }] };
+  gsSetAnnotationTrack(emptyGenes);
+  gsSetAnnotationTrack(emptyRepeats);
   cfg.reference_data = "";
-  cfg.transcripts_data = [];
-  cfg.repeats_data = [];
+  cfg.genes_track = emptyGenes;
+  cfg.repeats_track = emptyRepeats;
   _gsVpRegions = [];
   _gsVpData.clear();
   _gsVpRebuildTracks();
@@ -1281,13 +1451,13 @@ function gsApplyNavigatePayload(p) {
     cfg.reference_data = p.reference_data;
     referenceSequence = p.reference_data;
   }
-  if (Array.isArray(p.transcripts_data)) {
-    cfg.transcripts_data = p.transcripts_data;
-    transcripts = p.transcripts_data;
+  if (p.genes_track && typeof p.genes_track === "object") {
+    cfg.genes_track = p.genes_track;
+    gsSetAnnotationTrack(p.genes_track);
   }
-  if (Array.isArray(p.repeats_data)) {
-    cfg.repeats_data = p.repeats_data;
-    repeats = p.repeats_data;
+  if (p.repeats_track && typeof p.repeats_track === "object") {
+    cfg.repeats_track = p.repeats_track;
+    gsSetAnnotationTrack(p.repeats_track);
   }
   if (Array.isArray(p.ideogram_data)) cfg.ideogram_data = p.ideogram_data;
   if (typeof p.start === "number" && typeof p.end === "number") {
@@ -1328,10 +1498,13 @@ function gsApplyNavigatePayload(p) {
   if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
   if (typeof updateDocumentTitle === "function") updateDocumentTitle();
   if (typeof renderAll === "function") renderAll();
+  if (typeof gsLoadDataTracksForViewport === "function") gsLoadDataTracksForViewport();
 }
 
 if (typeof window !== "undefined") {
   window.gsSwitchContig = gsSwitchContig;
   window.gsPopulateContigSelect = gsPopulateContigSelect;
+  window.gsAnnotationFeatures = gsAnnotationFeatures;
+  window.gsSetAnnotationTrack = gsSetAnnotationTrack;
   window.gsApplyNavigatePayload = gsApplyNavigatePayload;
 }

@@ -6,9 +6,10 @@
 # REST API, keyed on `genome_build`, and caches each result as JSON under
 # `{gcs_session_dir}/cache/ucsc/...`. PlasmoDB genomes are not in UCSC. This
 # module pre-computes the exact same cache blobs straight from the PlasmoDB
-# genome FASTA + GFF3, and registers them in the cache interval index. With
-# GENOMESHADER_ALLOW_UCSC_API unset, GenomeShader.ideogram/genes/reference then
-# serve these blobs and never touch the network.
+# genome FASTA + GFF3, and registers them in the cache interval index (including
+# chrom_sizes). GenomeShader then serves those blobs and skips the UCSC API
+# automatically — no GENOMESHADER_ALLOW_UCSC_API needed. Pass
+# allow_ucsc_api=False to force that even without staged chrom_sizes.
 #
 # Files (PlasmoDB-61 P. falciparum 3D7) come from:
 #   https://plasmodb.org/common/downloads/release-61/Pfalciparum3D7/
@@ -17,12 +18,9 @@
 #
 # Usage:
 #   from genomeshader.view import GenomeShader
-#   from genomeshader.plasmodb import stage_plasmodb
-#   session = GenomeShader(genome_build="PlasmoDB-61_Pfalciparum3D7",
-#                          gcs_session_dir="gs://my-bucket/genomeshader")
-#   stage_plasmodb(session,
-#                  fasta_path="PlasmoDB-61_Pfalciparum3D7_Genome.fasta",
-#                  gff_path="PlasmoDB-61_Pfalciparum3D7.gff")
+#   session = GenomeShader(gcs_session_dir="gs://my-bucket/genomeshader")
+#   session.stage_genome("PlasmoDB-61_Pfalciparum3D7_Genome.fasta",
+#                         gff="PlasmoDB-61_Pfalciparum3D7.gff")
 #   # then, as usual:  session.render("Pf3D7_01_v3:100000-101000"); session.show()
 #
 # Contig naming: PlasmoDB uses names like "Pf3D7_01_v3". Your BAMs/VCFs must use
@@ -329,6 +327,18 @@ def _assign_lanes(models: List[dict], n_lanes: int = 3) -> None:
             lanes[0].append(g)
 
 
+def _genome_name_from_fasta(path: str) -> str:
+    """Filename stem used as the assembly name when init() omitted genome=."""
+    base = str(path).rsplit("/", 1)[-1]
+    lower = base.lower()
+    for suffix in (".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fna", ".fa", ".gz"):
+        if lower.endswith(suffix):
+            base = base[: -len(suffix)]
+            lower = base.lower()
+            break
+    return base or "local"
+
+
 def stage_reference(
     session,
     fasta: str,
@@ -336,6 +346,7 @@ def stage_reference(
     contig_rename: Optional[Union[Dict[str, str], Callable[[str], str]]] = None,
     verbose: bool = True,
     force: bool = False,
+    name: Optional[str] = None,
 ) -> Dict[str, int]:
     """Stage any reference's FASTA (+ optional GFF3) into `session`'s cache.
 
@@ -347,6 +358,14 @@ def stage_reference(
     them without UCSC. Returns {contig: length}.
     """
     rename = _make_renamer(contig_rename)
+    prev = getattr(session, "genome_build", None)
+    if name:
+        session.genome_build = name
+    elif not prev:
+        session.genome_build = _genome_name_from_fasta(fasta)
+    session._genome_from_fasta = True
+    if session.genome_build != prev:
+        session._chrom_sizes_memo = None
     build = session.genome_build
     base = session.gcs_session_dir.rstrip("/")
 
@@ -432,6 +451,9 @@ def stage_plasmodb(
     """Back-compat alias for :func:`stage_reference` (FASTA + required GFF)."""
     return stage_reference(session, fasta_path, gff=gff_path,
                            contig_rename=contig_rename, verbose=verbose, force=force)
+
+
+stage_genome = stage_reference
 
 
 def demo():

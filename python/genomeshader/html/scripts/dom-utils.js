@@ -124,8 +124,8 @@ if (sidebar) {
     
     // Don't intercept clicks on form elements or their containers
     const target = e.target;
-    if (target.closest('select, input, button, label, .sampleStrategyControls, .sampleSearchControls, #samplePreview, #sampleContext')) {
-      return; // Let form element handlers fire
+    if (target.closest('select, input, button, label, .sampleStrategyControls, .sampleSearchControls, #samplePreview, #sampleContext, .sidebar-left-resize-handle')) {
+      return; // Let form / resize handlers fire
     }
     
     const collapsed = getSidebarCollapsed();

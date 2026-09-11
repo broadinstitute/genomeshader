@@ -40,7 +40,11 @@ INSTALL_MOCK = r"""
         type: "navigate_response",
         contig: data.contig, start: data.start, end: data.end,
         reference_data: "ACGTACGTAC",
-        ideogram_data: [], transcripts_data: [], repeats_data: [],
+        ideogram_data: [],
+        genes_track: { id: "genes", label: "Genes", style: "gene",
+          series: [{ name: "genes", features: [] }] },
+        repeats_track: { id: "repeats", label: "RepeatMasker", style: "interval",
+          series: [{ name: "repeats", features: [] }] },
         variant_tracks: [{ name: "vp", variants_data: [
           { id: data.contig + ":150", position: 150, pos: 150, ref: "A", alt: "C",
             n_ref: 9, n_alt: 1, n_missing: 0, n_samples: 10 }] }],

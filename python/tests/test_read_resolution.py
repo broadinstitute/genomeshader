@@ -23,7 +23,8 @@ def _obj(mapping=None, attached=(), read_index=None):
     o._read_index_thread = None                 # index already "done" -> no wait
     o._read_index_done = threading.Event(); o._read_index_done.set()
     o._read_index_lock = threading.Lock()
-    for name in ("get_bam_samples_for_vcf_samples", "_attached_reads_by_stem"):
+    for name in ("get_bam_samples_for_vcf_samples", "_attached_reads_by_stem",
+                 "_samples_with_reads"):
         setattr(o, name, types.MethodType(getattr(GenomeShader, name), o))
     o._read_stem = GenomeShader._read_stem  # staticmethod -> plain function
     return o
@@ -55,3 +56,17 @@ def test_unmatched_plain_name_resolves_to_nothing():
 def test_locator_value_passes_through():
     o = _obj()
     assert o.get_bam_samples_for_vcf_samples(["gs://b/explicit.bam"]) == ["gs://b/explicit.bam"]
+
+
+def test_samples_with_reads_is_attached_set_not_vcf_only():
+    o = _obj(mapping={"S1": ["gs://x/s1.bam"]},
+              attached=["gs://b/HG001.bam", "gs://b/HG002.cram"],
+              read_index={"HG003": ["gs://idx/weird.bam"]})
+    assert o._samples_with_reads() == ["HG001", "HG002", "HG003", "S1"]
+
+
+def test_samples_with_reads_empty_when_nothing_attached():
+    o = _obj(attached=["gs://b/other.bam"])
+    # Filename stem is in the set; a VCF-only name is not.
+    assert "HG005" not in o._samples_with_reads()
+    assert "other" in o._samples_with_reads()

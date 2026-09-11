@@ -3,6 +3,8 @@ use pyo3::prelude::*;
 
 use cloud_storage::sync::*;
 use chrono::{ DateTime, Utc };
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
@@ -111,6 +113,53 @@ pub fn _gcs_download_file(path: String) -> PyResult<String> {
     }
 
     Ok(filename)
+}
+
+/// Cache directory for URL-hashed htslib sidecar indexes (`.tbi`/`.bai`/…).
+pub fn htslib_index_cache_dir() -> PathBuf {
+    let base = std::env::var("GENOMESHADER_LOCAL_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("genomeshader"));
+    base.join("htslib-idx")
+}
+
+/// Download a remote htslib sidecar index (`.tbi`/`.csi`/`.bai`/`.crai`) into
+/// a URL-hashed cache file so cwd leftovers cannot win (`HTS_IDX_SAVE_REMOTE`
+/// prefers a basename match in the process cwd). Returns the local path.
+pub fn pin_remote_htslib_index(data_url: &str, extensions: &[&str]) -> Option<String> {
+    if !data_url.starts_with("gs://") {
+        return None;
+    }
+    for ext in extensions {
+        let remote = format!("{}{}", data_url, ext);
+        let mut hasher = DefaultHasher::new();
+        remote.hash(&mut hasher);
+        let base = remote.rsplit('/').next().unwrap_or("index");
+        let dest = htslib_index_cache_dir().join(format!("{:016x}-{}", hasher.finish(), base));
+        if gcs_fetch_object(&remote, &dest).is_ok() {
+            return Some(dest.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Download a GCS object to `local_path`, overwriting. Errors if the copy does
+/// not produce a non-empty file. Unlike `gcs_download_file_to`, a missing
+/// object is a hard error (not a quiet cache miss).
+pub fn gcs_fetch_object(path: &str, local_path: &PathBuf) -> Result<()> {
+    if let Some(parent) = local_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if !run_gcs_cp(path, &local_path.to_string_lossy(), true) {
+        return Err(anyhow!(
+            "Failed to download '{}' via both 'gcloud storage cp' and 'gsutil cp'.",
+            path
+        ));
+    }
+    match std::fs::metadata(local_path) {
+        Ok(m) if m.len() > 0 => Ok(()),
+        _ => Err(anyhow!("downloaded '{}' but '{}' is missing or empty", path, local_path.display())),
+    }
 }
 
 pub fn gcs_download_file_to(path: &str, local_path: &PathBuf) -> Result<()> {

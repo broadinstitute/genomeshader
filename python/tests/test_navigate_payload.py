@@ -9,6 +9,7 @@ failing the whole jump.
 import types
 
 from genomeshader.view import GenomeShader
+from genomeshader import data_tracks as dt
 
 
 class _NullTimer:
@@ -48,8 +49,10 @@ def test_assembles_all_pieces():
     assert p["region"] == "chr2:100-200"
     assert p["reference_data"] == "ACGT"
     assert p["ideogram_data"] == [{"chrom": "chr2"}]
-    assert p["transcripts_data"] == [{"name": "g1"}]
-    assert p["repeats_data"] == [{"cls": "LINE"}]
+    assert p["genes_track"]["id"] == "genes" and p["genes_track"]["style"] == "gene"
+    assert dt.annotation_features(p["genes_track"]) == [{"name": "g1"}]
+    assert p["repeats_track"]["id"] == "repeats"
+    assert dt.annotation_features(p["repeats_track"]) == [{"cls": "LINE"}]
     assert p["variant_tracks"][0]["variants_data"] == [{"pos": 150}]
     assert p["insertion_variants_lookup"] == [{"id": "i1"}]
 
@@ -62,7 +65,9 @@ def test_missing_tracks_fall_back_to_empty_not_error():
     )
     p = o.navigate_payload("chrX", 1, 50)
     assert p["reference_data"] == ""
-    assert p["ideogram_data"] == [] and p["transcripts_data"] == [] and p["repeats_data"] == []
+    assert p["ideogram_data"] == []
+    assert dt.annotation_features(p["genes_track"]) == []
+    assert dt.annotation_features(p["repeats_track"]) == []
     assert p["variant_tracks"] == []
 
 
@@ -77,7 +82,8 @@ def test_none_returns_become_defaults():
     )
     p = o.navigate_payload("chr1", 1, 10)
     assert p["reference_data"] == "" and p["ideogram_data"] == []
-    assert p["transcripts_data"] == [] and p["repeats_data"] == []
+    assert dt.annotation_features(p["genes_track"]) == []
+    assert dt.annotation_features(p["repeats_track"]) == []
     assert p["insertion_variants_lookup"] == []  # absent key -> default
 
 
@@ -112,7 +118,7 @@ def test_wide_window_skips_variant_and_reference_fetch():
     assert wide["variant_tracks"] == [] and wide["reference_data"] == ""
     assert wide["insertion_variants_lookup"] == []
     assert wide["span_bp"] == 4_999_999
-    assert wide["transcripts_data"] == [{"name": "g"}]   # genes still load
+    assert dt.annotation_features(wide["genes_track"]) == [{"name": "g"}]   # genes still load
 
 
 def test_region_track_meta_defensive():
@@ -125,7 +131,7 @@ def test_region_track_meta_defensive():
     o._region_track_meta = types.MethodType(GenomeShader._region_track_meta, o)
     m = o._region_track_meta("chr2", 100, 200)
     assert m["reference_data"] == "ACGT"
-    assert m["transcripts_data"] == [{"name": "g"}]
-    assert m["repeats_data"] == []            # raiser -> default
+    assert dt.annotation_features(m["genes_track"]) == [{"name": "g"}]
+    assert dt.annotation_features(m["repeats_track"]) == []            # raiser -> default
     assert m["ideogram_data"] == [{"chrom": "chr2"}]
     assert m["data_bounds"] == {"start": 100, "end": 200}

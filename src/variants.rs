@@ -42,6 +42,15 @@ fn reader_cache_key(bcf_path: &str, index_path: Option<&str>) -> String {
     }
 }
 
+/// htslib's `HTS_IDX_SAVE_REMOTE` prefers a *basename* match in the process cwd
+/// over the remote `.tbi`. Regenerating a gs:// VCF therefore keeps seeking
+/// against a stale cwd copy (chr14 failed because cwd still had the chr20-only
+/// index). Pin the remote index to a URL-hashed cache file and pass it via
+/// `##idx##` so cwd leftovers cannot win.
+fn pin_remote_vcf_index(bcf_path: &str) -> Option<String> {
+    crate::storage_gcs::pin_remote_htslib_index(bcf_path, &[".tbi", ".csi"])
+}
+
 /// Open a tabix (.tbi) index by URL with the same GCS-auth / CA-bundle retry
 /// ladder as `open_url_with_fallbacks`.
 fn open_tbx_with_fallbacks(url: &Url) -> Result<tbx::Reader> {
@@ -131,6 +140,9 @@ fn open_indexed_bcf(bcf_path: &str, index_path: Option<&str>) -> Result<IndexedR
         // No explicit index: preserve the plain adjacent-index open.
         None => {
             return if is_remote {
+                if let Some(local_idx) = pin_remote_vcf_index(bcf_path) {
+                    return open_indexed_bcf(bcf_path, Some(&local_idx));
+                }
                 open_url_with_fallbacks(&Url::parse(bcf_path)?)
             } else {
                 Ok(IndexedReader::from_path(bcf_path)?)
@@ -442,8 +454,11 @@ pub fn extract_variants(
                         GenotypeAllele::Unphased(idx) | GenotypeAllele::Phased(idx) => idx.to_string(),
                         GenotypeAllele::UnphasedMissing | GenotypeAllele::PhasedMissing => ".".to_string(),
                     };
-                    let sep = match (&gt[0], &gt[1]) {
-                        (GenotypeAllele::Phased(_) | GenotypeAllele::PhasedMissing, GenotypeAllele::Phased(_) | GenotypeAllele::PhasedMissing) => "|",
+                    // VCF stores the phase bit on alleles AFTER the first: `0|1`
+                    // is Unphased(0)+Phased(1). Requiring both to be Phased would
+                    // render every diploid phased GT as unphased (`0/1`).
+                    let sep = match &gt[1] {
+                        GenotypeAllele::Phased(_) | GenotypeAllele::PhasedMissing => "|",
                         _ => "/",
                     };
                     format!("{}{}{}", a1, sep, a2)

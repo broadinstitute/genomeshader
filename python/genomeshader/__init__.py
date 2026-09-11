@@ -12,5 +12,5 @@ warnings.simplefilter(action="ignore", category=FutureWarning, append=True)
 warnings.filterwarnings("ignore", module="urllib3", append=True)
 
 from .view import *
-from .plasmodb import stage_plasmodb, stage_reference
+from .plasmodb import stage_plasmodb, stage_reference, stage_genome
 from .widget import GenomeShaderWidget

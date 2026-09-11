@@ -49,7 +49,7 @@ def test_jump_returns_fast_without_variants(shader):
     p = shader.navigate_payload(CONTIG, JUMP_START, JUMP_END, with_variants=False)
     dt = time.time() - t0
     print(f"\n[navigate fast] {dt:.2f}s  ref_len={len(p.get('reference_data') or '')} "
-          f"genes={len(p.get('transcripts_data') or [])} deferred={p.get('variants_deferred')}")
+          f"genes={len((p.get('genes_track') or {}).get('series', [{}])[0].get('features') or [])} deferred={p.get('variants_deferred')}")
     assert p["variants_deferred"] is True
     assert p["variant_tracks"] == []
     assert p["reference_data"], "reference did not load on the jump"
