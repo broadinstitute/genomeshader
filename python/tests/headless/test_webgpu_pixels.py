@@ -679,14 +679,11 @@ def test_comment_pins_survive_pan_settle(gpu_browser):
         assert errors == [], errors
 
 
-def test_smart_track_group_scroll_via_shift_wheel(gpu_browser):
-    """Regression: opening several sample tracks that overflow the viewport must
-    stay scrollable by wheel. The group wrapper (#smartScroll) owns the one
-    scrollbar, but macOS overlay scrollbars auto-hide — and shift+wheel was
-    hijacked to scroll the (scrollbar-hidden, non-overflowing) inner container
-    and preventDefault'd, killing the native group scroll. So on a Mac the stack
-    became unscrollable "in any way whatsoever". shift+wheel must now scroll
-    #smartScroll between tracks."""
+def test_smart_track_group_scroll_via_wheel(gpu_browser):
+    """Opening several sample tracks that overflow the viewport must scroll on a
+    PLAIN wheel (sample tracks default to vertical scroll, not zoom). The group
+    wrapper (#smartScroll) owns the one scrollbar; a plain wheel over the stack
+    scrolls it between tracks."""
     with hg.open_viewer(gpu_browser) as (page, errors):
         page.evaluate(
             """async () => { const S = window.__GS_STATE;
@@ -710,15 +707,13 @@ def test_smart_track_group_scroll_via_shift_wheel(gpu_browser):
             "  const r = w.getBoundingClientRect();"
             "  return {x: r.x + r.width/2, y: r.y + Math.min(40, r.height/2)}; }")
         page.mouse.move(box["x"], box["y"])
-        page.keyboard.down("Shift")
         for _ in range(4):
-            page.mouse.wheel(0, 120)
+            page.mouse.wheel(0, 120)  # plain wheel -> vertical scroll
             page.wait_for_timeout(60)
-        page.keyboard.up("Shift")
         page.wait_for_timeout(200)
 
         top = page.evaluate("() => document.getElementById('smartScroll').scrollTop")
-        assert top > 0, "shift+wheel did not scroll the sample-track group (#smartScroll)"
+        assert top > 0, "plain wheel did not scroll the sample-track group (#smartScroll)"
         assert errors == [], errors
 
 

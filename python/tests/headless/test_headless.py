@@ -827,3 +827,47 @@ def test_svg_text_is_themed(browser, tmp_path, theme, bad):
         offenders = [c for c in fills if c[0] < 70 and c[1] < 70 and c[2] < 70 and (len(c) < 4 or c[3] > 0.3)]
         assert not offenders, f"near-black SVG text in dark mode (won't read): {offenders[:5]}"
     page.close()
+
+
+def test_sample_tracks_scroll_on_plain_wheel(browser, tmp_path):
+    """Sample tracks default to vertical scroll on a PLAIN wheel (not zoom). When
+    the stack overflows, a plain wheel over it scrolls the group (#smartScroll)
+    even though the name/menu overlay (pointer-events:auto) sits over the reads —
+    the handler scrolls by geometry, not event.target. Shift+wheel is left for
+    zoom (must NOT scroll)."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    page.wait_for_function("() => window.__GS_READY === true", timeout=20000)
+    # A few expanded tracks overflow the wrapper (renderer-independent: the
+    # containers give #smartScroll its scroll height regardless of WebGPU).
+    page.evaluate("""async () => { const S = window.__GS_STATE;
+        for (let k = 0; k < 4; k++) {
+          const reads = {query_name:['r'+k], element_type:[0],
+            reference_start:[S.startBp+10], reference_end:[S.endBp-10],
+            is_forward:[true], haplotype:[1], sample_name:['S'+k], sequence:['']};
+          await window.__GS_TEST_seedSmartTrack('S'+k, reads, {collapsed:false});
+        } }""")
+    page.wait_for_timeout(300)
+    info = page.evaluate("""() => { const w = document.getElementById('smartScroll');
+        return w ? {sh: w.scrollHeight, ch: w.clientHeight} : null; }""")
+    assert info and info["sh"] > info["ch"], f"stack doesn't overflow ({info})"
+    box = page.evaluate("() => { const w = document.getElementById('smartScroll');"
+                        " const r = w.getBoundingClientRect(); return {x: r.x + r.width/2, y: r.y + 40}; }")
+    page.mouse.move(box["x"], box["y"])
+
+    # Plain wheel scrolls.
+    for _ in range(3):
+        page.mouse.wheel(0, 120)
+        page.wait_for_timeout(50)
+    assert page.evaluate("() => document.getElementById('smartScroll').scrollTop") > 0, \
+        "plain wheel did not scroll the sample-track stack"
+
+    # Shift+wheel is reserved for zoom — must not scroll the stack.
+    page.evaluate("() => { document.getElementById('smartScroll').scrollTop = 0; }")
+    page.keyboard.down("Shift")
+    for _ in range(3):
+        page.mouse.wheel(0, 120)
+        page.wait_for_timeout(50)
+    page.keyboard.up("Shift")
+    assert page.evaluate("() => document.getElementById('smartScroll').scrollTop") == 0, \
+        "shift+wheel scrolled the stack (should be reserved for zoom)"
+    page.close()

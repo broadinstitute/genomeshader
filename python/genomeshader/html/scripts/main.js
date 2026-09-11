@@ -6306,6 +6306,35 @@ function bindInteractions(root, state, main) {
       }
     }
 
+    // Sample tracks default to VERTICAL SCROLL on a plain wheel (zoom is on
+    // shift+wheel). #smartScroll is a real overflow container and the sample
+    // track canvases sit inside it with pointer-events:none, so a wheel over the
+    // stack targets #smartScroll — let the browser scroll it NATIVELY. This is
+    // renderer-independent (works before/without a WebGPU renderer), unlike the
+    // geometry block below which needs smartTrackRenderers.
+    const ssWrap = (typeof byId === "function" ? byId(root, "smartScroll") : null)
+      || document.getElementById("smartScroll");
+    if (ssWrap && !e.shiftKey && !isVerticalMode()
+        && ssWrap.scrollHeight > ssWrap.clientHeight) {
+      // Geometry, not event.target: the sample-name/menu overlay
+      // (.track-control-container, pointer-events:auto) covers the reads and
+      // would otherwise swallow the wheel. If the cursor is anywhere over the
+      // #smartScroll rect, scroll it manually.
+      const r = ssWrap.getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right
+          && e.clientY >= r.top && e.clientY <= r.bottom) {
+        const delta = e.deltaY || e.deltaX;
+        const maxS = ssWrap.scrollHeight - ssWrap.clientHeight;
+        const next = Math.max(0, Math.min(maxS, ssWrap.scrollTop + delta));
+        if (next !== ssWrap.scrollTop) {
+          ssWrap.scrollTop = next;
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
+    }
+
     // Allow scrolling in Smart Tracks even if container has pointer-events:none
     // Determine if wheel event is over a Smart Track content area
     const smartTracks = state.smartTracks || [];
@@ -6328,25 +6357,12 @@ function bindInteractions(root, state, main) {
         const renderer = state.smartTrackRenderers.get(track.id);
         if (!renderer || !renderer.container) continue;
         const container = renderer.container;
-        // NB: don't skip non-'scrollable' tracks here. A shallow track still
-        // needs shift+wheel to scroll the GROUP (#smartScroll) between tracks;
-        // skipping it left the loop with no match (when no track is deep) and
-        // the wheel fell through to zoom instead.
 
-        // A PLAIN wheel over the samples track zooms the genome (fall through);
-        // scroll the read pileup only on shift+wheel. Otherwise the wheel got
-        // swallowed here and never zoomed.
-        if (!e.shiftKey) break;
-
-        // shift+wheel scrolls the sample-track stack. Scroll THIS pileup first;
-        // when it's at its bound, chain to the group wrapper (#smartScroll) so
-        // you can reach the next sample track. The group's macOS overlay
-        // scrollbar auto-hides, so the wheel is the only reliable scroll path —
-        // previously we scrolled only the (scrollbar-hidden, often-non-
-        // overflowing) inner container and preventDefault'd, which killed the
-        // native group scroll entirely.
-        e.preventDefault();
-        e.stopPropagation();
+        // Sample tracks default to VERTICAL SCROLL on a plain wheel — scroll the
+        // read pileup, or the group (#smartScroll) to move between tracks. Zoom
+        // is on shift+wheel (fall through). If there's nothing to scroll, fall
+        // through so a plain wheel still zooms rather than dead-ending.
+        if (e.shiftKey) break;   // shift+wheel = zoom
         const delta = e.deltaY || e.deltaX;
         const scrollEl = (el) => {
           if (!el) return false;
@@ -6357,18 +6373,21 @@ function bindInteractions(root, state, main) {
           el.scrollTop = next;
           return true;
         };
-        // Only a genuinely deep pileup (the 'scrollable' marker) may consume the
-        // wheel for its own reads; every shallow track marginally overflows its
-        // bounded height, which would otherwise silently eat the scroll and
-        // never reach the group.
+        let scrolled = false;
+        // A genuinely deep pileup ('scrollable') scrolls its own reads first;
+        // otherwise scroll the group wrapper to reach the next sample track.
         if (container.classList.contains('scrollable') && scrollEl(container)) {
           renderSmartTrack(track.id);
-        } else {
-          // Group scroll: children are positioned inside #smartScroll, so the
-          // browser repaints them natively — no per-track redraw needed.
-          scrollEl(document.getElementById("smartScroll"));
+          scrolled = true;
+        } else if (scrollEl(document.getElementById("smartScroll"))) {
+          scrolled = true;  // children sit inside #smartScroll -> native repaint
         }
-        return;
+        if (scrolled) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        break;  // nothing to scroll here -> let a plain wheel zoom
       }
     }
 
