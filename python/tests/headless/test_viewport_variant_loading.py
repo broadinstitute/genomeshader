@@ -359,7 +359,11 @@ def test_load_syncs_reference_and_data_bounds(browser):
             variant_tracks: [{ name: "vp", variants_data: [] }],
             insertion_variants_lookup: [],
             reference_data: "ACGTACGT",
-            transcripts_data: [], repeats_data: [], ideogram_data: [],
+            genes_track: { id: "genes", label: "Genes", style: "gene",
+              series: [{ name: "genes", features: [] }] },
+            repeats_track: { id: "repeats", label: "RepeatMasker", style: "interval",
+              series: [{ name: "repeats", features: [] }] },
+            ideogram_data: [],
             data_bounds: { start: data.start, end: data.end },
         });
         return Promise.resolve({}); }; }""")

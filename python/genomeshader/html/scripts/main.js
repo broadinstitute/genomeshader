@@ -1228,6 +1228,124 @@ function isFlowTrack(trackId) {
   return trackId === "flow" || (typeof trackId === "string" && trackId.startsWith("flow-"));
 }
 
+/** Popover settings for software-defined (data-*) tracks. Local-only; no Python round-trip. */
+function gsToggleDataTrackSettings(trackId, anchorBtn) {
+  const existing = document.getElementById("gsDataTrackSettingsPopover");
+  if (existing) {
+    const wasFor = existing.dataset.trackId;
+    existing.remove();
+    if (wasFor === trackId) return;
+  }
+  const entry = (state.dataTracks || []).find(d => d.id === trackId);
+  if (!entry) return;
+
+  const pop = document.createElement("div");
+  pop.id = "gsDataTrackSettingsPopover";
+  pop.className = "gs-data-track-settings";
+  pop.dataset.trackId = trackId;
+  pop.style.position = "absolute";
+  pop.style.zIndex = "10000";
+  pop.style.background = "var(--panel,#14181f)";
+  pop.style.border = "1px solid var(--border2,#333)";
+  pop.style.borderRadius = "6px";
+  pop.style.padding = "10px 12px";
+  pop.style.fontSize = "12px";
+  pop.style.color = "var(--text)";
+  pop.style.minWidth = "200px";
+  pop.style.boxShadow = "0 4px 16px rgba(0,0,0,0.35)";
+
+  const autoRange = (entry.y_min == null && entry.y_max == null);
+  const curStyle = entry.style || "scatter";
+  const styleOpts = ["scatter", "line", "bar", "interval"];
+  pop.innerHTML = `
+    <div style="font-weight:600;margin-bottom:8px;">Track settings</div>
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+      Display
+      <select data-field="style" style="flex:1;background:var(--panel2);color:var(--text);border:1px solid var(--border2);border-radius:4px;padding:2px 4px;">
+        ${styleOpts.map(s => `<option value="${s}"${curStyle === s ? " selected" : ""}>${s}</option>`).join("")}
+      </select>
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+      Y scale
+      <select data-field="y_scale" style="flex:1;background:var(--panel2);color:var(--text);border:1px solid var(--border2);border-radius:4px;padding:2px 4px;">
+        <option value="linear"${entry.y_scale !== "log" ? " selected" : ""}>linear</option>
+        <option value="log"${entry.y_scale === "log" ? " selected" : ""}>log</option>
+      </select>
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+      <input type="checkbox" data-field="auto_range"${autoRange ? " checked" : ""}/> Auto y-range
+    </label>
+    <div data-field="fixed_range" style="display:${autoRange ? "none" : "flex"};gap:6px;margin-bottom:6px;">
+      <input data-field="y_min" type="number" placeholder="min" value="${entry.y_min != null ? entry.y_min : ""}"
+        style="width:70px;background:var(--panel2);color:var(--text);border:1px solid var(--border2);border-radius:4px;padding:2px 4px;"/>
+      <input data-field="y_max" type="number" placeholder="max" value="${entry.y_max != null ? entry.y_max : ""}"
+        style="width:70px;background:var(--panel2);color:var(--text);border:1px solid var(--border2);border-radius:4px;padding:2px 4px;"/>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+      Color
+      <input data-field="color" type="text" value="${(typeof entry.color === "string" ? entry.color : (Array.isArray(entry.color) ? entry.color[0] : "")) || ""}"
+        placeholder="#2b6fff"
+        style="flex:1;background:var(--panel2);color:var(--text);border:1px solid var(--border2);border-radius:4px;padding:2px 4px;"/>
+    </label>
+    <button type="button" data-field="apply" style="width:100%;padding:4px 8px;border-radius:4px;border:1px solid var(--border2);background:var(--panel2);color:var(--text);cursor:pointer;">Apply</button>
+  `;
+
+  const host = getTrackControlsEl() || document.body;
+  host.appendChild(pop);
+
+  // Position near the gear button
+  try {
+    const br = anchorBtn.getBoundingClientRect();
+    const hr = host.getBoundingClientRect();
+    pop.style.left = Math.max(0, br.left - hr.left) + "px";
+    pop.style.top = (br.bottom - hr.top + 4) + "px";
+  } catch (e) {
+    pop.style.left = "8px";
+    pop.style.top = "28px";
+  }
+
+  const autoCb = pop.querySelector('[data-field="auto_range"]');
+  const fixedRow = pop.querySelector('[data-field="fixed_range"]');
+  autoCb.addEventListener("change", () => {
+    fixedRow.style.display = autoCb.checked ? "none" : "flex";
+  });
+
+  pop.querySelector('[data-field="apply"]').addEventListener("click", (e) => {
+    e.stopPropagation();
+    const nextStyle = pop.querySelector('[data-field="style"]').value || entry.style || "scatter";
+    if (styleOpts.indexOf(nextStyle) >= 0) entry.style = nextStyle;
+    entry.y_scale = pop.querySelector('[data-field="y_scale"]').value || "linear";
+    if (autoCb.checked) {
+      entry.y_min = null;
+      entry.y_max = null;
+    } else {
+      const ymin = pop.querySelector('[data-field="y_min"]').value;
+      const ymax = pop.querySelector('[data-field="y_max"]').value;
+      entry.y_min = ymin === "" ? null : Number(ymin);
+      entry.y_max = ymax === "" ? null : Number(ymax);
+    }
+    const col = (pop.querySelector('[data-field="color"]').value || "").trim();
+    if (col) {
+      entry.color = col;
+      // Mark series colors as user-overridden so fetches don't clobber
+      (entry.series || []).forEach(s => { s.color = col; s._userColor = true; });
+    }
+    pop.remove();
+    if (typeof renderAll === "function") renderAll();
+  });
+
+  // Close on outside click
+  setTimeout(() => {
+    const closer = (ev) => {
+      if (!pop.isConnected) { document.removeEventListener("mousedown", closer, true); return; }
+      if (pop.contains(ev.target) || (anchorBtn && anchorBtn.contains(ev.target))) return;
+      pop.remove();
+      document.removeEventListener("mousedown", closer, true);
+    };
+    document.addEventListener("mousedown", closer, true);
+  }, 0);
+}
+
 function renderTrackControls() {
   const controlsHost = getTrackControlsEl();
   if (!controlsHost) return;
@@ -1434,28 +1552,112 @@ function renderTrackControls() {
       labelTextSpan.className = "smart-track-label-text";
       label.appendChild(labelTextSpan);
     } else {
-      // For the Locus track, append the extent in parentheses
-      if (track.id === "ruler") {
-        const extent = Math.floor(state.endBp) - Math.floor(state.startBp);
-        label.textContent = `${track.label} (${extent.toLocaleString()} bp)`;
-      } else {
-        label.textContent = track.label;
-      }
-      // Click the name to collapse the track. Only while expanded — when
-      // collapsed the whole bar already expands on click (see renderTrackControls
-      // collapsed branch), so adding a toggle here too would double-fire.
-      if (!track.collapsed) {
-        label.style.cursor = "pointer";
-        label.style.pointerEvents = "auto";
-        label.title = "Click to collapse";
-        label.addEventListener("click", (e) => {
+      // Click-to-rename for all other tracks (data, genes, repeats, UCSC, flow, …).
+      // Collapse stays on the collapse button / collapsed-bar click.
+      label.style.cursor = "text";
+      label.title = "Click to rename";
+
+      labelInput = document.createElement("input");
+      labelInput.type = "text";
+      labelInput.className = "smart-track-label-input";
+      labelInput.value = track.label;
+      labelInput.style.display = "none";
+      labelInput.style.fontSize = "12px";
+      labelInput.style.fontWeight = "600";
+      labelInput.style.color = "var(--muted)";
+      labelInput.style.background = "transparent";
+      labelInput.style.border = "1px solid var(--border2)";
+      labelInput.style.borderRadius = "4px";
+      labelInput.style.padding = "2px 4px";
+      labelInput.style.width = "auto";
+      labelInput.style.minWidth = "100px";
+      labelInput.style.maxWidth = "200px";
+
+      labelSpacer = document.createElement("span");
+      labelSpacer.className = "smart-track-label-spacer";
+      labelSpacer.style.display = "none";
+      labelSpacer.style.flex = "1";
+      labelSpacer.style.minWidth = "0";
+
+      const displayLabelText = () => {
+        if (track.id === "ruler") {
+          const s = Math.max(1, Math.floor(state.startBp));
+          const e = Math.max(s, Math.ceil(state.endBp));
+          const extent = e - s;
+          return `${track.label} (${extent.toLocaleString()} bp)`;
+        }
+        return track.label;
+      };
+
+      const attachLabelClickHandler = () => {
+        const labelTextSpan = label.querySelector(".smart-track-label-text");
+        if (!labelTextSpan) return;
+        labelTextSpan.addEventListener("click", (e) => {
           e.stopPropagation();
           e.preventDefault();
-          track.collapsed = true;
-          updateTracksHeight();
-          renderAll();
+          if (track.collapsed) {
+            track.collapsed = false;
+            updateTracksHeight();
+            renderAll();
+            return;
+          }
+          label.style.display = "none";
+          labelSpacer.style.display = "block";
+          labelInput.style.display = "block";
+          labelInput.value = track.label;
+          collapseBtn.style.display = "none";
+          labelInput.focus();
+          labelInput.select();
         });
-      }
+      };
+
+      const saveLabel = () => {
+        const newLabel = labelInput.value.trim() || track.label;
+        label.innerHTML = "";
+        const labelTextSpan = document.createElement("span");
+        labelTextSpan.textContent = track.id === "ruler"
+          ? (() => {
+              const s = Math.max(1, Math.floor(state.startBp));
+              const e = Math.max(s, Math.ceil(state.endBp));
+              return `${newLabel} (${(e - s).toLocaleString()} bp)`;
+            })()
+          : newLabel;
+        labelTextSpan.className = "smart-track-label-text";
+        label.appendChild(labelTextSpan);
+        label.style.display = "";
+        labelSpacer.style.display = "none";
+        labelInput.style.display = "none";
+        collapseBtn.style.display = "";
+        editTrackLabel(track.id, newLabel);
+        attachLabelClickHandler();
+      };
+
+      labelInput.addEventListener("blur", saveLabel);
+      labelInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          saveLabel();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          labelInput.value = track.label;
+          label.innerHTML = "";
+          const labelTextSpan = document.createElement("span");
+          labelTextSpan.textContent = displayLabelText();
+          labelTextSpan.className = "smart-track-label-text";
+          label.appendChild(labelTextSpan);
+          label.style.display = "";
+          labelSpacer.style.display = "none";
+          labelInput.style.display = "none";
+          collapseBtn.style.display = "";
+          attachLabelClickHandler();
+        }
+      });
+
+      const labelTextSpan = document.createElement("span");
+      labelTextSpan.textContent = displayLabelText();
+      labelTextSpan.className = "smart-track-label-text";
+      label.appendChild(labelTextSpan);
+      setTimeout(attachLabelClickHandler, 0);
     }
 
     // Add Smart track controls if needed
@@ -1605,13 +1807,33 @@ function renderTrackControls() {
       // already sets `transform:none; writing-mode:horizontal-tb`). Earlier code
       // set an inline `rotate(-90deg)` here, which beat the CSS and produced the
       // sideways, clipped headers.
+      const isDataTrack = typeof track.id === "string" && track.id.indexOf("data-") === 0;
+      let settingsBtn = null;
+      if (isDataTrack && !track.collapsed) {
+        settingsBtn = document.createElement("button");
+        settingsBtn.className = "track-settings-btn";
+        settingsBtn.type = "button";
+        settingsBtn.textContent = "⚙";
+        settingsBtn.title = "Track settings";
+        settingsBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          gsToggleDataTrackSettings(track.id, settingsBtn);
+        });
+      }
       if (isVertical) {
         controls.appendChild(label);
+        if (settingsBtn) controls.appendChild(settingsBtn);
+        if (labelSpacer) controls.appendChild(labelSpacer);
+        if (labelInput) controls.appendChild(labelInput);
         controls.appendChild(collapseBtn);
         container.appendChild(controls);
       } else {
         controls.appendChild(collapseBtn);
         controls.appendChild(label);
+        if (labelSpacer) controls.appendChild(labelSpacer);
+        if (labelInput) controls.appendChild(labelInput);
+        if (settingsBtn) controls.appendChild(settingsBtn);
         container.appendChild(controls);
       }
     }
@@ -1746,7 +1968,9 @@ function renderGenesPanel() {
     || document.getElementById("genesContent");
   if (!host) return;
   const lo = state.startBp, hi = state.endBp;
-  const all = (typeof transcripts !== "undefined" && Array.isArray(transcripts)) ? transcripts : [];
+  const all = (typeof gsAnnotationFeatures === "function")
+    ? gsAnnotationFeatures("genes")
+    : [];
   const visible = all
     .filter(g => g && typeof g.start === "number" && typeof g.end === "number" && g.end >= lo && g.start <= hi)
     .sort((a, b) => a.start - b.start);
@@ -1811,7 +2035,11 @@ function renderGenesPanel() {
 // HUD + renderAll
 // -----------------------------
 function renderHUD() {
-  const locusText = `${state.contig}:${Math.floor(state.startBp).toLocaleString()}-${Math.floor(state.endBp).toLocaleString()}`;
+  // Match gsSyncLocusBar: floor(start) / ceil(end) so the status readout and
+  // the locus text box never disagree by one base.
+  const s = Math.max(1, Math.floor(state.startBp));
+  const e = Math.max(s, Math.ceil(state.endBp));
+  const locusText = `${state.contig}:${s.toLocaleString()}-${e.toLocaleString()}`;
   // The current-position indicator now lives in the top nav bar (right side).
   const readout = document.getElementById('locusReadout');
   if (readout) {
@@ -3255,7 +3483,9 @@ function setupCanvasHover() {
       }).filter(Boolean).sort((a, b) => (a.pos - b.pos) || (a.alleleIndex - b.alleleIndex));
     } catch (e) { opts.alleleChoices = []; }
     try {
-      const all = (typeof transcripts !== "undefined" && Array.isArray(transcripts)) ? transcripts : [];
+      const all = (typeof gsAnnotationFeatures === "function")
+    ? gsAnnotationFeatures("genes")
+    : [];
       const seen = new Set();
       opts.genes = all
         .filter(g => g && g.name && typeof g.start === "number" && typeof g.end === "number"
@@ -4284,6 +4514,33 @@ function setupCanvasHover() {
     }
   }
   
+  // Samples that have attached BAM/CRAM. Load / search / matching-samples
+  // lists draw only from this set — VCF-only carriers stay in the callset
+  // but cannot be drawn as read tracks (and must not raise a modal).
+  function attachedReadSampleSet() {
+    const cfg = window.GENOMESHADER_CONFIG || {};
+    const set = new Set();
+    if (Array.isArray(cfg.read_samples)) {
+      cfg.read_samples.forEach((s) => { if (s) set.add(String(s)); });
+    }
+    const sm = cfg.sample_mapping || {};
+    Object.keys(sm).forEach((s) => set.add(s));
+    return set;
+  }
+  function hasAttachedReadUniverse() {
+    const cfg = window.GENOMESHADER_CONFIG || {};
+    if (Array.isArray(cfg.read_samples)) return true;
+    const sm = cfg.sample_mapping || {};
+    return Object.keys(sm).length > 0;
+  }
+  function filterToAttachedReads(ids) {
+    const list = Array.isArray(ids) ? ids : Array.from(ids || []);
+    if (!hasAttachedReadUniverse()) return list;
+    const allowed = attachedReadSampleSet();
+    return list.filter((id) => allowed.has(id));
+  }
+  if (typeof window !== "undefined") window.__GS_filterToAttachedReads = filterToAttachedReads;
+
   // Recompute candidate samples based on strategy and selection
   function recomputeCandidateSamples() {
     // The carrier pool for a selection is fixed by the selected alleles + combine
@@ -4349,7 +4606,9 @@ function setupCanvasHover() {
           }
         });
       }
-      state.sampleSelection.allSampleIds = Array.from(allSamplesSet).sort();
+      // Cohort for Load / search / carriers+controls: attached reads only.
+      state.sampleSelection.allSampleIds = filterToAttachedReads(
+        Array.from(allSamplesSet).sort());
     }
     
     // Find samples that match the selection criteria
@@ -4388,8 +4647,9 @@ function setupCanvasHover() {
       }
     }
     
-    // Convert to sorted array
-    state.sampleSelection.candidateSamples = Array.from(candidateSamplesSet).sort();
+    // Convert to sorted array — only samples with attached BAM/CRAM.
+    state.sampleSelection.candidateSamples = filterToAttachedReads(
+      Array.from(candidateSamplesSet).sort());
 
     // Scale mode: when the per-sample map is omitted from the payload (large
     // cohorts), the sync scan above finds nothing — resolve carriers on demand
@@ -4399,7 +4659,7 @@ function setupCanvasHover() {
     if (omitted && candidateSamplesSet.size === 0 && typeof window.__GS_SEND === "function") {
       _fetchCarriersForSelection(selectedAllelePairs, combineMode)
         .then((ids) => {
-          state.sampleSelection.candidateSamples = ids;
+          state.sampleSelection.candidateSamples = filterToAttachedReads(ids);
           updateSamplePreview();
           try { if (typeof updateLoadButtonText === "function") updateLoadButtonText(); } catch (e) {}
         })
@@ -4489,7 +4749,7 @@ function setupCanvasHover() {
         perPairSets.forEach((set) => set.forEach((s) => u.add(s)));
         result = [...u];
       }
-      return result.sort();
+      return filterToAttachedReads(result.sort());
     } finally {
       _endCarrierStatus();
     }
@@ -4656,7 +4916,7 @@ function setupCanvasHover() {
       }
     }
     
-    return Array.from(candidateSamplesSet).sort();
+    return filterToAttachedReads(Array.from(candidateSamplesSet).sort());
   }
   
   // Export for use in smart-tracks.js
@@ -5251,9 +5511,14 @@ function setupCanvasHover() {
     const allIds = () => {
       let ids = state.sampleSelection.allSampleIds;
       if (!ids || ids.length === 0) {
-        // Keys are the VCF sample names (what you load); values are BAM paths.
-        const sm = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.sample_mapping) || {};
-        ids = Object.keys(sm).sort();
+        const allowed = attachedReadSampleSet();
+        if (allowed.size) {
+          ids = Array.from(allowed).sort();
+        } else {
+          // Keys are the VCF sample names (what you load); values are BAM paths.
+          const sm = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.sample_mapping) || {};
+          ids = Object.keys(sm).sort();
+        }
         if (ids.length) state.sampleSelection.allSampleIds = ids;
       }
       return ids;
@@ -5310,6 +5575,10 @@ function setupCanvasHover() {
   function loadSmartTrackForSample(sampleId) {
     // One track per sample: if this sample is already loaded, don't load it again.
     if (sampleId && (state.smartTracks || []).some(t => t.sampleId === sampleId)) {
+      return;
+    }
+    // VCF-only samples have no BAM — don't fetch or raise a modal.
+    if (sampleId && hasAttachedReadUniverse() && !attachedReadSampleSet().has(sampleId)) {
       return;
     }
     // Use currently selected alleles if any, otherwise use empty set

@@ -441,6 +441,13 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     .then(function(response) {
       track.loading = false;
       if (response.type === 'fetch_reads_response') {
+        // No BAM resolved for this sample (VCF-only). Drop the empty track
+        // quietly — not an error modal.
+        if (!response.bam_urls || !response.bam_urls.length) {
+          _readStatusDone(false);
+          removeSmartTrack(trackId);
+          return null;
+        }
         const sn = sampleId || response.sample_id;
         _readStatusDone('Loaded reads' + (sn ? ' for ' + sn : ''), false);
         // Warn only when SNPs truly can't be shown: has_md is per-element and now
@@ -484,7 +491,9 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
         console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
-        throw new Error(response.error, { cause: response.hint });  // handled in .catch
+        const err = new Error(response.error, { cause: response.hint });
+        err._gsMissingBam = /no bam files found/i.test(String(response.error || ''));
+        throw err;  // handled in .catch
       }
       _readStatusDone(false);            // unknown response: decrement, don't leak
       return null;
@@ -496,7 +505,9 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
       _readStatusDone(false);       // clear the busy bar; the modal carries the message
       // A read track that failed to load shouldn't linger empty — remove it.
       removeSmartTrack(trackId);    // also re-renders + refreshes the sidebar
-      if (window.__GS_MODAL) {
+      const missingBam = (err && err._gsMissingBam)
+        || /no bam files found/i.test(String((err && err.message) || err || ''));
+      if (window.__GS_MODAL && !missingBam) {
         window.__GS_MODAL(
           'Failed to load reads' + (who ? ' for ' + who : '') + '.\n\n'
             + (err && err.message ? err.message : 'The read fetch failed.')
@@ -717,75 +728,72 @@ function updateSmartTrackLabel(track) {
   }
 }
 
-// Update Smart track label
-function editSmartTrackLabel(trackId, newLabel) {
-  const track = state.smartTracks.find(t => t.id === trackId);
-  if (!track) return;
-  
-  // Also update in tracks array
+// Update any track's display label (layout + parallel data/smart/annotation stores).
+function editTrackLabel(trackId, newLabel) {
+  newLabel = (newLabel == null ? "" : String(newLabel)).trim();
+  if (!newLabel) return;
+
   const trackInArray = state.tracks.find(t => t.id === trackId);
-  if (trackInArray) {
-    trackInArray.label = newLabel;
-  }
-  
-  track.label = newLabel;
-  renderAll();
-  renderSmartTracksSidebar();
+  if (trackInArray) trackInArray.label = newLabel;
+
+  const smart = (state.smartTracks || []).find(t => t.id === trackId);
+  if (smart) smart.label = newLabel;
+
+  const data = (state.dataTracks || []).find(t => t.id === trackId);
+  if (data) data.label = newLabel;
+
+  const ann = (state.annotationTracks || []).find(t => t.id === trackId);
+  if (ann) ann.label = newLabel;
+
+  if (typeof renderAll === "function") renderAll();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
 }
 
-// Right sidebar for Smart Tracks
+// Update Smart track label
+function editSmartTrackLabel(trackId, newLabel) {
+  editTrackLabel(trackId, newLabel);
+}
+
+// Right sidebar for Tracks (layout order, visibility, labels)
 // -----------------------------
 
-// Render Smart Tracks list in right sidebar
+// Render Tracks list in right sidebar (all layout tracks, not just smart samples)
 function renderSmartTracksSidebar() {
   const smartTracksList = document.getElementById('smartTracksList');
   if (!smartTracksList) return;
   
   smartTracksList.innerHTML = '';
 
-  const applySmartTrackOrderFromDom = () => {
+  const applyTrackOrderFromDom = () => {
     const items = Array.from(smartTracksList.querySelectorAll('.smart-track-item'));
     const newOrder = items.map(item => item.dataset.trackId);
     if (newOrder.length === 0) return;
 
-    const currentOrder = state.tracks
-      .filter(t => t.id.startsWith('smart-track-'))
-      .map(t => t.id);
-
+    const currentOrder = state.tracks.map(t => t.id);
     if (JSON.stringify(currentOrder) === JSON.stringify(newOrder)) {
       return;
     }
 
-    const smartTrackMap = new Map();
-    state.smartTracks.forEach(track => {
-      smartTrackMap.set(track.id, track);
-    });
-
-    const orderedSmartTracks = newOrder
-      .map(id => smartTrackMap.get(id))
-      .filter(track => track);
-
-    state.smartTracks = orderedSmartTracks;
-
-    const allTracks = [...state.tracks];
-    const reorderedTracks = [];
-    let smartTracksInserted = false;
-
-    for (const track of allTracks) {
-      if (!track.id.startsWith('smart-track-')) {
-        reorderedTracks.push(track);
-        if (track.id === 'flow' && !smartTracksInserted) {
-          reorderedTracks.push(...orderedSmartTracks);
-          smartTracksInserted = true;
-        }
-      }
+    const byId = new Map(state.tracks.map(t => [t.id, t]));
+    const reorderedTracks = newOrder.map(id => byId.get(id)).filter(Boolean);
+    const seen = new Set(reorderedTracks.map(t => t.id));
+    for (const t of state.tracks) {
+      if (!seen.has(t.id)) reorderedTracks.push(t);
     }
-
-    if (!smartTracksInserted) {
-      reorderedTracks.push(...orderedSmartTracks);
-    }
-
     state.tracks = reorderedTracks;
+
+    // Keep smartTracks array order aligned with layout order among smart ids
+    if (Array.isArray(state.smartTracks) && state.smartTracks.length) {
+      const smartOrder = newOrder.filter(id => id.startsWith('smart-track-'));
+      const smartMap = new Map(state.smartTracks.map(t => [t.id, t]));
+      const orderedSmart = smartOrder.map(id => smartMap.get(id)).filter(Boolean);
+      const smartSeen = new Set(orderedSmart.map(t => t.id));
+      for (const t of state.smartTracks) {
+        if (!smartSeen.has(t.id)) orderedSmart.push(t);
+      }
+      state.smartTracks = orderedSmart;
+    }
+
     updateTracksHeight();
     renderAll();
     setTimeout(() => {
@@ -793,18 +801,14 @@ function renderSmartTracksSidebar() {
     }, 0);
   };
   
-  // Get Smart Tracks in the order they appear in state.tracks
-  const smartTracksInOrder = state.tracks
-    .filter(t => t.id.startsWith('smart-track-'))
-    .map(t => state.smartTracks.find(st => st.id === t.id))
-    .filter(st => st !== undefined);
+  const tracksInOrder = state.tracks.slice();
   
-  if (smartTracksInOrder.length === 0) {
+  if (tracksInOrder.length === 0) {
     const emptyMsg = document.createElement('div');
     emptyMsg.style.padding = '9px 10px';
     emptyMsg.style.fontSize = '11px';
     emptyMsg.style.color = 'var(--muted)';
-    emptyMsg.textContent = 'No Smart Tracks';
+    emptyMsg.textContent = 'No tracks';
     smartTracksList.appendChild(emptyMsg);
     return;
   }
@@ -826,7 +830,7 @@ function renderSmartTracksSidebar() {
       item.classList.remove('dragging');
     });
 
-    applySmartTrackOrderFromDom();
+    applyTrackOrderFromDom();
   };
   
   const handleContainerDragover = (e) => {
@@ -842,7 +846,12 @@ function renderSmartTracksSidebar() {
   smartTracksList.addEventListener('dragover', handleContainerDragover);
   smartTracksList.addEventListener('drop', handleContainerDrop);
   
-  smartTracksInOrder.forEach((track, index) => {
+  tracksInOrder.forEach((track) => {
+    const isSmart = track.id.startsWith('smart-track-');
+    const smartMeta = isSmart
+      ? (state.smartTracks || []).find(st => st.id === track.id)
+      : null;
+
     const item = document.createElement('div');
     item.className = 'smart-track-item';
     item.dataset.trackId = track.id;
@@ -855,7 +864,7 @@ function renderSmartTracksSidebar() {
     label.className = 'smart-track-item-label';
     label.textContent = track.label;
     label.style.cursor = 'text';
-    label.title = 'Click to edit label';
+    label.title = 'Click to rename';
     
     // Create input field for editing (hidden initially)
     const labelInput = document.createElement('input');
@@ -888,7 +897,7 @@ function renderSmartTracksSidebar() {
       label.textContent = newLabel;
       label.style.display = '';
       labelInput.style.display = 'none';
-      editSmartTrackLabel(track.id, newLabel);
+      editTrackLabel(track.id, newLabel);
     };
     
     labelInput.addEventListener('blur', saveLabel);
@@ -913,14 +922,13 @@ function renderSmartTracksSidebar() {
     collapseBtn.type = 'button';
     // For Smart Tracks: collapsed = closed (single read), !collapsed = open (full height)
     collapseBtn.textContent = track.collapsed ? "▶" : "▼";
-    collapseBtn.title = track.collapsed ? "Expand to full height" : "Collapse to single read";
+    collapseBtn.title = isSmart
+      ? (track.collapsed ? "Expand to full height" : "Collapse to single read")
+      : (track.collapsed ? "Expand track" : "Collapse track");
     collapseBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       track.collapsed = !track.collapsed;
-      const trackInArray = state.tracks.find(t => t.id === track.id);
-      if (trackInArray) {
-        trackInArray.collapsed = track.collapsed;
-      }
+      if (smartMeta) smartMeta.collapsed = track.collapsed;
       updateTracksHeight();
       renderAll();
       // Re-render sidebar to update button state
@@ -936,47 +944,47 @@ function renderSmartTracksSidebar() {
     checkbox.addEventListener('change', (e) => {
       e.stopPropagation();
       track.hidden = !checkbox.checked;
-      const trackInArray = state.tracks.find(t => t.id === track.id);
-      if (trackInArray) {
-        trackInArray.hidden = track.hidden;
-      }
+      if (smartMeta) smartMeta.hidden = track.hidden;
       updateTracksHeight();
       renderAll();
     });
     
-    // Refresh button
-    const refreshBtn = document.createElement('button');
-    refreshBtn.className = 'smart-track-item-btn refresh';
-    refreshBtn.title = 'Refresh';
-    refreshBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      reloadSmartTrack(track.id);
-    });
-    
-    // Shuffle button
-    const shuffleBtn = document.createElement('button');
-    shuffleBtn.className = 'smart-track-item-btn shuffle';
-    shuffleBtn.title = 'Shuffle';
-    shuffleBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      shuffleSmartTrack(track.id);
-    });
-    
-    // Close button
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'smart-track-item-btn close';
-    closeBtn.title = 'Close';
-    closeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      removeSmartTrack(track.id);
-      renderSmartTracksSidebar();
-    });
-    
     controls.appendChild(collapseBtn);
     controls.appendChild(checkbox);
-    controls.appendChild(refreshBtn);
-    controls.appendChild(shuffleBtn);
-    controls.appendChild(closeBtn);
+
+    if (isSmart) {
+      // Refresh button
+      const refreshBtn = document.createElement('button');
+      refreshBtn.className = 'smart-track-item-btn refresh';
+      refreshBtn.title = 'Refresh';
+      refreshBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        reloadSmartTrack(track.id);
+      });
+      
+      // Shuffle button
+      const shuffleBtn = document.createElement('button');
+      shuffleBtn.className = 'smart-track-item-btn shuffle';
+      shuffleBtn.title = 'Shuffle';
+      shuffleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        shuffleSmartTrack(track.id);
+      });
+      
+      // Close button
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'smart-track-item-btn close';
+      closeBtn.title = 'Close';
+      closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeSmartTrack(track.id);
+        renderSmartTracksSidebar();
+      });
+
+      controls.appendChild(refreshBtn);
+      controls.appendChild(shuffleBtn);
+      controls.appendChild(closeBtn);
+    }
     
     header.appendChild(label);
     header.appendChild(labelInput);
@@ -993,7 +1001,7 @@ function renderSmartTracksSidebar() {
     
     item.addEventListener('dragend', (e) => {
       item.classList.remove('dragging');
-      applySmartTrackOrderFromDom();
+      applyTrackOrderFromDom();
     });
     
     item.addEventListener('dragover', (e) => {
@@ -1077,6 +1085,67 @@ function applyRightSidebarWidth(px) {
   const rootEl = document.querySelector('[id^="genomeshader-root-"]') || document.documentElement;
   rootEl.style.setProperty("--sidebar-right-w", px + "px");
 }
+
+// Left sidebar width (drag-to-resize). Default is wide enough that settings
+// labels ("Click chromosome to jump", …) sit on one line.
+const LEFT_SIDEBAR_MIN_W = 240;
+const LEFT_SIDEBAR_DEFAULT_W = 360;
+function getLeftSidebarWidth() {
+  const v = parseInt(gsLocalStorage.getItem("genomeshader.leftSidebarWidth"), 10);
+  return (isFinite(v) && v >= LEFT_SIDEBAR_MIN_W) ? v : LEFT_SIDEBAR_DEFAULT_W;
+}
+function applyLeftSidebarWidth(px) {
+  const rootEl = document.querySelector('[id^="genomeshader-root-"]') || document.documentElement;
+  rootEl.style.setProperty("--sidebar-w", px + "px");
+}
+function setupLeftSidebarResize(sidebarLeft, app) {
+  if (!sidebarLeft || sidebarLeft.querySelector(".sidebar-left-resize-handle")) return;
+  applyLeftSidebarWidth(getLeftSidebarWidth());
+
+  const handle = document.createElement("div");
+  handle.className = "sidebar-left-resize-handle";
+  handle.title = "Drag to resize panel";
+  handle.style.cssText =
+    "position:absolute;right:0;top:0;bottom:0;width:6px;cursor:col-resize;" +
+    "z-index:150;pointer-events:auto;touch-action:none;";
+  sidebarLeft.appendChild(handle);
+
+  let startX = 0, startW = 0, dragging = false;
+  const onMove = (e) => {
+    if (!dragging) return;
+    const appW = app.getBoundingClientRect().width || 1200;
+    const maxW = Math.max(LEFT_SIDEBAR_MIN_W, Math.min(720, appW * 0.6));
+    // Dragging the right edge rightward widens the panel.
+    let w = startW + (e.clientX - startX);
+    w = Math.max(LEFT_SIDEBAR_MIN_W, Math.min(maxW, w));
+    applyLeftSidebarWidth(w);
+    requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (err) {} });
+  };
+  const onUp = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    document.removeEventListener("pointermove", onMove, true);
+    document.removeEventListener("pointerup", onUp, true);
+    try { handle.releasePointerCapture(e.pointerId); } catch (err) {}
+    const cur = getComputedStyle(sidebarLeft).width;
+    const px = Math.round(parseFloat(cur));
+    if (isFinite(px)) gsLocalStorage.setItem("genomeshader.leftSidebarWidth", String(px));
+    requestAnimationFrame(() => { try { if (typeof renderAll === "function") renderAll(); } catch (err) {} });
+  };
+  handle.addEventListener("pointerdown", (e) => {
+    if (typeof getSidebarCollapsed === "function" && getSidebarCollapsed()) return;
+    e.preventDefault(); e.stopPropagation();
+    dragging = true;
+    startX = e.clientX;
+    startW = sidebarLeft.getBoundingClientRect().width;
+    try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+    document.addEventListener("pointermove", onMove, true);
+    document.addEventListener("pointerup", onUp, true);
+  }, true);
+  handle.addEventListener("click", (e) => { e.stopPropagation(); }, true);
+  handle.addEventListener("mousedown", (e) => { e.stopPropagation(); }, true);
+}
+
 function setupRightSidebarResize(sidebarRight, app) {
   if (sidebarRight.querySelector(".sidebar-right-resize-handle")) return;
   applyRightSidebarWidth(getRightSidebarWidth());
@@ -1222,6 +1291,9 @@ function initializeRightSidebar() {
     // the --sidebar-right-w CSS var on the container (the flex-basis rules read
     // it), so setting the var live resizes the panel and reflows the tracks.
     setupRightSidebarResize(sidebarRight, app);
+
+    const sidebarLeft = document.getElementById("sidebarLeft");
+    setupLeftSidebarResize(sidebarLeft, app);
 
     // Initialize tab switching
     // Scope to the right strip so left-panel icons (data-left-tab) aren't caught.

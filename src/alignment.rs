@@ -196,7 +196,14 @@ pub fn extract_reads(
         let record = r?;
 
         let hap = match record.aux(b"HP") {
+            // BAM packs small integers into the narrowest aux type. PacBio
+            // haplotags (`HP:i:1`) are almost always i8 after samtools write.
+            Ok(Aux::I8(val)) => i32::from(val),
+            Ok(Aux::U8(val)) => i32::from(val),
+            Ok(Aux::I16(val)) => i32::from(val),
+            Ok(Aux::U16(val)) => i32::from(val),
             Ok(Aux::I32(val)) => val,
+            Ok(Aux::U32(val)) => val as i32,
             _ => 0,
         };
 
@@ -488,7 +495,7 @@ pub fn extract_reads(
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use rust_htslib::bam::record::CigarString;
+    use rust_htslib::bam::record::{Aux, CigarString};
 
     // Write a tiny single-read BAM (no MD tag) to a temp path, index it, and
     // return (path, url). Read: pos 100 (0-based) => 1-based 101, CIGAR 2S8M.
@@ -576,6 +583,48 @@ mod integration_tests {
         // No MD tag and no reference => no SNP calls (indels/softclips still emitted).
         let df = extract_reads(&mut bam, &url, &cohort, &chr, &100u64, &110u64, None, 0).unwrap();
         assert_eq!(diffs(&df), Vec::<(u32, String)>::new());
+    }
+
+    #[test]
+    fn extract_reads_decodes_hp_packed_as_u8() {
+        // samtools packs `HP:i:1` as BAM type C (uint8). Matching only Aux::I32
+        // silently dropped haplotags on every real HiFi BAM.
+        let mut header = bam::Header::new();
+        let mut sq = bam::header::HeaderRecord::new(b"SQ");
+        sq.push_tag(b"SN", &"testchr");
+        sq.push_tag(b"LN", &1000);
+        header.push_record(&sq);
+        let bam_path = std::env::temp_dir().join("gs_hp_u8_test.bam");
+        {
+            let mut w = bam::Writer::from_path(&bam_path, &header, bam::Format::Bam).unwrap();
+            let mut rec = bam::Record::new();
+            let cigar = CigarString(vec![Cigar::Match(4)]);
+            rec.set(b"hp2", Some(&cigar), b"ACGT", &[30u8; 4]);
+            rec.set_tid(0);
+            rec.set_pos(100);
+            rec.set_mapq(60);
+            rec.set_mtid(-1);
+            rec.set_mpos(-1);
+            rec.push_aux(b"HP", Aux::U8(2)).unwrap();
+            w.write(&rec).unwrap();
+        }
+        bam::index::build(&bam_path, None, bam::index::Type::Bai, 1).unwrap();
+        let url = Url::from_file_path(&bam_path).unwrap();
+        let mut bam = IndexedReader::from_path(url.to_file_path().unwrap()).unwrap();
+        let df = extract_reads(
+            &mut bam, &url, &"all".to_string(), &"testchr".to_string(),
+            &100u64, &110u64, None, 0,
+        ).unwrap();
+        let et = df.column("element_type").unwrap().u8().unwrap();
+        let hap = df.column("haplotype").unwrap().i32().unwrap();
+        let mut n = 0;
+        for i in 0..df.height() {
+            if et.get(i) == Some(0u8) {
+                assert_eq!(hap.get(i), Some(2));
+                n += 1;
+            }
+        }
+        assert!(n >= 1);
     }
 }
 

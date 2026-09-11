@@ -14,11 +14,31 @@
 # config; reads are fetched on demand via widget custom messages.
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import anywidget
 import traitlets
 
+
+# Shared pool for software-defined track fetches (closures may be slow user
+# code). Sized small so we don't thrash the GIL / UCSC network; the handler
+# returns immediately so other comm traffic isn't blocked.
+_TRACK_DATA_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gs-track-data")
+
+
+def _send_on_ioloop(widget, msg):
+    """Hop a widget.send onto the kernel ioloop (thread-safe from worker threads)."""
+    try:
+        from tornado.ioloop import IOLoop
+        loop = IOLoop.current(instance=False)
+        if loop is not None:
+            loop.add_callback(widget.send, msg)
+            return
+    except Exception:
+        pass
+    # No tornado ioloop (unit tests / plain Python): send directly.
+    widget.send(msg)
 
 def _html_dir() -> Path:
     """Locate the packaged html/ directory (installed or in-tree)."""
@@ -56,7 +76,7 @@ def _container_override_css(cid: str) -> str:
     c = "#" + cid
     return "\n".join([
         f"{c} {{ height:1200px; display:block; position:relative; overflow:visible;"
-        f" --sidebar-w:240px; --sidebar-right-w:240px; --tracks-h:280px; --flow-h:500px; --reads-h:220px; }}",
+        f" --sidebar-w:360px; --sidebar-right-w:240px; --tracks-h:280px; --flow-h:500px; --reads-h:220px; }}",
         # Flex row: sidebar-left | main | sidebar-right. As siblings they cannot
         # overlap — main flexes to fill whatever the panels leave, so expanding a
         # panel narrows the tracks instead of occluding them. Overrides the inline
@@ -77,7 +97,7 @@ def _container_override_css(cid: str) -> str:
         # .sidebarContent instead (flex column), mirroring the right sidebar.
         f"{c} .sidebar-left {{ position:relative !important; left:auto !important; top:auto !important;"
         f" bottom:auto !important; height:auto !important; align-self:stretch !important;"
-        f" flex:0 0 240px !important; z-index:100 !important; background:var(--panel) !important;"
+        f" flex:0 0 var(--sidebar-w,360px) !important; z-index:100 !important; background:var(--panel) !important;"
         f" display:flex !important; flex-direction:column !important;"
         f" overflow:visible !important; pointer-events:auto !important; }}",
         f"{c} .sidebar-left .sidebarContent {{ flex:1 1 auto !important; min-height:0 !important;"
@@ -178,7 +198,7 @@ def _build_esm() -> str:
         "        model.send(Object.assign({ type: type, request_id: id }, data || {}));\n"
         "        setTimeout(function () {\n"
         "          if (__pending.has(id)) { __pending.delete(id); reject(new Error('Request timeout')); }\n"
-        "        }, timeoutMs || (type === 'fetch_reads' ? 120000 : 30000));\n"
+        "        }, timeoutMs || (type === 'fetch_reads' || type === 'fetch_track_data' ? 120000 : 30000));\n"
         "      });\n"
         "    };\n"
         "    const viewId = window.GENOMESHADER_VIEW_ID;\n"
@@ -285,6 +305,42 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                     "variants", e, locus=f"{content.get('contig')}:{content.get('start')}-{content.get('end')}")
                 self.send({"type": "fetch_variants_error", "request_id": request_id,
                            "error": str(e), "hint": hint})
+        elif msg_type == "fetch_track_data":
+            # Software-defined tracks (attach_data). Always offload — closures are
+            # assumed slow user code; even static filters stay off the zmq thread
+            # so other comm traffic isn't blocked.
+            track_id = content.get("track_id")
+            contig = content.get("contig")
+            start = content.get("start")
+            end = content.get("end")
+            max_points = content.get("max_points", 2000)
+            shader = self._shader
+
+            def _work():
+                try:
+                    payload = shader.fetch_track_data_payload(
+                        track_id, contig, start, end,
+                        max_points=max_points if max_points is not None else 2000)
+                    _send_on_ioloop(self, {
+                        "type": "fetch_track_data_response",
+                        "request_id": request_id,
+                        **payload,
+                    })
+                except Exception as e:
+                    try:
+                        hint = shader._report_fetch_failure(
+                            "track_data", e, track_id=track_id,
+                            locus=f"{contig}:{start}-{end}")
+                    except Exception:
+                        hint = None
+                    _send_on_ioloop(self, {
+                        "type": "fetch_track_data_error",
+                        "request_id": request_id,
+                        "error": str(e),
+                        "hint": hint,
+                    })
+
+            _TRACK_DATA_EXECUTOR.submit(_work)
         elif msg_type == "navigate":
             # Contig/region switch: the full per-window payload (reference, genes,
             # ideogram, repeats, variants) for a new locus, since those are

@@ -50,7 +50,9 @@ def test_navigate_defers_variants_for_fast_jump():
     assert p["variant_tracks"] == []
     # Reference + genes still come back so the region is usable immediately.
     assert p["reference_data"], "reference should load fast on a jump"
-    assert len(p["transcripts_data"]) == 1, "genes should load fast on a jump"
+    assert p["genes_track"]["style"] == "gene"
+    assert len(p["genes_track"]["series"][0]["features"]) == 1, "genes should load fast on a jump"
+
 
 
 def test_navigate_eager_still_fetches_variants():

@@ -526,9 +526,9 @@ def test_window_store_update_and_coverage(browser, tmp_path):
 
 
 def test_repeats_track_dropped_without_data_still_renders(browser, tmp_path):
-    """No repeats_data -> the RepeatMasker track is dropped, but the rest of the
-    tracks still render. Guards the regression where removing a track tripped the
-    required-layouts guard and blanked the whole SVG."""
+    """No repeats_track features -> the RepeatMasker track is dropped, but the
+    rest of the tracks still render. Guards the regression where removing a
+    track tripped the required-layouts guard and blanked the whole SVG."""
     page, _ = _open(browser, tmp_path, "horizontal", config={"region": "chr1:100-200"})
     _wait_ready(page)
     assert page.evaluate(_SVG_COUNT) > 0, "tracks did not render with repeats absent"
@@ -538,7 +538,12 @@ def test_repeats_track_dropped_without_data_still_renders(browser, tmp_path):
 
     page2, _ = _open(browser, tmp_path, "horizontal", config={
         "region": "chr1:100-200",
-        "repeats_data": [{"start": 120, "end": 150, "cls": "LINE"}],
+        "repeats_track": {
+            "id": "repeats", "label": "RepeatMasker", "style": "interval",
+            "series": [{"name": "repeats", "features": [
+                {"start": 120, "end": 150, "cls": "LINE"},
+            ]}],
+        },
     })
     _wait_ready(page2)
     assert page2.evaluate(_SVG_COUNT) > 0
@@ -569,6 +574,53 @@ def test_read_load_failure_removes_track_and_shows_modal(browser, tmp_path):
     page.evaluate("() => document.querySelector('.gs-modal-ok').click()")
     page.wait_for_timeout(100)
     assert page.evaluate("() => !document.querySelector('.gs-modal-backdrop')")
+    page.close()
+
+
+def test_vcf_only_sample_skips_reads_without_modal(browser, tmp_path):
+    """A VCF-only sample (no BAM in the attached set) must not raise the
+    Failed-to-load-reads modal. Empty bam_urls is a quiet skip."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    page.evaluate("""() => { window.__GS_SEND = (type) =>
+        type === 'fetch_reads'
+          ? Promise.resolve({ type: 'fetch_reads_response', reads: {}, count: 0,
+                              bam_urls: [], sample_id: 'HG005' })
+          : Promise.resolve({}); }""")
+    page.evaluate("() => window.__GS_TEST_loadReads('HG005', 'best_evidence')")
+    page.wait_for_timeout(300)
+    info = page.evaluate(
+        "() => ({ modal: !!document.querySelector('.gs-modal-backdrop'),"
+        " ntracks:(window.__GS_STATE.smartTracks||[]).length });")
+    assert info["modal"] is False, info
+    assert info["ntracks"] == 0, "empty no-BAM track was not removed"
+    page.close()
+
+
+def test_no_bam_error_does_not_show_modal(browser, tmp_path):
+    """If the kernel still replies fetch_reads_error for a missing BAM, skip
+    the modal (auth failures still use it — see test_read_load_failure)."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    page.evaluate("""() => { window.__GS_SEND = (type) =>
+        type === 'fetch_reads'
+          ? Promise.resolve({ type: 'fetch_reads_error',
+                               error: "No BAM files found for sample(s): ['HG005']" })
+          : Promise.resolve({}); }""")
+    page.evaluate("() => window.__GS_TEST_loadReads('HG005', 'best_evidence')")
+    page.wait_for_timeout(300)
+    assert page.evaluate("() => !document.querySelector('.gs-modal-backdrop')")
+    assert page.evaluate("() => (window.__GS_STATE.smartTracks||[]).length") == 0
+    page.close()
+
+
+def test_matching_samples_only_attached_reads(browser, tmp_path):
+    """Load's candidate pool is the attached BAM set, not every VCF sample."""
+    page, _ = _open(browser, tmp_path, "horizontal", config={"read_samples": ["HG001", "HG002"]})
+    _wait_ready(page)
+    got = page.evaluate(
+        "() => window.__GS_filterToAttachedReads(['HG001', 'HG005', 'HG002', 'HG_ORPHAN'])")
+    assert got == ["HG001", "HG002"]
     page.close()
 
 

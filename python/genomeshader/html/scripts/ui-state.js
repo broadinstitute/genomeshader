@@ -99,7 +99,16 @@ const state = {
   smartTrackRenderers: new Map(), // Map<trackId, { webgpuCore, instancedRenderer, canvas, webgpuCanvas, container }>
   
   // allele context menu state: { x, y, visible } or null
-  alleleContextMenu: null
+  alleleContextMenu: null,
+
+  // Software-defined tracks from attach_data() (Phase 1). Parallel to
+  // state.ucscTracks — layout lives in state.tracks; feature data here.
+  // Entry: { id, label, style, color, y_scale, y_min, y_max, series, ... }
+  dataTracks: [],
+
+  // Built-in annotation tracks (genes / repeats) — Phase 2 shared envelope.
+  // Layout ids stay "genes" / "repeats"; features live here.
+  annotationTracks: []
 };
 
 // Initialize variant layout mode
@@ -192,8 +201,10 @@ function clampToChromosomeBounds() {
 
 // Function to update document title with current locus
 function updateDocumentTitle() {
-  const startFormatted = Math.floor(state.startBp).toLocaleString();
-  const endFormatted = Math.floor(state.endBp).toLocaleString();
+  const s = Math.max(1, Math.floor(state.startBp));
+  const e = Math.max(s, Math.ceil(state.endBp));
+  const startFormatted = s.toLocaleString();
+  const endFormatted = e.toLocaleString();
   document.title = `Genomeshader (${state.contig}:${startFormatted}-${endFormatted})`;
 }
 
@@ -223,11 +234,16 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.region) {
 
 // Drop the RepeatMasker track when no repeats were supplied — an empty track
 // just wastes vertical space.
-if (!(window.GENOMESHADER_CONFIG
-      && Array.isArray(window.GENOMESHADER_CONFIG.repeats_data)
-      && window.GENOMESHADER_CONFIG.repeats_data.length > 0)) {
-  state.tracks = state.tracks.filter(t => t.id !== "repeats");
-}
+(function _gsDropEmptyRepeatsTrack() {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const rt = cfg.repeats_track;
+  const feats = rt && Array.isArray(rt.series) && rt.series[0]
+    ? (rt.series[0].features || [])
+    : [];
+  if (!feats.length) {
+    state.tracks = state.tracks.filter(t => t.id !== "repeats");
+  }
+})();
 
 // Replace single "flow" track with one track per variant dataset when config.variant_tracks is provided
 if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && window.GENOMESHADER_CONFIG.variant_tracks.length > 0) {
@@ -243,6 +259,36 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && w
     });
   });
 }
+
+// Software-defined tracks (attach_data): inject layout rows before flow, seed
+// state.dataTracks from config (static tracks may already include series).
+(function _gsInitDataTracks() {
+  const cfgTracks = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.data_tracks) || [];
+  if (!Array.isArray(cfgTracks) || !cfgTracks.length) return;
+  state.dataTracks = cfgTracks.map(t => ({
+    id: t.id,
+    label: t.label || t.id,
+    style: t.style || "line",
+    color: t.color,
+    y_scale: t.y_scale || "linear",
+    y_min: (t.y_min != null) ? t.y_min : null,
+    y_max: (t.y_max != null) ? t.y_max : null,
+    series: Array.isArray(t.series) ? t.series : [],
+    callable: !!t.callable,
+  }));
+  for (const t of state.dataTracks) {
+    if (state.tracks.some(tr => tr.id === t.id)) continue;
+    const trackDef = {
+      id: t.id,
+      label: t.label,
+      collapsed: false,
+      height: (window.GENOMESHADER_CONFIG.data_tracks.find(d => d.id === t.id) || {}).height || 80,
+      minHeight: (window.GENOMESHADER_CONFIG.data_tracks.find(d => d.id === t.id) || {}).minHeight || 40,
+    };
+    const at = state.tracks.findIndex(tr => tr.id === "flow" || (typeof tr.id === "string" && tr.id.startsWith("flow-")));
+    if (at >= 0) state.tracks.splice(at, 0, trackDef); else state.tracks.push(trackDef);
+  }
+})();
 
 const main = byId(root, "main");
 const tracksSvg = byId(root, "tracksSvg");
