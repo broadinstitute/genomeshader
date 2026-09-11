@@ -791,6 +791,39 @@ def test_progress_bar_shows_while_genotypes_load(browser, tmp_path):
     page.close()
 
 
+def test_multi_sample_read_load_shows_determinate_progress(browser, tmp_path):
+    """Loading reads for >1 sample at once (e.g. "Load in view") must show a
+    DETERMINATE bar (done/total tracks), not just an indeterminate spinner — the
+    burst total is a real denominator. Single opaque decodes stay indeterminate."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    page.evaluate("""() => {
+        // fetch_reads resolves after a delay so we can observe the bar mid-flight.
+        window.__GS_SEND = (type) => (type === 'fetch_reads')
+            ? new Promise(r => setTimeout(() => r({
+                type: 'fetch_reads_response', sample_id: 'S', bam_urls: [], reads_data: [] }), 500))
+            : Promise.resolve({});
+        // Two concurrent loads => burst total 2 => determinate.
+        window.__GS_TEST_loadReads('S1');
+        window.__GS_TEST_loadReads('S2');
+    }""")
+    def bar_state():
+        return page.evaluate("""() => {
+            const b = document.getElementById('statusBar');
+            if (!b) return null;
+            const t = b.querySelector('.status-text');
+            return { hasProgress: b.classList.contains('has-progress'),
+                     indeterminate: b.classList.contains('indeterminate'),
+                     text: t ? t.textContent : '' };
+        }""")
+    page.wait_for_timeout(150)
+    st = bar_state()
+    assert st and st["hasProgress"] and not st["indeterminate"], \
+        f"multi-sample read load must be determinate, got {st}"
+    assert "/2" in st["text"], f"determinate bar must show done/total, got {st}"
+    page.close()
+
+
 def _svg_text_fills(page):
     return page.evaluate(r"""() => {
         const root = document.querySelector('[id^=genomeshader-root-]');

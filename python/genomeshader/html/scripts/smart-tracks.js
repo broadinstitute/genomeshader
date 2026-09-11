@@ -374,21 +374,35 @@ function _cacheSmartReads(sampleId, reads, bamUrls) {
 // while the others are still loading — which reads as "the loading bar doesn't
 // show up", especially in full screen.
 let _readLoadsInFlight = 0;
+let _readLoadsTotal = 0;   // total started in the current burst; resets when idle
 function _readStatusStart(sampleId) {
   _readLoadsInFlight++;
+  _readLoadsTotal++;
   if (!window.__GS_STATUS) return;
-  window.__GS_STATUS(_readLoadsInFlight > 1
-    ? ('Loading reads (' + _readLoadsInFlight + ')…')
-    : ('Loading reads' + (sampleId ? ' for ' + sampleId : '') + '…'), { busy: true });
+  // Multiple tracks (e.g. "Load in view"): the burst total is a real denominator,
+  // so show a determinate done/total bar. A single track can't report intra-fetch
+  // progress (one opaque htslib decode) — stays indeterminate with its name.
+  if (_readLoadsTotal > 1) {
+    const done = _readLoadsTotal - _readLoadsInFlight;
+    window.__GS_STATUS('Loading reads (' + done + '/' + _readLoadsTotal + ')…',
+      { progress: done / _readLoadsTotal });
+  } else {
+    window.__GS_STATUS('Loading reads' + (sampleId ? ' for ' + sampleId : '') + '…',
+      { busy: true });
+  }
 }
 function _readStatusDone(label, isError) {
   _readLoadsInFlight = Math.max(0, _readLoadsInFlight - 1);
   if (!window.__GS_STATUS) return;
   if (_readLoadsInFlight > 0) {                       // others still loading
-    window.__GS_STATUS('Loading reads (' + _readLoadsInFlight + ')…', { busy: true });
+    const done = _readLoadsTotal - _readLoadsInFlight;
+    window.__GS_STATUS('Loading reads (' + done + '/' + _readLoadsTotal + ')…',
+      { progress: done / _readLoadsTotal });
   } else if (label) {
+    _readLoadsTotal = 0;
     window.__GS_STATUS(label, { autoHide: isError ? 5000 : 2000 });
   } else {
+    _readLoadsTotal = 0;
     window.__GS_STATUS(false);
   }
 }
@@ -563,10 +577,10 @@ function updateSmartTrackStrategy(trackId, newStrategy) {
 // Reload Smart track (reload with current sample)
 function reloadSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
-  if (!track) return;
-  
+  if (!track) return Promise.resolve();
+
   // Reload with the same sample ID
-  fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId)
+  return fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId)
     .catch(err => {
       console.error(`Failed to reload track ${trackId}:`, err);
     });
