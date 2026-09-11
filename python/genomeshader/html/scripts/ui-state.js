@@ -515,6 +515,26 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+// Level-of-detail downsample shared by every track: when items are DENSER than
+// the available pixel columns (zoomed out), keep ~one per `minPx` column so a
+// wide view doesn't paint thousands of overlapping features. Returns the input
+// unchanged when sparse (items <= columns) so zoomed-in views lose nothing.
+// `axisPxFn(item)` -> the item's pixel position along the genomic axis.
+function gsLodByPixel(items, axisPxFn, minPx, axisLenPx) {
+  if (!Array.isArray(items) || items.length <= 2) return items;
+  const px = (minPx > 0) ? minPx : 2;
+  if (!(axisLenPx > 0) || items.length <= (axisLenPx / px)) return items;  // sparse: keep all
+  const sorted = items.slice().sort((a, b) => axisPxFn(a) - axisPxFn(b));
+  const kept = [];
+  let last = -Infinity;
+  for (const it of sorted) {
+    const p = axisPxFn(it);
+    if (p - last >= px) { kept.push(it); last = p; }
+  }
+  return kept.length < items.length ? kept : items;
+}
+if (typeof window !== "undefined") window.gsLodByPixel = gsLodByPixel;
+
 function updateDerived() {
   const span = state.endBp - state.startBp;
   if (span <= 0 || isNaN(span)) {

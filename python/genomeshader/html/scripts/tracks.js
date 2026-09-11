@@ -92,6 +92,16 @@ function _drawGeneStyleFeatures(features, item, genomePos, opts) {
   const devicePixelRatio = window.devicePixelRatio || 1;
   const useWebGPU = webgpuSupported && instancedRenderer && !window.__GS_FORCE_SVG_TRACKS;
 
+  // LOD: a gene-dense wide view otherwise spawns thousands of SVG line/exon
+  // nodes. When genes outnumber pixel columns, keep ~one per 2px (by midpoint);
+  // no effect when sparse (zoomed in).
+  if (typeof gsLodByPixel === "function") {
+    features = gsLodByPixel(
+      features,
+      (g) => genomePos((Number(g.start) + Number(g.end)) / 2),
+      2, isVertical ? H : W);
+  }
+
   for (let lane=0; lane<lanes; lane++) {
     if (isVertical) {
       const x = geneStartX + lane*laneDim + laneDim/2;
@@ -1419,8 +1429,13 @@ function renderTracks() {
     seenRulerVariantIds.add(rid);
     rulerVariants.push(rv);
   }
-  for (let idx = 0; idx < rulerVariants.length; idx++) {
-    const v = rulerVariants[idx];
+  // LOD: coalesce indel lollipops when denser than pixel columns (mirrors the
+  // flow variant LOD) so a variant-dense wide view stays responsive.
+  const rulerVariantsDraw = (typeof gsLodByPixel === "function")
+    ? gsLodByPixel(rulerVariants, (rv) => genomePos(Number(rv.pos) + VARIANT_BASE_CENTER_OFFSET_BP), 2, _ovW)
+    : rulerVariants;
+  for (let idx = 0; idx < rulerVariantsDraw.length; idx++) {
+    const v = rulerVariantsDraw[idx];
     const variantId = String(v.id);
     if (v.pos < renderStartBp() || v.pos > renderEndBp()) continue;
     // Indel track: only positions with an insertion or deletion.

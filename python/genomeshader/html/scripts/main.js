@@ -794,7 +794,10 @@ function renderSmartTrack(trackId) {
           // Use canonical mapping so read spans align with insertion-expanded coordinates.
           const x1 = xGenomeCanonical(read.start, genomeW);
           const x2 = xGenomeCanonical(read.end, genomeW);
-          
+          // LOD: at extreme zoom-out a read is sub-pixel — skip invisible bodies
+          // so a wide view doesn't queue thousands of overlapping rects.
+          if (Math.abs(x2 - x1) < 0.5) continue;
+
           const y = readsTop + read.row * rowH + 2;
           const h = rowH - 4;
 
