@@ -871,3 +871,25 @@ def test_sample_tracks_scroll_on_plain_wheel(browser, tmp_path):
     assert page.evaluate("() => document.getElementById('smartScroll').scrollTop") == 0, \
         "shift+wheel scrolled the stack (should be reserved for zoom)"
     page.close()
+
+
+def test_load_in_view_button_force_loads(browser, tmp_path):
+    """The top-right 'Load in view' button force-loads all viewport tracks for
+    the current window now (bypasses the settle debounce + coverage)."""
+    cfg = {"region": "chr1:1-1000", "viewport_variant_loading": True,
+           "chrom_lengths": {"chr1": 2000000}}
+    page, _ = _open(browser, tmp_path, "horizontal", config=cfg)
+    _wait_ready(page)
+    assert page.evaluate("() => !!document.getElementById('loadInViewBtn')"), \
+        "Load-in-view button missing from the locus bar"
+    page.wait_for_timeout(1500)  # let any startup load settle
+    page.evaluate("""() => {
+        window.__vfetch = 0;
+        window.__GS_SEND = (type) => { if (type === 'fetch_variants') window.__vfetch++;
+            return Promise.resolve({ type: 'fetch_variants_response', variant_tracks: [] }); };
+        const s = window.__GS_STATE; s.contig = 'chr1'; s.startBp = 700000; s.endBp = 701000;
+    }""")
+    page.evaluate("() => document.getElementById('loadInViewBtn').click()")
+    page.wait_for_function("() => window.__vfetch >= 1", timeout=3000)
+    assert page.evaluate("() => window.__vfetch") >= 1, "button did not trigger a viewport load"
+    page.close()

@@ -1380,6 +1380,20 @@ function gsInitLocusBar() {
     go.__gsWired = true;
     go.addEventListener("click", () => { if (!go.disabled) submit(); });
   }
+  // "Load in view": force-load every track for the CURRENT window now (bypasses
+  // the settle debounce + coverage). Loads variants + the reference/genes/
+  // repeats/ideogram that ride the same fetch, and re-fetches reads for any
+  // already-loaded sample tracks at this window.
+  const loadInView = document.getElementById("loadInViewBtn");
+  if (loadInView && !loadInView.__gsWired) {
+    loadInView.__gsWired = true;
+    loadInView.addEventListener("click", () => {
+      if (typeof gsLoadVariantsForViewport === "function") gsLoadVariantsForViewport(true);
+      if (state.smartTracks && typeof reloadSmartTrack === "function") {
+        state.smartTracks.forEach((t) => { if (t.sampleId) { try { reloadSmartTrack(t.id); } catch (e) {} } });
+      }
+    });
+  }
   if (pos && !pos.__gsWired) {
     pos.__gsWired = true;
     // Typing new coordinates stages them (enables Go) and drops any staged
