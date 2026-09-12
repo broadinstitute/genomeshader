@@ -39,7 +39,7 @@ def shader():
         fasta="gs://broad-malaria-public/short_read_workspace_data/reference/PlasmoDB-61_Pfalciparum3D7_Genome.fasta",
         gff="gs://broad-malaria-public/short_read_workspace_data/reference/PlasmoDB-61_Pfalciparum3D7.gff")
     s.attach_variants("pf7", "gs://broad-dsp-pf7-mirror/vcf/")
-    s.attach_reads("gs://broad-dsp-pf7-mirror/bam/", "pf7")
+    s.attach_reads("pf7", "gs://broad-dsp-pf7-mirror/bam/")
     return s
 
 

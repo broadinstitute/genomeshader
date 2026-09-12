@@ -78,6 +78,7 @@ const aggregateRareAllelesItem = getElementById("aggregateRareAllelesItem");
 const aggregateRareAllelesToggle = getElementById("aggregateRareAllelesToggle");
 const aggregateRareAllelesCutoffItem = getElementById("aggregateRareAllelesCutoffItem");
 const aggregateRareAllelesCutoffInput = getElementById("aggregateRareAllelesCutoffInput");
+const groupingVariableSelect = getElementById("groupingVariableSelect");
 
 // Debug: Check if elements are found
 
@@ -259,11 +260,246 @@ function updateAggregateRareAllelesControls() {
   }
 }
 
+function getStoredGroupingVariable() {
+  return gsLocalStorage.getItem("genomeshader.groupingVariable");
+}
+function setStoredGroupingVariable(name) {
+  if (name == null || name === "") {
+    gsLocalStorage.removeItem("genomeshader.groupingVariable");
+  } else {
+    gsLocalStorage.setItem("genomeshader.groupingVariable", String(name));
+  }
+}
+
+function getSampleMetadataConfig() {
+  const cfg = (typeof window !== "undefined" && window.GENOMESHADER_CONFIG) || {};
+  return cfg.sample_metadata || null;
+}
+
+function getGroupingEligibleColumns() {
+  const meta = getSampleMetadataConfig();
+  if (!meta || !Array.isArray(meta.columns)) return [];
+  return meta.columns.map(c => c && c.name).filter(Boolean);
+}
+
+function getGroupingColumnSpec(columnName) {
+  const meta = getSampleMetadataConfig();
+  if (!meta || !Array.isArray(meta.columns) || !columnName) return null;
+  return meta.columns.find(c => c && c.name === columnName) || null;
+}
+
+function getGroupColor(columnName, groupValue) {
+  const spec = getGroupingColumnSpec(columnName);
+  if (!spec || !Array.isArray(spec.values)) return null;
+  const hit = spec.values.find(v => v && String(v.value) === String(groupValue));
+  return hit && hit.color ? hit.color : null;
+}
+
+function getSampleGroupValue(sampleId, columnName) {
+  if (!columnName) return null;
+  const meta = getSampleMetadataConfig();
+  if (!meta || !meta.by_id) return "(unlabeled)";
+  const attrs = meta.by_id[String(sampleId)];
+  if (!attrs || attrs[columnName] == null || attrs[columnName] === "") return "(unlabeled)";
+  return String(attrs[columnName]);
+}
+
+function updateGroupingVariableSelect() {
+  if (!groupingVariableSelect) return;
+  const cols = getGroupingEligibleColumns();
+  const cur = state.groupingVariable ? String(state.groupingVariable) : "";
+  // Rebuild options when the eligible set changes (metadata attach / refresh).
+  const desired = [""].concat(cols);
+  const existing = Array.from(groupingVariableSelect.options).map(o => o.value);
+  const same = existing.length === desired.length && existing.every((v, i) => v === desired[i]);
+  if (!same) {
+    groupingVariableSelect.innerHTML = "";
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = cols.length ? "None" : "None (no metadata)";
+    groupingVariableSelect.appendChild(noneOpt);
+    for (const col of cols) {
+      const opt = document.createElement("option");
+      opt.value = col;
+      opt.textContent = col;
+      groupingVariableSelect.appendChild(opt);
+    }
+  }
+  groupingVariableSelect.disabled = cols.length === 0;
+  if (groupingVariableSelect.value !== cur) {
+    groupingVariableSelect.value = cur;
+  }
+  // If the stored value vanished from options, snap to None.
+  if (cur && groupingVariableSelect.value !== cur) {
+    state.groupingVariable = null;
+    setStoredGroupingVariable(null);
+    groupingVariableSelect.value = "";
+  }
+}
+
+function setGroupingVariable(columnName) {
+  const cols = getGroupingEligibleColumns();
+  let next = columnName || null;
+  if (next && cols.indexOf(next) < 0) next = null;
+  if ((state.groupingVariable || null) === next) {
+    updateGroupingVariableSelect();
+    return;
+  }
+  state.groupingVariable = next;
+  state.groupingFilter = null;
+  setStoredGroupingVariable(next);
+  updateGroupingVariableSelect();
+  renderParticipantGroups();
+  if (window.ribbonTransitionCache && typeof window.ribbonTransitionCache.clear === "function") {
+    window.ribbonTransitionCache.clear();
+  }
+  if (typeof window.clusterSmartTracksByGrouping === "function") {
+    window.clusterSmartTracksByGrouping();
+  }
+  if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
+  if (typeof renderAll === "function") renderAll();
+}
+
+function setGroupingFilter(groupValue) {
+  if (groupValue == null || groupValue === "" || groupValue === state.groupingFilter) {
+    state.groupingFilter = null;
+  } else {
+    state.groupingFilter = String(groupValue);
+  }
+  renderParticipantGroups();
+  // Force candidate recompute so Load / preview honor the active group pill.
+  if (state.sampleSelection) state.sampleSelection._candidateSig = null;
+  if (typeof recomputeCandidateSamples === "function") recomputeCandidateSamples();
+  else if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
+  if (window.ribbonTransitionCache && typeof window.ribbonTransitionCache.clear === "function") {
+    window.ribbonTransitionCache.clear();
+  }
+  if (typeof renderAll === "function") renderAll();
+}
+
+function renderParticipantGroups() {
+  const section = getElementById("participantGroupsSection");
+  const list = getElementById("participantGroupsList");
+  const hint = getElementById("participantGroupsHint");
+  if (!section || !list) return;
+  const col = state.groupingVariable;
+  const spec = getGroupingColumnSpec(col);
+  if (!col || !spec || !Array.isArray(spec.values) || !spec.values.length) {
+    list.innerHTML = "";
+    if (hint) {
+      hint.style.display = "";
+      const eligible = getGroupingEligibleColumns();
+      hint.textContent = eligible.length
+        ? "Choose a Variable above to list groups here."
+        : "Attach sample metadata to enable participant groups.";
+    }
+    return;
+  }
+  if (hint) hint.style.display = "none";
+  list.innerHTML = "";
+
+  const allRow = document.createElement("div");
+  allRow.className = "group" + (state.groupingFilter == null ? " group-active" : "");
+  allRow.dataset.groupValue = "";
+  const allLabel = document.createElement("span");
+  allLabel.textContent = "All";
+  const allPill = document.createElement("span");
+  allPill.className = "pill";
+  const total = spec.values.reduce((n, v) => n + (Number(v.count) || 0), 0);
+  allPill.textContent = String(total);
+  allRow.appendChild(allLabel);
+  allRow.appendChild(allPill);
+  allRow.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setGroupingFilter(null);
+  });
+  list.appendChild(allRow);
+
+  for (const entry of spec.values) {
+    const row = document.createElement("div");
+    const val = String(entry.value);
+    row.className = "group" + (state.groupingFilter === val ? " group-active" : "");
+    row.dataset.groupValue = val;
+    if (entry.color) {
+      row.style.borderLeft = `3px solid ${entry.color}`;
+    }
+    const label = document.createElement("span");
+    label.textContent = val;
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    if (entry.color) {
+      pill.style.background = entry.color;
+      pill.style.color = "#fff";
+    }
+    pill.textContent = String(entry.count != null ? entry.count : 0);
+    row.appendChild(label);
+    row.appendChild(pill);
+    row.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setGroupingFilter(val);
+    });
+    list.appendChild(row);
+  }
+}
+
+function initSampleGroupingUI() {
+  const cols = getGroupingEligibleColumns();
+  const storedVar = getStoredGroupingVariable();
+  if (storedVar && cols.indexOf(storedVar) >= 0) {
+    state.groupingVariable = storedVar;
+  } else if (storedVar) {
+    state.groupingVariable = null;
+    setStoredGroupingVariable(null);
+  }
+  updateGroupingVariableSelect();
+  renderParticipantGroups();
+}
+
+function onSampleMetadataChanged(meta) {
+  const cfg = window.GENOMESHADER_CONFIG || (window.GENOMESHADER_CONFIG = {});
+  cfg.sample_metadata = meta || null;
+  const cols = getGroupingEligibleColumns();
+  if (state.groupingVariable && cols.indexOf(state.groupingVariable) < 0) {
+    state.groupingVariable = null;
+    setStoredGroupingVariable(null);
+  }
+  state.groupingFilter = null;
+  updateGroupingVariableSelect();
+  renderParticipantGroups();
+  if (typeof window.clusterSmartTracksByGrouping === "function") {
+    window.clusterSmartTracksByGrouping();
+  }
+  if (typeof renderAll === "function") renderAll();
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("genomeshader_msg", function (ev) {
+    const msg = ev && ev.detail;
+    if (msg && msg.type === "sample_metadata_changed") {
+      onSampleMetadataChanged(msg.sample_metadata || null);
+    }
+  });
+}
+
+if (typeof window !== "undefined") {
+  window.getSampleMetadataConfig = getSampleMetadataConfig;
+  window.getGroupingColumnSpec = getGroupingColumnSpec;
+  window.getGroupColor = getGroupColor;
+  window.getSampleGroupValue = getSampleGroupValue;
+  window.setGroupingVariable = setGroupingVariable;
+  window.setGroupingFilter = setGroupingFilter;
+  window.renderParticipantGroups = renderParticipantGroups;
+  window.initSampleGroupingUI = initSampleGroupingUI;
+  window.onSampleMetadataChanged = onSampleMetadataChanged;
+}
+
 const stored = getStoredTheme();
 document.documentElement.setAttribute("data-theme", stored ?? "auto");
 updateThemeLabel();
 
-// Left panel tabs (samples / settings). Settings now lives inline in its own
+// Left panel tabs (samples / groups / settings). Settings lives inline in its own
 // left tab instead of a floating popup, so openMenu just switches to it.
 function getActiveLeftTab() {
   return gsLocalStorage.getItem("genomeshader.leftTab") || "samples";
@@ -390,6 +626,13 @@ themeItem.addEventListener("click", () => {
   setTheme(next);
   renderAll();
 });
+
+if (groupingVariableSelect) {
+  groupingVariableSelect.addEventListener("change", () => {
+    const val = groupingVariableSelect.value;
+    setGroupingVariable(val || null);
+  });
+}
 
 orientationItem.addEventListener("click", () => {
   const cur = getStoredOrientation() ?? "horizontal";

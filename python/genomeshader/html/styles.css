@@ -686,7 +686,21 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   border: 1px solid transparent;
 }
 .group:hover { border-color: var(--border2); }
+.group.group-active {
+  border-color: var(--accent, #2b6fff);
+  background: color-mix(in srgb, var(--accent, #2b6fff) 12%, var(--panel2));
+}
 .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,0.16); color: var(--muted); }
+
+.smart-track-group-header {
+  padding: 8px 10px 4px;
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  border-left: 3px solid transparent;
+}
 
 /* Gear button bottom-left (requested) */
 .gearBtn {
@@ -1245,9 +1259,9 @@ svg.overlay {
 /* Collapsed: show only the icon rail, hide the tab content. */
 .app.sidebar-collapsed .sidebar-left-tab-content { display: none; }
 
-/* The settings menu renders inline inside the Settings tab (not a floating
-   popup). Override the .menu popup styling for this instance. */
-#ctxMenu.settings-panel {
+/* Settings-style menus render inline inside left tabs (not floating popups).
+   Override the .menu popup styling for these instances. */
+.menu.settings-panel {
   position: static !important;
   display: block !important;
   visibility: visible !important;

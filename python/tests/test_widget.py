@@ -173,6 +173,25 @@ def test_strategy_order_best_evidence_first():
     assert "strategy: 'best_evidence'" in _build_esm()   # JS state default (raw in ESM)
 
 
+def test_grouping_variable_row_wired():
+    body = _body_html()
+    assert 'id="groupingVariableSelect"' in body
+    assert 'id="participantGroupsSection"' in body
+    assert 'id="participantGroupsList"' in body
+    assert 'data-left-tab="groups"' in body
+    # Hardcoded Super-pop stub is gone
+    assert ">Super-pop<" not in body
+    esm = _build_esm()
+    assert "setGroupingVariable" in esm
+    assert "updateGroupingVariableSelect" in esm
+    assert "fillAlleleNodeGrouped" in esm
+    assert "clusterSmartTracksByGrouping" in esm
+    assert "sample_metadata_changed" in esm
+    assert "cycleGroupingVariable" not in esm
+    assert "groupingVariableItem" not in body
+    assert "groupingVariableLabel" not in body
+
+
 def test_comment_store_crud(tmp_path, monkeypatch):
     # Point the session dir at a local folder so the store uses its os fallback.
     s = _shader(tmp_path, monkeypatch)

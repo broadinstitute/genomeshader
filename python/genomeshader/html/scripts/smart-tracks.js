@@ -429,6 +429,9 @@ function spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleTy
         })
     );
   }
+  if (typeof clusterSmartTracksByGrouping === "function") {
+    clusterSmartTracksByGrouping();
+  }
   return promises;
 }
 
@@ -901,6 +904,87 @@ function editSmartTrackLabel(trackId, newLabel) {
 // Right sidebar for Tracks (layout order, visibility, labels)
 // -----------------------------
 
+// Reorder loaded Smart Tracks into blocks by the active grouping column.
+function clusterSmartTracksByGrouping() {
+  const col = state.groupingVariable;
+  if (!col || typeof getSampleGroupValue !== "function") {
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+    return;
+  }
+  const smartIds = new Set(
+    (state.smartTracks || []).map(t => t.id).filter(id => String(id).startsWith("smart-track-"))
+  );
+  if (!smartIds.size) {
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+    return;
+  }
+
+  const spec = typeof getGroupingColumnSpec === "function" ? getGroupingColumnSpec(col) : null;
+  const groupOrder = (spec && Array.isArray(spec.values))
+    ? spec.values.map(v => String(v.value))
+    : [];
+
+  const nonSmart = [];
+  const byGroup = new Map(); // group -> [track]
+  for (const track of state.tracks) {
+    if (!smartIds.has(track.id)) {
+      nonSmart.push(track);
+      continue;
+    }
+    const smartMeta = (state.smartTracks || []).find(st => st.id === track.id);
+    const sampleId = (smartMeta && smartMeta.sampleId) || track.sampleId || track.label;
+    const g = String(getSampleGroupValue(sampleId, col) || "(unlabeled)");
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g).push(track);
+  }
+
+  const orderedGroups = [];
+  for (const g of groupOrder) {
+    if (byGroup.has(g)) orderedGroups.push(g);
+  }
+  for (const g of byGroup.keys()) {
+    if (orderedGroups.indexOf(g) < 0) orderedGroups.push(g);
+  }
+
+  // Keep non-smart tracks in their relative order; splice smart tracks after flow
+  // as a contiguous grouped block (matching createSmartTrack insertion).
+  const flowIdx = nonSmart.findIndex(t => t.id === "flow" || String(t.id).startsWith("flow-"));
+  const clusteredSmart = [];
+  for (const g of orderedGroups) {
+    clusteredSmart.push(...byGroup.get(g));
+  }
+  let next;
+  if (flowIdx >= 0) {
+    next = [
+      ...nonSmart.slice(0, flowIdx + 1),
+      ...clusteredSmart,
+      ...nonSmart.slice(flowIdx + 1),
+    ];
+  } else {
+    next = [...nonSmart, ...clusteredSmart];
+  }
+  state.tracks = next;
+
+  // Align smartTracks array with layout order among smart ids
+  if (Array.isArray(state.smartTracks) && state.smartTracks.length) {
+    const smartMap = new Map(state.smartTracks.map(t => [t.id, t]));
+    const orderedSmart = clusteredSmart.map(t => smartMap.get(t.id)).filter(Boolean);
+    const seen = new Set(orderedSmart.map(t => t.id));
+    for (const t of state.smartTracks) {
+      if (!seen.has(t.id)) orderedSmart.push(t);
+    }
+    state.smartTracks = orderedSmart;
+  }
+
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof renderAll === "function") renderAll();
+}
+
+if (typeof window !== "undefined") {
+  window.clusterSmartTracksByGrouping = clusterSmartTracksByGrouping;
+}
+
 // Render Tracks list in right sidebar (all layout tracks, not just smart samples)
 function renderSmartTracksSidebar() {
   const smartTracksList = document.getElementById('smartTracksList');
@@ -989,12 +1073,29 @@ function renderSmartTracksSidebar() {
   // Add drop handler to container
   smartTracksList.addEventListener('dragover', handleContainerDragover);
   smartTracksList.addEventListener('drop', handleContainerDrop);
+
+  let lastGroupHeader = null;
+  const groupingCol = state.groupingVariable;
   
   tracksInOrder.forEach((track) => {
     const isSmart = track.id.startsWith('smart-track-');
     const smartMeta = isSmart
       ? (state.smartTracks || []).find(st => st.id === track.id)
       : null;
+
+    if (isSmart && groupingCol && typeof getSampleGroupValue === "function") {
+      const sampleId = (smartMeta && smartMeta.sampleId) || track.sampleId || track.label;
+      const g = String(getSampleGroupValue(sampleId, groupingCol) || "(unlabeled)");
+      if (g !== lastGroupHeader) {
+        lastGroupHeader = g;
+        const hdr = document.createElement("div");
+        hdr.className = "smart-track-group-header";
+        hdr.textContent = g;
+        const color = typeof getGroupColor === "function" ? getGroupColor(groupingCol, g) : null;
+        if (color) hdr.style.borderLeftColor = color;
+        smartTracksList.appendChild(hdr);
+      }
+    }
 
     const item = document.createElement('div');
     item.className = 'smart-track-item';

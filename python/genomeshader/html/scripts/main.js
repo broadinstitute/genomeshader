@@ -4578,7 +4578,7 @@ function setupCanvasHover() {
     const currentRoot = getCurrentRoot();
     const previewEl = byId(currentRoot, 'samplePreview');
     const previewListEl = byId(currentRoot, 'samplePreviewList');
-    const candidates = state.sampleSelection.candidateSamples;
+    const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
     
     if (!previewEl || !previewListEl) return;
     
@@ -4608,7 +4608,7 @@ function setupCanvasHover() {
     const currentRoot = getCurrentRoot();
     const replaceBtn = byId(currentRoot, 'loadSamplesReplace');
     const addBtn = byId(currentRoot, 'loadSamplesAdd');
-    const candidates = state.sampleSelection.candidateSamples;
+    const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
     const numSamples = state.sampleSelection.numSamples || 1;
 
     // The selectable pool depends on the strategy: carriers+controls draws from
@@ -4618,7 +4618,7 @@ function setupCanvasHover() {
     const strategy = state.sampleSelection.strategy;
     let pool = candidates.length;
     if (strategy === 'carriers_controls') {
-      const allN = (state.sampleSelection.allSampleIds || []).length;
+      const allN = applyGroupingSampleFilter(state.sampleSelection.allSampleIds || []).length;
       if (allN > pool) pool = allN;
     }
     const samplesToLoad = Math.min(numSamples, pool);
@@ -4688,7 +4688,21 @@ function setupCanvasHover() {
     const allowed = attachedReadSampleSet();
     return list.filter((id) => allowed.has(id));
   }
-  if (typeof window !== "undefined") window.__GS_filterToAttachedReads = filterToAttachedReads;
+  function applyGroupingSampleFilter(ids) {
+    const list = Array.isArray(ids) ? ids : Array.from(ids || []);
+    const col = state.groupingVariable;
+    const filter = state.groupingFilter;
+    if (!col || !filter || typeof getSampleGroupValue !== "function") return list;
+    return list.filter((id) => String(getSampleGroupValue(id, col)) === String(filter));
+  }
+  function filterSamplesForUi(ids) {
+    return applyGroupingSampleFilter(filterToAttachedReads(ids));
+  }
+  if (typeof window !== "undefined") {
+    window.__GS_filterToAttachedReads = filterToAttachedReads;
+    window.__GS_applyGroupingSampleFilter = applyGroupingSampleFilter;
+    window.__GS_filterSamplesForUi = filterSamplesForUi;
+  }
 
   // Recompute candidate samples based on strategy and selection
   function recomputeCandidateSamples() {
@@ -4796,8 +4810,8 @@ function setupCanvasHover() {
       }
     }
     
-    // Convert to sorted array — only samples with attached BAM/CRAM.
-    state.sampleSelection.candidateSamples = filterToAttachedReads(
+    // Convert to sorted array — only samples with attached BAM/CRAM (+ group pill).
+    state.sampleSelection.candidateSamples = filterSamplesForUi(
       Array.from(candidateSamplesSet).sort());
 
     // Scale mode: when the per-sample map is omitted from the payload (large
@@ -4808,7 +4822,7 @@ function setupCanvasHover() {
     if (omitted && candidateSamplesSet.size === 0 && typeof window.__GS_SEND === "function") {
       _fetchCarriersForSelection(selectedAllelePairs, combineMode)
         .then((ids) => {
-          state.sampleSelection.candidateSamples = filterToAttachedReads(ids);
+          state.sampleSelection.candidateSamples = filterSamplesForUi(ids);
           updateSamplePreview();
           try { if (typeof updateLoadButtonText === "function") updateLoadButtonText(); } catch (e) {}
         })
@@ -5065,7 +5079,7 @@ function setupCanvasHover() {
       }
     }
     
-    return filterToAttachedReads(Array.from(candidateSamplesSet).sort());
+    return filterSamplesForUi(Array.from(candidateSamplesSet).sort());
   }
   
   // Export for use in smart-tracks.js
@@ -5173,8 +5187,8 @@ function setupCanvasHover() {
       // Carriers are samples with selected alleles (candidates)
       // Controls are samples without selected alleles
       
-      // Get all available samples
-      const allSamples = state.sampleSelection.allSampleIds || [];
+      // Get all available samples (respect active Participant-group pill)
+      const allSamples = applyGroupingSampleFilter(state.sampleSelection.allSampleIds || []);
       if (allSamples.length === 0) {
         // Fallback: if allSampleIds not populated, just use candidates (or empty)
         if (!candidates || candidates.length === 0) {
@@ -5602,6 +5616,7 @@ function setupCanvasHover() {
   
   // Export for use in smart-tracks.js
   window.selectSamplesForStrategy = selectSamplesForStrategy;
+  window.recomputeCandidateSamples = recomputeCandidateSamples;
   
   // Strategy change handler
   function onStrategyChange() {
@@ -5670,7 +5685,7 @@ function setupCanvasHover() {
         }
         if (ids.length) state.sampleSelection.allSampleIds = ids;
       }
-      return ids;
+      return applyGroupingSampleFilter(ids);
     };
 
     searchInput.addEventListener('input', () => {
@@ -5866,7 +5881,7 @@ function setupCanvasHover() {
       replaceBtn.disabled = true;
       
       const strategy = state.sampleSelection.strategy;
-      const candidates = state.sampleSelection.candidateSamples;
+      const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
@@ -5935,7 +5950,7 @@ function setupCanvasHover() {
       addBtn.disabled = true;
       
       const strategy = state.sampleSelection.strategy;
-      const candidates = state.sampleSelection.candidateSamples;
+      const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
