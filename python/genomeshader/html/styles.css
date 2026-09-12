@@ -686,7 +686,53 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   border: 1px solid transparent;
 }
 .group:hover { border-color: var(--border2); }
+.group.group-active {
+  border-color: var(--accent, #2b6fff);
+  background: color-mix(in srgb, var(--accent, #2b6fff) 12%, var(--panel2));
+}
 .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,0.16); color: var(--muted); }
+
+.smart-track-group-block {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+.smart-track-group-rail {
+  flex: 0 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+.smart-track-group-rail-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: currentColor;
+  line-height: 1;
+  max-height: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+.smart-track-group-items {
+  flex: 1;
+  min-width: 0;
+}
+.smart-track-group-items .smart-track-item {
+  /* Keep the same pill rhythm; the rail provides the group cue. */
+  margin-left: 0;
+}
+
+.smart-track-item.group-filtered-out {
+  opacity: 0.42;
+}
 
 /* Gear button bottom-left (requested) */
 .gearBtn {
@@ -1245,9 +1291,9 @@ svg.overlay {
 /* Collapsed: show only the icon rail, hide the tab content. */
 .app.sidebar-collapsed .sidebar-left-tab-content { display: none; }
 
-/* The settings menu renders inline inside the Settings tab (not a floating
-   popup). Override the .menu popup styling for this instance. */
-#ctxMenu.settings-panel {
+/* Settings-style menus render inline inside left tabs (not floating popups).
+   Override the .menu popup styling for these instances. */
+.menu.settings-panel {
   position: static !important;
   display: block !important;
   visibility: visible !important;
@@ -1482,6 +1528,12 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   display: flex !important;
   background: var(--panel) !important;
 }
+/* Smart-track label pill: same top offset open or closed so expanding doesn't
+   jump the controls up. 3px = (closedHeight 30 − pill 24) / 2, matching the
+   centered summary strip midline. */
+.main:not(.vertical) .track-control-container[data-track-id^="smart-track-"] .track-controls {
+  top: 3px;
+}
 /* The faint 8px indicator line is redundant now the labeled bar shows. */
 .track-collapsed-indicator {
   display: none !important;
@@ -1510,9 +1562,12 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   overflow: hidden;
   transition: max-width 0.2s ease;
   white-space: nowrap;
+  /* Above the track canvas so the expanded pill keeps receiving hover/clicks */
+  z-index: 100;
 }
 
-.track-controls[data-track-id^="smart-track-"]:hover {
+.track-controls[data-track-id^="smart-track-"]:hover,
+.track-controls[data-track-id^="smart-track-"]:focus-within {
   max-width: 300px; /* Enough for all controls */
 }
 
@@ -1995,6 +2050,14 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 /* Smart Track containers: allow pointer events for dragging */
 .track-control-container[data-track-id^="smart-track-"] {
   pointer-events: auto; /* Need pointer-events for drag detection */
+}
+/* Collapsed smart-track pills must keep pointer-events on the whole control
+   chrome. The generic collapsed rule above sets pointer-events:none so clicks
+   fall through on standard tracks — but that leaves only the label text and
+   individual buttons hittable, so moving across the flex gap onto revealed
+   buttons drops :hover and the max-width expand collapses. */
+.track-control-container.track-collapsed[data-track-id^="smart-track-"] .track-controls {
+  pointer-events: auto !important;
 }
 /* Ensure standard track controls overlay on top of track content */
 .track-control-container.standard-track .track-controls {

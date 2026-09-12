@@ -21,6 +21,14 @@
               <line x1="10" y1="12" x2="14" y2="12"></line>
             </svg>
           </button>
+          <button class="command-strip-icon" data-left-tab="groups" title="Groups" aria-label="Groups">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+              <circle cx="9" cy="7" r="4"></circle>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+            </svg>
+          </button>
         </div>
         <div class="command-strip-settings">
           <button class="command-strip-icon" data-left-tab="settings" title="Settings" aria-label="Settings">
@@ -34,22 +42,10 @@
       <div class="sidebar-left-tab-content">
         <div class="sidebarContent">
           <div class="left-tab-pane active" data-left-tab="samples">
-    <div style="display: none;">
-      <div class="sidebarHeader">
-        <h3>Participant groups</h3>
-      </div>
-
-      <div class="group"><span>AFR</span><span class="pill">2634</span></div>
-      <div class="group"><span>AMR</span><span class="pill">603</span></div>
-      <div class="group"><span>EAS</span><span class="pill">1095</span></div>
-      <div class="group"><span>EUR</span><span class="pill">5340</span></div>
-      <div class="group"><span>SAS</span><span class="pill">328</span></div>
-    </div>
-
     <!-- Region/contig navigation moved to the always-visible top locus bar. -->
 
     <!-- Sample Search Section -->
-    <div class="sidebarHeader" style="margin-top: 20px;">
+    <div class="sidebarHeader">
       <h3>Sample Search</h3>
     </div>
 
@@ -111,6 +107,32 @@
       </div>
     </div>
           </div>
+          <div class="left-tab-pane" data-left-tab="groups">
+            <div id="participantGroupsSection">
+              <div class="sidebarHeader">
+                <h3>Grouping</h3>
+              </div>
+              <div class="menu settings-panel" style="margin: 0 0 16px;">
+                <table class="settings-table">
+                  <tr id="groupingVariableRow" title="Sample-metadata column used for grouping">
+                    <td>Variable</td>
+                    <td class="menuRight">
+                      <select id="groupingVariableSelect" aria-label="Grouping variable" style="max-width: 160px; padding: 4px 6px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer;" data-1p-ignore>
+                        <option value="">None</option>
+                      </select>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+              <div class="sidebarHeader">
+                <h3>Participant groups</h3>
+              </div>
+              <div id="participantGroupsHint" style="padding: 9px 10px; margin: 7px 0; border-radius: 10px; background: var(--panel2); font-size: 11px; color: var(--muted);">
+                Choose a Variable above to list groups here.
+              </div>
+              <div id="participantGroupsList"></div>
+            </div>
+          </div>
           <div class="left-tab-pane" data-left-tab="settings">
             <div class="menu settings-panel" id="ctxMenu" role="menu" aria-hidden="false">
       <table class="settings-table">
@@ -147,11 +169,6 @@
         <tr class="settings-row" id="fullscreenItem" role="menuitem">
           <td>Full screen<span class="menuHotkey">F</span></td>
           <td class="menuRight" id="fullscreenLabel">Enter full screen</td>
-        </tr>
-        <tr class="settings-section"><td colspan="2">Grouping</td></tr>
-        <tr class="settings-row" role="menuitem">
-          <td>Variable</td>
-          <td class="menuRight">Super-pop</td>
         </tr>
         <tr class="settings-section"><td colspan="2">Maintenance</td></tr>
         <tr class="settings-row" id="clearCacheItem" role="menuitem" title="Delete cached downloads and re-fetch on next access">
@@ -358,12 +375,18 @@
                 via the protruding tab on its inner edge.
               </p>
 
+              <div style="font-weight: 700; margin: 14px 0 6px;">Left panel tabs</div>
+              <ul style="margin: 0 0 12px; padding-left: 18px;">
+                <li style="margin-bottom: 4px;"><strong>Samples</strong> — search and load Smart Tracks for matching samples.</li>
+                <li style="margin-bottom: 4px;"><strong>Groups</strong> — pick a metadata Variable and filter the flow / sample loaders by participant group.</li>
+                <li style="margin-bottom: 4px;"><strong>Settings</strong> — display and allele options.</li>
+              </ul>
+
               <div style="font-weight: 700; margin: 14px 0 6px;">Right panel tabs</div>
               <ul style="margin: 0 0 12px; padding-left: 18px;">
                 <li style="margin-bottom: 4px;"><strong>Tracks</strong> — rename, show/hide, collapse, and reorder every track in the display (including Smart Tracks loaded from alleles).</li>
                 <li style="margin-bottom: 4px;"><strong>Genes</strong> — descriptions of the genes currently in view.</li>
                 <li style="margin-bottom: 4px;"><strong>Variants</strong> — details for the selected variant; the ◀ ▶ arrows at the top step between variants, and a second pair steps between that variant's alleles (changing the selection).</li>
-                <li><strong>Settings</strong> — display and allele options (also on the ⚙ menu).</li>
               </ul>
 
               <div style="font-weight: 700; margin: 14px 0 6px;">Keyboard shortcuts</div>

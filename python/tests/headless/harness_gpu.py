@@ -175,6 +175,37 @@ BUILD_READS_JS = r"""
           is_forward:fw, haplotype:hp, sample_name:sn, sequence:seq};
 }"""
 
+# Mixed-haplotype reads for haplotype-split summary tests. opts.groups is a list
+# of {n, haplotype, snp, snpBase, snpFrac} where snpFrac is the SNP's position
+# as a fraction of the visible span (so HP1/HP2 SNPs can sit at distinct x).
+BUILD_MIXED_READS_JS = r"""
+(opts) => {
+  const S = window.__GS_STATE;
+  const s0 = S.startBp, s1 = S.endBp, span = s1 - s0;
+  const q=[],et=[],rs=[],re=[],fw=[],hp=[],sn=[],seq=[];
+  let i = 0;
+  for (const g of (opts.groups || [])) {
+    const n = g.n || 6;
+    const hap = g.haplotype || 0;
+    const snpFrac = (g.snpFrac != null) ? g.snpFrac : 0.5;
+    const snpBase = g.snpBase || 'A';
+    for (let k = 0; k < n; k++) {
+      const st = Math.floor(s0 + span * 0.08);
+      const en = Math.floor(s0 + span * 0.92);
+      q.push('r'+i); et.push(0); rs.push(st); re.push(en);
+      fw.push(true); hp.push(hap); sn.push('S'); seq.push('');
+      if (g.snp) {
+        const mid = Math.floor(s0 + span * snpFrac);
+        q.push('r'+i); et.push(1); rs.push(mid); re.push(mid);
+        fw.push(true); hp.push(hap); sn.push('S'); seq.push(snpBase);
+      }
+      i++;
+    }
+  }
+  return {query_name:q, element_type:et, reference_start:rs, reference_end:re,
+          is_forward:fw, haplotype:hp, sample_name:sn, sequence:seq};
+}"""
+
 
 def set_span(page, span_bp):
     """Narrow the visible locus to span_bp bases (zoom in) and re-render, so
@@ -190,6 +221,15 @@ def seed_reads(page, sample_id="SAMPLE", n=20, haplotype=1, rows_deep=False,
         "nReads": n, "haplotype": haplotype, "rowsDeep": rows_deep,
         "snp": snp, "snpBase": snp_base,
     })
+    return page.evaluate(
+        "async (a) => await window.__GS_TEST_seedSmartTrack(a.sid, a.reads, {collapsed:a.c})",
+        {"sid": sample_id, "reads": reads, "c": collapsed},
+    )
+
+
+def seed_mixed_reads(page, groups, sample_id="SAMPLE", collapsed=False):
+    """Seed one smart track with mixed-haplotype reads (see BUILD_MIXED_READS_JS)."""
+    reads = page.evaluate(BUILD_MIXED_READS_JS, {"groups": groups})
     return page.evaluate(
         "async (a) => await window.__GS_TEST_seedSmartTrack(a.sid, a.reads, {collapsed:a.c})",
         {"sid": sample_id, "reads": reads, "c": collapsed},

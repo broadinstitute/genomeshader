@@ -1407,8 +1407,8 @@ s = gs.GenomeShader(genome_build="{GENOME_BUILD}",
                     gcs_session_dir=BUCKET + "/sessions")
 s.attach_variants("phased", f"{{BUCKET}}/variants/phased.snv_indel_sv.vcf.gz")
 s.attach_variants("TRGT", f"{{BUCKET}}/trgt/")          # unphased; ribbons off
-s.attach_reads(f"{{BUCKET}}/long_reads/", cohort="pacbio")
-s.attach_reads(f"{{BUCKET}}/short_reads/", cohort="illumina")
+s.attach_reads("pacbio", f"{{BUCKET}}/long_reads/")
+s.attach_reads("illumina", f"{{BUCKET}}/short_reads/")
 cov = pd.read_csv(f"{{BUCKET}}/tracks/coverage.tsv", sep="\\t")
 peaks = pd.read_csv(f"{{BUCKET}}/tracks/peaks.bed", sep="\\t")
 s.attach_data("coverage", cov,

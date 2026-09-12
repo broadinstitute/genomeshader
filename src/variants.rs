@@ -521,13 +521,19 @@ pub fn extract_variants(
 /// semantics of the Python builder: a het 0/1 counts toward BOTH ref and its alt.
 ///
 /// Columns: chromosome, position, ref_allele, alt_allele, alt_index, variant_id,
-/// vcf_id, filter_status, info_fields, n_ref, n_alt, n_missing, n_samples.
+/// vcf_id, filter_status, info_fields, n_ref, n_alt, n_missing, n_samples,
+/// and optionally group_counts (JSON) when `grouping` is provided.
+///
+/// `grouping` is a list of (column_name, label_per_sample_index) aligned with
+/// the VCF header sample order. When present, each row's `group_counts` is
+/// `{column: {group: {ref, alt, missing}}}`.
 pub fn extract_variant_aggregates(
     bcf_path: &str,
     index_path: Option<&str>,
     chr: &String,
     start: &u64,
     stop: &u64,
+    grouping: Option<&[(String, Vec<String>)]>,
 ) -> Result<DataFrame> {
     // Same per-thread reader cache as extract_variants — at 1M-sample scroll
     // this path would otherwise re-download the index every window.
@@ -560,6 +566,18 @@ pub fn extract_variant_aggregates(
     let mut n_alts = Vec::new();
     let mut n_missings = Vec::new();
     let mut n_sampless = Vec::new();
+    let mut group_counts_json: Vec<String> = Vec::new();
+
+    // Validate grouping lengths once; ignore columns whose length mismatches.
+    let grouping_cols: Vec<(String, &Vec<String>)> = match grouping {
+        Some(cols) => cols
+            .iter()
+            .filter(|(_, labels)| labels.len() == n_samples)
+            .map(|(name, labels)| (name.clone(), labels))
+            .collect(),
+        None => Vec::new(),
+    };
+    let emit_groups = !grouping_cols.is_empty();
 
     let mut variant_map: HashMap<(u64, String, String), u32> = HashMap::new();
     let mut next_variant_id: u32 = 0;
@@ -605,6 +623,13 @@ pub fn extract_variant_aggregates(
             let mut present = vec![0u32; n_alts_here + 1]; // index 0..=n_alts
             let mut missing = 0u32;
             let mut seen_alt = vec![false; n_alts_here + 1]; // scratch, hoisted
+
+            // Per-column per-group tallies when metadata grouping is attached.
+            let mut group_present: Vec<HashMap<String, Vec<u32>>> =
+                vec![HashMap::new(); grouping_cols.len()];
+            let mut group_missing: Vec<HashMap<String, u32>> =
+                vec![HashMap::new(); grouping_cols.len()];
+
             for sample_idx in 0..n_samples {
                 let slice = gts[sample_idx];
                 let mut seen_ref = false;
@@ -636,6 +661,29 @@ pub fn extract_variant_aggregates(
                 if seen_missing {
                     missing += 1;
                 }
+
+                if emit_groups {
+                    for (ci, (_col, labels)) in grouping_cols.iter().enumerate() {
+                        let label = labels
+                            .get(sample_idx)
+                            .map(|s| s.as_str())
+                            .unwrap_or("(unlabeled)");
+                        let gp = group_present[ci]
+                            .entry(label.to_string())
+                            .or_insert_with(|| vec![0u32; n_alts_here + 1]);
+                        if seen_ref {
+                            gp[0] += 1;
+                        }
+                        for k in 1..=n_alts_here {
+                            if seen_alt[k] {
+                                gp[k] += 1;
+                            }
+                        }
+                        if seen_missing {
+                            *group_missing[ci].entry(label.to_string()).or_insert(0) += 1;
+                        }
+                    }
+                }
             }
 
             for (alt_idx, alt_allele) in alleles[1..].iter().enumerate() {
@@ -660,11 +708,57 @@ pub fn extract_variant_aggregates(
                 n_alts.push(present[alt_idx + 1]);
                 n_missings.push(missing);
                 n_sampless.push(n_samples as u32);
+
+                if emit_groups {
+                    let mut json = String::from("{");
+                    for (ci, (col, _)) in grouping_cols.iter().enumerate() {
+                        if ci > 0 {
+                            json.push(',');
+                        }
+                        json.push('"');
+                        json.push_str(&escape_json_str(col));
+                        json.push_str("\":{");
+                        let mut first_g = true;
+                        let mut groups: Vec<String> = group_present[ci].keys().cloned().collect();
+                        for g in group_missing[ci].keys() {
+                            if !group_present[ci].contains_key(g) {
+                                groups.push(g.clone());
+                            }
+                        }
+                        groups.sort();
+                        for gname in groups {
+                            if !first_g {
+                                json.push(',');
+                            }
+                            first_g = false;
+                            let pref = group_present[ci]
+                                .get(&gname)
+                                .map(|v| v[0])
+                                .unwrap_or(0);
+                            let palt = group_present[ci]
+                                .get(&gname)
+                                .map(|v| v.get(alt_idx + 1).copied().unwrap_or(0))
+                                .unwrap_or(0);
+                            let pmiss = group_missing[ci].get(&gname).copied().unwrap_or(0);
+                            json.push('"');
+                            json.push_str(&escape_json_str(&gname));
+                            json.push_str("\":{");
+                            json.push_str(&format!(
+                                "\"ref\":{},\"alt\":{},\"missing\":{}",
+                                pref, palt, pmiss
+                            ));
+                            json.push('}');
+                        }
+                        json.push('}');
+                    }
+                    json.push('}');
+                    group_counts_json.push(json);
+                }
             }
         }
     }
 
-    let df = DataFrame::new(vec![
+    let mut cols = vec![
         Series::new("chromosome", chromosomes),
         Series::new("position", positions),
         Series::new("ref_allele", ref_alleles),
@@ -678,11 +772,31 @@ pub fn extract_variant_aggregates(
         Series::new("n_alt", n_alts),
         Series::new("n_missing", n_missings),
         Series::new("n_samples", n_sampless),
-    ])?;
+    ];
+    if emit_groups {
+        cols.push(Series::new("group_counts", group_counts_json));
+    }
+    let df = DataFrame::new(cols)?;
 
     READER_CACHE.with(|c| c.borrow_mut().insert(cache_key, reader));
 
     Ok(df)
+}
+
+fn escape_json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -707,7 +821,7 @@ mod tests {
         // rows — proving the O(samples)-counter aggregation is correct.
         let (chr, s, e) = ("chr1".to_string(), 1u64, 1000u64);
         let long = extract_variants(&fixture(), None, None, &chr, &s, &e).unwrap();
-        let agg = extract_variant_aggregates(&fixture(), None, &chr, &s, &e).unwrap();
+        let agg = extract_variant_aggregates(&fixture(), None, &chr, &s, &e, None).unwrap();
 
         let pos = long.column("position").unwrap().u64().unwrap();
         let alt = long.column("alt_allele").unwrap().str().unwrap();
@@ -746,6 +860,89 @@ mod tests {
             assert_eq!(arefc.get(i).unwrap(), *nref.get(&key).unwrap_or(&0), "n_ref {:?}", key);
             assert_eq!(aaltc.get(i).unwrap(), *nalt.get(&key).unwrap_or(&0), "n_alt {:?}", key);
             assert_eq!(amissc.get(i).unwrap(), *nmiss.get(&key).unwrap_or(&0), "n_missing {:?}", key);
+        }
+    }
+
+    #[test]
+    fn grouped_aggregates_match_longformat_recompute() {
+        // S1=case, S2=control. Grouped n_ref/n_alt/missing must match a
+        // long-format recompute filtered by sample.
+        use std::collections::HashMap;
+        let (chr, s, e) = ("chr1".to_string(), 1u64, 1000u64);
+        let long = extract_variants(&fixture(), None, None, &chr, &s, &e).unwrap();
+        let grouping = vec![(
+            "pop".to_string(),
+            vec!["case".to_string(), "control".to_string()],
+        )];
+        let agg = extract_variant_aggregates(
+            &fixture(), None, &chr, &s, &e, Some(&grouping),
+        ).unwrap();
+        assert!(agg.column("group_counts").is_ok());
+
+        let sample = long.column("sample_name").unwrap().str().unwrap();
+        let pos = long.column("position").unwrap().u64().unwrap();
+        let alt = long.column("alt_allele").unwrap().str().unwrap();
+        let gt = long.column("genotype").unwrap().str().unwrap();
+        let ai = long.column("alt_index").unwrap().i32().unwrap();
+
+        // key: (pos, alt, group) -> (n_ref, n_alt, n_miss)
+        let mut expected: HashMap<(u64, String, String), (u32, u32, u32)> = HashMap::new();
+        let group_of = |sname: &str| -> &str {
+            if sname == "S1" { "case" } else { "control" }
+        };
+        for i in 0..long.height() {
+            let sname = sample.get(i).unwrap();
+            let gname = group_of(sname).to_string();
+            let key = (pos.get(i).unwrap(), alt.get(i).unwrap().to_string(), gname);
+            let g = gt.get(i).unwrap();
+            let this_ai = ai.get(i).unwrap();
+            let (mut r, mut a, mut m) = (false, false, false);
+            for t in g.split(|c| c == '/' || c == '|') {
+                let t = t.trim();
+                if t == "." || t.is_empty() {
+                    m = true;
+                } else if let Ok(k) = t.parse::<i32>() {
+                    if k == 0 { r = true; } else if k == this_ai { a = true; }
+                }
+            }
+            let e = expected.entry(key).or_insert((0, 0, 0));
+            if r { e.0 += 1; }
+            if a { e.1 += 1; }
+            if m { e.2 += 1; }
+        }
+
+        let apos = agg.column("position").unwrap().u64().unwrap();
+        let aalt = agg.column("alt_allele").unwrap().str().unwrap();
+        let gjson = agg.column("group_counts").unwrap().str().unwrap();
+        for i in 0..agg.height() {
+            let raw = gjson.get(i).unwrap();
+            // Minimal parse: look for "case":{"ref":N,"alt":N,"missing":N}
+            for gname in ["case", "control"] {
+                let needle = format!("\"{}\":{{", gname);
+                let start = raw.find(&needle).expect("group present");
+                let rest = &raw[start + needle.len()..];
+                let end = rest.find('}').unwrap();
+                let body = &rest[..end]; // ref:N,"alt":N,"missing":N
+                let mut got_ref = 0u32;
+                let mut got_alt = 0u32;
+                let mut got_miss = 0u32;
+                for part in body.split(',') {
+                    let kv: Vec<&str> = part.split(':').collect();
+                    if kv.len() != 2 { continue; }
+                    let k = kv[0].trim().trim_matches('"');
+                    let v: u32 = kv[1].trim().parse().unwrap_or(0);
+                    match k {
+                        "ref" => got_ref = v,
+                        "alt" => got_alt = v,
+                        "missing" => got_miss = v,
+                        _ => {}
+                    }
+                }
+                let key = (apos.get(i).unwrap(), aalt.get(i).unwrap().to_string(), gname.to_string());
+                let (er, ea, em) = expected.get(&key).copied().unwrap_or((0, 0, 0));
+                assert_eq!((got_ref, got_alt, got_miss), (er, ea, em),
+                    "group {} at {:?}", gname, key);
+            }
         }
     }
 

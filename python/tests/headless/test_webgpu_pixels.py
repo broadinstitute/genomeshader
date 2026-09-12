@@ -738,12 +738,11 @@ def test_expanded_track_keeps_aggregate_overview_row(gpu_browser):
         def row_nonblank(y):
             return sum(1 for x in range(W) if _non_blank(px[y * W + x]))
 
-        # Overview strip lives in roughly the top ~28px (top=8, overviewH=rowH+4).
-        overview_hits = max(row_nonblank(y) for y in range(10, 26))
+        # Overview strip: centered in closedHeight (summaryY≈4, summaryH≈22).
+        overview_hits = max(row_nonblank(y) for y in range(2, 28))
         assert overview_hits > 5, "overview row painted nothing at the top of the expanded track"
 
-        # Reads (hap1 = reddish) must start BELOW the overview strip (~y>=28),
-        # i.e. no read body bleeds into the overview row.
+        # Reads (hap1 = reddish) must start BELOW the overview strip.
         reddish_ys = [i // W for i, p in enumerate(px) if _reddish(p)]
         assert reddish_ys, "no reads painted"
         assert min(reddish_ys) >= 24, (
@@ -840,4 +839,121 @@ def test_expanded_overview_sits_behind_sample_name(gpu_browser):
         assert d["cont"] is not None and d["ctrl"] is not None, d
         assert abs(d["cont"] - d["ctrl"]) <= 6, \
             f"reads canvas not at the track top (24px header not removed): {d}"
+        assert errors == [], errors
+
+
+def _base_red(p):  # SNP 'T' tile uses the base palette red [255,0,0], opaque
+    r, g, b = p
+    return r > 200 and g < 80 and b < 80
+
+
+def _base_blue(p):  # SNP 'C' tile uses the base palette blue [0,0,255], opaque
+    r, g, b = p
+    return b > 200 and r < 80 and g < 80
+
+
+def test_collapsed_haplotype_split_stacks_snp_bands(gpu_browser):
+    """Collapsed summary with both HP1 and HP2 must paint SNPs in stacked
+    halves (HP1 top / HP2 bottom) inside one capsule — not mixed on one band."""
+    with hg.open_viewer(gpu_browser) as (page, errors):
+        hg.set_span(page, 400)
+        res = hg.seed_mixed_reads(page, [
+            {"n": 8, "haplotype": 1, "snp": True, "snpBase": "A", "snpFrac": 0.30},
+            {"n": 8, "haplotype": 2, "snp": True, "snpBase": "T", "snpFrac": 0.70},
+        ], collapsed=True)
+        assert res["hasWebGPU"] is True
+        page.wait_for_timeout(500)
+        img, px = hg.region_pixels(page, hg.canvas_box(page))
+        W, H = img.size
+        green_ys = [i // W for i, p in enumerate(px) if _base_green(p)]
+        red_ys = [i // W for i, p in enumerate(px) if _base_red(p)]
+        assert green_ys, "no HP1 (A/green) SNP pixels in collapsed split summary"
+        assert red_ys, "no HP2 (T/red) SNP pixels in collapsed split summary"
+        # Inner capsule is ~14px tall starting near y=2; equal halves meet flush.
+        mid = H / 2
+        assert sum(1 for y in green_ys if y < mid) > sum(1 for y in green_ys if y >= mid), \
+            f"HP1 green SNPs not concentrated in the top half (ys={sorted(set(green_ys))}, H={H})"
+        assert sum(1 for y in red_ys if y >= mid) > sum(1 for y in red_ys if y < mid), \
+            f"HP2 red SNPs not concentrated in the bottom half (ys={sorted(set(red_ys))}, H={H})"
+        assert max(green_ys) < min(red_ys) + 2, \
+            f"HP1/HP2 SNP bands overlap too much: green={sorted(set(green_ys))} red={sorted(set(red_ys))}"
+        assert errors == [], errors
+
+
+def test_collapsed_single_haplotype_stays_full_height(gpu_browser):
+    """HP1-only collapsed summary must keep full-height SNP tiles (no half-band
+    split when the other haplotype is absent)."""
+    with hg.open_viewer(gpu_browser) as (page, errors):
+        hg.set_span(page, 400)
+        res = hg.seed_reads(page, n=12, haplotype=1, snp=True, snp_base="A", collapsed=True)
+        assert res["hasWebGPU"] is True
+        page.wait_for_timeout(500)
+        img, px = hg.region_pixels(page, hg.canvas_box(page))
+        W, H = img.size
+        green_ys = [i // W for i, p in enumerate(px) if _base_green(p)]
+        assert green_ys, "no SNP markers in HP1-only collapsed track"
+        span = max(green_ys) - min(green_ys)
+        # Full inner height is ~12px of SNP tile (eh-2 with eh=rowH-4=14).
+        assert span >= 8, (
+            f"HP1-only collapsed SNPs span only {span}px — looks half-banded "
+            f"(ys={sorted(set(green_ys))}, H={H})")
+        assert errors == [], errors
+
+
+def test_expanded_overview_haplotype_split(gpu_browser):
+    """The pinned overview row of an expanded track must also stack HP1/HP2
+    SNP bands, matching the collapsed summary."""
+    with hg.open_viewer(gpu_browser) as (page, errors):
+        hg.set_span(page, 400)
+        res = hg.seed_mixed_reads(page, [
+            {"n": 10, "haplotype": 1, "snp": True, "snpBase": "A", "snpFrac": 0.30},
+            {"n": 10, "haplotype": 2, "snp": True, "snpBase": "T", "snpFrac": 0.70},
+        ], collapsed=False)
+        assert res["hasWebGPU"] is True
+        page.wait_for_timeout(500)
+        img, px = hg.region_pixels(page, hg.canvas_box(page))
+        W, _H = img.size
+        # Overview strip: summaryY≈4, summaryH≈22 → y ~4..26.
+        overview_lo, overview_hi = 2, 28
+        green_ys = [i // W for i, p in enumerate(px)
+                    if _base_green(p) and overview_lo <= (i // W) < overview_hi]
+        red_ys = [i // W for i, p in enumerate(px)
+                  if _base_red(p) and overview_lo <= (i // W) < overview_hi]
+        assert green_ys, "no HP1 green SNPs in the expanded overview strip"
+        assert red_ys, "no HP2 red SNPs in the expanded overview strip"
+        assert max(green_ys) < min(red_ys) + 2, (
+            f"overview HP1/HP2 SNP bands not stacked: "
+            f"green={sorted(set(green_ys))} red={sorted(set(red_ys))}")
+        mid = (min(green_ys + red_ys) + max(green_ys + red_ys)) / 2
+        assert sum(1 for y in green_ys if y < mid) > sum(1 for y in green_ys if y >= mid), \
+            f"overview HP1 greens not in top half: {sorted(set(green_ys))} mid={mid}"
+        assert sum(1 for y in red_ys if y >= mid) > sum(1 for y in red_ys if y < mid), \
+            f"overview HP2 reds not in bottom half: {sorted(set(red_ys))} mid={mid}"
+        assert errors == [], errors
+
+
+def test_collapsed_untagged_snps_span_both_halves(gpu_browser):
+    """Untagged (HP=0) CIGAR elements paint across the full capsule height even
+    when HP1/HP2 are split into stacked halves."""
+    with hg.open_viewer(gpu_browser) as (page, errors):
+        hg.set_span(page, 400)
+        res = hg.seed_mixed_reads(page, [
+            {"n": 6, "haplotype": 1, "snp": True, "snpBase": "A", "snpFrac": 0.25},
+            {"n": 6, "haplotype": 2, "snp": True, "snpBase": "T", "snpFrac": 0.75},
+            {"n": 6, "haplotype": 0, "snp": True, "snpBase": "C", "snpFrac": 0.50},
+        ], collapsed=True)
+        assert res["hasWebGPU"] is True
+        page.wait_for_timeout(500)
+        img, px = hg.region_pixels(page, hg.canvas_box(page))
+        W, H = img.size
+        blue_ys = [i // W for i, p in enumerate(px) if _base_blue(p)]
+        assert blue_ys, "no untagged (C/blue) SNP pixels in collapsed split summary"
+        span = max(blue_ys) - min(blue_ys)
+        # Full-height SNP tile inside the ~14px capsule should span most of it.
+        assert span >= 8, (
+            f"untagged SNPs span only {span}px — expected full capsule height "
+            f"(ys={sorted(set(blue_ys))}, H={H})")
+        mid = H / 2
+        assert min(blue_ys) < mid < max(blue_ys), \
+            f"untagged SNPs should cross the mid split line (ys={sorted(set(blue_ys))})"
         assert errors == [], errors

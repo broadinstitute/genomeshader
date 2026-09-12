@@ -102,10 +102,13 @@ function createSmartTrack(strategy, selectedAlleles) {
   const track = {
     id: trackId,
     label: "Loading...",  // Initial label, will be updated when sample is loaded
-    collapsed: true,  // true = closed (~22px single read) by default, false = open (220px)
+    collapsed: true,  // true = closed (summary strip) by default, false = open (220px)
     hidden: false,      // true = not displayed at all
     height: 220,       // Open height
-    closedHeight: 22,  // Closed height (single read: 2px top + 18px row + 2px bottom, no header gap)
+    // Closed slot: taller than the 24px label pill so adjacent labels don't
+    // touch, with a few px of breathing room. Summary paints nearly label-tall
+    // and centered inside this slot.
+    closedHeight: 30,
     minHeight: 50,
     strategy: strategy,
     selectedAlleles: new Set(selectedAlleles),
@@ -358,14 +361,84 @@ function _readsLocusSig() {
     return state.contig + ":" + Math.floor(state.startBp) + "-" + Math.ceil(state.endBp);
   } catch (e) { return ""; }
 }
-function _cacheSmartReads(sampleId, reads, bamUrls) {
+function _cacheSmartReads(sampleId, reads, bamUrls, bamUrl) {
   if (!sampleId) return;
-  const key = sampleId + "|" + _readsLocusSig();
+  const key = sampleId + "|" + (bamUrl || "") + "|" + _readsLocusSig();
   _smartReadsCache.delete(key);          // move-to-front
-  _smartReadsCache.set(key, { reads: reads, bamUrls: bamUrls || [] });
+  _smartReadsCache.set(key, { reads: reads, bamUrls: bamUrls || [], bamUrl: bamUrl || null });
   while (_smartReadsCache.size > _SMART_READS_CACHE_MAX) {
     _smartReadsCache.delete(_smartReadsCache.keys().next().value);
   }
+}
+
+// BAM/CRAM URLs resolved for a sample (from config). Empty when unknown —
+// fetch_reads will resolve on the kernel. Multi-URL samples get one track each.
+function bamUrlsForSample(sampleId) {
+  if (!sampleId) return [];
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const idx = cfg.read_bam_index || {};
+  if (Array.isArray(idx[sampleId]) && idx[sampleId].length) {
+    return idx[sampleId].slice();
+  }
+  const sm = cfg.sample_mapping || {};
+  if (Array.isArray(sm[sampleId]) && sm[sampleId].length) {
+    return sm[sampleId].slice();
+  }
+  return [];
+}
+
+function isSampleBamTrackLoaded(sampleId, bamUrl) {
+  return (state.smartTracks || []).some((t) => {
+    if (t.sampleId !== sampleId) return false;
+    if (!bamUrl) return true;
+    if (t.requestedBamUrl === bamUrl) return true;
+    return Array.isArray(t.bamUrls) && t.bamUrls.length === 1 && t.bamUrls[0] === bamUrl;
+  });
+}
+
+function isSampleFullyLoaded(sampleId) {
+  const urls = bamUrlsForSample(sampleId);
+  if (!urls.length) {
+    return (state.smartTracks || []).some((t) => t.sampleId === sampleId);
+  }
+  return urls.every((u) => isSampleBamTrackLoaded(sampleId, u));
+}
+
+// Create one smart track per unresolved BAM for this sample and kick off fetches.
+// Returns the list of fetch promises (may be empty if already fully loaded).
+function spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleType) {
+  const promises = [];
+  if (!sampleId) return promises;
+  if (isSampleFullyLoaded(sampleId)) return promises;
+  const alleles = selectedAlleles instanceof Set
+    ? selectedAlleles
+    : new Set(selectedAlleles || []);
+  const urls = bamUrlsForSample(sampleId);
+  const bamList = urls.length
+    ? urls.filter((u) => !isSampleBamTrackLoaded(sampleId, u))
+    : [null];
+  for (const bamUrl of bamList) {
+    const track = createSmartTrack(strategy, Array.from(alleles));
+    track.sampleId = sampleId;
+    track.requestedBamUrl = bamUrl || null;
+    if (sampleType) track.sampleType = sampleType;
+    promises.push(
+      fetchReadsForSmartTrack(track.id, strategy, alleles, sampleId, bamUrl || undefined)
+        .catch((err) => {
+          console.error("Failed to load reads for Smart track:", err);
+        })
+    );
+  }
+  if (typeof clusterSmartTracksByGrouping === "function") {
+    clusterSmartTracksByGrouping();
+  }
+  return promises;
+}
+
+if (typeof window !== "undefined") {
+  window.__GS_bamUrlsForSample = bamUrlsForSample;
+  window.__GS_isSampleFullyLoaded = isSampleFullyLoaded;
+  window.__GS_spawnSmartTracksForSample = spawnSmartTracksForSample;
 }
 
 // Bottom-bar status for read loads, COUNTED so concurrent loads (e.g. 3 samples
@@ -393,15 +466,28 @@ function _readStatusDone(label, isError) {
   }
 }
 
-function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
+function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, bamUrl) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) {
     console.error(`Smart track ${trackId} not found`);
     return Promise.reject(new Error('Track not found'));
   }
+  // Pin an explicit BAM when the caller asks for one. When switching samples
+  // without a new BAM, drop the previous pin — otherwise shuffle/reload sends
+  // the old sample's bam_url for the new sample_id, the kernel returns an empty
+  // payload, and we delete the track.
+  if (bamUrl) {
+    track.requestedBamUrl = bamUrl;
+  } else if (sampleId != null && track.sampleId != null
+      && String(sampleId) !== String(track.sampleId)) {
+    track.requestedBamUrl = null;
+  }
+  const requestedBam = track.requestedBamUrl || null;
 
-  // Instant path: a known sample previously loaded at this locus.
-  const cacheKey = sampleId ? (sampleId + "|" + _readsLocusSig()) : null;
+  // Instant path: a known sample(+bam) previously loaded at this locus.
+  const cacheKey = sampleId
+    ? (sampleId + "|" + (requestedBam || "") + "|" + _readsLocusSig())
+    : null;
   if (cacheKey && _smartReadsCache.has(cacheKey)) {
     const hit = _smartReadsCache.get(cacheKey);
     track.loading = false;
@@ -409,6 +495,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     track.readsLayout = processReadsData(hit.reads);
     track.sampleId = sampleId;
     track.bamUrls = hit.bamUrls || [];
+    track.requestedBamUrl = hit.bamUrl || requestedBam;
     updateSmartTrackLabel(track);
     renderAll();
     // Instant cache hit: flash a brief confirmation so the user sees something
@@ -428,7 +515,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
   // Convert selectedAlleles Set to array
   const allelesArray = Array.from(selectedAlleles);
 
-  return sendCommMessage('fetch_reads', {
+  const req = {
     strategy: strategy,
     selected_alleles: allelesArray,
     sample_id: sampleId || null,
@@ -437,7 +524,10 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     // goes stale — reads would come back for the old region and never align with
     // what's on screen. Matches _readsLocusSig() so the client read cache agrees.
     locus: _readsLocusSig() || null
-  })
+  };
+  if (requestedBam) req.bam_url = requestedBam;
+
+  return sendCommMessage('fetch_reads', req)
     .then(function(response) {
       track.loading = false;
       if (response.type === 'fetch_reads_response') {
@@ -447,6 +537,25 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
           _readStatusDone(false);
           removeSmartTrack(trackId);
           return null;
+        }
+        // Stale config / no bam_url requested but the kernel resolved multiple
+        // BAMs for this sample: keep this track for the first URL and spawn
+        // sibling tracks for the rest (one track per BAM).
+        if (!requestedBam && response.bam_urls.length > 1) {
+          const urls = response.bam_urls.slice();
+          _readStatusDone(false);
+          track.requestedBamUrl = urls[0];
+          for (let i = 1; i < urls.length; i++) {
+            if (isSampleBamTrackLoaded(sampleId || response.sample_id, urls[i])) continue;
+            const sibling = createSmartTrack(strategy, selectedAlleles);
+            sibling.sampleId = sampleId || response.sample_id || null;
+            sibling.requestedBamUrl = urls[i];
+            sibling.sampleType = track.sampleType || null;
+            fetchReadsForSmartTrack(sibling.id, strategy, selectedAlleles,
+              sibling.sampleId, urls[i]).catch(() => {});
+          }
+          return fetchReadsForSmartTrack(trackId, strategy, selectedAlleles,
+            sampleId || response.sample_id, urls[0]);
         }
         const sn = sampleId || response.sample_id;
         _readStatusDone('Loaded reads' + (sn ? ' for ' + sn : ''), false);
@@ -471,7 +580,8 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
         track.bamUrls = response.bam_urls || [];
-        _cacheSmartReads(track.sampleId, response.reads, track.bamUrls);
+        track.requestedBamUrl = requestedBam || (track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+        _cacheSmartReads(track.sampleId, response.reads, track.bamUrls, track.requestedBamUrl);
 
         // Update track label to use sample name
         updateSmartTrackLabel(track);
@@ -565,17 +675,55 @@ function reloadSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
   
-  // Reload with the same sample ID
-  fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId)
+  // Keep the same BAM pin so multi-BAM samples reload this file only.
+  const bamUrl = track.requestedBamUrl
+    || (track.bamUrls && track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+  fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId,
+    bamUrl || undefined)
     .catch(err => {
       console.error(`Failed to reload track ${trackId}:`, err);
     });
+}
+
+// Pick one BAM URL for a sample when replacing a single track (shuffle/reload).
+// Prefers a file whose basename shares a token with the previous BAM (e.g. both
+// "long" or both "short"), otherwise the first resolved URL.
+function pickBamUrlForSample(sampleId, previousBamUrl) {
+  const urls = bamUrlsForSample(sampleId);
+  if (!urls.length) return null;
+  if (urls.length === 1) return urls[0];
+  if (!previousBamUrl || typeof getBasename !== "function") return urls[0];
+  const prev = String(getBasename(previousBamUrl) || "").toLowerCase();
+  const tokens = prev.split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+  for (const u of urls) {
+    const b = String(getBasename(u) || "").toLowerCase();
+    if (tokens.some((t) => b.includes(t) && t !== String(sampleId).toLowerCase())) {
+      return u;
+    }
+  }
+  return urls[0];
 }
 
 // Shuffle Smart track (choose a new/different sample)
 function shuffleSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
+
+  const prevBam = track.requestedBamUrl
+    || (track.bamUrls && track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+
+  function fetchShuffled(sampleId) {
+    if (!sampleId) return;
+    // Clear the old pin, then lock onto one BAM for the new sample so shuffle
+    // replaces this track instead of spawning every BAM as a sibling.
+    track.requestedBamUrl = null;
+    const bamUrl = pickBamUrlForSample(sampleId, prevBam);
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId,
+      bamUrl || undefined)
+      .catch(err => {
+        console.error(`Failed to shuffle track ${trackId}:`, err);
+      });
+  }
   
   // For carriers_controls strategy, preserve the sample type (carrier vs control)
   if (track.strategy === 'carriers_controls' && track.sampleType) {
@@ -618,14 +766,7 @@ function shuffleSmartTrack(trackId) {
     
     // Pick a random sample from the type-specific candidates
     const randomIndex = Math.floor(Math.random() * typeCandidates.length);
-    const sampleId = typeCandidates[randomIndex];
-    
-    // Fetch reads with new sample (preserving the sampleType)
-    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
-      .catch(err => {
-        console.error(`Failed to shuffle track ${trackId}:`, err);
-      });
-    
+    fetchShuffled(typeCandidates[randomIndex]);
     return;
   }
   
@@ -677,13 +818,7 @@ function shuffleSmartTrack(trackId) {
     }
   }
   
-  // Fetch reads with new sample
-  if (sampleId) {
-    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
-      .catch(err => {
-        console.error(`Failed to shuffle track ${trackId}:`, err);
-      });
-  }
+  fetchShuffled(sampleId);
 }
 
 // Update Smart track label based on sampleId or BAM URLs
@@ -694,9 +829,21 @@ function updateSmartTrackLabel(track) {
   
   let newLabel;
   
-  // Use sampleId (VCF sample name from sample mapping) if available
+  // Use sampleId (VCF sample name from sample mapping) if available.
+  // When a sample has multiple BAMs (one track each), append the file basename
+  // so long-read vs short-read tracks are distinguishable.
   if (track.sampleId) {
-    newLabel = track.sampleId;
+    const bam = (track.bamUrls && track.bamUrls.length === 1)
+      ? track.bamUrls[0]
+      : (track.requestedBamUrl || null);
+    const siblings = bamUrlsForSample(track.sampleId);
+    const multi = siblings.length > 1
+      || (state.smartTracks || []).filter((t) => t.sampleId === track.sampleId).length > 1;
+    if (multi && bam && typeof getBasename === "function") {
+      newLabel = track.sampleId + " · " + getBasename(bam);
+    } else {
+      newLabel = track.sampleId;
+    }
   } else if (track.bamUrls && track.bamUrls.length > 0) {
     // Fallback to BAM basenames if sampleId not available
     // Use functions from main.js (available at runtime)
@@ -756,6 +903,89 @@ function editSmartTrackLabel(trackId, newLabel) {
 
 // Right sidebar for Tracks (layout order, visibility, labels)
 // -----------------------------
+
+// Reorder loaded Smart Tracks into blocks by the active grouping column.
+// Within each group, preserve the previous relative order (load / drag order).
+function clusterSmartTracksByGrouping() {
+  const col = state.groupingVariable;
+  if (!col || typeof getSampleGroupValue !== "function") {
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+    return;
+  }
+  const smartIds = new Set(
+    (state.smartTracks || []).map(t => t.id).filter(id => String(id).startsWith("smart-track-"))
+  );
+  if (!smartIds.size) {
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+    return;
+  }
+
+  const spec = typeof getGroupingColumnSpec === "function" ? getGroupingColumnSpec(col) : null;
+  const groupOrder = (spec && Array.isArray(spec.values))
+    ? spec.values.map(v => String(v.value))
+    : [];
+
+  const nonSmart = [];
+  const byGroup = new Map(); // group -> [track] in prior relative order
+  for (const track of state.tracks) {
+    if (!smartIds.has(track.id)) {
+      nonSmart.push(track);
+      continue;
+    }
+    const sampleId = (typeof smartTrackSampleId === "function")
+      ? smartTrackSampleId(track)
+      : ((state.smartTracks || []).find(st => st.id === track.id) || {}).sampleId || track.label;
+    const g = String(getSampleGroupValue(sampleId, col) || "(unlabeled)");
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g).push(track);
+  }
+
+  const orderedGroups = [];
+  for (const g of groupOrder) {
+    if (byGroup.has(g)) orderedGroups.push(g);
+  }
+  for (const g of byGroup.keys()) {
+    if (orderedGroups.indexOf(g) < 0) orderedGroups.push(g);
+  }
+
+  // Keep non-smart tracks in their relative order; splice smart tracks after flow
+  // as a contiguous grouped block (matching createSmartTrack insertion).
+  const flowIdx = nonSmart.findIndex(t => t.id === "flow" || String(t.id).startsWith("flow-"));
+  const clusteredSmart = [];
+  for (const g of orderedGroups) {
+    clusteredSmart.push(...byGroup.get(g));
+  }
+  let next;
+  if (flowIdx >= 0) {
+    next = [
+      ...nonSmart.slice(0, flowIdx + 1),
+      ...clusteredSmart,
+      ...nonSmart.slice(flowIdx + 1),
+    ];
+  } else {
+    next = [...nonSmart, ...clusteredSmart];
+  }
+  state.tracks = next;
+
+  // Align smartTracks array with layout order among smart ids
+  if (Array.isArray(state.smartTracks) && state.smartTracks.length) {
+    const smartMap = new Map(state.smartTracks.map(t => [t.id, t]));
+    const orderedSmart = clusteredSmart.map(t => smartMap.get(t.id)).filter(Boolean);
+    const seen = new Set(orderedSmart.map(t => t.id));
+    for (const t of state.smartTracks) {
+      if (!seen.has(t.id)) orderedSmart.push(t);
+    }
+    state.smartTracks = orderedSmart;
+  }
+
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof renderAll === "function") renderAll();
+}
+
+if (typeof window !== "undefined") {
+  window.clusterSmartTracksByGrouping = clusterSmartTracksByGrouping;
+}
 
 // Render Tracks list in right sidebar (all layout tracks, not just smart samples)
 function renderSmartTracksSidebar() {
@@ -845,6 +1075,37 @@ function renderSmartTracksSidebar() {
   // Add drop handler to container
   smartTracksList.addEventListener('dragover', handleContainerDragover);
   smartTracksList.addEventListener('drop', handleContainerDrop);
+
+  let currentGroupKey = null;
+  let currentGroupItems = null;
+  const groupingCol = state.groupingVariable;
+
+  const closeGroupBlock = () => {
+    currentGroupKey = null;
+    currentGroupItems = null;
+  };
+
+  const ensureGroupBlock = (groupName, groupColor) => {
+    if (currentGroupKey === groupName && currentGroupItems) return currentGroupItems;
+    const block = document.createElement("div");
+    block.className = "smart-track-group-block";
+    const rail = document.createElement("div");
+    rail.className = "smart-track-group-rail";
+    if (groupColor) rail.style.color = groupColor;
+    const railLabel = document.createElement("span");
+    railLabel.className = "smart-track-group-rail-label";
+    railLabel.textContent = groupName;
+    railLabel.title = groupingCol ? `${groupingCol}: ${groupName}` : groupName;
+    rail.appendChild(railLabel);
+    const items = document.createElement("div");
+    items.className = "smart-track-group-items";
+    block.appendChild(rail);
+    block.appendChild(items);
+    smartTracksList.appendChild(block);
+    currentGroupKey = groupName;
+    currentGroupItems = items;
+    return items;
+  };
   
   tracksInOrder.forEach((track) => {
     const isSmart = track.id.startsWith('smart-track-');
@@ -852,10 +1113,29 @@ function renderSmartTracksSidebar() {
       ? (state.smartTracks || []).find(st => st.id === track.id)
       : null;
 
+    let appendParent = smartTracksList;
+    if (isSmart && groupingCol && typeof getSampleGroupValue === "function") {
+      const sampleId = (typeof smartTrackSampleId === "function")
+        ? smartTrackSampleId(track)
+        : ((smartMeta && smartMeta.sampleId) || track.sampleId || track.label);
+      const g = String(getSampleGroupValue(sampleId, groupingCol) || "(unlabeled)");
+      const color = (typeof getGroupColor === "function") ? getGroupColor(groupingCol, g) : null;
+      appendParent = ensureGroupBlock(g, color);
+    } else {
+      closeGroupBlock();
+    }
+
     const item = document.createElement('div');
     item.className = 'smart-track-item';
     item.dataset.trackId = track.id;
     item.draggable = true;
+
+    if (isSmart) {
+      if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+        item.classList.add("group-filtered-out");
+        item.title = "Hidden while another participant group is selected";
+      }
+    }
     
     const header = document.createElement('div');
     header.className = 'smart-track-item-header';
@@ -1010,10 +1290,13 @@ function renderSmartTracksSidebar() {
       
       const afterElement = getDragAfterElement(smartTracksList, e.clientY);
       const dragging = document.querySelector('.smart-track-item.dragging');
+      if (!dragging) return;
       if (afterElement == null) {
-        smartTracksList.appendChild(dragging);
+        // Prefer appending inside the last open group items tray when present.
+        const lastGroupItems = smartTracksList.querySelector('.smart-track-group-block:last-child .smart-track-group-items');
+        (lastGroupItems || smartTracksList).appendChild(dragging);
       } else {
-        smartTracksList.insertBefore(dragging, afterElement);
+        afterElement.parentNode.insertBefore(dragging, afterElement);
       }
     });
     
@@ -1023,7 +1306,7 @@ function renderSmartTracksSidebar() {
       e.stopPropagation();
     });
     
-    smartTracksList.appendChild(item);
+    appendParent.appendChild(item);
   });
 }
 
