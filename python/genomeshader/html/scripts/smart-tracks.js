@@ -941,8 +941,17 @@ function clusterSmartTracksByGrouping() {
   }
 
   const orderedGroups = [];
+  // Prefer current layout order so sidebar group-rail drags stick across reloads.
+  for (const track of state.tracks) {
+    if (!smartIds.has(track.id)) continue;
+    const sampleId = (typeof smartTrackSampleId === "function")
+      ? smartTrackSampleId(track)
+      : ((state.smartTracks || []).find(st => st.id === track.id) || {}).sampleId || track.label;
+    const g = String(getSampleGroupValue(sampleId, col) || "(unlabeled)");
+    if (byGroup.has(g) && orderedGroups.indexOf(g) < 0) orderedGroups.push(g);
+  }
   for (const g of groupOrder) {
-    if (byGroup.has(g)) orderedGroups.push(g);
+    if (byGroup.has(g) && orderedGroups.indexOf(g) < 0) orderedGroups.push(g);
   }
   for (const g of byGroup.keys()) {
     if (orderedGroups.indexOf(g) < 0) orderedGroups.push(g);
@@ -1066,6 +1075,14 @@ function renderSmartTracksSidebar() {
   const handleContainerDragover = (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
+    const draggingGroup = smartTracksList.querySelector('.smart-track-group-block.dragging-group');
+    if (!draggingGroup) return;
+    const afterElement = getDragAfterTopLevel(smartTracksList, e.clientY, draggingGroup);
+    if (afterElement == null) {
+      smartTracksList.appendChild(draggingGroup);
+    } else {
+      smartTracksList.insertBefore(draggingGroup, afterElement);
+    }
   };
   
   // Store handlers to allow removal later
@@ -1089,18 +1106,37 @@ function renderSmartTracksSidebar() {
     if (currentGroupKey === groupName && currentGroupItems) return currentGroupItems;
     const block = document.createElement("div");
     block.className = "smart-track-group-block";
+    block.dataset.groupValue = groupName;
     const rail = document.createElement("div");
     rail.className = "smart-track-group-rail";
+    rail.draggable = true;
+    rail.title = (groupingCol ? `${groupingCol}: ${groupName}` : groupName) + " — drag to reorder group";
     if (groupColor) rail.style.color = groupColor;
     const railLabel = document.createElement("span");
     railLabel.className = "smart-track-group-rail-label";
     railLabel.textContent = groupName;
-    railLabel.title = groupingCol ? `${groupingCol}: ${groupName}` : groupName;
     rail.appendChild(railLabel);
     const items = document.createElement("div");
     items.className = "smart-track-group-items";
     block.appendChild(rail);
     block.appendChild(items);
+
+    rail.addEventListener("dragstart", (e) => {
+      e.stopPropagation();
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", "group:" + groupName);
+      // Avoid individual items being treated as the drag source.
+      block.classList.add("dragging-group");
+      document.querySelectorAll(".smart-track-item.dragging").forEach((el) => {
+        el.classList.remove("dragging");
+      });
+    });
+    rail.addEventListener("dragend", (e) => {
+      e.stopPropagation();
+      block.classList.remove("dragging-group");
+      applyTrackOrderFromDom();
+    });
+
     smartTracksList.appendChild(block);
     currentGroupKey = groupName;
     currentGroupItems = items;
@@ -1274,6 +1310,11 @@ function renderSmartTracksSidebar() {
     
     // Drag and drop handlers
     item.addEventListener('dragstart', (e) => {
+      // Don't start an item drag while a group rail drag is active.
+      if (smartTracksList.querySelector('.smart-track-group-block.dragging-group')) {
+        e.preventDefault();
+        return;
+      }
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', track.id);
       item.classList.add('dragging');
@@ -1287,6 +1328,8 @@ function renderSmartTracksSidebar() {
     item.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
+      // Group reordering is handled on the list container.
+      if (smartTracksList.querySelector('.smart-track-group-block.dragging-group')) return;
       
       const afterElement = getDragAfterElement(smartTracksList, e.clientY);
       const dragging = document.querySelector('.smart-track-item.dragging');
@@ -1323,6 +1366,23 @@ function getDragAfterElement(container, y) {
     } else {
       return closest;
     }
+  }, { offset: Number.NEGATIVE_INFINITY }).element;
+}
+
+// Top-level reorder target for whole group blocks (and ungrouped track rows).
+function getDragAfterTopLevel(container, y, draggingEl) {
+  const children = [...container.children].filter((el) => {
+    if (el === draggingEl) return false;
+    return el.classList.contains('smart-track-group-block')
+      || el.classList.contains('smart-track-item');
+  });
+  return children.reduce((closest, child) => {
+    const box = child.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    if (offset < 0 && offset > closest.offset) {
+      return { offset: offset, element: child };
+    }
+    return closest;
   }, { offset: Number.NEGATIVE_INFINITY }).element;
 }
 

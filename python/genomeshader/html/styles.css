@@ -461,7 +461,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   display: flex;
   flex-direction: column;
   padding: 9px 10px;
-  margin: 7px 0;
+  margin: 4px 0;
   border-radius: 10px;
   background: var(--panel2);
   border: 1px solid transparent;
@@ -696,14 +696,26 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   display: flex;
   align-items: stretch;
   gap: 6px;
-  margin: 6px 0 10px;
+  margin: 4px 0;
+}
+.smart-track-group-block.dragging-group {
+  opacity: 0.55;
 }
 .smart-track-group-rail {
-  flex: 0 0 14px;
+  flex: 0 0 16px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--muted);
+  cursor: grab;
+  border-radius: 4px;
+  user-select: none;
+}
+.smart-track-group-rail:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.smart-track-group-rail:active {
+  cursor: grabbing;
 }
 .smart-track-group-rail-label {
   writing-mode: vertical-rl;
@@ -724,10 +736,12 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .smart-track-group-items {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .smart-track-group-items .smart-track-item {
-  /* Keep the same pill rhythm; the rail provides the group cue. */
-  margin-left: 0;
+  margin: 0;
 }
 
 .smart-track-item.group-filtered-out {
