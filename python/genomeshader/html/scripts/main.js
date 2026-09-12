@@ -1543,6 +1543,15 @@ function renderTrackControls() {
     const controls = document.createElement("div");
     controls.className = "track-controls";
     controls.dataset.trackId = track.id;
+
+    // Grouping Variable: tint Smart Track control pills with the sample's group color.
+    if (isSmartTrack && typeof groupColorForSmartTrack === "function") {
+      const gColor = groupColorForSmartTrack(track);
+      if (gColor) {
+        controls.style.borderLeft = `3px solid ${gColor}`;
+        controls.classList.add("group-tinted");
+      }
+    }
     
     // Only a fully hidden track (which takes no layout space) drops controls.
     // Collapsed tracks keep their control bar (label + expand ▶) visible — see

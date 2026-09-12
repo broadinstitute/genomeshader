@@ -304,6 +304,36 @@ function getSampleGroupValue(sampleId, columnName) {
   return String(attrs[columnName]);
 }
 
+function smartTrackSampleId(track) {
+  if (!track) return null;
+  if (track.sampleId) return String(track.sampleId);
+  const smartMeta = (typeof state !== "undefined" && Array.isArray(state.smartTracks))
+    ? state.smartTracks.find(st => st && st.id === track.id)
+    : null;
+  if (smartMeta && smartMeta.sampleId) return String(smartMeta.sampleId);
+  return track.label ? String(track.label) : null;
+}
+
+/** True when a Participant-group pill is filtering this sample out. */
+function isSmartTrackExcludedByGrouping(track) {
+  if (!track || !String(track.id || "").startsWith("smart-track-")) return false;
+  const col = state.groupingVariable;
+  const filter = state.groupingFilter;
+  if (!col || filter == null || filter === "") return false;
+  const sid = smartTrackSampleId(track);
+  const g = String(getSampleGroupValue(sid, col) || "(unlabeled)");
+  return g !== String(filter);
+}
+
+function groupColorForSmartTrack(track) {
+  const col = state.groupingVariable;
+  if (!col || !track) return null;
+  const sid = smartTrackSampleId(track);
+  const g = getSampleGroupValue(sid, col);
+  if (g == null) return null;
+  return (typeof getGroupColor === "function") ? getGroupColor(col, g) : null;
+}
+
 function updateGroupingVariableSelect() {
   if (!groupingVariableSelect) return;
   const cols = getGroupingEligibleColumns();
@@ -357,6 +387,7 @@ function setGroupingVariable(columnName) {
     window.clusterSmartTracksByGrouping();
   }
   if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
   if (typeof renderAll === "function") renderAll();
 }
 
@@ -374,6 +405,8 @@ function setGroupingFilter(groupValue) {
   if (window.ribbonTransitionCache && typeof window.ribbonTransitionCache.clear === "function") {
     window.ribbonTransitionCache.clear();
   }
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
   if (typeof renderAll === "function") renderAll();
 }
 
@@ -488,6 +521,9 @@ if (typeof window !== "undefined") {
   window.getGroupingColumnSpec = getGroupingColumnSpec;
   window.getGroupColor = getGroupColor;
   window.getSampleGroupValue = getSampleGroupValue;
+  window.smartTrackSampleId = smartTrackSampleId;
+  window.isSmartTrackExcludedByGrouping = isSmartTrackExcludedByGrouping;
+  window.groupColorForSmartTrack = groupColorForSmartTrack;
   window.setGroupingVariable = setGroupingVariable;
   window.setGroupingFilter = setGroupingFilter;
   window.renderParticipantGroups = renderParticipantGroups;

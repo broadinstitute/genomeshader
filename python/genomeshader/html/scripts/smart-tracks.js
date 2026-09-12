@@ -905,6 +905,7 @@ function editSmartTrackLabel(trackId, newLabel) {
 // -----------------------------
 
 // Reorder loaded Smart Tracks into blocks by the active grouping column.
+// Within each group, preserve the previous relative order (load / drag order).
 function clusterSmartTracksByGrouping() {
   const col = state.groupingVariable;
   if (!col || typeof getSampleGroupValue !== "function") {
@@ -925,14 +926,15 @@ function clusterSmartTracksByGrouping() {
     : [];
 
   const nonSmart = [];
-  const byGroup = new Map(); // group -> [track]
+  const byGroup = new Map(); // group -> [track] in prior relative order
   for (const track of state.tracks) {
     if (!smartIds.has(track.id)) {
       nonSmart.push(track);
       continue;
     }
-    const smartMeta = (state.smartTracks || []).find(st => st.id === track.id);
-    const sampleId = (smartMeta && smartMeta.sampleId) || track.sampleId || track.label;
+    const sampleId = (typeof smartTrackSampleId === "function")
+      ? smartTrackSampleId(track)
+      : ((state.smartTracks || []).find(st => st.id === track.id) || {}).sampleId || track.label;
     const g = String(getSampleGroupValue(sampleId, col) || "(unlabeled)");
     if (!byGroup.has(g)) byGroup.set(g, []);
     byGroup.get(g).push(track);
@@ -1074,8 +1076,36 @@ function renderSmartTracksSidebar() {
   smartTracksList.addEventListener('dragover', handleContainerDragover);
   smartTracksList.addEventListener('drop', handleContainerDrop);
 
-  let lastGroupHeader = null;
+  let currentGroupKey = null;
+  let currentGroupItems = null;
   const groupingCol = state.groupingVariable;
+
+  const closeGroupBlock = () => {
+    currentGroupKey = null;
+    currentGroupItems = null;
+  };
+
+  const ensureGroupBlock = (groupName, groupColor) => {
+    if (currentGroupKey === groupName && currentGroupItems) return currentGroupItems;
+    const block = document.createElement("div");
+    block.className = "smart-track-group-block";
+    const rail = document.createElement("div");
+    rail.className = "smart-track-group-rail";
+    if (groupColor) rail.style.color = groupColor;
+    const railLabel = document.createElement("span");
+    railLabel.className = "smart-track-group-rail-label";
+    railLabel.textContent = groupName;
+    railLabel.title = groupingCol ? `${groupingCol}: ${groupName}` : groupName;
+    rail.appendChild(railLabel);
+    const items = document.createElement("div");
+    items.className = "smart-track-group-items";
+    block.appendChild(rail);
+    block.appendChild(items);
+    smartTracksList.appendChild(block);
+    currentGroupKey = groupName;
+    currentGroupItems = items;
+    return items;
+  };
   
   tracksInOrder.forEach((track) => {
     const isSmart = track.id.startsWith('smart-track-');
@@ -1083,24 +1113,29 @@ function renderSmartTracksSidebar() {
       ? (state.smartTracks || []).find(st => st.id === track.id)
       : null;
 
+    let appendParent = smartTracksList;
     if (isSmart && groupingCol && typeof getSampleGroupValue === "function") {
-      const sampleId = (smartMeta && smartMeta.sampleId) || track.sampleId || track.label;
+      const sampleId = (typeof smartTrackSampleId === "function")
+        ? smartTrackSampleId(track)
+        : ((smartMeta && smartMeta.sampleId) || track.sampleId || track.label);
       const g = String(getSampleGroupValue(sampleId, groupingCol) || "(unlabeled)");
-      if (g !== lastGroupHeader) {
-        lastGroupHeader = g;
-        const hdr = document.createElement("div");
-        hdr.className = "smart-track-group-header";
-        hdr.textContent = g;
-        const color = typeof getGroupColor === "function" ? getGroupColor(groupingCol, g) : null;
-        if (color) hdr.style.borderLeftColor = color;
-        smartTracksList.appendChild(hdr);
-      }
+      const color = (typeof getGroupColor === "function") ? getGroupColor(groupingCol, g) : null;
+      appendParent = ensureGroupBlock(g, color);
+    } else {
+      closeGroupBlock();
     }
 
     const item = document.createElement('div');
     item.className = 'smart-track-item';
     item.dataset.trackId = track.id;
     item.draggable = true;
+
+    if (isSmart) {
+      if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+        item.classList.add("group-filtered-out");
+        item.title = "Hidden while another participant group is selected";
+      }
+    }
     
     const header = document.createElement('div');
     header.className = 'smart-track-item-header';
@@ -1255,10 +1290,13 @@ function renderSmartTracksSidebar() {
       
       const afterElement = getDragAfterElement(smartTracksList, e.clientY);
       const dragging = document.querySelector('.smart-track-item.dragging');
+      if (!dragging) return;
       if (afterElement == null) {
-        smartTracksList.appendChild(dragging);
+        // Prefer appending inside the last open group items tray when present.
+        const lastGroupItems = smartTracksList.querySelector('.smart-track-group-block:last-child .smart-track-group-items');
+        (lastGroupItems || smartTracksList).appendChild(dragging);
       } else {
-        smartTracksList.insertBefore(dragging, afterElement);
+        afterElement.parentNode.insertBefore(dragging, afterElement);
       }
     });
     
@@ -1268,7 +1306,7 @@ function renderSmartTracksSidebar() {
       e.stopPropagation();
     });
     
-    smartTracksList.appendChild(item);
+    appendParent.appendChild(item);
   });
 }
 
