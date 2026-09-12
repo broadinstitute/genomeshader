@@ -46,7 +46,7 @@ def test_widget_reads_response():
     # Reads must be fetched for the CURRENTLY VIEWED window (passed from the
     # client), not the server's stale last-rendered locus.
     shader._fetch_reads_payload.assert_called_once_with(
-        sample_id="S1", samples=None, locus="chr1:100-200")
+        sample_id="S1", samples=None, locus="chr1:100-200", bam_url=None)
 
 
 def test_widget_reads_error():
@@ -400,6 +400,23 @@ def test_staged_reference_forwarded_to_fetch(tmp_path, monkeypatch):
     # ref_seq forwarded verbatim; ref_start is the 1-based locus start (100).
     s._session.fetch_reads_for_locus.assert_called_once_with(
         "Pf3D7_01_v3:100-200", ["gs://b/S1.bam"], "ACGTACGT", 100)
+
+
+def test_reads_payload_filters_to_requested_bam_url(tmp_path, monkeypatch):
+    # Multi-BAM samples fetch one file at a time when bam_url is set (one track
+    # per BAM on the frontend).
+    import polars as pl
+    s = _shader(tmp_path, monkeypatch)
+    s._last_locus = "Pf3D7_01_v3:1-100"
+    s.set_sample_mapping({"S1": ["gs://b/S1_long.bam", "gs://b/S1_short.bam"]})
+    s.reference = Mock(return_value="")
+    s._session.fetch_reads_for_locus = Mock(
+        return_value=pl.DataFrame({"sample_name": ["S1"], "reference_start": [7]}))
+
+    p = s._fetch_reads_payload(sample_id="S1", bam_url="gs://b/S1_long.bam")
+    assert p["bam_urls"] == ["gs://b/S1_long.bam"] and p["count"] == 1
+    s._session.fetch_reads_for_locus.assert_called_once_with(
+        "Pf3D7_01_v3:1-100", ["gs://b/S1_long.bam"], None, 1)
 
 
 def test_reads_payload_skips_sample_without_bam(tmp_path, monkeypatch):

@@ -102,10 +102,13 @@ function createSmartTrack(strategy, selectedAlleles) {
   const track = {
     id: trackId,
     label: "Loading...",  // Initial label, will be updated when sample is loaded
-    collapsed: true,  // true = closed (~22px single read) by default, false = open (220px)
+    collapsed: true,  // true = closed (summary strip) by default, false = open (220px)
     hidden: false,      // true = not displayed at all
     height: 220,       // Open height
-    closedHeight: 22,  // Closed height (single read: 2px top + 18px row + 2px bottom, no header gap)
+    // Closed slot: taller than the 24px label pill so adjacent labels don't
+    // touch, with a few px of breathing room. Summary paints nearly label-tall
+    // and centered inside this slot.
+    closedHeight: 30,
     minHeight: 50,
     strategy: strategy,
     selectedAlleles: new Set(selectedAlleles),
@@ -358,14 +361,81 @@ function _readsLocusSig() {
     return state.contig + ":" + Math.floor(state.startBp) + "-" + Math.ceil(state.endBp);
   } catch (e) { return ""; }
 }
-function _cacheSmartReads(sampleId, reads, bamUrls) {
+function _cacheSmartReads(sampleId, reads, bamUrls, bamUrl) {
   if (!sampleId) return;
-  const key = sampleId + "|" + _readsLocusSig();
+  const key = sampleId + "|" + (bamUrl || "") + "|" + _readsLocusSig();
   _smartReadsCache.delete(key);          // move-to-front
-  _smartReadsCache.set(key, { reads: reads, bamUrls: bamUrls || [] });
+  _smartReadsCache.set(key, { reads: reads, bamUrls: bamUrls || [], bamUrl: bamUrl || null });
   while (_smartReadsCache.size > _SMART_READS_CACHE_MAX) {
     _smartReadsCache.delete(_smartReadsCache.keys().next().value);
   }
+}
+
+// BAM/CRAM URLs resolved for a sample (from config). Empty when unknown —
+// fetch_reads will resolve on the kernel. Multi-URL samples get one track each.
+function bamUrlsForSample(sampleId) {
+  if (!sampleId) return [];
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const idx = cfg.read_bam_index || {};
+  if (Array.isArray(idx[sampleId]) && idx[sampleId].length) {
+    return idx[sampleId].slice();
+  }
+  const sm = cfg.sample_mapping || {};
+  if (Array.isArray(sm[sampleId]) && sm[sampleId].length) {
+    return sm[sampleId].slice();
+  }
+  return [];
+}
+
+function isSampleBamTrackLoaded(sampleId, bamUrl) {
+  return (state.smartTracks || []).some((t) => {
+    if (t.sampleId !== sampleId) return false;
+    if (!bamUrl) return true;
+    if (t.requestedBamUrl === bamUrl) return true;
+    return Array.isArray(t.bamUrls) && t.bamUrls.length === 1 && t.bamUrls[0] === bamUrl;
+  });
+}
+
+function isSampleFullyLoaded(sampleId) {
+  const urls = bamUrlsForSample(sampleId);
+  if (!urls.length) {
+    return (state.smartTracks || []).some((t) => t.sampleId === sampleId);
+  }
+  return urls.every((u) => isSampleBamTrackLoaded(sampleId, u));
+}
+
+// Create one smart track per unresolved BAM for this sample and kick off fetches.
+// Returns the list of fetch promises (may be empty if already fully loaded).
+function spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleType) {
+  const promises = [];
+  if (!sampleId) return promises;
+  if (isSampleFullyLoaded(sampleId)) return promises;
+  const alleles = selectedAlleles instanceof Set
+    ? selectedAlleles
+    : new Set(selectedAlleles || []);
+  const urls = bamUrlsForSample(sampleId);
+  const bamList = urls.length
+    ? urls.filter((u) => !isSampleBamTrackLoaded(sampleId, u))
+    : [null];
+  for (const bamUrl of bamList) {
+    const track = createSmartTrack(strategy, Array.from(alleles));
+    track.sampleId = sampleId;
+    track.requestedBamUrl = bamUrl || null;
+    if (sampleType) track.sampleType = sampleType;
+    promises.push(
+      fetchReadsForSmartTrack(track.id, strategy, alleles, sampleId, bamUrl || undefined)
+        .catch((err) => {
+          console.error("Failed to load reads for Smart track:", err);
+        })
+    );
+  }
+  return promises;
+}
+
+if (typeof window !== "undefined") {
+  window.__GS_bamUrlsForSample = bamUrlsForSample;
+  window.__GS_isSampleFullyLoaded = isSampleFullyLoaded;
+  window.__GS_spawnSmartTracksForSample = spawnSmartTracksForSample;
 }
 
 // Bottom-bar status for read loads, COUNTED so concurrent loads (e.g. 3 samples
@@ -393,15 +463,28 @@ function _readStatusDone(label, isError) {
   }
 }
 
-function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
+function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, bamUrl) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) {
     console.error(`Smart track ${trackId} not found`);
     return Promise.reject(new Error('Track not found'));
   }
+  // Pin an explicit BAM when the caller asks for one. When switching samples
+  // without a new BAM, drop the previous pin — otherwise shuffle/reload sends
+  // the old sample's bam_url for the new sample_id, the kernel returns an empty
+  // payload, and we delete the track.
+  if (bamUrl) {
+    track.requestedBamUrl = bamUrl;
+  } else if (sampleId != null && track.sampleId != null
+      && String(sampleId) !== String(track.sampleId)) {
+    track.requestedBamUrl = null;
+  }
+  const requestedBam = track.requestedBamUrl || null;
 
-  // Instant path: a known sample previously loaded at this locus.
-  const cacheKey = sampleId ? (sampleId + "|" + _readsLocusSig()) : null;
+  // Instant path: a known sample(+bam) previously loaded at this locus.
+  const cacheKey = sampleId
+    ? (sampleId + "|" + (requestedBam || "") + "|" + _readsLocusSig())
+    : null;
   if (cacheKey && _smartReadsCache.has(cacheKey)) {
     const hit = _smartReadsCache.get(cacheKey);
     track.loading = false;
@@ -409,6 +492,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     track.readsLayout = processReadsData(hit.reads);
     track.sampleId = sampleId;
     track.bamUrls = hit.bamUrls || [];
+    track.requestedBamUrl = hit.bamUrl || requestedBam;
     updateSmartTrackLabel(track);
     renderAll();
     // Instant cache hit: flash a brief confirmation so the user sees something
@@ -428,7 +512,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
   // Convert selectedAlleles Set to array
   const allelesArray = Array.from(selectedAlleles);
 
-  return sendCommMessage('fetch_reads', {
+  const req = {
     strategy: strategy,
     selected_alleles: allelesArray,
     sample_id: sampleId || null,
@@ -437,7 +521,10 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
     // goes stale — reads would come back for the old region and never align with
     // what's on screen. Matches _readsLocusSig() so the client read cache agrees.
     locus: _readsLocusSig() || null
-  })
+  };
+  if (requestedBam) req.bam_url = requestedBam;
+
+  return sendCommMessage('fetch_reads', req)
     .then(function(response) {
       track.loading = false;
       if (response.type === 'fetch_reads_response') {
@@ -447,6 +534,25 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
           _readStatusDone(false);
           removeSmartTrack(trackId);
           return null;
+        }
+        // Stale config / no bam_url requested but the kernel resolved multiple
+        // BAMs for this sample: keep this track for the first URL and spawn
+        // sibling tracks for the rest (one track per BAM).
+        if (!requestedBam && response.bam_urls.length > 1) {
+          const urls = response.bam_urls.slice();
+          _readStatusDone(false);
+          track.requestedBamUrl = urls[0];
+          for (let i = 1; i < urls.length; i++) {
+            if (isSampleBamTrackLoaded(sampleId || response.sample_id, urls[i])) continue;
+            const sibling = createSmartTrack(strategy, selectedAlleles);
+            sibling.sampleId = sampleId || response.sample_id || null;
+            sibling.requestedBamUrl = urls[i];
+            sibling.sampleType = track.sampleType || null;
+            fetchReadsForSmartTrack(sibling.id, strategy, selectedAlleles,
+              sibling.sampleId, urls[i]).catch(() => {});
+          }
+          return fetchReadsForSmartTrack(trackId, strategy, selectedAlleles,
+            sampleId || response.sample_id, urls[0]);
         }
         const sn = sampleId || response.sample_id;
         _readStatusDone('Loaded reads' + (sn ? ' for ' + sn : ''), false);
@@ -471,7 +577,8 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId) {
         track.readsLayout = processReadsData(response.reads);
         track.sampleId = sampleId || response.sample_id || null;
         track.bamUrls = response.bam_urls || [];
-        _cacheSmartReads(track.sampleId, response.reads, track.bamUrls);
+        track.requestedBamUrl = requestedBam || (track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+        _cacheSmartReads(track.sampleId, response.reads, track.bamUrls, track.requestedBamUrl);
 
         // Update track label to use sample name
         updateSmartTrackLabel(track);
@@ -565,17 +672,55 @@ function reloadSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
   
-  // Reload with the same sample ID
-  fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId)
+  // Keep the same BAM pin so multi-BAM samples reload this file only.
+  const bamUrl = track.requestedBamUrl
+    || (track.bamUrls && track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+  fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId,
+    bamUrl || undefined)
     .catch(err => {
       console.error(`Failed to reload track ${trackId}:`, err);
     });
+}
+
+// Pick one BAM URL for a sample when replacing a single track (shuffle/reload).
+// Prefers a file whose basename shares a token with the previous BAM (e.g. both
+// "long" or both "short"), otherwise the first resolved URL.
+function pickBamUrlForSample(sampleId, previousBamUrl) {
+  const urls = bamUrlsForSample(sampleId);
+  if (!urls.length) return null;
+  if (urls.length === 1) return urls[0];
+  if (!previousBamUrl || typeof getBasename !== "function") return urls[0];
+  const prev = String(getBasename(previousBamUrl) || "").toLowerCase();
+  const tokens = prev.split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+  for (const u of urls) {
+    const b = String(getBasename(u) || "").toLowerCase();
+    if (tokens.some((t) => b.includes(t) && t !== String(sampleId).toLowerCase())) {
+      return u;
+    }
+  }
+  return urls[0];
 }
 
 // Shuffle Smart track (choose a new/different sample)
 function shuffleSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
+
+  const prevBam = track.requestedBamUrl
+    || (track.bamUrls && track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+
+  function fetchShuffled(sampleId) {
+    if (!sampleId) return;
+    // Clear the old pin, then lock onto one BAM for the new sample so shuffle
+    // replaces this track instead of spawning every BAM as a sibling.
+    track.requestedBamUrl = null;
+    const bamUrl = pickBamUrlForSample(sampleId, prevBam);
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId,
+      bamUrl || undefined)
+      .catch(err => {
+        console.error(`Failed to shuffle track ${trackId}:`, err);
+      });
+  }
   
   // For carriers_controls strategy, preserve the sample type (carrier vs control)
   if (track.strategy === 'carriers_controls' && track.sampleType) {
@@ -618,14 +763,7 @@ function shuffleSmartTrack(trackId) {
     
     // Pick a random sample from the type-specific candidates
     const randomIndex = Math.floor(Math.random() * typeCandidates.length);
-    const sampleId = typeCandidates[randomIndex];
-    
-    // Fetch reads with new sample (preserving the sampleType)
-    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
-      .catch(err => {
-        console.error(`Failed to shuffle track ${trackId}:`, err);
-      });
-    
+    fetchShuffled(typeCandidates[randomIndex]);
     return;
   }
   
@@ -677,13 +815,7 @@ function shuffleSmartTrack(trackId) {
     }
   }
   
-  // Fetch reads with new sample
-  if (sampleId) {
-    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
-      .catch(err => {
-        console.error(`Failed to shuffle track ${trackId}:`, err);
-      });
-  }
+  fetchShuffled(sampleId);
 }
 
 // Update Smart track label based on sampleId or BAM URLs
@@ -694,9 +826,21 @@ function updateSmartTrackLabel(track) {
   
   let newLabel;
   
-  // Use sampleId (VCF sample name from sample mapping) if available
+  // Use sampleId (VCF sample name from sample mapping) if available.
+  // When a sample has multiple BAMs (one track each), append the file basename
+  // so long-read vs short-read tracks are distinguishable.
   if (track.sampleId) {
-    newLabel = track.sampleId;
+    const bam = (track.bamUrls && track.bamUrls.length === 1)
+      ? track.bamUrls[0]
+      : (track.requestedBamUrl || null);
+    const siblings = bamUrlsForSample(track.sampleId);
+    const multi = siblings.length > 1
+      || (state.smartTracks || []).filter((t) => t.sampleId === track.sampleId).length > 1;
+    if (multi && bam && typeof getBasename === "function") {
+      newLabel = track.sampleId + " · " + getBasename(bam);
+    } else {
+      newLabel = track.sampleId;
+    }
   } else if (track.bamUrls && track.bamUrls.length > 0) {
     // Fallback to BAM basenames if sampleId not available
     // Use functions from main.js (available at runtime)
