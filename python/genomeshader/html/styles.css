@@ -1482,6 +1482,12 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   display: flex !important;
   background: var(--panel) !important;
 }
+/* Collapsed smart tracks: vertically center the 24px label pill in the taller
+   closedHeight slot so it shares a midline with the summary strip. */
+.main:not(.vertical) .track-control-container.track-collapsed[data-track-id^="smart-track-"] .track-controls {
+  top: 50%;
+  margin-top: -12px; /* half of .track-controls height (24px) */
+}
 /* The faint 8px indicator line is redundant now the labeled bar shows. */
 .track-collapsed-indicator {
   display: none !important;
