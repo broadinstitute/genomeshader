@@ -165,6 +165,10 @@ function getTrackLayout() {
       if (track.hidden === true) {
         continue;
       }
+      // Participant-group pill: hide Smart Tracks outside the active group.
+      if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+        continue;
+      }
       
       // For standard tracks, don't reserve space for header (controls overlay on hover)
       // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
@@ -231,6 +235,10 @@ function getTrackLayout() {
       // Skip hidden tracks (they take no space)
       // Default to false for backwards compatibility
       if (track.hidden === true) {
+        continue;
+      }
+      // Participant-group pill: hide Smart Tracks outside the active group.
+      if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
         continue;
       }
       
