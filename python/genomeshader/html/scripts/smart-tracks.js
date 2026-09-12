@@ -469,8 +469,17 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
     console.error(`Smart track ${trackId} not found`);
     return Promise.reject(new Error('Track not found'));
   }
-  if (bamUrl) track.requestedBamUrl = bamUrl;
-  const requestedBam = track.requestedBamUrl || bamUrl || null;
+  // Pin an explicit BAM when the caller asks for one. When switching samples
+  // without a new BAM, drop the previous pin — otherwise shuffle/reload sends
+  // the old sample's bam_url for the new sample_id, the kernel returns an empty
+  // payload, and we delete the track.
+  if (bamUrl) {
+    track.requestedBamUrl = bamUrl;
+  } else if (sampleId != null && track.sampleId != null
+      && String(sampleId) !== String(track.sampleId)) {
+    track.requestedBamUrl = null;
+  }
+  const requestedBam = track.requestedBamUrl || null;
 
   // Instant path: a known sample(+bam) previously loaded at this locus.
   const cacheKey = sampleId
@@ -663,17 +672,55 @@ function reloadSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
   
-  // Reload with the same sample ID
-  fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId)
+  // Keep the same BAM pin so multi-BAM samples reload this file only.
+  const bamUrl = track.requestedBamUrl
+    || (track.bamUrls && track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+  fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, track.sampleId,
+    bamUrl || undefined)
     .catch(err => {
       console.error(`Failed to reload track ${trackId}:`, err);
     });
+}
+
+// Pick one BAM URL for a sample when replacing a single track (shuffle/reload).
+// Prefers a file whose basename shares a token with the previous BAM (e.g. both
+// "long" or both "short"), otherwise the first resolved URL.
+function pickBamUrlForSample(sampleId, previousBamUrl) {
+  const urls = bamUrlsForSample(sampleId);
+  if (!urls.length) return null;
+  if (urls.length === 1) return urls[0];
+  if (!previousBamUrl || typeof getBasename !== "function") return urls[0];
+  const prev = String(getBasename(previousBamUrl) || "").toLowerCase();
+  const tokens = prev.split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+  for (const u of urls) {
+    const b = String(getBasename(u) || "").toLowerCase();
+    if (tokens.some((t) => b.includes(t) && t !== String(sampleId).toLowerCase())) {
+      return u;
+    }
+  }
+  return urls[0];
 }
 
 // Shuffle Smart track (choose a new/different sample)
 function shuffleSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
+
+  const prevBam = track.requestedBamUrl
+    || (track.bamUrls && track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+
+  function fetchShuffled(sampleId) {
+    if (!sampleId) return;
+    // Clear the old pin, then lock onto one BAM for the new sample so shuffle
+    // replaces this track instead of spawning every BAM as a sibling.
+    track.requestedBamUrl = null;
+    const bamUrl = pickBamUrlForSample(sampleId, prevBam);
+    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId,
+      bamUrl || undefined)
+      .catch(err => {
+        console.error(`Failed to shuffle track ${trackId}:`, err);
+      });
+  }
   
   // For carriers_controls strategy, preserve the sample type (carrier vs control)
   if (track.strategy === 'carriers_controls' && track.sampleType) {
@@ -716,14 +763,7 @@ function shuffleSmartTrack(trackId) {
     
     // Pick a random sample from the type-specific candidates
     const randomIndex = Math.floor(Math.random() * typeCandidates.length);
-    const sampleId = typeCandidates[randomIndex];
-    
-    // Fetch reads with new sample (preserving the sampleType)
-    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
-      .catch(err => {
-        console.error(`Failed to shuffle track ${trackId}:`, err);
-      });
-    
+    fetchShuffled(typeCandidates[randomIndex]);
     return;
   }
   
@@ -775,13 +815,7 @@ function shuffleSmartTrack(trackId) {
     }
   }
   
-  // Fetch reads with new sample
-  if (sampleId) {
-    fetchReadsForSmartTrack(trackId, track.strategy, track.selectedAlleles, sampleId)
-      .catch(err => {
-        console.error(`Failed to shuffle track ${trackId}:`, err);
-      });
-  }
+  fetchShuffled(sampleId);
 }
 
 // Update Smart track label based on sampleId or BAM URLs

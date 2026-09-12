@@ -1482,11 +1482,11 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   display: flex !important;
   background: var(--panel) !important;
 }
-/* Collapsed smart tracks: vertically center the 24px label pill in the taller
-   closedHeight slot so it shares a midline with the summary strip. */
-.main:not(.vertical) .track-control-container.track-collapsed[data-track-id^="smart-track-"] .track-controls {
-  top: 50%;
-  margin-top: -12px; /* half of .track-controls height (24px) */
+/* Smart-track label pill: same top offset open or closed so expanding doesn't
+   jump the controls up. 3px = (closedHeight 30 − pill 24) / 2, matching the
+   centered summary strip midline. */
+.main:not(.vertical) .track-control-container[data-track-id^="smart-track-"] .track-controls {
+  top: 3px;
 }
 /* The faint 8px indicator line is redundant now the labeled bar shows. */
 .track-collapsed-indicator {
@@ -1516,9 +1516,12 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   overflow: hidden;
   transition: max-width 0.2s ease;
   white-space: nowrap;
+  /* Above the track canvas so the expanded pill keeps receiving hover/clicks */
+  z-index: 100;
 }
 
-.track-controls[data-track-id^="smart-track-"]:hover {
+.track-controls[data-track-id^="smart-track-"]:hover,
+.track-controls[data-track-id^="smart-track-"]:focus-within {
   max-width: 300px; /* Enough for all controls */
 }
 
@@ -2001,6 +2004,14 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 /* Smart Track containers: allow pointer events for dragging */
 .track-control-container[data-track-id^="smart-track-"] {
   pointer-events: auto; /* Need pointer-events for drag detection */
+}
+/* Collapsed smart-track pills must keep pointer-events on the whole control
+   chrome. The generic collapsed rule above sets pointer-events:none so clicks
+   fall through on standard tracks — but that leaves only the label text and
+   individual buttons hittable, so moving across the flex gap onto revealed
+   buttons drops :hover and the max-width expand collapses. */
+.track-control-container.track-collapsed[data-track-id^="smart-track-"] .track-controls {
+  pointer-events: auto !important;
 }
 /* Ensure standard track controls overlay on top of track content */
 .track-control-container.standard-track .track-controls {
