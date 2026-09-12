@@ -96,7 +96,7 @@ def test_carriers_first_k_short_circuits():
     assert len(scanned) == 5, f"scanned {len(scanned)} rows (should stop at 5)"
 
 
-from genomeshader.view import _build_variants_data_from_aggregates
+from genomeshader.view import _build_variants_data_from_aggregates, _apply_persample_scale_gate
 
 
 def test_aggregate_builder_shape_and_counts():
@@ -119,6 +119,8 @@ def test_aggregate_builder_shape_and_counts():
     # per-sample omitted, aggregates present
     assert v1["perSampleOmitted"] is True
     assert "sampleGenotypes" not in v1 and "sampleAlleles" not in v1
+    # empty group counts when no group_counts column
+    assert v1.get("alleleSampleCountsByGroup") == {}
     # G (support 8) sorts before C (support 5) -> altAlleles [G, C]
     assert v1["altAlleles"] == ["G", "C"]
     assert v1["alleleSampleCounts"] == {".": 1, "ref": 10, "a1": 8, "a2": 5}
@@ -129,6 +131,26 @@ def test_aggregate_builder_shape_and_counts():
     v2 = vd[1]
     assert v2["vcfId"] == "rs9" and v2["isInsertion"] is True
     assert v2["alleleSampleCounts"] == {".": 0, "ref": 3, "a1": 2}
+
+
+def test_aggregate_builder_preserves_group_counts():
+    rows = [
+        {"position": 100, "ref_allele": "A", "alt_allele": "G", "alt_index": 1,
+         "variant_id": 0, "vcf_id": None, "filter_status": "PASS", "info_fields": ".",
+         "n_ref": 3, "n_alt": 2, "n_missing": 0, "n_samples": 5,
+         "group_counts": (
+             '{"pop":{"AFR":{"ref":2,"alt":1,"missing":0},'
+             '"EUR":{"ref":1,"alt":1,"missing":0}}}'
+         )},
+    ]
+    v = _build_variants_data_from_aggregates(rows)[0]
+    assert v["alleleSampleCountsByGroup"]["pop"]["AFR"]["a1"] == 1
+    assert v["alleleSampleCountsByGroup"]["pop"]["EUR"]["ref"] == 1
+    # Survives the scale gate
+    gated = [dict(v)]
+    gated[0]["sampleGenotypes"] = {"x": "0/1"}
+    assert _apply_persample_scale_gate(gated, 99999, 5000) is True
+    assert gated[0]["alleleSampleCountsByGroup"]["pop"]["AFR"]["a1"] == 1
 
 
 def test_aggregate_builder_id_stable_across_windows():

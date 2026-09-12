@@ -814,6 +814,88 @@ function renderFlowCanvas() {
     return match ? match[1] : label;
   }
   
+  // Hex (#rrggbb) or rgba → [r,g,b,a] floats in 0..1 for WebGPU / Canvas fills.
+  function parseColorToRgba(color, alpha) {
+    if (!color) return null;
+    const a = alpha !== undefined ? alpha : 1.0;
+    const hex = String(color).match(/^#([0-9a-fA-F]{6})$/);
+    if (hex) {
+      const n = parseInt(hex[1], 16);
+      return [(n >> 16) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255, a];
+    }
+    const m = String(color).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+    if (m) {
+      return [
+        parseInt(m[1], 10) / 255,
+        parseInt(m[2], 10) / 255,
+        parseInt(m[3], 10) / 255,
+        m[4] !== undefined ? parseFloat(m[4]) : a,
+      ];
+    }
+    return null;
+  }
+
+  // Stacked group segments for an allele node when Groups → Variable is active.
+  // Returns true when segments were drawn (caller skips the solid allele-type fill).
+  function fillAlleleNodeGrouped(opts) {
+    const {
+      ctx, variant, alleleKey, nodeX, nodeY, nodeW, nodeH,
+      isVertical, useWebGPU, flowInstancedRenderer, yBandToFlow, devicePixelRatio,
+      fallbackFill,
+    } = opts;
+    const col = state.groupingVariable;
+    if (!col || state.groupingFilter) return false; // filtered = solid within-group
+    const byGroup = variant && variant.alleleSampleCountsByGroup && variant.alleleSampleCountsByGroup[col];
+    if (!byGroup) return false;
+    const spec = typeof getGroupingColumnSpec === "function" ? getGroupingColumnSpec(col) : null;
+    const order = (spec && Array.isArray(spec.values))
+      ? spec.values.map(v => String(v.value))
+      : Object.keys(byGroup).sort();
+    const segments = [];
+    let total = 0;
+    for (const gname of order) {
+      const bucket = byGroup[gname];
+      if (!bucket) continue;
+      const n = Number(bucket[alleleKey] || 0);
+      if (!(n > 0)) continue;
+      const color = (typeof getGroupColor === "function" && getGroupColor(col, gname))
+        || (spec && spec.values && (spec.values.find(v => String(v.value) === gname) || {}).color)
+        || "#888888";
+      segments.push({ gname, n, color });
+      total += n;
+    }
+    if (!(total > 0) || segments.length === 0) return false;
+
+    let cursor = isVertical ? nodeX : nodeY;
+    for (const seg of segments) {
+      const frac = seg.n / total;
+      const span = (isVertical ? nodeW : nodeH) * frac;
+      if (!(span > 0.5)) {
+        cursor += span;
+        continue;
+      }
+      const sx = isVertical ? cursor : nodeX;
+      const sy = isVertical ? nodeY : cursor;
+      const sw = isVertical ? span : nodeW;
+      const sh = isVertical ? nodeH : span;
+      const rgba = parseColorToRgba(seg.color, 1.0);
+      if (useWebGPU && flowInstancedRenderer && rgba) {
+        flowInstancedRenderer.addRect(
+          sx * devicePixelRatio,
+          yBandToFlow(sy) * devicePixelRatio,
+          sw * devicePixelRatio,
+          sh * devicePixelRatio,
+          rgba
+        );
+      } else if (ctx) {
+        ctx.fillStyle = seg.color;
+        ctx.fillRect(sx, sy, sw, sh);
+      }
+      cursor += span;
+    }
+    return true;
+  }
+
   // Helper function to get node colors based on allele type
   // Always returns rgba() so WebGPU fill path works for all colors (red/purple were hsla and were skipped)
   function getAlleleNodeColors(label, variant, actualAllele, isDragging) {
@@ -1124,6 +1206,30 @@ function renderFlowCanvas() {
     const refLabel = variant.hasOwnProperty('formattedRefAllele') && variant.formattedRefAllele
       ? variant.formattedRefAllele
       : (variant.refAllele ? formatAlleleLabel(variant.refAllele) : null);
+    // When a Participant-group pill is active, size/label nodes from that
+    // group's alleleSampleCountsByGroup instead of the cohort-wide counts.
+    const resolveActiveCountsAndFreqs = () => {
+      const col = state.groupingVariable;
+      const filter = state.groupingFilter;
+      let counts = variant.alleleSampleCounts || {};
+      if (
+        col && filter &&
+        variant.alleleSampleCountsByGroup &&
+        variant.alleleSampleCountsByGroup[col] &&
+        variant.alleleSampleCountsByGroup[col][filter]
+      ) {
+        counts = variant.alleleSampleCountsByGroup[col][filter];
+      }
+      const total = Object.values(counts).reduce((n, v) => n + (Number(v) || 0), 0);
+      const freqs = {};
+      if (total > 0) {
+        for (const [k, v] of Object.entries(counts)) freqs[k] = (Number(v) || 0) / total;
+      } else if (variant.alleleFrequencies) {
+        Object.assign(freqs, variant.alleleFrequencies);
+      }
+      return { counts, freqs };
+    };
+    const { counts: activeCounts, freqs: activeFreqs } = resolveActiveCountsAndFreqs();
     const keyForRawLabel = (label) => {
       if (label === noCallLabel) return ".";
       if (label === refLabel) return "ref";
@@ -1172,7 +1278,7 @@ function renderFlowCanvas() {
       // a union of keys (a sample carrying two of them counts twice), which is
       // acceptable for the node's label.
       if (variant.perSampleOmitted || !variant.sampleAlleles) {
-        const counts = variant.alleleSampleCounts || {};
+        const counts = activeCounts || variant.alleleSampleCounts || {};
         let total = 0;
         for (const k of keys) total += (counts[k] || 0);
         if (total > 0 || variant.perSampleOmitted) return total;
@@ -1227,11 +1333,11 @@ function renderFlowCanvas() {
       spec.displayLabelToAllele.set(rawLabel, labelToAllele.get(rawLabel) || ".");
       spec.rawToDisplayLabel.set(rawLabel, rawLabel);
       spec.displayToRawLabels.set(rawLabel, [rawLabel]);
-      spec.frequencyByKey[key] = variant.alleleFrequencies && variant.alleleFrequencies.hasOwnProperty(key)
-        ? variant.alleleFrequencies[key]
+      spec.frequencyByKey[key] = activeFreqs && activeFreqs.hasOwnProperty(key)
+        ? activeFreqs[key]
         : (spec.frequencyByKey[key] || 0);
-      spec.sampleCountByKey[key] = variant.alleleSampleCounts && variant.alleleSampleCounts.hasOwnProperty(key)
-        ? variant.alleleSampleCounts[key]
+      spec.sampleCountByKey[key] = activeCounts && activeCounts.hasOwnProperty(key)
+        ? activeCounts[key]
         : (spec.sampleCountByKey[key] || 0);
     }
 
@@ -1250,8 +1356,8 @@ function renderFlowCanvas() {
     for (const rawLabel of rawOrder) {
       const key = keyForRawLabel(rawLabel);
       const type = alleleTypeForRawLabel(rawLabel);
-      const freq = variant.alleleFrequencies && variant.alleleFrequencies.hasOwnProperty(key)
-        ? variant.alleleFrequencies[key]
+      const freq = activeFreqs && activeFreqs.hasOwnProperty(key)
+        ? activeFreqs[key]
         : 0;
       const eligible = (type !== "nocall" && type !== "ref" && freq < cutoff);
       if (!eligible) {
@@ -1289,11 +1395,11 @@ function renderFlowCanvas() {
         merged.displayLabelToAllele.set(rawLabel, labelToAllele.get(rawLabel) || ".");
         merged.rawToDisplayLabel.set(rawLabel, rawLabel);
         merged.displayToRawLabels.set(rawLabel, [rawLabel]);
-        merged.frequencyByKey[key] = variant.alleleFrequencies && variant.alleleFrequencies.hasOwnProperty(key)
-          ? variant.alleleFrequencies[key]
+        merged.frequencyByKey[key] = activeFreqs && activeFreqs.hasOwnProperty(key)
+          ? activeFreqs[key]
           : (merged.frequencyByKey[key] || 0);
-        merged.sampleCountByKey[key] = variant.alleleSampleCounts && variant.alleleSampleCounts.hasOwnProperty(key)
-          ? variant.alleleSampleCounts[key]
+        merged.sampleCountByKey[key] = activeCounts && activeCounts.hasOwnProperty(key)
+          ? activeCounts[key]
           : (merged.sampleCountByKey[key] || 0);
       } else {
         const g = groupState.get(entry.type);
@@ -1488,30 +1594,36 @@ function renderFlowCanvas() {
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
         const useWebGPU = webgpuSupported && flowInstancedRenderer;
-        
-        if (useWebGPU) {
-          // Parse rgba color string to array for WebGPU
-          const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-          if (fillMatch) {
-            const r = parseInt(fillMatch[1]) / 255;
-            const g = parseInt(fillMatch[2]) / 255;
-            const b = parseInt(fillMatch[3]) / 255;
-            const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
-            // Scale coordinates to physical pixels for WebGPU (yBandToFlow for multi-track)
-            flowInstancedRenderer.addRect(
-              nodeX * devicePixelRatio,
-              yBandToFlow(nodeY) * devicePixelRatio,
-              nodeW * devicePixelRatio,
-              nodeH * devicePixelRatio,
-              [r, g, b, a]
-            );
+        const drewGrouped = fillAlleleNodeGrouped({
+          ctx, variant: v, alleleKey, nodeX, nodeY, nodeW, nodeH,
+          isVertical: true, useWebGPU, flowInstancedRenderer, yBandToFlow, devicePixelRatio,
+          fallbackFill: colors.fillColor,
+        });
+        if (!drewGrouped) {
+          if (useWebGPU) {
+            // Parse rgba color string to array for WebGPU
+            const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+            if (fillMatch) {
+              const r = parseInt(fillMatch[1]) / 255;
+              const g = parseInt(fillMatch[2]) / 255;
+              const b = parseInt(fillMatch[3]) / 255;
+              const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
+              // Scale coordinates to physical pixels for WebGPU (yBandToFlow for multi-track)
+              flowInstancedRenderer.addRect(
+                nodeX * devicePixelRatio,
+                yBandToFlow(nodeY) * devicePixelRatio,
+                nodeW * devicePixelRatio,
+                nodeH * devicePixelRatio,
+                [r, g, b, a]
+              );
+            }
+          } else {
+            // Fallback to Canvas2D
+            ctx.fillStyle = colors.fillColor;
+            ctx.beginPath();
+            roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
+            ctx.fill();
           }
-        } else {
-          // Fallback to Canvas2D
-          ctx.fillStyle = colors.fillColor;
-          ctx.beginPath();
-          roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
-          ctx.fill();
         }
         
         // Check if this allele is selected
@@ -1555,7 +1667,15 @@ function renderFlowCanvas() {
             if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
             else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
           }
-          const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}`;
+          let groupTag = "";
+          if (state.groupingVariable && state.groupingFilter) {
+            groupTag = ` · ${state.groupingFilter}`;
+          } else if (state.groupingVariable && v.alleleSampleCountsByGroup && v.alleleSampleCountsByGroup[state.groupingVariable]) {
+            const bg = v.alleleSampleCountsByGroup[state.groupingVariable];
+            const parts = Object.keys(bg).map(g => `${g}:${bg[g][alleleKey] || 0}`).filter(s => !s.endsWith(":0"));
+            if (parts.length) groupTag = ` · ${parts.join(", ")}`;
+          }
+          const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}${groupTag}`;
           allLabelsToDraw.push({
             label: label,
             text: labelText,
@@ -1762,30 +1882,36 @@ function renderFlowCanvas() {
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
         const useWebGPU = webgpuSupported && flowInstancedRenderer;
-        
-        if (useWebGPU) {
-          // Parse rgba color string to array for WebGPU
-          const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-          if (fillMatch) {
-            const r = parseInt(fillMatch[1]) / 255;
-            const g = parseInt(fillMatch[2]) / 255;
-            const b = parseInt(fillMatch[3]) / 255;
-            const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
-            // Scale coordinates to physical pixels for WebGPU
-            flowInstancedRenderer.addRect(
-              nodeX * devicePixelRatio,
-              yBandToFlow(nodeY) * devicePixelRatio,
-              nodeW * devicePixelRatio,
-              nodeH * devicePixelRatio,
-              [r, g, b, a]
-            );
+        const drewGrouped = fillAlleleNodeGrouped({
+          ctx, variant: v, alleleKey, nodeX, nodeY, nodeW, nodeH,
+          isVertical: false, useWebGPU, flowInstancedRenderer, yBandToFlow, devicePixelRatio,
+          fallbackFill: colors.fillColor,
+        });
+        if (!drewGrouped) {
+          if (useWebGPU) {
+            // Parse rgba color string to array for WebGPU
+            const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+            if (fillMatch) {
+              const r = parseInt(fillMatch[1]) / 255;
+              const g = parseInt(fillMatch[2]) / 255;
+              const b = parseInt(fillMatch[3]) / 255;
+              const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
+              // Scale coordinates to physical pixels for WebGPU
+              flowInstancedRenderer.addRect(
+                nodeX * devicePixelRatio,
+                yBandToFlow(nodeY) * devicePixelRatio,
+                nodeW * devicePixelRatio,
+                nodeH * devicePixelRatio,
+                [r, g, b, a]
+              );
+            }
+          } else {
+            // Fallback to Canvas2D
+            ctx.fillStyle = colors.fillColor;
+            ctx.beginPath();
+            roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
+            ctx.fill();
           }
-        } else {
-          // Fallback to Canvas2D
-          ctx.fillStyle = colors.fillColor;
-          ctx.beginPath();
-          roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
-          ctx.fill();
         }
         
         // Check if this allele is selected
@@ -1829,7 +1955,15 @@ function renderFlowCanvas() {
             if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
             else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
           }
-          const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}`;
+          let groupTag = "";
+          if (state.groupingVariable && state.groupingFilter) {
+            groupTag = ` · ${state.groupingFilter}`;
+          } else if (state.groupingVariable && v.alleleSampleCountsByGroup && v.alleleSampleCountsByGroup[state.groupingVariable]) {
+            const bg = v.alleleSampleCountsByGroup[state.groupingVariable];
+            const parts = Object.keys(bg).map(g => `${g}:${bg[g][alleleKey] || 0}`).filter(s => !s.endsWith(":0"));
+            if (parts.length) groupTag = ` · ${parts.join(", ")}`;
+          }
+          const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}${groupTag}`;
           allLabelsToDraw.push({
             label: label,
             text: labelText,
@@ -2001,16 +2135,28 @@ function renderFlowCanvas() {
       return ".";
     }
     
-    // Helper function to compute transitions for a variant pair
+    // Helper function to compute transitions for a variant pair.
+    // Returns Map<srcLabel, Map<dstLabel, Map<groupKey, count>>> where groupKey is
+    // "" when Grouping is off, otherwise the sample's group label.
     function computeTransitions(srcVariant, dstVariant) {
       const transitions = new Map();
       const srcGenotypes = srcVariant.sampleGenotypes || {};
       const dstGenotypes = dstVariant.sampleGenotypes || {};
+      const groupCol = state.groupingVariable;
+      const groupFilter = state.groupingFilter;
+      const useGroups = !!(groupCol && typeof getSampleGroupValue === "function");
       
       // Get all samples that have genotype data at both variants
       const allSamples = new Set([...Object.keys(srcGenotypes), ...Object.keys(dstGenotypes)]);
       
       for (const sample of allSamples) {
+        let groupKey = "";
+        if (useGroups) {
+          groupKey = String(getSampleGroupValue(sample, groupCol) || "(unlabeled)");
+          if (groupFilter && groupKey !== String(groupFilter)) {
+            continue;
+          }
+        }
         const srcGt = srcGenotypes[sample] || "./.";
         const dstGt = dstGenotypes[sample] || "./.";
         
@@ -2037,7 +2183,11 @@ function renderFlowCanvas() {
             transitions.set(srcLabel, new Map());
           }
           const srcTransitions = transitions.get(srcLabel);
-          srcTransitions.set(dstLabel, (srcTransitions.get(dstLabel) || 0) + 1);
+          if (!srcTransitions.has(dstLabel)) {
+            srcTransitions.set(dstLabel, new Map());
+          }
+          const groupMap = srcTransitions.get(dstLabel);
+          groupMap.set(groupKey, (groupMap.get(groupKey) || 0) + 1);
         }
       }
       
@@ -2045,17 +2195,42 @@ function renderFlowCanvas() {
     }
 
     // Strong-contrast, hue-preserving ribbon color transform.
-    // Keeps allele colors distinguishable while staying very dark on light backgrounds.
+    // Keeps allele/group colors distinguishable while staying very dark on light backgrounds.
     function toDarkRibbonColor(baseColor, alpha, darken = 0.80) {
-      const m = baseColor && baseColor.match
-        ? baseColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/)
-        : null;
-      if (!m) return `rgba(18, 18, 18, ${alpha.toFixed(3)})`;
+      let r0, g0, b0;
+      const rgba = parseColorToRgba(baseColor, 1.0);
+      if (rgba) {
+        r0 = Math.round(rgba[0] * 255);
+        g0 = Math.round(rgba[1] * 255);
+        b0 = Math.round(rgba[2] * 255);
+      } else {
+        return `rgba(18, 18, 18, ${alpha.toFixed(3)})`;
+      }
       // Keep hue ratios, just compress luminance hard so color remains visible but very dark.
-      const r = Math.max(0, Math.min(255, Math.round(parseInt(m[1], 10) * darken)));
-      const g = Math.max(0, Math.min(255, Math.round(parseInt(m[2], 10) * darken)));
-      const b = Math.max(0, Math.min(255, Math.round(parseInt(m[3], 10) * darken)));
+      const r = Math.max(0, Math.min(255, Math.round(r0 * darken)));
+      const g = Math.max(0, Math.min(255, Math.round(g0 * darken)));
+      const b = Math.max(0, Math.min(255, Math.round(b0 * darken)));
       return `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
+    }
+
+    function groupingOrderForRibbons() {
+      const col = state.groupingVariable;
+      if (!col) return [];
+      const spec = typeof getGroupingColumnSpec === "function" ? getGroupingColumnSpec(col) : null;
+      if (spec && Array.isArray(spec.values)) {
+        return spec.values.map(v => String(v.value));
+      }
+      return [];
+    }
+
+    function colorForGroupedRibbon(groupKey, fallbackFill, alpha, isNoCallFlow) {
+      const col = state.groupingVariable;
+      let base = null;
+      if (col && groupKey) {
+        base = (typeof getGroupColor === "function" && getGroupColor(col, groupKey)) || null;
+      }
+      if (!base) base = fallbackFill;
+      return toDarkRibbonColor(base, alpha, isNoCallFlow ? 0.92 : 0.80);
     }
     
     for (let i = 0; i < sortedVariantIdxs.length - 1; i++) {
@@ -2072,10 +2247,12 @@ function renderFlowCanvas() {
       if (!srcVariant || !dstVariant) continue;
       const noCallLabel = formatAlleleLabel(".");
       
-      // Cache key: variant pair IDs (variant objects are the same regardless of which list they come from)
+      // Cache key: variant pair IDs + aggregation + grouping (objects are shared across lists)
       const aggCutoff = Number(state.aggregateRareAllelesCutoffPct ?? 2.0).toFixed(2);
       const aggEnabled = state.aggregateRareAlleles === true ? "1" : "0";
-      const cacheKey = `${srcVariant.id}-${dstVariant.id}-agg${aggEnabled}:${aggCutoff}`;
+      const groupColKey = state.groupingVariable ? String(state.groupingVariable) : "";
+      const groupFilterKey = state.groupingFilter ? String(state.groupingFilter) : "";
+      const cacheKey = `${srcVariant.id}-${dstVariant.id}-agg${aggEnabled}:${aggCutoff}-g${groupColKey}:${groupFilterKey}`;
       
       // Get or compute transitions (cached to avoid recalculating on every pan/zoom)
       // The cache includes transitions for variants in the expanded window, so when variants
@@ -2083,10 +2260,13 @@ function renderFlowCanvas() {
       let transitions = ribbonTransitionCache.get(cacheKey);
       if (!transitions) {
         transitions = computeTransitions(srcVariant, dstVariant);
-        // Store as serializable Map structure (convert nested Maps to objects for storage)
+        // Store as serializable Map structure: src -> dst -> group -> count
         const serialized = Array.from(transitions.entries()).map(([srcLabel, dstMap]) => [
           srcLabel,
-          Array.from(dstMap.entries())
+          Array.from(dstMap.entries()).map(([dstLabel, groupMap]) => [
+            dstLabel,
+            Array.from(groupMap.entries())
+          ])
         ]);
         
         // Limit cache size: remove oldest entries if cache is too large
@@ -2101,7 +2281,10 @@ function renderFlowCanvas() {
         // Deserialize cached transitions back to Map structure
         transitions = new Map(transitions.map(([srcLabel, dstEntries]) => [
           srcLabel,
-          new Map(dstEntries)
+          new Map(dstEntries.map(([dstLabel, groupEntries]) => [
+            dstLabel,
+            new Map(groupEntries)
+          ]))
         ]));
       }
       
@@ -2153,25 +2336,53 @@ function renderFlowCanvas() {
         continue;
       }
       
-      // Calculate total outgoing count per source label and total incoming per dest label
+      // Calculate totals. transitions: src -> dst -> group -> count
+      const colorByGroup = !!(state.groupingVariable && !state.groupingFilter);
+      const groupOrder = colorByGroup ? groupingOrderForRibbons() : [];
       const srcTotals = new Map(); // srcLabel -> total outgoing haplotypes
       const dstTotals = new Map(); // dstLabel -> total incoming haplotypes
+      const srcGroupTotals = new Map(); // srcLabel -> Map<group, count>
+      const dstGroupTotals = new Map(); // dstLabel -> Map<group, count>
       let totalHaplotypes = 0; // Total haplotypes across all transitions
+      const seenGroups = new Set();
       
       for (const [srcLabel, dstMap] of transitions) {
         let total = 0;
-        for (const [dstLabel, count] of dstMap) {
-          total += count;
-          totalHaplotypes += count;
-          dstTotals.set(dstLabel, (dstTotals.get(dstLabel) || 0) + count);
+        if (!srcGroupTotals.has(srcLabel)) srcGroupTotals.set(srcLabel, new Map());
+        const srcG = srcGroupTotals.get(srcLabel);
+        for (const [dstLabel, groupMap] of dstMap) {
+          if (!dstGroupTotals.has(dstLabel)) dstGroupTotals.set(dstLabel, new Map());
+          const dstG = dstGroupTotals.get(dstLabel);
+          for (const [groupKey, count] of groupMap) {
+            total += count;
+            totalHaplotypes += count;
+            dstTotals.set(dstLabel, (dstTotals.get(dstLabel) || 0) + count);
+            srcG.set(groupKey, (srcG.get(groupKey) || 0) + count);
+            dstG.set(groupKey, (dstG.get(groupKey) || 0) + count);
+            if (groupKey) seenGroups.add(groupKey);
+          }
         }
         srcTotals.set(srcLabel, total);
       }
+
+      // Ensure any group present in the data but missing from the column spec still draws.
+      if (colorByGroup) {
+        for (const g of [...seenGroups].sort()) {
+          if (!groupOrder.includes(g)) groupOrder.push(g);
+        }
+      } else {
+        // Ungrouped (or filtered-to-one-group): single pass with "" or the filter key.
+        groupOrder.length = 0;
+        if (seenGroups.size === 0) {
+          groupOrder.push("");
+        } else {
+          for (const g of seenGroups) groupOrder.push(g);
+        }
+      }
       
-      // Track current offset within each node for stacking ribbons
-      // In horizontal mode: Y offset from top; in vertical mode: X offset from left
-      const srcOffsets = new Map();
-      const dstOffsets = new Map();
+      // Track offset within each (allele, group) band so ribbons meet stacked node segments.
+      const srcWithinGroupOffsets = new Map(); // `${src}\0${group}` -> offset inside group band
+      const dstWithinGroupOffsets = new Map();
       
       // Get reference allele labels to identify background persistence flows
       const srcRefLabel = srcVariant.refAllele ? formatAlleleLabel(srcVariant.refAllele) : null;
@@ -2179,76 +2390,95 @@ function renderFlowCanvas() {
       
       // Collect all ribbon data first, then sort so reference flows draw first (background)
       const ribbonData = [];
+
+      function alleleGroupBand(node0, nodeSpan, alleleTotal, groupMap, groupKey, order) {
+        // Returns { start, size } along the node axis for this group's share of the allele.
+        if (!(alleleTotal > 0) || !(nodeSpan > 0)) return { start: node0, size: 0 };
+        let before = 0;
+        for (const g of order) {
+          if (g === groupKey) break;
+          before += groupMap.get(g) || 0;
+        }
+        const gCount = groupMap.get(groupKey) || 0;
+        return {
+          start: node0 + (before / alleleTotal) * nodeSpan,
+          size: (gCount / alleleTotal) * nodeSpan,
+        };
+      }
       
-      for (const [srcLabel, dstMap] of transitions) {
-        const srcNode = srcNodes.get(srcLabel);
-        if (!srcNode) continue;
-        
-        const srcTotal = srcTotals.get(srcLabel) || 1;
-        
-        for (const [dstLabel, count] of dstMap) {
-          const dstNode = dstNodes.get(dstLabel);
-          if (!dstNode) continue;
-          
-          const dstTotal = dstTotals.get(dstLabel) || 1;
-          
-          // Get current offsets (for stacking)
-          const srcOffset = srcOffsets.get(srcLabel) || 0;
-          const dstOffset = dstOffsets.get(dstLabel) || 0;
-          
-          let src0, src1, dst0, dst1;
-          
-          if (isVertical) {
-            // Vertical mode: ribbons flow downward, width is along X axis
-            const srcNodeW = srcNode.right - srcNode.left;
-            const dstNodeW = dstNode.right - dstNode.left;
-            
-            // Calculate ribbon slice widths proportional to transition count
-            const srcSliceW = (count / srcTotal) * srcNodeW;
-            const dstSliceW = (count / dstTotal) * dstNodeW;
-            
-            // Calculate X positions
-            src0 = srcNode.left + srcOffset;
-            src1 = src0 + srcSliceW;
-            dst0 = dstNode.left + dstOffset;
-            dst1 = dst0 + dstSliceW;
-            
-            // Update offsets for next ribbon
-            srcOffsets.set(srcLabel, srcOffset + srcSliceW);
-            dstOffsets.set(dstLabel, dstOffset + dstSliceW);
-          } else {
-            // Horizontal mode: ribbons flow rightward, height is along Y axis
-            const srcNodeH = srcNode.bottom - srcNode.top;
-            const dstNodeH = dstNode.bottom - dstNode.top;
-            
-            // Calculate ribbon slice heights proportional to transition count
-            const srcSliceH = (count / srcTotal) * srcNodeH;
-            const dstSliceH = (count / dstTotal) * dstNodeH;
-            
-            // Calculate Y positions
-            src0 = srcNode.top + srcOffset;
-            src1 = src0 + srcSliceH;
-            dst0 = dstNode.top + dstOffset;
-            dst1 = dst0 + dstSliceH;
-            
-            // Update offsets for next ribbon
-            srcOffsets.set(srcLabel, srcOffset + srcSliceH);
-            dstOffsets.set(dstLabel, dstOffset + dstSliceH);
+      for (const groupKey of groupOrder) {
+        for (const [srcLabel, dstMap] of transitions) {
+          const srcNode = srcNodes.get(srcLabel);
+          if (!srcNode) continue;
+          const srcTotal = srcTotals.get(srcLabel) || 1;
+          const srcGMap = srcGroupTotals.get(srcLabel) || new Map();
+          const srcGroupTotal = srcGMap.get(groupKey) || 0;
+          if (!(srcGroupTotal > 0)) continue;
+
+          for (const [dstLabel, groupMap] of dstMap) {
+            const count = groupMap.get(groupKey) || 0;
+            if (!(count > 0)) continue;
+            const dstNode = dstNodes.get(dstLabel);
+            if (!dstNode) continue;
+
+            const dstTotal = dstTotals.get(dstLabel) || 1;
+            const dstGMap = dstGroupTotals.get(dstLabel) || new Map();
+            const dstGroupTotal = dstGMap.get(groupKey) || 0;
+            if (!(dstGroupTotal > 0)) continue;
+
+            const srcKey = `${srcLabel}\0${groupKey}`;
+            const dstKey = `${dstLabel}\0${groupKey}`;
+            const srcOff = srcWithinGroupOffsets.get(srcKey) || 0;
+            const dstOff = dstWithinGroupOffsets.get(dstKey) || 0;
+
+            let src0, src1, dst0, dst1;
+            if (isVertical) {
+              const srcNodeW = srcNode.right - srcNode.left;
+              const dstNodeW = dstNode.right - dstNode.left;
+              const srcBand = alleleGroupBand(srcNode.left, srcNodeW, srcTotal, srcGMap, groupKey, groupOrder);
+              const dstBand = alleleGroupBand(dstNode.left, dstNodeW, dstTotal, dstGMap, groupKey, groupOrder);
+              const srcSliceW = (count / srcGroupTotal) * srcBand.size;
+              const dstSliceW = (count / dstGroupTotal) * dstBand.size;
+              src0 = srcBand.start + srcOff;
+              src1 = src0 + srcSliceW;
+              dst0 = dstBand.start + dstOff;
+              dst1 = dst0 + dstSliceW;
+              srcWithinGroupOffsets.set(srcKey, srcOff + srcSliceW);
+              dstWithinGroupOffsets.set(dstKey, dstOff + dstSliceW);
+            } else {
+              const srcNodeH = srcNode.bottom - srcNode.top;
+              const dstNodeH = dstNode.bottom - dstNode.top;
+              const srcBand = alleleGroupBand(srcNode.top, srcNodeH, srcTotal, srcGMap, groupKey, groupOrder);
+              const dstBand = alleleGroupBand(dstNode.top, dstNodeH, dstTotal, dstGMap, groupKey, groupOrder);
+              const srcSliceH = (count / srcGroupTotal) * srcBand.size;
+              const dstSliceH = (count / dstGroupTotal) * dstBand.size;
+              src0 = srcBand.start + srcOff;
+              src1 = src0 + srcSliceH;
+              dst0 = dstBand.start + dstOff;
+              dst1 = dst0 + dstSliceH;
+              srcWithinGroupOffsets.set(srcKey, srcOff + srcSliceH);
+              dstWithinGroupOffsets.set(dstKey, dstOff + dstSliceH);
+            }
+
+            const isRefFlow = srcLabel === srcRefLabel && dstLabel === dstRefLabel;
+            const isNoCallFlow = (srcLabel === noCallLabel || dstLabel === noCallLabel);
+            ribbonData.push({
+              srcNode, dstNode, src0, src1, dst0, dst1,
+              srcLabel, count, isRefFlow, isNoCallFlow, groupKey
+            });
           }
-          
-          // Check if this is a reference-to-reference flow (background persistence)
-          const isRefFlow = srcLabel === srcRefLabel && dstLabel === dstRefLabel;
-          const isNoCallFlow = (srcLabel === noCallLabel || dstLabel === noCallLabel);
-          
-          ribbonData.push({
-            srcNode, dstNode, src0, src1, dst0, dst1,
-            srcLabel, count, isRefFlow, isNoCallFlow
-          });
         }
       }
       
       // Sort ribbons: reference flows first (drawn in background), then colored flows on top
-      ribbonData.sort((a, b) => (b.isRefFlow ? 1 : 0) - (a.isRefFlow ? 1 : 0));
+      // When coloring by group, keep group order so stacked segments stay readable.
+      ribbonData.sort((a, b) => {
+        if (a.isRefFlow !== b.isRefFlow) return (b.isRefFlow ? 1 : 0) - (a.isRefFlow ? 1 : 0);
+        if (colorByGroup && a.groupKey !== b.groupKey) {
+          return groupOrder.indexOf(a.groupKey) - groupOrder.indexOf(b.groupKey);
+        }
+        return 0;
+      });
       
       // Draw all ribbons with sqrt-scaled opacity
       // Add viewport clipping: skip ribbons where both nodes are completely off-screen
@@ -2258,7 +2488,7 @@ function renderFlowCanvas() {
       const viewportBottom = H;
       
       for (const ribbon of ribbonData) {
-        const { srcNode, dstNode, src0, src1, dst0, dst1, srcLabel, count, isRefFlow, isNoCallFlow } = ribbon;
+        const { srcNode, dstNode, src0, src1, dst0, dst1, srcLabel, count, isRefFlow, isNoCallFlow, groupKey } = ribbon;
         
         // Viewport clipping: skip if both nodes are completely off-screen
         // This avoids rendering ribbons that are outside the visible area
@@ -2288,7 +2518,7 @@ function renderFlowCanvas() {
           }
         }
         
-        // Get color from source allele
+        // Get color from source allele (fallback when not coloring by group)
         const actualAllele = getActualAlleleFromLabel(srcVariant, srcLabel);
         const colors = getAlleleNodeColors(srcLabel, srcVariant, actualAllele, false);
         
@@ -2300,7 +2530,8 @@ function renderFlowCanvas() {
         let alpha = 0.30 + 0.16 * Math.sqrt(frac);
         
         // De-emphasize reference flows further (lower saturation via reduced alpha)
-        if (isRefFlow) {
+        // Skip this when ribbons are group-colored — every strip should read equally.
+        if (isRefFlow && !colorByGroup && !(state.groupingVariable && state.groupingFilter)) {
           alpha *= 0.70; // Keep persistence flows visible but less dominant.
         }
         
@@ -2317,6 +2548,9 @@ function renderFlowCanvas() {
         if (isEdgeSelected) {
           // Use gold highlight color for selected edges
           ribbonColor = `rgba(255, 215, 0, ${alpha.toFixed(3)})`;
+        } else if (state.groupingVariable && (colorByGroup || state.groupingFilter)) {
+          // Groups tab: paint ribbons with the group palette (stacked when All).
+          ribbonColor = colorForGroupedRibbon(groupKey || state.groupingFilter, colors.fillColor, alpha, isNoCallFlow);
         } else if (isRefFlow) {
           // Dominant reference ribbons should stay dark-neutral so colored non-ref ribbons stand out.
           ribbonColor = `rgba(34, 34, 34, ${alpha.toFixed(3)})`;
