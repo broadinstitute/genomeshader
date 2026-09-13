@@ -873,15 +873,18 @@ impl Session {
     /// Aggregate variant extractor for large cohorts (≥100k–1M samples): returns
     /// per-(variant,alt) rows with per-allele SAMPLE counts (n_ref/n_alt/
     /// n_missing) instead of the O(variants×samples) long format that OOMs at 1M.
-    /// No parquet caching (aggregates are cheap to recompute); no sample subset
-    /// (cohort-wide counts). Consumed by the Python aggregate payload builder.
+    /// No parquet caching (aggregates are cheap to recompute). Optional
+    /// `samples` restricts tallies (and group_counts) to that subset — used by
+    /// the Groups-tab multi-facet AND filter.
     ///
     /// `grouping` is optional: list of (column_name, labels_per_header_sample).
     /// When set, each row gains a `group_counts` JSON column.
+    #[pyo3(signature = (locus, grouping=None, samples=None))]
     fn get_locus_variant_aggregates(
         &mut self,
         locus: String,
         grouping: Option<Vec<(String, Vec<String>)>>,
+        samples: Option<Vec<String>>,
     ) -> PyResult<PyDataFrame> {
         let l_fmt = self.parse_locus(locus.clone())?;
         if self.variant_file_groups.is_empty() {
@@ -892,6 +895,7 @@ impl Session {
         let grouping_slice: Option<Vec<(String, Vec<String>)>> = grouping;
         let grouping_ref: Option<&[(String, Vec<String>)]> =
             grouping_slice.as_ref().map(|v| v.as_slice());
+        let samples_ref: Option<&[String]> = samples.as_ref().map(|v| v.as_slice());
         let mut combined_df: Option<DataFrame> = None;
         for (group_index, file_list) in self.variant_file_groups.iter().enumerate() {
             let mut group_df: Option<DataFrame> = None;
@@ -904,6 +908,7 @@ impl Session {
                     &l_fmt.1,
                     &l_fmt.2,
                     grouping_ref,
+                    samples_ref,
                 ) {
                     Ok(df) => {
                         group_df = Some(match group_df {

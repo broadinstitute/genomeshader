@@ -444,6 +444,153 @@ def test_group_frequency_rows_helper(browser, tmp_path):
     page.close()
 
 
+def test_active_facets_helpers(browser, tmp_path):
+    """Metadata facets AND independently of Sample Search evidenceFilter."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          if (!window.compositeSampleIds || !window.compositeLabelSuffix) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.sample_metadata = {
+            columns: [
+              { name: 'sex', values: [
+                { value: 'female', count: 2, color: '#a' },
+                { value: 'male', count: 1, color: '#b' },
+              ]},
+              { name: 'super_pop', values: [
+                { value: 'EUR', count: 2, color: '#c' },
+                { value: 'AFR', count: 1, color: '#d' },
+              ]},
+            ],
+            by_id: {
+              S1: { sex: 'female', super_pop: 'EUR' },
+              S2: { sex: 'female', super_pop: 'AFR' },
+              S3: { sex: 'male', super_pop: 'EUR' },
+            },
+          };
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S1: ['gs://x/S1.pb.bam'],
+            S2: ['gs://x/S2.pb.bam', 'gs://x/S2.il.bam'],
+            S3: ['gs://x/S3.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 2, color: '#1' },
+              { name: 'illumina', count: 2, color: '#2' },
+            ],
+            by_url: {
+              'gs://x/S1.pb.bam': 'pacbio',
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S2.il.bam': 'illumina',
+              'gs://x/S3.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.activeFacets = [
+            { key: 'super_pop', level: 'EUR' },
+            { key: 'sex', level: 'female' },
+          ];
+          state.colorFacetKey = 'sex';
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          const metaIds = window.compositeSampleIds();
+          const suffix = window.compositeLabelSuffix();
+          const urlsS1 = window.__GS_bamUrlsForSample('S1');
+          const urlsS3 = window.__GS_bamUrlsForSample('S3');
+          // Evidence does not affect compositeSampleIds (AF scope).
+          const metaOnly = metaIds.slice().sort();
+          // Flat color when no metadata facets
+          state.activeFacets = [];
+          state.colorFacetKey = null;
+          const flatColor = window.getColorFacetKey();
+          return {
+            metaOnly, suffix, flatColor,
+            urlsS1, urlsS3,
+            evidence: state.sampleSelection.evidenceFilter,
+          };
+        }"""
+    )
+    assert result is not None
+    assert result["metaOnly"] == ["S1"], result
+    assert result["suffix"] == " · EUR", result["suffix"]
+    assert result["flatColor"] is None
+    assert result["urlsS1"] == ["gs://x/S1.pb.bam"], result
+    assert result["urlsS3"] == [], result  # illumina-only under pacbio filter
+    assert result["evidence"] == "pacbio"
+    page.close()
+
+
+def test_evidence_filter_excludes_from_candidate_pool(browser, tmp_path):
+    """Evidence filter narrows UI sample lists via filterSamplesForUi."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const fn = window.__GS_filterSamplesForUi;
+          if (!fn || !window.__GS_bamUrlsForSample) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_samples = ['S1', 'S2', 'S3'];
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S1: ['gs://x/S1.pb.bam'],
+            S2: ['gs://x/S2.pb.bam', 'gs://x/S2.il.bam'],
+            S3: ['gs://x/S3.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 2 },
+              { name: 'illumina', count: 2 },
+            ],
+            by_url: {
+              'gs://x/S1.pb.bam': 'pacbio',
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S2.il.bam': 'illumina',
+              'gs://x/S3.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          const filtered = fn(['S1', 'S2', 'S3']);
+          state.sampleSelection.evidenceFilter = null;
+          const all = fn(['S1', 'S2', 'S3']);
+          return { filtered, all };
+        }"""
+    )
+    assert result is not None
+    assert result["filtered"] == ["S1", "S2"], result
+    assert result["all"] == ["S1", "S2", "S3"], result
+    page.close()
+
+
+def test_spawn_skips_null_fallback_when_evidence_empty(browser, tmp_path):
+    """Active evidence with no matching BAM must not fall through to [null] fetch."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const spawn = window.__GS_spawnSmartTracksForSample;
+          if (!spawn) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S3: ['gs://x/S3.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [{ name: 'pacbio', count: 0 }, { name: 'illumina', count: 1 }],
+            by_url: { 'gs://x/S3.il.bam': 'illumina' },
+          };
+          const state = window.__GS_STATE;
+          const before = (state.smartTracks || []).length;
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          const promises = spawn('S3', 'random', [], null);
+          const after = (state.smartTracks || []).length;
+          return { nPromises: promises.length, before, after };
+        }"""
+    )
+    assert result is not None
+    assert result["nPromises"] == 0, result
+    assert result["after"] == result["before"], result
+    page.close()
+
+
 def test_comment_time_has_timezone(browser, tmp_path):
     """Comment timestamps must render with a timezone token (regression: the old
     formatter dropped the zone entirely)."""

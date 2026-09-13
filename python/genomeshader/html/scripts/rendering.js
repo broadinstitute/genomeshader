@@ -165,11 +165,10 @@ function getTrackLayout() {
       if (track.hidden === true) {
         continue;
       }
-      // Participant-group / read-set pills: hide Smart Tracks outside active facets.
-      if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+      // Participant-group / read-set facets: hide Smart Tracks outside active AND.
+      if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
         continue;
-      }
-      if (typeof isSmartTrackExcludedByReadSet === "function" && isSmartTrackExcludedByReadSet(track)) {
+      } else if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
         continue;
       }
       
@@ -240,11 +239,10 @@ function getTrackLayout() {
       if (track.hidden === true) {
         continue;
       }
-      // Participant-group / read-set pills: hide Smart Tracks outside active facets.
-      if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+      // Participant-group / read-set facets: hide Smart Tracks outside active AND.
+      if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
         continue;
-      }
-      if (typeof isSmartTrackExcludedByReadSet === "function" && isSmartTrackExcludedByReadSet(track)) {
+      } else if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
         continue;
       }
       

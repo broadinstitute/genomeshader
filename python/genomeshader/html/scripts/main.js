@@ -4380,9 +4380,9 @@ function setupCanvasHover() {
       changeRow.appendChild(changeValue);
       card.appendChild(changeRow);
 
-      // Per-group sample frequency (Groups → Variable), when metadata is attached.
+      // Per-group sample frequency (Groups → color facet), when metadata is attached.
       (function appendGroupFrequency() {
-        const col = state.groupingVariable;
+        const col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
         if (!col || typeof buildGroupFrequencyRows !== "function") return;
         const byGroupAll = variant.alleleSampleCountsByGroup;
         if (!byGroupAll || !byGroupAll[col]) return;
@@ -4392,7 +4392,8 @@ function setupCanvasHover() {
         const keys = alleleKeys.length ? alleleKeys.slice() : ["ref"];
         const rows = buildGroupFrequencyRows({
           groupingVariable: col,
-          groupingFilter: state.groupingFilter,
+          colorFacetKey: col,
+          groupingFilter: (typeof getColorFacetLevel === "function") ? getColorFacetLevel() : null,
           alleleKeys: keys,
           alleleSampleCountsByGroup: byGroupAll,
           columnSpec: spec,
@@ -4490,7 +4491,10 @@ function setupCanvasHover() {
           rowEl.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (typeof setGroupingFilter === "function") {
+            const key = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+            if (key && typeof setMetadataFacetLevel === "function") {
+              setMetadataFacetLevel(key, row.active ? null : row.group);
+            } else if (typeof setGroupingFilter === "function") {
               setGroupingFilter(row.active ? null : row.group);
             }
           });
@@ -4678,6 +4682,7 @@ function setupCanvasHover() {
     if (strategySectionEl) {
       strategySectionEl.style.display = hasSelection ? 'block' : 'none';
     }
+    if (typeof renderEvidenceFilter === "function") renderEvidenceFilter();
     
     // Enable/disable controls based on selection
     const disabled = !hasSelection;
@@ -4819,17 +4824,36 @@ function setupCanvasHover() {
   }
   function applyGroupingSampleFilter(ids) {
     const list = Array.isArray(ids) ? ids : Array.from(ids || []);
-    const col = state.groupingVariable;
-    const filter = state.groupingFilter;
-    if (!col || !filter || typeof getSampleGroupValue !== "function") return list;
-    return list.filter((id) => String(getSampleGroupValue(id, col)) === String(filter));
+    if (typeof compositeSampleIds === "function") {
+      const allowed = compositeSampleIds();
+      if (allowed != null) {
+        const set = new Set(allowed.map(String));
+        return list.filter((id) => set.has(String(id)));
+      }
+    }
+    return list;
+  }
+  function filterEvidenceEligible(ids) {
+    const list = Array.isArray(ids) ? ids : Array.from(ids || []);
+    const evidence = state.sampleSelection && state.sampleSelection.evidenceFilter;
+    if (!evidence) return list;
+    return list.filter((id) => {
+      if (typeof bamUrlsForSample === "function") {
+        return bamUrlsForSample(id).length > 0;
+      }
+      if (typeof sampleHasEvidence === "function") {
+        return sampleHasEvidence(id, evidence);
+      }
+      return true;
+    });
   }
   function filterSamplesForUi(ids) {
-    return applyGroupingSampleFilter(filterToAttachedReads(ids));
+    return filterEvidenceEligible(applyGroupingSampleFilter(filterToAttachedReads(ids)));
   }
   if (typeof window !== "undefined") {
     window.__GS_filterToAttachedReads = filterToAttachedReads;
     window.__GS_applyGroupingSampleFilter = applyGroupingSampleFilter;
+    window.__GS_filterEvidenceEligible = filterEvidenceEligible;
     window.__GS_filterSamplesForUi = filterSamplesForUi;
   }
 
@@ -4843,6 +4867,7 @@ function setupCanvasHover() {
     // AND/OR toggle) recomputes. The candidate carriers of a variant don't change
     // when we re-fetch the same variant in a new window, so freezing is correct.
     const sig = (state.sampleSelection.combineMode || "") + "|"
+      + (state.sampleSelection.evidenceFilter || "") + "|"
       + Array.from(state.selectedAlleles).sort().join(",");
     if (sig === state.sampleSelection._candidateSig) {
       updateSamplePreview();
