@@ -485,6 +485,131 @@ function renderParticipantGroups() {
   }
 }
 
+function getReadSetsConfig() {
+  const cfg = (typeof window !== "undefined" && window.GENOMESHADER_CONFIG) || {};
+  return cfg.read_sets || null;
+}
+
+function getReadSetForUrl(url) {
+  if (!url) return null;
+  const rs = getReadSetsConfig();
+  if (!rs || !rs.by_url) return null;
+  const hit = rs.by_url[String(url)];
+  return hit != null && hit !== "" ? String(hit) : null;
+}
+
+function getReadSetColor(label) {
+  const rs = getReadSetsConfig();
+  if (!rs || !Array.isArray(rs.labels)) return null;
+  const hit = rs.labels.find((e) => e && String(e.name) === String(label));
+  return hit && hit.color ? hit.color : null;
+}
+
+function smartTrackReadSet(track) {
+  if (!track) return null;
+  const url = (track.requestedBamUrl)
+    || (Array.isArray(track.bamUrls) && track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+  return getReadSetForUrl(url);
+}
+
+function isSmartTrackExcludedByReadSet(track) {
+  if (!track || !String(track.id || "").startsWith("smart-track-")) return false;
+  const filter = state.readSetFilter;
+  if (filter == null || filter === "") return false;
+  const label = smartTrackReadSet(track);
+  if (label == null) return true; // unknown set while filtering → hide
+  return String(label) !== String(filter);
+}
+
+function setReadSetFilter(label) {
+  if (label == null || label === "" || label === state.readSetFilter) {
+    state.readSetFilter = null;
+  } else {
+    state.readSetFilter = String(label);
+  }
+  renderReadSets();
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
+  if (typeof renderAll === "function") renderAll();
+}
+
+function renderReadSets() {
+  const section = getElementById("readSetsSection");
+  const list = getElementById("readSetsList");
+  const hint = getElementById("readSetsHint");
+  if (!section || !list) return;
+  const rs = getReadSetsConfig();
+  const labels = (rs && Array.isArray(rs.labels)) ? rs.labels : [];
+  if (!labels.length) {
+    section.style.display = "none";
+    list.innerHTML = "";
+    return;
+  }
+  section.style.display = "";
+  if (hint) hint.style.display = "none";
+  list.innerHTML = "";
+
+  const allRow = document.createElement("div");
+  allRow.className = "group" + (state.readSetFilter == null ? " group-active" : "");
+  const allLabel = document.createElement("span");
+  allLabel.textContent = "All";
+  const allPill = document.createElement("span");
+  allPill.className = "pill";
+  const total = labels.reduce((n, v) => n + (Number(v.count) || 0), 0);
+  allPill.textContent = String(total);
+  allRow.appendChild(allLabel);
+  allRow.appendChild(allPill);
+  allRow.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setReadSetFilter(null);
+  });
+  list.appendChild(allRow);
+
+  for (const entry of labels) {
+    const val = String(entry.name);
+    const row = document.createElement("div");
+    row.className = "group" + (state.readSetFilter === val ? " group-active" : "");
+    if (entry.color) row.style.borderLeft = `3px solid ${entry.color}`;
+    const labelEl = document.createElement("span");
+    labelEl.textContent = val;
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    if (entry.color) {
+      pill.style.background = entry.color;
+      pill.style.color = "#fff";
+    }
+    pill.textContent = String(entry.count != null ? entry.count : 0);
+    row.appendChild(labelEl);
+    row.appendChild(pill);
+    row.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setReadSetFilter(val);
+    });
+    list.appendChild(row);
+  }
+}
+
+function onReadSetsChanged(payload) {
+  const cfg = window.GENOMESHADER_CONFIG || (window.GENOMESHADER_CONFIG = {});
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "read_sets")) {
+    cfg.read_sets = payload.read_sets || null;
+  }
+  if (payload && payload.read_bam_index) cfg.read_bam_index = payload.read_bam_index;
+  if (payload && payload.read_samples) cfg.read_samples = payload.read_samples;
+  const rs = getReadSetsConfig();
+  const names = (rs && Array.isArray(rs.labels)) ? rs.labels.map((e) => String(e.name)) : [];
+  if (state.readSetFilter && names.indexOf(state.readSetFilter) < 0) {
+    state.readSetFilter = null;
+  }
+  renderReadSets();
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof renderAll === "function") renderAll();
+}
+
 function initSampleGroupingUI() {
   const cols = getGroupingEligibleColumns();
   const storedVar = getStoredGroupingVariable();
@@ -496,6 +621,7 @@ function initSampleGroupingUI() {
   }
   updateGroupingVariableSelect();
   renderParticipantGroups();
+  renderReadSets();
 }
 
 function onSampleMetadataChanged(meta) {
@@ -522,8 +648,11 @@ function onSampleMetadataChanged(meta) {
 if (typeof document !== "undefined") {
   document.addEventListener("genomeshader_msg", function (ev) {
     const msg = ev && ev.detail;
-    if (msg && msg.type === "sample_metadata_changed") {
+    if (!msg || !msg.type) return;
+    if (msg.type === "sample_metadata_changed") {
       onSampleMetadataChanged(msg.sample_metadata || null);
+    } else if (msg.type === "read_sets_changed") {
+      onReadSetsChanged(msg);
     }
   });
 }
@@ -536,6 +665,14 @@ if (typeof window !== "undefined") {
   window.smartTrackSampleId = smartTrackSampleId;
   window.isSmartTrackExcludedByGrouping = isSmartTrackExcludedByGrouping;
   window.groupColorForSmartTrack = groupColorForSmartTrack;
+  window.getReadSetsConfig = getReadSetsConfig;
+  window.getReadSetForUrl = getReadSetForUrl;
+  window.getReadSetColor = getReadSetColor;
+  window.smartTrackReadSet = smartTrackReadSet;
+  window.isSmartTrackExcludedByReadSet = isSmartTrackExcludedByReadSet;
+  window.setReadSetFilter = setReadSetFilter;
+  window.renderReadSets = renderReadSets;
+  window.onReadSetsChanged = onReadSetsChanged;
   window.setGroupingVariable = setGroupingVariable;
   window.setGroupingFilter = setGroupingFilter;
   window.renderParticipantGroups = renderParticipantGroups;

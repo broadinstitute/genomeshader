@@ -377,14 +377,20 @@ function bamUrlsForSample(sampleId) {
   if (!sampleId) return [];
   const cfg = window.GENOMESHADER_CONFIG || {};
   const idx = cfg.read_bam_index || {};
+  let urls = [];
   if (Array.isArray(idx[sampleId]) && idx[sampleId].length) {
-    return idx[sampleId].slice();
+    urls = idx[sampleId].slice();
+  } else {
+    const sm = cfg.sample_mapping || {};
+    if (Array.isArray(sm[sampleId]) && sm[sampleId].length) {
+      urls = sm[sampleId].slice();
+    }
   }
-  const sm = cfg.sample_mapping || {};
-  if (Array.isArray(sm[sampleId]) && sm[sampleId].length) {
-    return sm[sampleId].slice();
+  const filter = (typeof state !== "undefined") ? state.readSetFilter : null;
+  if (filter && typeof getReadSetForUrl === "function") {
+    urls = urls.filter((u) => String(getReadSetForUrl(u) || "") === String(filter));
   }
-  return [];
+  return urls;
 }
 
 function isSampleBamTrackLoaded(sampleId, bamUrl) {
@@ -840,7 +846,8 @@ function updateSmartTrackLabel(track) {
     const multi = siblings.length > 1
       || (state.smartTracks || []).filter((t) => t.sampleId === track.sampleId).length > 1;
     if (multi && bam && typeof getBasename === "function") {
-      newLabel = track.sampleId + " · " + getBasename(bam);
+      const readSet = (typeof getReadSetForUrl === "function") ? getReadSetForUrl(bam) : null;
+      newLabel = track.sampleId + " · " + (readSet || getBasename(bam));
     } else {
       newLabel = track.sampleId;
     }
@@ -1170,6 +1177,11 @@ function renderSmartTracksSidebar() {
       if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
         item.classList.add("group-filtered-out");
         item.title = "Hidden while another participant group is selected";
+      }
+      if (typeof isSmartTrackExcludedByReadSet === "function" && isSmartTrackExcludedByReadSet(track)) {
+        item.classList.add("group-filtered-out");
+        item.title = (item.title ? item.title + "; " : "")
+          + "Hidden while another read set is selected";
       }
     }
     

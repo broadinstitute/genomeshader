@@ -178,6 +178,8 @@ def test_grouping_variable_row_wired():
     assert 'id="groupingVariableSelect"' in body
     assert 'id="participantGroupsSection"' in body
     assert 'id="participantGroupsList"' in body
+    assert 'id="readSetsSection"' in body
+    assert 'id="readSetsList"' in body
     assert 'data-left-tab="groups"' in body
     # Hardcoded Super-pop stub is gone
     assert ">Super-pop<" not in body
@@ -187,7 +189,10 @@ def test_grouping_variable_row_wired():
     assert "fillAlleleNodeGrouped" in esm
     assert "clusterSmartTracksByGrouping" in esm
     assert "sample_metadata_changed" in esm
+    assert "read_sets_changed" in esm
     assert "isSmartTrackExcludedByGrouping" in esm
+    assert "isSmartTrackExcludedByReadSet" in esm
+    assert "setReadSetFilter" in esm
     assert "groupColorForSmartTrack" in esm
     assert "buildGroupFrequencyRows" in esm or "__gsBuildGroupFrequencyRows" in esm
     assert "variant-group-freq" in esm
