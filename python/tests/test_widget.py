@@ -189,6 +189,8 @@ def test_grouping_variable_row_wired():
     assert "sample_metadata_changed" in esm
     assert "isSmartTrackExcludedByGrouping" in esm
     assert "groupColorForSmartTrack" in esm
+    assert "buildGroupFrequencyRows" in esm or "__gsBuildGroupFrequencyRows" in esm
+    assert "variant-group-freq" in esm
     assert "cycleGroupingVariable" not in esm
     assert "groupingVariableItem" not in body
     assert "groupingVariableLabel" not in body

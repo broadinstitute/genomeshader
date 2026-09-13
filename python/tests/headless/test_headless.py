@@ -408,6 +408,42 @@ def test_zero_carrier_allele_label_is_honest(browser, tmp_path):
     page.close()
 
 
+def test_group_frequency_rows_helper(browser, tmp_path):
+    """Variants-tab per-group frequency helper: sample freq from group counts."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    rows = page.evaluate(
+        """() => {
+          if (!window.__gsBuildGroupFrequencyRows) return null;
+          return window.__gsBuildGroupFrequencyRows({
+            groupingVariable: 'status',
+            groupingFilter: 'case',
+            alleleKeys: ['a1'],
+            alleleSampleCountsByGroup: {
+              status: {
+                case: { ref: 1, a1: 2 },
+                control: { ref: 3, a1: 0 },
+              },
+            },
+            columnSpec: {
+              values: [
+                { value: 'case', count: 3, color: '#111' },
+                { value: 'control', count: 3, color: '#222' },
+              ],
+            },
+          });
+        }"""
+    )
+    assert rows is not None, "group frequency helper not exposed"
+    assert [r["group"] for r in rows] == ["case", "control"]
+    assert rows[0]["n"] == 2 and rows[0]["N"] == 3 and abs(rows[0]["freq"] - 2 / 3) < 1e-9
+    assert rows[0]["active"] is True and rows[0]["color"] == "#111"
+    assert rows[1]["n"] == 0 and rows[1]["active"] is False
+    empty = page.evaluate("() => window.__gsBuildGroupFrequencyRows({})")
+    assert empty == []
+    page.close()
+
+
 def test_comment_time_has_timezone(browser, tmp_path):
     """Comment timestamps must render with a timezone token (regression: the old
     formatter dropped the zone entirely)."""

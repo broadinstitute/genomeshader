@@ -388,6 +388,10 @@ function setGroupingVariable(columnName) {
   }
   if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
   if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderVariantsTabSelection === "function") renderVariantsTabSelection();
+  else if (typeof window !== "undefined" && typeof window.renderVariantsTabSelection === "function") {
+    window.renderVariantsTabSelection();
+  }
   if (typeof renderAll === "function") renderAll();
 }
 
@@ -407,6 +411,10 @@ function setGroupingFilter(groupValue) {
   }
   if (typeof updateTracksHeight === "function") updateTracksHeight();
   if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof renderVariantsTabSelection === "function") renderVariantsTabSelection();
+  else if (typeof window !== "undefined" && typeof window.renderVariantsTabSelection === "function") {
+    window.renderVariantsTabSelection();
+  }
   if (typeof renderAll === "function") renderAll();
 }
 
@@ -503,6 +511,10 @@ function onSampleMetadataChanged(meta) {
   renderParticipantGroups();
   if (typeof window.clusterSmartTracksByGrouping === "function") {
     window.clusterSmartTracksByGrouping();
+  }
+  if (typeof renderVariantsTabSelection === "function") renderVariantsTabSelection();
+  else if (typeof window !== "undefined" && typeof window.renderVariantsTabSelection === "function") {
+    window.renderVariantsTabSelection();
   }
   if (typeof renderAll === "function") renderAll();
 }
