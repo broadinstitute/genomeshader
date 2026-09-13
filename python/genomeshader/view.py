@@ -2910,21 +2910,28 @@ class GenomeShader:
                             too_wide=too_wide)
         return payload
 
-    def fetch_variants_payload(self, contig, start, end):
+    def fetch_variants_payload(self, contig, start, end, sample_ids=None):
         """Viewport variant fetch (P2): build the variant payload for one window,
         on demand, so the frontend can load a new region on pan/zoom without a
         full re-render. Reuses the same aggregate/long-format threshold as render
         (GENOMESHADER_VARIANT_AGG_MAX). Returns
         {variant_tracks, insertion_variants_lookup, region, aggregate}.
+
+        ``sample_ids`` — optional list restricting aggregate tallies / group_counts
+        to the Groups-tab composite AND filter.
         """
         start, end = int(start), int(end)
         locus = f"{contig}:{start}-{end}"
         region = {"contig": contig, "start": start, "end": end}
         _t0 = time.perf_counter()
+        sample_ids_list = None
+        if sample_ids is not None:
+            sample_ids_list = [str(s) for s in sample_ids if s is not None and str(s) != ""]
 
         def _log_result(n, aggregate, cached):
             self._debug_log("fetch_variants", locus=locus, span_bp=end - start,
                             n_variants=n, aggregate=aggregate, cached=cached,
+                            n_sample_filter=(len(sample_ids_list) if sample_ids_list is not None else None),
                             ms=round((time.perf_counter() - _t0) * 1000, 1))
 
         def _count(pl_tracks):
@@ -2950,7 +2957,11 @@ class GenomeShader:
 
         # Host cache (#77): serve a re-visited / covered window from RAM instead
         # of re-reading+parsing it from the VCF (the measured wall). Bounded+LRU.
+        # Include sample-filter fingerprint so facet changes don't reuse unfiltered.
         sig = self._variant_dataset_signature()
+        if sample_ids_list is not None:
+            filt = ",".join(sorted(sample_ids_list))
+            sig = f"{sig}|sf={hashlib.sha1(filt.encode('utf-8')).hexdigest()[:16]}"
         hit = self._agg_region_cache_get(sig, contig, start, end)
         if hit is not None:
             sub = self._subset_variant_payload(hit["payload"], start, end)
@@ -2973,7 +2984,8 @@ class GenomeShader:
         if use_agg:
             try:
                 grouping = self._sample_metadata_grouping_for_rust()
-                agg_df = self._session.get_locus_variant_aggregates(locus, grouping)
+                agg_df = self._session.get_locus_variant_aggregates(
+                    locus, grouping, sample_ids_list)
                 if agg_df is not None and isinstance(agg_df, pl.DataFrame) and len(agg_df) > 0:
                     tracks, ins = self._build_variant_payload_from_aggregates(agg_df)
                     payload, aggregate = {"variant_tracks": tracks,

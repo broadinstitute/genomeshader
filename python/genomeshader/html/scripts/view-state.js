@@ -106,8 +106,8 @@ if (typeof window !== "undefined") window.__gsFormatAlleleSampleCount = formatAl
  * Each row: { group, color, n, N, freq, active }
  */
 function buildGroupFrequencyRows(opts) {
-  const col = opts && opts.groupingVariable;
-  const filter = opts && opts.groupingFilter;
+  const col = (opts && (opts.colorFacetKey || opts.groupingVariable)) || null;
+  const filter = opts && (opts.groupingFilter != null ? opts.groupingFilter : opts.colorFacetLevel);
   const alleleKeys = (opts && Array.isArray(opts.alleleKeys)) ? opts.alleleKeys : [];
   const byCol = opts && opts.alleleSampleCountsByGroup;
   const spec = opts && opts.columnSpec;
@@ -124,6 +124,18 @@ function buildGroupFrequencyRows(opts) {
         color: null,
         N: 0,
       }));
+
+  // Prefer live metadata (+ active facet AND) for denominators so N matches the
+  // filtered cohort after sample_filter refetch.
+  let pool = null;
+  if (typeof compositeSampleIds === "function") {
+    pool = compositeSampleIds();
+  }
+  if (pool == null && typeof getSampleMetadataConfig === "function") {
+    const meta = getSampleMetadataConfig();
+    if (meta && meta.by_id) pool = Object.keys(meta.by_id);
+  }
+
   const rows = [];
   for (const entry of order) {
     const bucket = byGroup[entry.group] || {};
@@ -131,7 +143,14 @@ function buildGroupFrequencyRows(opts) {
     for (const key of alleleKeys) {
       n += Number(bucket[key] || 0);
     }
-    const N = entry.N > 0 ? entry.N : Math.max(n, 0);
+    let N = entry.N > 0 ? entry.N : Math.max(n, 0);
+    if (pool && typeof getSampleGroupValue === "function") {
+      let counted = 0;
+      for (const sid of pool) {
+        if (String(getSampleGroupValue(sid, col) || "(unlabeled)") === entry.group) counted++;
+      }
+      if (counted > 0 || pool.length > 0) N = counted;
+    }
     const freq = N > 0 ? n / N : 0;
     rows.push({
       group: entry.group,
@@ -804,7 +823,10 @@ async function gsLoadVariantsForViewport(force) {
   // in-flight request bricks all future loading when one request sticks.
   // Rapid panning may briefly overlap fetches; the transient "variant load
   // failed" self-heals on the next settle and is preferable to a hard stall.
-  const reqKey = `${contig}:${win.start}-${win.end}`;
+  const facetSig = (typeof compositeSampleIds === "function" && compositeSampleIds())
+    ? ("|" + compositeSampleIds().slice().sort().join(","))
+    : "";
+  const reqKey = `${contig}:${win.start}-${win.end}${facetSig}`;
   if (_gsVpInFlight === reqKey) return;
   _gsVpInFlight = reqKey;
   // Progress feedback: a cold window is read-bound (htslib decompress+parse of
@@ -821,8 +843,13 @@ async function gsLoadVariantsForViewport(force) {
   const _t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
   __GS_DEBUG("vp_fetch_start", { reqKey: reqKey });
   try {
+    const fetchArgs = { contig, start: win.start, end: win.end };
+    if (typeof compositeSampleIds === "function") {
+      const sids = compositeSampleIds();
+      if (sids != null) fetchArgs.sample_ids = sids;
+    }
     const resp = await sendCommMessage("fetch_variants",
-      { contig, start: win.start, end: win.end }, 300000);  // first cold remote open (downloads the index) can be minutes; the Rust reader cache makes every later window fast
+      fetchArgs, 300000);  // first cold remote open (downloads the index) can be minutes; the Rust reader cache makes every later window fast
     // A server-side failure comes back as a resolved *_error response (not a
     // rejection), so it would otherwise fall through silently — no variants, no
     // message ("scrolled and nothing happened"). Surface it like a rejection.
@@ -1142,6 +1169,22 @@ function gsResetRegionData() {
   _gsVpRegions = [];
   _gsVpData.clear();
   _gsVpRebuildTracks();
+}
+
+/** Facet change: drop cached variant windows and refetch with new sample_ids. */
+function invalidateViewportForFacets() {
+  _gsVpRegions = [];
+  _gsVpData.clear();
+  _gsVpInFlight = null;
+  _gsVpRebuildTracks();
+  if (typeof gsScheduleViewportVariantLoad === "function") {
+    gsScheduleViewportVariantLoad(0);
+  } else if (typeof gsLoadVariantsForViewport === "function") {
+    try { gsLoadVariantsForViewport(true); } catch (e) { /* ignore */ }
+  }
+}
+if (typeof window !== "undefined") {
+  window.invalidateViewportForFacets = invalidateViewportForFacets;
 }
 
 function gsSwitchContig(contig) {

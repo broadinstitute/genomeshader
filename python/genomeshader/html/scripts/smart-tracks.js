@@ -373,6 +373,8 @@ function _cacheSmartReads(sampleId, reads, bamUrls, bamUrl) {
 
 // BAM/CRAM URLs resolved for a sample (from config). Empty when unknown —
 // fetch_reads will resolve on the kernel. Multi-URL samples get one track each.
+// evidenceFilter (Sample Search) narrows by attach_reads label; metadata facets
+// are applied at the candidate-pool layer, not here.
 function bamUrlsForSample(sampleId) {
   if (!sampleId) return [];
   const cfg = window.GENOMESHADER_CONFIG || {};
@@ -386,7 +388,7 @@ function bamUrlsForSample(sampleId) {
       urls = sm[sampleId].slice();
     }
   }
-  const filter = (typeof state !== "undefined") ? state.readSetFilter : null;
+  const filter = (state.sampleSelection && state.sampleSelection.evidenceFilter) || null;
   if (filter && typeof getReadSetForUrl === "function") {
     urls = urls.filter((u) => String(getReadSetForUrl(u) || "") === String(filter));
   }
@@ -420,6 +422,15 @@ function spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleTy
     ? selectedAlleles
     : new Set(selectedAlleles || []);
   const urls = bamUrlsForSample(sampleId);
+  if (!urls.length) {
+    const evidence = state.sampleSelection && state.sampleSelection.evidenceFilter;
+    if (evidence) {
+      if (window.__GS_STATUS) {
+        window.__GS_STATUS(`No ${evidence} reads for ${sampleId}`, { autoHide: 3500 });
+      }
+      return promises;
+    }
+  }
   const bamList = urls.length
     ? urls.filter((u) => !isSampleBamTrackLoaded(sampleId, u))
     : [null];
@@ -847,9 +858,12 @@ function updateSmartTrackLabel(track) {
       || (state.smartTracks || []).filter((t) => t.sampleId === track.sampleId).length > 1;
     if (multi && bam && typeof getBasename === "function") {
       const readSet = (typeof getReadSetForUrl === "function") ? getReadSetForUrl(bam) : null;
-      newLabel = track.sampleId + " · " + (readSet || getBasename(bam));
+      let base = track.sampleId + " · " + (readSet || getBasename(bam));
+      const suffix = (typeof compositeLabelSuffix === "function") ? compositeLabelSuffix() : "";
+      newLabel = suffix ? (base + suffix) : base;
     } else {
-      newLabel = track.sampleId;
+      const suffix = (typeof compositeLabelSuffix === "function") ? compositeLabelSuffix() : "";
+      newLabel = track.sampleId + (suffix || "");
     }
   } else if (track.bamUrls && track.bamUrls.length > 0) {
     // Fallback to BAM basenames if sampleId not available
@@ -914,7 +928,7 @@ function editSmartTrackLabel(trackId, newLabel) {
 // Reorder loaded Smart Tracks into blocks by the active grouping column.
 // Within each group, preserve the previous relative order (load / drag order).
 function clusterSmartTracksByGrouping() {
-  const col = state.groupingVariable;
+  const col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
   if (!col || typeof getSampleGroupValue !== "function") {
     if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
     return;
@@ -1102,7 +1116,7 @@ function renderSmartTracksSidebar() {
 
   let currentGroupKey = null;
   let currentGroupItems = null;
-  const groupingCol = state.groupingVariable;
+  const groupingCol = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
 
   const closeGroupBlock = () => {
     currentGroupKey = null;
@@ -1174,14 +1188,9 @@ function renderSmartTracksSidebar() {
     item.draggable = true;
 
     if (isSmart) {
-      if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+      if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
         item.classList.add("group-filtered-out");
-        item.title = "Hidden while another participant group is selected";
-      }
-      if (typeof isSmartTrackExcludedByReadSet === "function" && isSmartTrackExcludedByReadSet(track)) {
-        item.classList.add("group-filtered-out");
-        item.title = (item.title ? item.title + "; " : "")
-          + "Hidden while another read set is selected";
+        item.title = "Hidden by active Groups filters";
       }
     }
     

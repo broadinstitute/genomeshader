@@ -90,6 +90,7 @@ const state = {
     strategy: 'best_evidence',
     numSamples: 1,
     combineMode: 'AND', // 'AND' or 'OR'
+    evidenceFilter: null, // attach_reads label or null (All) — Sample Search only
     candidateSamples: [], // Will be populated when selection changes
     allSampleIds: [] // All available sample IDs (populated from data)
   },
@@ -98,11 +99,11 @@ const state = {
   smartTracks: [], // Array of Smart track instances
   smartTrackRenderers: new Map(), // Map<trackId, { webgpuCore, instancedRenderer, canvas, webgpuCanvas, container }>
   
-  // Sample metadata grouping (Groups tab: Variable + Participant groups)
-  groupingVariable: null, // column name or null
-  groupingFilter: null,   // active group value or null (All)
-  // attach_reads label facet (Groups tab: Read sets) — AND with groupingFilter
-  readSetFilter: null,    // label or null (All)
+  // Groups tab: metadata facets only. Each entry: { key, level }.
+  // level null = All (unrestricted on that facet). AND across non-null levels.
+  activeFacets: [],
+  // Metadata column used for flow/ribbon/track color; null → flat palette.
+  colorFacetKey: null,
 
   // allele context menu state: { x, y, visible } or null
   alleleContextMenu: null,

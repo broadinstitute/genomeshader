@@ -534,6 +534,7 @@ pub fn extract_variant_aggregates(
     start: &u64,
     stop: &u64,
     grouping: Option<&[(String, Vec<String>)]>,
+    samples: Option<&[String]>,
 ) -> Result<DataFrame> {
     // Same per-thread reader cache as extract_variants — at 1M-sample scroll
     // this path would otherwise re-download the index every window.
@@ -544,6 +545,17 @@ pub fn extract_variant_aggregates(
     };
     let header = reader.header().clone();
     let n_samples = header.sample_count() as usize;
+    let sample_names: Vec<String> = header
+        .samples()
+        .iter()
+        .map(|s| String::from_utf8_lossy(s).to_string())
+        .collect();
+    let sample_filter: Option<std::collections::HashSet<&str>> =
+        samples.map(|s| s.iter().map(|x| x.as_str()).collect());
+    let n_samples_out: u32 = sample_filter
+        .as_ref()
+        .map(|f| f.len() as u32)
+        .unwrap_or(n_samples as u32);
     let info_tags: Vec<String> = header
         .header_records()
         .iter()
@@ -631,6 +643,15 @@ pub fn extract_variant_aggregates(
                 vec![HashMap::new(); grouping_cols.len()];
 
             for sample_idx in 0..n_samples {
+                if let Some(filter) = &sample_filter {
+                    let sname = sample_names
+                        .get(sample_idx)
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
+                    if !filter.contains(sname) {
+                        continue;
+                    }
+                }
                 let slice = gts[sample_idx];
                 let mut seen_ref = false;
                 let mut seen_missing = false;
@@ -707,7 +728,7 @@ pub fn extract_variant_aggregates(
                 n_refs.push(present[0]);
                 n_alts.push(present[alt_idx + 1]);
                 n_missings.push(missing);
-                n_sampless.push(n_samples as u32);
+                n_sampless.push(n_samples_out);
 
                 if emit_groups {
                     let mut json = String::from("{");
@@ -821,7 +842,7 @@ mod tests {
         // rows — proving the O(samples)-counter aggregation is correct.
         let (chr, s, e) = ("chr1".to_string(), 1u64, 1000u64);
         let long = extract_variants(&fixture(), None, None, &chr, &s, &e).unwrap();
-        let agg = extract_variant_aggregates(&fixture(), None, &chr, &s, &e, None).unwrap();
+        let agg = extract_variant_aggregates(&fixture(), None, &chr, &s, &e, None, None).unwrap();
 
         let pos = long.column("position").unwrap().u64().unwrap();
         let alt = long.column("alt_allele").unwrap().str().unwrap();
@@ -875,7 +896,7 @@ mod tests {
             vec!["case".to_string(), "control".to_string()],
         )];
         let agg = extract_variant_aggregates(
-            &fixture(), None, &chr, &s, &e, Some(&grouping),
+            &fixture(), None, &chr, &s, &e, Some(&grouping), None,
         ).unwrap();
         assert!(agg.column("group_counts").is_ok());
 
@@ -944,6 +965,64 @@ mod tests {
                     "group {} at {:?}", gname, key);
             }
         }
+    }
+
+    #[test]
+    fn aggregates_sample_filter_restricts_counts() {
+        // Fixture has S1 + S2. Filtering to S1 alone must shrink n_ref/n_alt/
+        // n_missing and group_counts versus the unfiltered aggregate.
+        let (chr, s, e) = ("chr1".to_string(), 1u64, 1000u64);
+        let grouping = vec![(
+            "pop".to_string(),
+            vec!["case".to_string(), "control".to_string()],
+        )];
+        let all = extract_variant_aggregates(
+            &fixture(), None, &chr, &s, &e, Some(&grouping), None,
+        )
+        .unwrap();
+        let only_s1 = extract_variant_aggregates(
+            &fixture(),
+            None,
+            &chr,
+            &s,
+            &e,
+            Some(&grouping),
+            Some(&["S1".to_string()]),
+        )
+        .unwrap();
+        assert_eq!(all.height(), only_s1.height());
+        let a_ref = all.column("n_ref").unwrap().u32().unwrap();
+        let f_ref = only_s1.column("n_ref").unwrap().u32().unwrap();
+        let a_alt = all.column("n_alt").unwrap().u32().unwrap();
+        let f_alt = only_s1.column("n_alt").unwrap().u32().unwrap();
+        let _a_n = all.column("n_samples").unwrap().u32().unwrap();
+        let f_n = only_s1.column("n_samples").unwrap().u32().unwrap();
+        let mut shrunk = false;
+        for i in 0..all.height() {
+            assert_eq!(f_n.get(i).unwrap(), 1);
+            assert!(f_ref.get(i).unwrap() <= a_ref.get(i).unwrap());
+            assert!(f_alt.get(i).unwrap() <= a_alt.get(i).unwrap());
+            if f_ref.get(i).unwrap() < a_ref.get(i).unwrap()
+                || f_alt.get(i).unwrap() < a_alt.get(i).unwrap()
+            {
+                shrunk = true;
+            }
+            let raw = only_s1
+                .column("group_counts")
+                .unwrap()
+                .str()
+                .unwrap()
+                .get(i)
+                .unwrap();
+            // S1 is "case" — control bucket should be absent or zeroed.
+            assert!(
+                !raw.contains("\"control\":{") || raw.contains("\"control\":{\"ref\":0,\"alt\":0,\"missing\":0}"),
+                "unexpected control tallies after S1 filter: {}",
+                raw
+            );
+            assert!(raw.contains("\"case\":{"), "case group missing: {}", raw);
+        }
+        assert!(shrunk, "expected at least one allele count to shrink with sample_filter");
     }
 
     #[test]

@@ -843,8 +843,9 @@ function renderFlowCanvas() {
       isVertical, useWebGPU, flowInstancedRenderer, yBandToFlow, devicePixelRatio,
       fallbackFill,
     } = opts;
-    const col = state.groupingVariable;
-    if (!col || state.groupingFilter) return false; // filtered = solid within-group
+    const col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+    const colorLevel = (typeof getColorFacetLevel === "function") ? getColorFacetLevel() : null;
+    if (!col || colorLevel) return false; // filtered = solid within-group
     const byGroup = variant && variant.alleleSampleCountsByGroup && variant.alleleSampleCountsByGroup[col];
     if (!byGroup) return false;
     const spec = typeof getGroupingColumnSpec === "function" ? getGroupingColumnSpec(col) : null;
@@ -1209,8 +1210,8 @@ function renderFlowCanvas() {
     // When a Participant-group pill is active, size/label nodes from that
     // group's alleleSampleCountsByGroup instead of the cohort-wide counts.
     const resolveActiveCountsAndFreqs = () => {
-      const col = state.groupingVariable;
-      const filter = state.groupingFilter;
+      const col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+      const filter = (typeof getColorFacetLevel === "function") ? getColorFacetLevel() : null;
       let counts = variant.alleleSampleCounts || {};
       if (
         col && filter &&
@@ -1668,12 +1669,16 @@ function renderFlowCanvas() {
             else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
           }
           let groupTag = "";
-          if (state.groupingVariable && state.groupingFilter) {
-            groupTag = ` · ${state.groupingFilter}`;
-          } else if (state.groupingVariable && v.alleleSampleCountsByGroup && v.alleleSampleCountsByGroup[state.groupingVariable]) {
-            const bg = v.alleleSampleCountsByGroup[state.groupingVariable];
-            const parts = Object.keys(bg).map(g => `${g}:${bg[g][alleleKey] || 0}`).filter(s => !s.endsWith(":0"));
-            if (parts.length) groupTag = ` · ${parts.join(", ")}`;
+          {
+            const _col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+            const _lvl = (typeof getColorFacetLevel === "function") ? getColorFacetLevel() : null;
+            if (_col && _lvl) {
+              groupTag = ` · ${_lvl}`;
+            } else if (_col && v.alleleSampleCountsByGroup && v.alleleSampleCountsByGroup[_col]) {
+              const bg = v.alleleSampleCountsByGroup[_col];
+              const parts = Object.keys(bg).map(g => `${g}:${bg[g][alleleKey] || 0}`).filter(s => !s.endsWith(":0"));
+              if (parts.length) groupTag = ` · ${parts.join(", ")}`;
+            }
           }
           const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}${groupTag}`;
           allLabelsToDraw.push({
@@ -1956,12 +1961,16 @@ function renderFlowCanvas() {
             else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
           }
           let groupTag = "";
-          if (state.groupingVariable && state.groupingFilter) {
-            groupTag = ` · ${state.groupingFilter}`;
-          } else if (state.groupingVariable && v.alleleSampleCountsByGroup && v.alleleSampleCountsByGroup[state.groupingVariable]) {
-            const bg = v.alleleSampleCountsByGroup[state.groupingVariable];
-            const parts = Object.keys(bg).map(g => `${g}:${bg[g][alleleKey] || 0}`).filter(s => !s.endsWith(":0"));
-            if (parts.length) groupTag = ` · ${parts.join(", ")}`;
+          {
+            const _col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+            const _lvl = (typeof getColorFacetLevel === "function") ? getColorFacetLevel() : null;
+            if (_col && _lvl) {
+              groupTag = ` · ${_lvl}`;
+            } else if (_col && v.alleleSampleCountsByGroup && v.alleleSampleCountsByGroup[_col]) {
+              const bg = v.alleleSampleCountsByGroup[_col];
+              const parts = Object.keys(bg).map(g => `${g}:${bg[g][alleleKey] || 0}`).filter(s => !s.endsWith(":0"));
+              if (parts.length) groupTag = ` · ${parts.join(", ")}`;
+            }
           }
           const labelText = `${label}${_indelTag} - ${formatAlleleSampleCount(sampleCount)}${groupTag}`;
           allLabelsToDraw.push({
@@ -2142,14 +2151,17 @@ function renderFlowCanvas() {
       const transitions = new Map();
       const srcGenotypes = srcVariant.sampleGenotypes || {};
       const dstGenotypes = dstVariant.sampleGenotypes || {};
-      const groupCol = state.groupingVariable;
-      const groupFilter = state.groupingFilter;
+      const groupCol = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+      const groupFilter = (typeof getColorFacetLevel === "function") ? getColorFacetLevel() : null;
       const useGroups = !!(groupCol && typeof getSampleGroupValue === "function");
+      const allowed = (typeof compositeSampleIds === "function") ? compositeSampleIds() : null;
+      const allowedSet = allowed != null ? new Set(allowed.map(String)) : null;
       
       // Get all samples that have genotype data at both variants
       const allSamples = new Set([...Object.keys(srcGenotypes), ...Object.keys(dstGenotypes)]);
       
       for (const sample of allSamples) {
+        if (allowedSet && !allowedSet.has(String(sample))) continue;
         let groupKey = "";
         if (useGroups) {
           groupKey = String(getSampleGroupValue(sample, groupCol) || "(unlabeled)");
@@ -2214,7 +2226,7 @@ function renderFlowCanvas() {
     }
 
     function groupingOrderForRibbons() {
-      const col = state.groupingVariable;
+      const col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
       if (!col) return [];
       const spec = typeof getGroupingColumnSpec === "function" ? getGroupingColumnSpec(col) : null;
       if (spec && Array.isArray(spec.values)) {
@@ -2224,7 +2236,7 @@ function renderFlowCanvas() {
     }
 
     function colorForGroupedRibbon(groupKey, fallbackFill, alpha, isNoCallFlow) {
-      const col = state.groupingVariable;
+      const col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
       let base = null;
       if (col && groupKey) {
         base = (typeof getGroupColor === "function" && getGroupColor(col, groupKey)) || null;
@@ -2250,9 +2262,13 @@ function renderFlowCanvas() {
       // Cache key: variant pair IDs + aggregation + grouping (objects are shared across lists)
       const aggCutoff = Number(state.aggregateRareAllelesCutoffPct ?? 2.0).toFixed(2);
       const aggEnabled = state.aggregateRareAlleles === true ? "1" : "0";
-      const groupColKey = state.groupingVariable ? String(state.groupingVariable) : "";
-      const groupFilterKey = state.groupingFilter ? String(state.groupingFilter) : "";
-      const cacheKey = `${srcVariant.id}-${dstVariant.id}-agg${aggEnabled}:${aggCutoff}-g${groupColKey}:${groupFilterKey}`;
+      const groupColKey = (typeof getColorFacetKey === "function" && getColorFacetKey())
+        ? String(getColorFacetKey()) : "";
+      const groupFilterKey = (typeof getColorFacetLevel === "function" && getColorFacetLevel())
+        ? String(getColorFacetLevel()) : "";
+      const facetSig = (typeof compositeSampleIds === "function" && compositeSampleIds())
+        ? compositeSampleIds().slice().sort().join(",") : "";
+      const cacheKey = `${srcVariant.id}-${dstVariant.id}-agg${aggEnabled}:${aggCutoff}-g${groupColKey}:${groupFilterKey}:f${facetSig.length}`;
       
       // Get or compute transitions (cached to avoid recalculating on every pan/zoom)
       // The cache includes transitions for variants in the expanded window, so when variants
@@ -2337,7 +2353,10 @@ function renderFlowCanvas() {
       }
       
       // Calculate totals. transitions: src -> dst -> group -> count
-      const colorByGroup = !!(state.groupingVariable && !state.groupingFilter);
+      const colorByGroup = !!(
+        (typeof getColorFacetKey === "function") && getColorFacetKey()
+        && !(typeof getColorFacetLevel === "function" && getColorFacetLevel())
+      );
       const groupOrder = colorByGroup ? groupingOrderForRibbons() : [];
       const srcTotals = new Map(); // srcLabel -> total outgoing haplotypes
       const dstTotals = new Map(); // dstLabel -> total incoming haplotypes
@@ -2531,7 +2550,7 @@ function renderFlowCanvas() {
         
         // De-emphasize reference flows further (lower saturation via reduced alpha)
         // Skip this when ribbons are group-colored — every strip should read equally.
-        if (isRefFlow && !colorByGroup && !(state.groupingVariable && state.groupingFilter)) {
+        if (isRefFlow && !colorByGroup && !(typeof getColorFacetKey === "function" && getColorFacetKey() && typeof getColorFacetLevel === "function" && getColorFacetLevel())) {
           alpha *= 0.70; // Keep persistence flows visible but less dominant.
         }
         
@@ -2548,9 +2567,10 @@ function renderFlowCanvas() {
         if (isEdgeSelected) {
           // Use gold highlight color for selected edges
           ribbonColor = `rgba(255, 215, 0, ${alpha.toFixed(3)})`;
-        } else if (state.groupingVariable && (colorByGroup || state.groupingFilter)) {
+        } else if ((typeof getColorFacetKey === "function") && getColorFacetKey() && (colorByGroup || (typeof getColorFacetLevel === "function" && getColorFacetLevel()))) {
           // Groups tab: paint ribbons with the group palette (stacked when All).
-          ribbonColor = colorForGroupedRibbon(groupKey || state.groupingFilter, colors.fillColor, alpha, isNoCallFlow);
+          const lvl = (typeof getColorFacetLevel === "function") ? getColorFacetLevel() : null;
+          ribbonColor = colorForGroupedRibbon(groupKey || lvl, colors.fillColor, alpha, isNoCallFlow);
         } else if (isRefFlow) {
           // Dominant reference ribbons should stay dark-neutral so colored non-ref ribbons stand out.
           ribbonColor = `rgba(34, 34, 34, ${alpha.toFixed(3)})`;
