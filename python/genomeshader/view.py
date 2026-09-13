@@ -471,10 +471,14 @@ class GenomeShader:
         # reads @RG SM headers for the leftovers (authoritative). Kept separate
         # from the user's explicit _sample_mapping, which always wins.
         self._read_index: dict = {}
-        self._pending_read_dirs: List[str] = []   # dirs to list in the background
+        self._pending_read_dirs: List[Tuple[str, str]] = []  # (dir, attach_reads label)
         self._read_index_thread = None
         self._read_index_done = threading.Event()
         self._read_index_lock = threading.Lock()
+        # BAM/CRAM URL -> attach_reads label (pacbio / illumina / …). Orthogonal
+        # to sample metadata: Groups tab can filter Smart Tracks by read set.
+        self._read_set_by_url: Dict[str, str] = {}
+        self._read_set_labels: List[str] = []  # attach order, unique
 
         # One entry per variant track: (track_name, list of paths). Order matches session's variant_file_groups.
         self._variant_datasets: List[Tuple[str, List[str]]] = []
@@ -1380,6 +1384,9 @@ class GenomeShader:
         if isinstance(gcs_paths, str):
             gcs_paths = [gcs_paths]  # Convert single string to list
 
+        if cohort and cohort not in self._read_set_labels:
+            self._read_set_labels.append(cohort)
+
         self._debug_log("attach_reads_start", cohort=cohort, n_paths=len(gcs_paths),
                         paths=_cap([str(p) for p in gcs_paths]))
 
@@ -1399,6 +1406,7 @@ class GenomeShader:
                     print(f"GenomeShader ERROR: attach_reads '{gcs_path}' failed: {e}",
                           file=sys.stderr, flush=True)
                     raise
+                self._read_set_by_url[str(gcs_path)] = cohort
                 n_direct += 1
                 self._debug_log("session_attach_reads_done", path=gcs_path, cohort=cohort,
                                 ms=round((time.perf_counter() - _t) * 1000, 1))
@@ -1415,6 +1423,7 @@ class GenomeShader:
                         n_pending_dirs=len(self._pending_read_dirs),
                         vcf_universe_size=len(self._vcf_sample_universe))
         self._reconcile_read_samples()
+        self._push_read_sets_changed()
         self._debug_log("attach_reads_done", cohort=cohort)
 
     def _reconcile_read_samples(self):
@@ -2037,6 +2046,21 @@ class GenomeShader:
             })
         except Exception:
             pass
+
+    def _push_read_sets_changed(self) -> None:
+        """Notify a live widget that read-set labels / BAM index updated."""
+        w = getattr(self, "_active_widget", None)
+        if w is None:
+            return
+        try:
+            w.send({
+                "type": "read_sets_changed",
+                "read_sets": self._read_sets_config(),
+                "read_bam_index": self._read_bam_index_snapshot(),
+                "read_samples": self._samples_with_reads(),
+            })
+        except Exception:
+            pass
     
     def get_bam_samples_for_vcf_samples(self, vcf_samples: List[str]) -> List[str]:
         """
@@ -2123,6 +2147,32 @@ class GenomeShader:
             pass
         return out
 
+    def _read_sets_config(self) -> Optional[dict]:
+        """Compact read-set facet for Groups tab (attach_reads labels).
+
+        Returns None when no labeled read sets exist. ``by_url`` maps each
+        BAM/CRAM URL to its attach label so Smart Tracks can filter independently
+        of sample metadata.
+        """
+        by_url = {str(u): str(lab) for u, lab in self._read_set_by_url.items() if u and lab}
+        labels = [str(x) for x in self._read_set_labels if x]
+        if not labels and by_url:
+            labels = sorted(set(by_url.values()))
+        if not labels:
+            return None
+        counts: Dict[str, int] = {lab: 0 for lab in labels}
+        for lab in by_url.values():
+            counts[lab] = counts.get(lab, 0) + 1
+        values = []
+        for i, lab in enumerate(labels):
+            color = _data_tracks.DEFAULT_PALETTE[i % len(_data_tracks.DEFAULT_PALETTE)]
+            values.append({
+                "name": lab,
+                "count": int(counts.get(lab, 0)),
+                "color": color,
+            })
+        return {"labels": values, "by_url": by_url}
+
     def _maybe_start_read_index(self):
         """Start the background VCF-sample -> read-URL index once BOTH variants
         (sample universe) and reads (attached files or pending dirs) are present.
@@ -2160,13 +2210,16 @@ class GenomeShader:
                 urls.extend(self._session.get_attached_reads())
             except Exception as e:
                 self._debug_log("read_index_attached_error", error=str(e))
-            for path, _cohort in list(self._pending_read_dirs):
+            for path, cohort in list(self._pending_read_dirs):
                 try:
                     with self._dbg_time("read_index_dir_list", dir=path):
                         b = gs._gcs_list_files_of_type(path, ".bam")
                         c = gs._gcs_list_files_of_type(path, ".cram")
                     urls.extend(b); urls.extend(c)
-                    self._debug_log("read_index_dir_counts", dir=path, n_bam=len(b), n_cram=len(c))
+                    for u in list(b) + list(c):
+                        self._read_set_by_url[str(u)] = str(cohort)
+                    self._debug_log("read_index_dir_counts", dir=path, n_bam=len(b), n_cram=len(c),
+                                    cohort=str(cohort))
                 except Exception as e:
                     self._debug_log("read_index_dir_error", dir=path, error=str(e),
                                     traceback=__import__("traceback").format_exc())
@@ -2209,6 +2262,7 @@ class GenomeShader:
                   f"sample(s) mapped ({time.perf_counter() - t0:.1f}s)", flush=True)
             self._debug_log("read_index_ready", mapped=len(index), universe=len(samples),
                             ms=round((time.perf_counter() - t0) * 1000, 1))
+            self._push_read_sets_changed()
         except BaseException as e:
             self._debug_log("read_index_fatal", error=str(e), error_type=type(e).__name__,
                             traceback=__import__("traceback").format_exc())
@@ -5167,6 +5221,8 @@ class GenomeShader:
             # VCF samples that have attached BAM/CRAM. Load / sample search draw
             # only from this set so VCF-only carriers don't raise a modal.
             'read_samples': self._samples_with_reads(),
+            # attach_reads labels (pacbio/illumina/…) — Groups tab read-set facet.
+            'read_sets': self._read_sets_config(),
             # Compact sample metadata for Settings → Grouping (None when unset).
             'sample_metadata': self._sample_metadata_config(),
             'cache_debug': self._cache_debug_delta(cache_debug_start),

@@ -101,6 +101,8 @@ const state = {
   // Sample metadata grouping (Groups tab: Variable + Participant groups)
   groupingVariable: null, // column name or null
   groupingFilter: null,   // active group value or null (All)
+  // attach_reads label facet (Groups tab: Read sets) — AND with groupingFilter
+  readSetFilter: null,    // label or null (All)
 
   // allele context menu state: { x, y, visible } or null
   alleleContextMenu: null,

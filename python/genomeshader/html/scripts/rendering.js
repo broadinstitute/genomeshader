@@ -165,8 +165,11 @@ function getTrackLayout() {
       if (track.hidden === true) {
         continue;
       }
-      // Participant-group pill: hide Smart Tracks outside the active group.
+      // Participant-group / read-set pills: hide Smart Tracks outside active facets.
       if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+        continue;
+      }
+      if (typeof isSmartTrackExcludedByReadSet === "function" && isSmartTrackExcludedByReadSet(track)) {
         continue;
       }
       
@@ -237,8 +240,11 @@ function getTrackLayout() {
       if (track.hidden === true) {
         continue;
       }
-      // Participant-group pill: hide Smart Tracks outside the active group.
+      // Participant-group / read-set pills: hide Smart Tracks outside active facets.
       if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+        continue;
+      }
+      if (typeof isSmartTrackExcludedByReadSet === "function" && isSmartTrackExcludedByReadSet(track)) {
         continue;
       }
       

@@ -170,3 +170,33 @@ def test_attach_metadata_multiple_labels(tmp_path, monkeypatch):
     names = {c["name"] for c in cfg["columns"]}
     assert "pop__super_pop" in names
     assert "pheno__case" in names
+
+
+def test_read_sets_config_from_attach_labels(tmp_path, monkeypatch):
+    """attach_reads labels are a separate facet from sample metadata."""
+    pytest.importorskip("genomeshader.genomeshader")
+    from unittest.mock import Mock, patch
+    import genomeshader as G
+
+    monkeypatch.setenv("GENOMESHADER_LOCAL_CACHE_DIR", str(tmp_path))
+    with patch("genomeshader.view.gs._init", return_value=Mock()):
+        s = G.GenomeShader(
+            genome_build="hg38",
+            gcs_session_dir="gs://test-bucket/genomeshader",
+        )
+    assert s._read_sets_config() is None
+
+    s._read_set_labels = ["pacbio", "illumina"]
+    s._read_set_by_url = {
+        "gs://bucket/HG001.pb.bam": "pacbio",
+        "gs://bucket/HG001.il.bam": "illumina",
+        "gs://bucket/HG002.pb.bam": "pacbio",
+    }
+    cfg = s._read_sets_config()
+    assert cfg is not None
+    names = [e["name"] for e in cfg["labels"]]
+    assert names == ["pacbio", "illumina"]
+    assert cfg["labels"][0]["count"] == 2
+    assert cfg["labels"][1]["count"] == 1
+    assert cfg["by_url"]["gs://bucket/HG001.pb.bam"] == "pacbio"
+    assert all("color" in e for e in cfg["labels"])
