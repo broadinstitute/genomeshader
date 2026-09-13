@@ -96,6 +96,56 @@ function formatAlleleSampleCount(n) {
 }
 if (typeof window !== "undefined") window.__gsFormatAlleleSampleCount = formatAlleleSampleCount;
 
+/**
+ * Per-group sample-frequency rows for the Variants tab (and tests).
+ *
+ * Uses carrier/sample-count semantics already on the variant payload
+ * (`alleleSampleCountsByGroup`), with group size N from the metadata column
+ * spec. Returns [] when grouping isn't active or counts are missing.
+ *
+ * Each row: { group, color, n, N, freq, active }
+ */
+function buildGroupFrequencyRows(opts) {
+  const col = opts && opts.groupingVariable;
+  const filter = opts && opts.groupingFilter;
+  const alleleKeys = (opts && Array.isArray(opts.alleleKeys)) ? opts.alleleKeys : [];
+  const byCol = opts && opts.alleleSampleCountsByGroup;
+  const spec = opts && opts.columnSpec;
+  if (!col || !byCol || !byCol[col] || !alleleKeys.length) return [];
+  const byGroup = byCol[col];
+  const order = (spec && Array.isArray(spec.values) && spec.values.length)
+    ? spec.values.map((v) => ({
+        group: String(v.value),
+        color: v.color || null,
+        N: Number(v.count) || 0,
+      }))
+    : Object.keys(byGroup).sort().map((g) => ({
+        group: String(g),
+        color: null,
+        N: 0,
+      }));
+  const rows = [];
+  for (const entry of order) {
+    const bucket = byGroup[entry.group] || {};
+    let n = 0;
+    for (const key of alleleKeys) {
+      n += Number(bucket[key] || 0);
+    }
+    const N = entry.N > 0 ? entry.N : Math.max(n, 0);
+    const freq = N > 0 ? n / N : 0;
+    rows.push({
+      group: entry.group,
+      color: entry.color,
+      n,
+      N,
+      freq,
+      active: filter != null && String(filter) === entry.group,
+    });
+  }
+  return rows;
+}
+if (typeof window !== "undefined") window.__gsBuildGroupFrequencyRows = buildGroupFrequencyRows;
+
 // Next Indel-marker expansion state on click. A position that is BOTH an
 // insertion and a deletion cycles off -> ins -> del -> off so either can be
 // inspected; pure insertions/deletions just toggle. Returns the target
