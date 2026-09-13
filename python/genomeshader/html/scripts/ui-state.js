@@ -90,6 +90,7 @@ const state = {
     strategy: 'best_evidence',
     numSamples: 1,
     combineMode: 'AND', // 'AND' or 'OR'
+    evidenceFilter: null, // attach_reads label or null (All) — Sample Search only
     candidateSamples: [], // Will be populated when selection changes
     allSampleIds: [] // All available sample IDs (populated from data)
   },
@@ -98,6 +99,12 @@ const state = {
   smartTracks: [], // Array of Smart track instances
   smartTrackRenderers: new Map(), // Map<trackId, { webgpuCore, instancedRenderer, canvas, webgpuCanvas, container }>
   
+  // Groups tab: metadata facets only. Each entry: { key, level }.
+  // level null = All (unrestricted on that facet). AND across non-null levels.
+  activeFacets: [],
+  // Metadata column used for flow/ribbon/track color; null → flat palette.
+  colorFacetKey: null,
+
   // allele context menu state: { x, y, visible } or null
   alleleContextMenu: null,
 
@@ -138,6 +145,9 @@ setTimeout(() => {
   if (typeof updateAggregateRareAllelesControls === "function") {
     updateAggregateRareAllelesControls();
   }
+}, 0);
+setTimeout(() => {
+  if (typeof initSampleGroupingUI === "function") initSampleGroupingUI();
 }, 0);
 
 // Chromosome lengths for bounds checking
@@ -314,6 +324,9 @@ let repeatHitTestData = []; // For tooltip hit testing
 // This avoids recalculating transitions on every pan/zoom
 const ribbonTransitionCache = new Map();
 const MAX_CACHE_SIZE = 1000; // Limit cache size to prevent unbounded growth
+if (typeof window !== "undefined") {
+  window.ribbonTransitionCache = ribbonTransitionCache;
+}
 let cachedVisibleVariantIds = null; // Track which variants were used for cache
 let cachedViewportRange = null; // Track the viewport range used for cache (with padding)
 

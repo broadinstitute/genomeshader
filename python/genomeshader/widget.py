@@ -265,6 +265,7 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                     sample_id=content.get("sample_id"),
                     samples=content.get("samples"),
                     locus=content.get("locus"),
+                    bam_url=content.get("bam_url"),
                 )
                 self.send({"type": "fetch_reads_response", "request_id": request_id, **payload})
             except Exception as e:  # surfaced to the frontend as a reads error
@@ -298,7 +299,8 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                     "fetch_variants_recv", contig=content.get("contig"),
                     start=content.get("start"), end=content.get("end"))
                 payload = self._shader.fetch_variants_payload(
-                    content.get("contig"), content.get("start"), content.get("end"))
+                    content.get("contig"), content.get("start"), content.get("end"),
+                    sample_ids=content.get("sample_ids"))
                 self.send({"type": "fetch_variants_response", "request_id": request_id, **payload})
             except Exception as e:
                 hint = self._shader._report_fetch_failure(
