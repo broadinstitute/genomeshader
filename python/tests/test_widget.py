@@ -183,6 +183,18 @@ def test_grouping_variable_row_wired():
     assert 'id="readSetsSection"' not in body
     assert 'data-left-tab="groups"' in body
     assert 'id="groupingVariableSelect"' not in body
+    # Sample Search redesign: empty state + How-many slider (no stepper)
+    assert 'id="sampleEmptyState"' in body
+    assert 'id="sampleCountSection"' in body
+    assert 'id="sampleCountSlider"' in body
+    assert 'id="sampleCountHeader"' in body
+    assert 'id="sampleCountValue"' in body
+    assert 'id="sampleAllelePills"' in body
+    assert 'id="sampleChooseHeader"' in body
+    assert 'id="samplePreviewHeader"' in body
+    assert 'id="sampleCountStepper"' not in body
+    assert 'id="sampleCountMinus"' not in body
+    assert 'id="sampleCountInput"' not in body
     # Hardcoded Super-pop stub is gone
     assert ">Super-pop<" not in body
     esm = _build_esm()
@@ -191,6 +203,7 @@ def test_grouping_variable_row_wired():
     assert "compositeSampleIds" in esm
     assert "evidenceFilter" in esm
     assert "setEvidenceFilter" in esm
+    assert "resolvedSamples" in esm
     assert "addMetadataFacet" in esm
     assert "setColorFacetKey" in esm
     assert "setMetadataFacetLevel" in esm

@@ -864,10 +864,268 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   filter: none;
 }
 
-/* Combine toggle (AND/OR) */
-.combineToggle.active {
-  background: var(--blue) !important;
+/* Combine toggle (AND/OR) — pill in Selection header */
+.combineTogglePill {
+  display: flex;
+  gap: 0;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  padding: 2px;
+  flex: 0 0 auto;
+}
+.combineTogglePill .combineToggle {
+  all: unset;
+  box-sizing: border-box;
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--muted);
+  line-height: 1.3;
+}
+.combineTogglePill .combineToggle.active {
+  background: var(--blue, #2b6fff) !important;
   color: white !important;
+}
+.combineTogglePill .combineToggle:disabled,
+.combineTogglePill.inert .combineToggle {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ---- Sample Search pane redesign ---- */
+.samplePaneCard {
+  padding: 9px 10px;
+  margin: 7px 0;
+  border-radius: 10px;
+  background: var(--panel2);
+  font-size: 11px;
+  color: var(--muted);
+  box-sizing: border-box;
+}
+.samplePaneGroupHeader {
+  margin-top: 0;
+  margin-bottom: 6px;
+}
+.samplePaneGroupHeader h3 {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.samplePaneDivider {
+  height: 0;
+  margin: 16px 0 14px;
+  border: none;
+  border-top: 1px solid var(--border2);
+  opacity: 0.9;
+}
+.sampleSearchCard {
+  margin-top: 0;
+  margin-bottom: 4px;
+}
+.sampleStrategyStack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.sampleEmptyState {
+  text-align: center;
+  padding: 18px 14px;
+}
+.sampleEmptyTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.sampleEmptyHint {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.sampleSelectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.sampleAllelePills {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.sampleAllelePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 6px 4px 10px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.3;
+  box-sizing: border-box;
+}
+.sampleAllelePillLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.sampleAllelePillRemove {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.sampleAllelePillRemove:hover {
+  color: var(--text);
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.sampleStepCard {
+  color: var(--text);
+}
+.sampleStepHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.sampleStepBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--blue, #2b6fff);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  flex: 0 0 auto;
+  line-height: 1;
+}
+.sampleStepTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sampleStrategySelect {
+  min-width: 110px;
+  max-width: 160px;
+  flex: 0 1 auto;
+  width: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.sampleStrategySelectFull {
+  display: block;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+.sampleCountRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sampleCountSlider {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.sampleCountSlider:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.sampleCountValue {
+  flex: 0 0 1.75em;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.samplePreviewChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+  color: var(--text);
+}
+.samplePreviewChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.3;
+  border: 1px solid var(--border2);
+  color: var(--muted);
+  background: transparent;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.samplePreviewChip.on {
+  color: var(--text);
+  border-color: var(--accent, #2b6fff);
+  background: color-mix(in srgb, var(--accent, #2b6fff) 12%, transparent);
+}
+.samplePreviewChip.dim {
+  color: var(--muted);
+  border-style: dashed;
+  opacity: 0.7;
+}
+.samplePreviewChip.more {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.sampleLoadBtn {
+  width: 100%;
+  margin: 7px 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  box-sizing: border-box;
 }
 
 /* Sample search results */
@@ -877,11 +1135,16 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   z-index: 5000;
 }
 /* Solid field so the sample IDs don't bleed into the panel behind it. */
-#sampleSearchInput {
-  background: var(--panel) !important;
-  color: var(--text) !important;
+#sampleSearchInput,
+.sampleSearchInput {
+  width: 100%;
+  padding: 6px 8px;
   border: 1px solid var(--border2) !important;
   border-radius: 6px;
+  background: var(--panel) !important;
+  color: var(--text) !important;
+  font-size: 12px;
+  box-sizing: border-box;
 }
 #sampleSearchInput::placeholder { color: var(--muted); }
 #sampleSearchResults {

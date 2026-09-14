@@ -591,6 +591,182 @@ def test_spawn_skips_null_fallback_when_evidence_empty(browser, tmp_path):
     page.close()
 
 
+def test_load_by_id_bypasses_evidence_filter(browser, tmp_path):
+    """Load-by-ID must open every BAM even when Narrow/Evidence is set."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const bam = window.__GS_bamUrlsForSample;
+          if (!bam) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S2: ['gs://x/S2.pb.bam', 'gs://x/S2.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 1 },
+              { name: 'illumina', count: 1 },
+            ],
+            by_url: {
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S2.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          return {
+            filtered: bam('S2'),
+            bypass: bam('S2', { applyEvidence: false }),
+          };
+        }"""
+    )
+    assert result is not None
+    assert result["filtered"] == ["gs://x/S2.pb.bam"], result
+    assert result["bypass"] == ["gs://x/S2.pb.bam", "gs://x/S2.il.bam"], result
+    page.close()
+
+
+def test_preview_resolved_samples_stable_across_refresh(browser, tmp_path):
+    """Preview caches resolvedSamples so Random does not re-roll on refresh/Load."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const resolve = window.__GS_resolvePreviewSelection;
+          const select = window.selectSamplesForStrategy;
+          if (!resolve || !select) return null;
+          const state = window.__GS_STATE;
+          state.selectedAlleles = new Set(['t1|v1|0']);
+          state.sampleSelection.strategy = 'random';
+          state.sampleSelection.numSamples = 2;
+          state.sampleSelection.combineMode = 'AND';
+          state.sampleSelection.evidenceFilter = null;
+          state.sampleSelection.candidateSamples = ['A', 'B', 'C', 'D', 'E', 'F'];
+          state.sampleSelection.allSampleIds = ['A', 'B', 'C', 'D', 'E', 'F'];
+          state.sampleSelection._candidateSig = 'force';
+          state.sampleSelection._resolvedSig = null;
+          state.sampleSelection.resolvedSamples = [];
+          // Stub allele parsing so resolve can run without real variants.
+          // resolvePreviewSelection calls selectSamplesForStrategy with candidates.
+          const first = resolve();
+          const second = resolve();
+          const loadPath = (state.sampleSelection.resolvedSamples || []).slice();
+          // Clearing only the candidate sig (as pan/zoom cache-hit would) must
+          // still reuse the same resolved set when resolve runs again.
+          const third = resolve();
+          return { first, second, loadPath, third, sig: state.sampleSelection._resolvedSig };
+        }"""
+    )
+    assert result is not None
+    assert len(result["first"]) == 2, result
+    assert result["first"] == result["second"] == result["loadPath"] == result["third"], result
+    assert result["sig"], result
+    page.close()
+
+
+def test_carriers_controls_pool_is_evidence_filtered(browser, tmp_path):
+    """Carriers+controls eligible pool must apply Evidence, not just Groups."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const poolFn = window.__GS_getEligibleSamplePool;
+          const filterUi = window.__GS_filterSamplesForUi;
+          if (!poolFn || !filterUi) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_samples = ['S1', 'S2', 'S3'];
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S1: ['gs://x/S1.pb.bam'],
+            S2: ['gs://x/S2.pb.bam', 'gs://x/S2.il.bam'],
+            S3: ['gs://x/S3.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 2 },
+              { name: 'illumina', count: 2 },
+            ],
+            by_url: {
+              'gs://x/S1.pb.bam': 'pacbio',
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S2.il.bam': 'illumina',
+              'gs://x/S3.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.sampleSelection.strategy = 'carriers_controls';
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          state.sampleSelection.candidateSamples = ['S1'];
+          state.sampleSelection.allSampleIds = ['S1', 'S2', 'S3'];
+          const pool = poolFn();
+          const filteredAll = filterUi(['S1', 'S2', 'S3']);
+          return { pool, filteredAll };
+        }"""
+    )
+    assert result is not None
+    assert result["filteredAll"] == ["S1", "S2"], result
+    assert result["pool"] == ["S1", "S2"], result
+    page.close()
+
+
+def test_choose_load_counts_track_evidence(browser, tmp_path):
+    """Choose/Load {x of y} must shrink when Evidence narrows the eligible pool."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const poolFn = window.__GS_getEligibleSamplePool;
+          const resolve = window.__GS_resolvePreviewSelection;
+          if (!poolFn || !resolve) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_samples = ['S1', 'S2', 'S3', 'S4'];
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S1: ['gs://x/S1.pb.bam'],
+            S2: ['gs://x/S2.pb.bam'],
+            S3: ['gs://x/S3.il.bam'],
+            S4: ['gs://x/S4.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 2 },
+              { name: 'illumina', count: 2 },
+            ],
+            by_url: {
+              'gs://x/S1.pb.bam': 'pacbio',
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S3.il.bam': 'illumina',
+              'gs://x/S4.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.selectedAlleles = new Set(['t1|v1|0']);
+          state.sampleSelection.strategy = 'best_evidence';
+          state.sampleSelection.numSamples = 3;
+          state.sampleSelection.candidateSamples = ['S1', 'S2', 'S3', 'S4'];
+          state.sampleSelection.allSampleIds = ['S1', 'S2', 'S3', 'S4'];
+          state.sampleSelection.evidenceFilter = null;
+          state.sampleSelection._resolvedSig = null;
+          const yAll = poolFn().length;
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          state.sampleSelection._resolvedSig = null;
+          const yPb = poolFn().length;
+          // Clamp numSamples to the narrowed pool via resolve.
+          resolve();
+          return {
+            yAll, yPb,
+            numAfter: state.sampleSelection.numSamples,
+            resolved: state.sampleSelection.resolvedSamples,
+          };
+        }"""
+    )
+    assert result is not None
+    assert result["yAll"] == 4, result
+    assert result["yPb"] == 2, result
+    assert result["numAfter"] == 2, result
+    assert len(result["resolved"]) == 2, result
+    page.close()
+
+
 def test_comment_time_has_timezone(browser, tmp_path):
     """Comment timestamps must render with a timezone token (regression: the old
     formatter dropped the zone entirely)."""
