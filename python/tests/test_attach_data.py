@@ -74,6 +74,22 @@ def test_interval_without_value_col():
     assert "value" not in payload["series"][0]["features"][0]
 
 
+def test_attach_data_same_label_replaces(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    s.attach_data(
+        "gwas",
+        {"chrom": ["chr1"], "start": [10], "value": [1.0]},
+        style="scatter",
+    )
+    s.attach_data(
+        "gwas",
+        {"chrom": ["chr1"], "start": [20], "value": [2.0]},
+        style="scatter",
+    )
+    assert list(s._data_tracks) == ["gwas"]
+    assert s._data_tracks["gwas"].data["start"].to_list() == [20]
+
+
 def test_attach_data_and_fetch_overlap(tmp_path, monkeypatch):
     s = _shader(tmp_path, monkeypatch)
     s.attach_data(
