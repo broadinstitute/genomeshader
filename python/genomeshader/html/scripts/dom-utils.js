@@ -469,7 +469,10 @@ function notifyFacetsChanged() {
   if (typeof window.clusterSmartTracksByGrouping === "function") {
     window.clusterSmartTracksByGrouping();
   }
-  if (state.sampleSelection) state.sampleSelection._candidateSig = null;
+  if (state.sampleSelection) {
+    state.sampleSelection._candidateSig = null;
+    state.sampleSelection._resolvedSig = null;
+  }
   if (typeof recomputeCandidateSamples === "function") recomputeCandidateSamples();
   else if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
   if (typeof updateTracksHeight === "function") updateTracksHeight();
@@ -485,7 +488,10 @@ function notifyFacetsChanged() {
 }
 
 function notifyEvidenceFilterChanged() {
-  if (state.sampleSelection) state.sampleSelection._candidateSig = null;
+  if (state.sampleSelection) {
+    state.sampleSelection._candidateSig = null;
+    state.sampleSelection._resolvedSig = null;
+  }
   renderEvidenceFilter();
   if (typeof recomputeCandidateSamples === "function") recomputeCandidateSamples();
   else if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
@@ -534,12 +540,12 @@ function setColorFacetKey(columnName) {
 
 function setEvidenceFilter(label) {
   if (!state.sampleSelection) return;
+  const next = (label == null || label === "") ? null : String(label);
   const cur = state.sampleSelection.evidenceFilter;
-  if (label == null || label === "" || String(label) === String(cur)) {
-    state.sampleSelection.evidenceFilter = null;
-  } else {
-    state.sampleSelection.evidenceFilter = String(label);
+  if (next === cur || (next == null && (cur == null || cur === ""))) {
+    return;
   }
+  state.sampleSelection.evidenceFilter = next;
   notifyEvidenceFilterChanged();
 }
 
@@ -712,58 +718,47 @@ function smartTrackReadSet(track) {
 
 function renderEvidenceFilter() {
   const section = getElementById("evidenceFilterSection");
-  const list = getElementById("evidenceFilterList");
-  if (!section || !list) return;
+  const sel = getElementById("evidenceFilterList");
+  if (!section || !sel) return;
   const rs = getReadSetsConfig();
   const labels = (rs && Array.isArray(rs.labels)) ? rs.labels : [];
   if (!labels.length) {
     section.style.display = "none";
-    list.innerHTML = "";
+    sel.innerHTML = "";
     return;
   }
   section.style.display = "";
-  list.innerHTML = "";
 
   const activeLevel = getEvidenceFilter();
-  const allRow = document.createElement("div");
-  allRow.className = "group" + (activeLevel == null ? " group-active" : "");
-  const allLabel = document.createElement("span");
-  allLabel.textContent = "All";
-  const allPill = document.createElement("span");
-  allPill.className = "pill";
-  const total = labels.reduce((n, v) => n + (Number(v.count) || 0), 0);
-  allPill.textContent = String(total);
-  allRow.appendChild(allLabel);
-  allRow.appendChild(allPill);
-  allRow.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setEvidenceFilter(null);
-  });
-  list.appendChild(allRow);
+  const desired = activeLevel == null ? "" : String(activeLevel);
 
+  // Rebuild options so newly attached read-set labels appear without a reload.
+  const prevFocus = document.activeElement === sel;
+  sel.innerHTML = "";
+  const allOpt = document.createElement("option");
+  allOpt.value = "";
+  allOpt.textContent = "All";
+  sel.appendChild(allOpt);
   for (const entry of labels) {
-    const val = String(entry.name);
-    const row = document.createElement("div");
-    row.className = "group" + (activeLevel === val ? " group-active" : "");
-    if (entry.color) row.style.borderLeft = `3px solid ${entry.color}`;
-    const labelEl = document.createElement("span");
-    labelEl.textContent = val;
-    const pill = document.createElement("span");
-    pill.className = "pill";
-    if (entry.color) {
-      pill.style.background = entry.color;
-      pill.style.color = "#fff";
-    }
-    pill.textContent = String(entry.count != null ? entry.count : 0);
-    row.appendChild(labelEl);
-    row.appendChild(pill);
-    row.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setEvidenceFilter(val);
+    const opt = document.createElement("option");
+    opt.value = String(entry.name);
+    opt.textContent = String(entry.name);
+    sel.appendChild(opt);
+  }
+  // Fall back to All if the active label disappeared from config.
+  sel.value = (desired && Array.from(sel.options).some((o) => o.value === desired))
+    ? desired
+    : "";
+
+  if (!sel._evidenceListenerAttached) {
+    sel._evidenceListenerAttached = true;
+    sel.addEventListener("change", () => {
+      const v = sel.value;
+      setEvidenceFilter(v === "" ? null : v);
     });
-    list.appendChild(row);
+  }
+  if (prevFocus) {
+    try { sel.focus(); } catch (e) {}
   }
 }
 
@@ -781,7 +776,10 @@ function onReadSetsChanged(payload) {
     state.sampleSelection.evidenceFilter = null;
   }
   renderEvidenceFilter();
-  if (state.sampleSelection) state.sampleSelection._candidateSig = null;
+  if (state.sampleSelection) {
+    state.sampleSelection._candidateSig = null;
+    state.sampleSelection._resolvedSig = null;
+  }
   if (typeof recomputeCandidateSamples === "function") recomputeCandidateSamples();
   else if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
   if (typeof updateTracksHeight === "function") updateTracksHeight();

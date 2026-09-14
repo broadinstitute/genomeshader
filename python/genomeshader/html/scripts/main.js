@@ -4619,50 +4619,154 @@ function setupCanvasHover() {
     });
   }
   
-  // Update context indicator (shows what's selected)
+  // Eligible pool for Choose / Preview / Load headers.
+  // Carriers+controls draws from the whole attached-read cohort (evidence-filtered);
+  // other strategies use the allele-matching candidate pool.
+  function getEligibleSamplePool() {
+    const strategy = state.sampleSelection.strategy;
+    if (strategy === 'carriers_controls') {
+      return filterSamplesForUi(state.sampleSelection.allSampleIds || []);
+    }
+    return filterSamplesForUi(state.sampleSelection.candidateSamples || []);
+  }
+
+  function getPreviewCounts() {
+    const pool = getEligibleSamplePool();
+    const y = pool.length;
+    const numSamples = state.sampleSelection.numSamples || 1;
+    const resolved = state.sampleSelection.resolvedSamples || [];
+    const x = Math.min(resolved.length, y);
+    return { pool, x, y, samplesToLoad: Math.min(numSamples, y) };
+  }
+
+  // Resolve Preview's "on" chips from strategy. Cached by signature so Random
+  // does not re-roll on Load or on unrelated UI refreshes.
+  function resolvePreviewSelection() {
+    if (!state.sampleSelection) return [];
+    if (state.selectedAlleles.size === 0) {
+      state.sampleSelection.resolvedSamples = [];
+      state.sampleSelection._resolvedSig = null;
+      return [];
+    }
+    const pool = getEligibleSamplePool();
+    const y = pool.length;
+    const strategy = state.sampleSelection.strategy || 'best_evidence';
+    let numSamples = state.sampleSelection.numSamples || 1;
+    if (y <= 0) {
+      state.sampleSelection.numSamples = 1;
+      state.sampleSelection.resolvedSamples = [];
+      state.sampleSelection._resolvedSig = null;
+      return [];
+    }
+    if (numSamples > y) numSamples = y;
+    if (numSamples < 1) numSamples = 1;
+    state.sampleSelection.numSamples = numSamples;
+
+    const candidates = filterSamplesForUi(state.sampleSelection.candidateSamples || []);
+    const sig = [
+      strategy,
+      String(numSamples),
+      state.sampleSelection.combineMode || '',
+      state.sampleSelection.evidenceFilter || '',
+      candidates.join(','),
+      Array.from(state.selectedAlleles).sort().join(','),
+    ].join('|');
+    if (sig === state.sampleSelection._resolvedSig
+        && Array.isArray(state.sampleSelection.resolvedSamples)) {
+      return state.sampleSelection.resolvedSamples;
+    }
+    const resolved = selectSamplesForStrategy(strategy, candidates, numSamples);
+    state.sampleSelection.resolvedSamples = resolved;
+    state.sampleSelection._resolvedSig = sig;
+    return resolved;
+  }
+  if (typeof window !== 'undefined') {
+    window.__GS_resolvePreviewSelection = resolvePreviewSelection;
+    window.__GS_getEligibleSamplePool = getEligibleSamplePool;
+  }
+
+  // Update Selection card (allele pills + AND/OR) and empty-state placeholder.
   function updateSampleContext() {
     const currentRoot = getCurrentRoot();
     const contextEl = byId(currentRoot, 'sampleContext');
+    const emptyEl = byId(currentRoot, 'sampleEmptyState');
+    const countEl = byId(currentRoot, 'sampleSelectionCount');
+    const pillsEl = byId(currentRoot, 'sampleAllelePills');
+    const combineAndBtn = byId(currentRoot, 'combineAnd');
+    const combineOrBtn = byId(currentRoot, 'combineOr');
+    const combinePill = byId(currentRoot, 'combineToggle');
     
+    const alleleCount = state.selectedAlleles.size;
+    const hasSelection = alleleCount > 0;
+
+    if (emptyEl) emptyEl.style.display = hasSelection ? 'none' : 'block';
     if (!contextEl) return;
-    
-    if (state.selectedAlleles.size === 0) {
+
+    if (!hasSelection) {
       contextEl.style.display = 'none';
       return;
     }
 
-    const alleleCount = state.selectedAlleles.size;
+    if (countEl) {
+      countEl.textContent = `${alleleCount} ${alleleCount === 1 ? 'allele' : 'alleles'} selected`;
+    }
 
-    // Header: the count, as before.
-    contextEl.innerHTML = '';
-    const header = document.createElement('div');
-    header.textContent = `${alleleCount} ${alleleCount === 1 ? 'allele' : 'alleles'} selected`;
-    header.style.fontWeight = '600';
-    contextEl.appendChild(header);
+    // AND/OR: visible always; inert at exactly one allele.
+    const combineLive = alleleCount >= 2;
+    if (combinePill) combinePill.classList.toggle('inert', !combineLive);
+    if (combineAndBtn) combineAndBtn.disabled = !combineLive;
+    if (combineOrBtn) combineOrBtn.disabled = !combineLive;
+    const mode = state.sampleSelection.combineMode || 'AND';
+    if (combineAndBtn) {
+      combineAndBtn.classList.toggle('active', mode === 'AND');
+    }
+    if (combineOrBtn) {
+      combineOrBtn.classList.toggle('active', mode === 'OR');
+    }
 
-    // List the actual allele(s): contig:pos · label. Long ALT sequences are
-    // clipped with an ellipsis but kept in full on hover (title).
-    let infos = [];
-    try { infos = getSelectedAlleleInfo() || []; } catch (e) {}
-    if (infos.length) {
+    if (pillsEl) {
+      pillsEl.innerHTML = '';
+      let infos = [];
+      try { infos = getSelectedAlleleInfo() || []; } catch (e) {}
       const contig = state.contig;
-      const list = document.createElement('div');
-      list.style.marginTop = '4px';
-      list.style.fontSize = '11px';
-      list.style.opacity = '0.85';
       for (const s of infos) {
         const v = s.variant || {};
         const pos = Number(v.pos || 0).toLocaleString();
-        const text = s.label ? `${contig}:${pos} · ${s.label}` : `${contig}:${pos}`;
-        const line = document.createElement('div');
-        line.textContent = text;
-        line.title = text;
-        line.style.whiteSpace = 'nowrap';
-        line.style.overflow = 'hidden';
-        line.style.textOverflow = 'ellipsis';
-        list.appendChild(line);
+        const label = s.label || '';
+        let text = label ? `${contig}:${pos} · ${label}` : `${contig}:${pos}`;
+        // Prefer mockup-style "C (1 bp)" when we have a short allele label.
+        if (label && !/\(\d+\s*bp\)/i.test(label) && typeof label === 'string') {
+          const base = String(label).replace(/^Allele\s+/i, '');
+          if (/^[ACGTN]+$/i.test(base) || base === 'ref' || base === 'REF') {
+            const bp = base.toLowerCase() === 'ref'
+              ? (v.refAllele ? String(v.refAllele).length : 1)
+              : base.length;
+            text = `${contig}:${pos} · ${base} (${bp} bp)`;
+          }
+        }
+        const key = makeAlleleSelectionKeyCompat(s.trackId, s.variantId, s.alleleIndex);
+        const pill = document.createElement('div');
+        pill.className = 'sampleAllelePill';
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'sampleAllelePillLabel';
+        labelSpan.textContent = text;
+        labelSpan.title = text;
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'sampleAllelePillRemove';
+        removeBtn.setAttribute('aria-label', 'Remove allele');
+        removeBtn.textContent = '×';
+        removeBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (key) state.selectedAlleles.delete(key);
+          if (typeof renderFlowCanvas === 'function') renderFlowCanvas();
+          if (window.updateSelectionDisplay) window.updateSelectionDisplay();
+        });
+        pill.appendChild(labelSpan);
+        pill.appendChild(removeBtn);
+        pillsEl.appendChild(pill);
       }
-      contextEl.appendChild(list);
     }
     contextEl.style.display = 'block';
   }
@@ -4673,8 +4777,6 @@ function setupCanvasHover() {
     const currentRoot = getCurrentRoot();
     const strategySectionEl = byId(currentRoot, 'sampleStrategySection');
     const strategyEl = byId(currentRoot, 'sampleStrategy');
-    const sliderEl = byId(currentRoot, 'sampleCountSlider');
-    const inputEl = byId(currentRoot, 'sampleCountInput');
     const replaceBtn = byId(currentRoot, 'loadSamplesReplace');
     const addBtn = byId(currentRoot, 'loadSamplesAdd');
     
@@ -4689,15 +4791,11 @@ function setupCanvasHover() {
     if (strategyEl) strategyEl.disabled = disabled;
     if (replaceBtn) replaceBtn.disabled = disabled;
     if (addBtn) addBtn.disabled = disabled;
-    // Slider/input enablement is governed by updateLoadButtonText() (below/after
-    // recompute) since it depends on the candidate pool, which is computed
-    // asynchronously — setting it here would use a stale (often empty) pool.
     
     // Update "Compare branches" option enablement
     if (strategyEl) {
       const compareOption = strategyEl.querySelector('option[value="compare_branches"]');
       if (compareOption) {
-        // Enable only when 2+ branches selected
         compareOption.disabled = state.selectedAlleles.size < 2;
       }
     }
@@ -4707,93 +4805,111 @@ function setupCanvasHover() {
     updateLoadButtonText();
   }
   
-  // Update sample preview
+  // Update sample preview chips from the strategy-resolved set.
   function updateSamplePreview() {
     const currentRoot = getCurrentRoot();
     const previewEl = byId(currentRoot, 'samplePreview');
     const previewListEl = byId(currentRoot, 'samplePreviewList');
-    const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
+    const previewHeader = byId(currentRoot, 'samplePreviewHeader');
     
     if (!previewEl || !previewListEl) return;
-    
-    if (candidates.length === 0) {
+
+    if (state.selectedAlleles.size === 0) {
       previewEl.style.display = 'none';
+      previewListEl.innerHTML = '';
       return;
     }
-    
-    // Show first 5 samples + count of remaining
-    const displayCount = Math.min(5, candidates.length);
-    const remaining = candidates.length - displayCount;
-    
-    let text = candidates.slice(0, displayCount).join(', ');
-    if (remaining > 0) {
-      text += `, +${remaining} more`;
+
+    resolvePreviewSelection();
+    const { pool, x, y } = getPreviewCounts();
+    const resolved = state.sampleSelection.resolvedSamples || [];
+    const onSet = new Set(resolved.map(String));
+
+    if (previewHeader) {
+      previewHeader.textContent = `Preview · loading ${x} of ${y} eligible`;
     }
-    
-    previewListEl.textContent = text;
+
+    if (y === 0) {
+      previewListEl.innerHTML = '';
+      previewEl.style.display = 'none';
+      updateLoadButtonText();
+      return;
+    }
+
+    // Cap chip DOM for large cohorts: all "on" chips first, then dimmed up to 32.
+    const PREVIEW_CHIP_CAP = 32;
+    previewListEl.innerHTML = '';
+    const onIds = resolved.slice();
+    const dimIds = pool.filter((id) => !onSet.has(String(id)));
+    const chips = [];
+    for (const id of onIds) chips.push({ id, on: true });
+    const remainingSlots = Math.max(0, PREVIEW_CHIP_CAP - chips.length);
+    for (const id of dimIds.slice(0, remainingSlots)) chips.push({ id, on: false });
+    const shown = chips.length;
+    const hidden = Math.max(0, y - shown);
+
+    for (const c of chips) {
+      const chip = document.createElement('span');
+      chip.className = 'samplePreviewChip ' + (c.on ? 'on' : 'dim');
+      chip.textContent = c.id;
+      chip.title = c.id;
+      previewListEl.appendChild(chip);
+    }
+    if (hidden > 0) {
+      const more = document.createElement('span');
+      more.className = 'samplePreviewChip more';
+      more.textContent = `+${hidden} more`;
+      previewListEl.appendChild(more);
+    }
+
     previewEl.style.display = 'block';
-    
-    // Update Load button text
     updateLoadButtonText();
   }
   
-  // Update Load button text to show sample count
+  // Update Load button, How-many header, and slider from the same {x,y}.
   function updateLoadButtonText() {
     const currentRoot = getCurrentRoot();
     const replaceBtn = byId(currentRoot, 'loadSamplesReplace');
     const addBtn = byId(currentRoot, 'loadSamplesAdd');
-    const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
+    const countHeader = byId(currentRoot, 'sampleCountHeader');
+    const sliderEl = byId(currentRoot, 'sampleCountSlider');
+    const valueEl = byId(currentRoot, 'sampleCountValue');
+
+    if (state.selectedAlleles.size > 0) {
+      resolvePreviewSelection();
+    }
+    const { pool, x, y, samplesToLoad } = getPreviewCounts();
     const numSamples = state.sampleSelection.numSamples || 1;
 
-    // The selectable pool depends on the strategy: carriers+controls draws from
-    // the whole cohort (allSampleIds), not just the allele carriers, so the
-    // button must count that pool — otherwise it under-reports and the load looks
-    // like it loaded "more than the button said".
-    const strategy = state.sampleSelection.strategy;
-    let pool = candidates.length;
-    if (strategy === 'carriers_controls') {
-      const allN = applyGroupingSampleFilter(state.sampleSelection.allSampleIds || []).length;
-      if (allN > pool) pool = allN;
+    if (countHeader) {
+      countHeader.textContent = `Count · up to ${y} eligible`;
     }
-    const samplesToLoad = Math.min(numSamples, pool);
 
-    // Nothing to load when no sample supports the selection (pool 0) — grey the
-    // Load buttons. (carriers+controls still has a pool from the cohort, so it
-    // stays enabled even with zero carriers.)
-    const noLoad = pool === 0;
+    const noLoad = y === 0 || state.selectedAlleles.size === 0;
     if (replaceBtn) {
       replaceBtn.disabled = noLoad;
-      replaceBtn.textContent = noLoad ? 'Load' : `Load (${samplesToLoad} of ${pool})`;
+      replaceBtn.textContent = noLoad ? 'Load' : `Load (${samplesToLoad} of ${y})`;
     }
     if (addBtn) {
       addBtn.disabled = noLoad;
-      addBtn.textContent = noLoad ? 'Load (add)' : `Load (add ${samplesToLoad} of ${pool})`;
+      addBtn.textContent = noLoad ? 'Load (add)' : `Load (add ${samplesToLoad} of ${y})`;
     }
 
-    // Enable the count slider only when 2+ samples are selectable. This runs
-    // AFTER recompute (fresh pool), unlike updateSampleStrategySection which sees
-    // a stale/empty pool — so the slider no longer starts stuck-disabled. Pin the
-    // count at 1 when there's exactly one sample.
-    const sliderEl = byId(currentRoot, 'sampleCountSlider');
-    const inputEl = byId(currentRoot, 'sampleCountInput');
-    const sl = gsSampleSliderState(pool);
-    if (sliderEl) sliderEl.disabled = sl.disabled;
-    if (inputEl) inputEl.disabled = sl.disabled;
-    // The slider's virtual stops track the number of samples that support the
-    // selection (the loadable pool) — not the hardcoded 20 from the HTML.
-    const sliderMax = Math.max(1, pool);
-    if (sliderEl) sliderEl.max = sliderMax;
-    if (inputEl) inputEl.max = sliderMax;
-    // Clamp a now-out-of-range count down to the new max.
-    if (state.sampleSelection.numSamples > sliderMax) {
-      state.sampleSelection.numSamples = sliderMax;
-      if (sliderEl) sliderEl.value = sliderMax;
-      if (inputEl) inputEl.value = sliderMax;
+    const sl = gsSampleSliderState(y);
+    const sliderMax = Math.max(1, y);
+    if (sliderEl) {
+      sliderEl.max = String(sliderMax);
+      sliderEl.disabled = sl.disabled || state.selectedAlleles.size === 0;
+      sliderEl.value = String(numSamples);
     }
-    if (sl.pinToOne) {
+    if (valueEl) valueEl.textContent = String(numSamples);
+
+    if (sl.pinToOne && state.sampleSelection.numSamples !== 1) {
       state.sampleSelection.numSamples = 1;
-      if (sliderEl) sliderEl.value = 1;
-      if (inputEl) inputEl.value = 1;
+      state.sampleSelection._resolvedSig = null;
+      resolvePreviewSelection();
+      if (sliderEl) sliderEl.value = '1';
+      if (valueEl) valueEl.textContent = '1';
     }
   }
   
@@ -4874,6 +4990,7 @@ function setupCanvasHover() {
       return;
     }
     state.sampleSelection._candidateSig = sig;
+    state.sampleSelection._resolvedSig = null;
 
     // Clear previous candidates
     state.sampleSelection.candidateSamples = [];
@@ -5341,8 +5458,8 @@ function setupCanvasHover() {
       // Carriers are samples with selected alleles (candidates)
       // Controls are samples without selected alleles
       
-      // Get all available samples (respect active Participant-group pill)
-      const allSamples = applyGroupingSampleFilter(state.sampleSelection.allSampleIds || []);
+      // Get all available samples (respect active Participant-group pill + Evidence)
+      const allSamples = filterSamplesForUi(state.sampleSelection.allSampleIds || []);
       if (allSamples.length === 0) {
         // Fallback: if allSampleIds not populated, just use candidates (or empty)
         if (!candidates || candidates.length === 0) {
@@ -5779,7 +5896,9 @@ function setupCanvasHover() {
     if (strategyEl) {
       state.sampleSelection.strategy = strategyEl.value;
     }
-    recomputeCandidateSamples();
+    state.sampleSelection._resolvedSig = null;
+    updateSamplePreview();
+    updateLoadButtonText();
   }
   
   // Setup sample search with autocomplete
@@ -5891,17 +6010,19 @@ function setupCanvasHover() {
   
   // Function to load a Smart Track for a specific sample.
   // Multi-BAM samples open as one track per BAM (long vs short reads stay separate).
+  // Load-by-ID bypasses Evidence (Narrow) so typed IDs always open every BAM.
   function loadSmartTrackForSample(sampleId) {
+    const idOpts = { applyEvidence: false };
     // VCF-only samples have no BAM — don't fetch or raise a modal.
     if (sampleId && hasAttachedReadUniverse() && !attachedReadSampleSet().has(sampleId)) {
       return;
     }
-    if (sampleId && typeof isSampleFullyLoaded === "function" && isSampleFullyLoaded(sampleId)) {
+    if (sampleId && typeof isSampleFullyLoaded === "function" && isSampleFullyLoaded(sampleId, idOpts)) {
       return;
     }
     // Legacy dedupe when the BAM index isn't in config yet.
     if (sampleId && typeof bamUrlsForSample === "function"
-        && !bamUrlsForSample(sampleId).length
+        && !bamUrlsForSample(sampleId, idOpts).length
         && (state.smartTracks || []).some(t => t.sampleId === sampleId)) {
       return;
     }
@@ -5920,7 +6041,7 @@ function setupCanvasHover() {
     }
 
     if (typeof spawnSmartTracksForSample === "function") {
-      spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleType);
+      spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleType, idOpts);
     } else {
       const track = createSmartTrack(strategy, selectedAlleles);
       track.sampleId = sampleId;
@@ -5952,8 +6073,7 @@ function setupCanvasHover() {
   
   // Setup sample selection strategy controls
   const strategyEl = byId(root, 'sampleStrategy');
-  const sliderEl = byId(root, 'sampleCountSlider');
-  const sampleCountInputEl = byId(root, 'sampleCountInput');
+  const sampleCountSlider = byId(root, 'sampleCountSlider');
   const combineAndBtn = byId(root, 'combineAnd');
   const combineOrBtn = byId(root, 'combineOr');
   const replaceBtn = byId(root, 'loadSamplesReplace');
@@ -5963,25 +6083,25 @@ function setupCanvasHover() {
   if (strategyEl) {
     strategyEl.addEventListener('change', onStrategyChange);
   }
-  
-  // Sample count sync between slider and input
-  if (sliderEl) {
-    sliderEl.addEventListener('input', (e) => {
-      if (sampleCountInputEl) sampleCountInputEl.value = e.target.value;
-      state.sampleSelection.numSamples = parseInt(e.target.value);
-      recomputeCandidateSamples();
-      updateLoadButtonText();
-    });
-  }
-  
-  if (sampleCountInputEl) {
-    sampleCountInputEl.addEventListener('change', (e) => {
-      const maxV = parseInt(sampleCountInputEl.max) || 20;
-      const value = Math.max(1, Math.min(maxV, parseInt(e.target.value) || 1));
-      if (sliderEl) sliderEl.value = value;
-      sampleCountInputEl.value = value;
+
+  if (sampleCountSlider && !sampleCountSlider._listenerAttached) {
+    sampleCountSlider._listenerAttached = true;
+    sampleCountSlider.addEventListener('input', (e) => {
+      const pool = getEligibleSamplePool();
+      const y = Math.max(1, pool.length);
+      const sl = gsSampleSliderState(pool.length);
+      if (sl.disabled) return;
+      const value = Math.max(1, Math.min(y, parseInt(e.target.value, 10) || 1));
+      if (value === (state.sampleSelection.numSamples || 1)) {
+        const valueEl = byId(getCurrentRoot(), 'sampleCountValue');
+        if (valueEl) valueEl.textContent = String(value);
+        return;
+      }
       state.sampleSelection.numSamples = value;
-      recomputeCandidateSamples();
+      state.sampleSelection._resolvedSig = null;
+      const valueEl = byId(getCurrentRoot(), 'sampleCountValue');
+      if (valueEl) valueEl.textContent = String(value);
+      updateSamplePreview();
       updateLoadButtonText();
     });
   }
@@ -5989,13 +6109,10 @@ function setupCanvasHover() {
   // Combine mode toggle
   if (combineAndBtn) {
     combineAndBtn.addEventListener('click', () => {
+      if (state.selectedAlleles.size < 2) return;
       state.sampleSelection.combineMode = 'AND';
       combineAndBtn.classList.add('active');
-      if (combineOrBtn) {
-        combineOrBtn.classList.remove('active');
-        combineOrBtn.style.color = 'var(--muted)';
-      }
-      combineAndBtn.style.color = 'white';
+      if (combineOrBtn) combineOrBtn.classList.remove('active');
       updateSampleContext();
       recomputeCandidateSamples();
     });
@@ -6003,19 +6120,16 @@ function setupCanvasHover() {
   
   if (combineOrBtn) {
     combineOrBtn.addEventListener('click', () => {
+      if (state.selectedAlleles.size < 2) return;
       state.sampleSelection.combineMode = 'OR';
       combineOrBtn.classList.add('active');
-      if (combineAndBtn) {
-        combineAndBtn.classList.remove('active');
-        combineAndBtn.style.color = 'var(--muted)';
-      }
-      combineOrBtn.style.color = 'white';
+      if (combineAndBtn) combineAndBtn.classList.remove('active');
       updateSampleContext();
       recomputeCandidateSamples();
     });
   }
   
-  // Load buttons
+  // Load buttons — commit exactly what Preview resolved (no re-roll).
   if (replaceBtn && !replaceBtn._listenerAttached) {
     replaceBtn._listenerAttached = true;
     replaceBtn.addEventListener('click', (e) => {
@@ -6035,18 +6149,17 @@ function setupCanvasHover() {
       replaceBtn.disabled = true;
       
       const strategy = state.sampleSelection.strategy;
-      const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
+      const candidates = filterSamplesForUi(state.sampleSelection.candidateSamples || []);
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
-      // Select samples based on strategy (will pick new random samples each time for Random strategy)
-      // Load UNIQUE samples only, capped at what the slider/button promised. A sample
-      // counts as loaded only when every BAM for it has a track (multi-BAM samples
-      // open as one track per file).
+      // Commit Preview's resolved set — do not call selectSamplesForStrategy again
+      // (Random must not re-roll between Preview and Load).
+      resolvePreviewSelection();
+      const previewResolved = (state.sampleSelection.resolvedSamples || []).slice();
       const _loadedIds = [...new Set((state.smartTracks || []).map(t => t.sampleId).filter(Boolean))]
         .filter((id) => (typeof isSampleFullyLoaded === "function" ? isSampleFullyLoaded(id) : true));
-      const toLoad = gsSelectSamplesToLoad(
-        selectSamplesForStrategy(strategy, candidates, numSamples), _loadedIds, numSamples);
+      const toLoad = gsSelectSamplesToLoad(previewResolved, _loadedIds, numSamples);
 
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};
@@ -6081,6 +6194,7 @@ function setupCanvasHover() {
       // Re-enable button after all tracks are created (reads may still be loading)
       Promise.all(trackPromises).finally(() => {
         replaceBtn.disabled = false;
+        updateLoadButtonText();
       });
     });
   }
@@ -6104,17 +6218,15 @@ function setupCanvasHover() {
       addBtn.disabled = true;
       
       const strategy = state.sampleSelection.strategy;
-      const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
+      const candidates = filterSamplesForUi(state.sampleSelection.candidateSamples || []);
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
-      // Select samples based on strategy
-      // Load UNIQUE samples only, capped at what the slider/button promised. A sample
-      // counts as loaded only when every BAM for it has a track.
+      resolvePreviewSelection();
+      const previewResolved = (state.sampleSelection.resolvedSamples || []).slice();
       const _loadedIds = [...new Set((state.smartTracks || []).map(t => t.sampleId).filter(Boolean))]
         .filter((id) => (typeof isSampleFullyLoaded === "function" ? isSampleFullyLoaded(id) : true));
-      const toLoad = gsSelectSamplesToLoad(
-        selectSamplesForStrategy(strategy, candidates, numSamples), _loadedIds, numSamples);
+      const toLoad = gsSelectSamplesToLoad(previewResolved, _loadedIds, numSamples);
 
       // For carriers_controls strategy, determine which samples are carriers vs controls
       let sampleTypes = {};
@@ -6149,6 +6261,7 @@ function setupCanvasHover() {
       // Re-enable button after all tracks are created (reads may still be loading)
       Promise.all(trackPromises).finally(() => {
         addBtn.disabled = false;
+        updateLoadButtonText();
       });
     });
   }
