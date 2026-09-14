@@ -19,6 +19,7 @@ def _obj(universe, pending):
     o._vcf_sample_universe = set(universe)
     o._pending_read_dirs = list(pending)
     o._read_index = {}
+    o._read_set_by_url = {}
     o._read_index_thread = None
     o._read_index_done = threading.Event()
     o._read_index_lock = threading.Lock()
@@ -26,6 +27,7 @@ def _obj(universe, pending):
     # No-op debug hooks (index build logs progress + times the listing).
     o._debug_log = lambda *a, **k: None
     o._dbg_on = lambda: False
+    o._push_read_sets_changed = lambda: None
 
     class _NullTimer:
         def __enter__(self): return self
@@ -53,6 +55,7 @@ def test_two_pass_filename_then_header():
         "S2": ["gs://d/S2.bam"],
         "WEIRD": ["gs://d/lab_9921.bam"],
     }
+    assert o._read_set_by_url["gs://d/S1.bam"] == "all"
     assert o._read_index_done.is_set()
 
 
@@ -65,6 +68,7 @@ def test_header_sm_outside_universe_is_dropped():
                            return_value=[("gs://d/other.bam", ["NOT_IN_VCF"])]):
         o._build_read_index()
     assert o._read_index == {"S1": ["gs://d/S1.bam"]}  # other.bam's SM not in the cohort
+    assert o._read_set_by_url["gs://d/other.bam"] == "all"
 
 
 def test_trigger_waits_for_both_variants_and_reads():

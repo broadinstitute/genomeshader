@@ -165,6 +165,12 @@ function getTrackLayout() {
       if (track.hidden === true) {
         continue;
       }
+      // Participant-group / read-set facets: hide Smart Tracks outside active AND.
+      if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
+        continue;
+      } else if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+        continue;
+      }
       
       // For standard tracks, don't reserve space for header (controls overlay on hover)
       // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
@@ -233,6 +239,12 @@ function getTrackLayout() {
       if (track.hidden === true) {
         continue;
       }
+      // Participant-group / read-set facets: hide Smart Tracks outside active AND.
+      if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
+        continue;
+      } else if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+        continue;
+      }
       
       // For standard tracks, don't reserve space for header (controls overlay on hover)
       // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
@@ -292,7 +304,10 @@ function getTrackLayout() {
         contentLeft: 0,
         contentWidth: safeMainWidth
       });
-      currentY += effectiveHeight; // no gap between tracks
+      currentY += effectiveHeight;
+      // Collapsed smart tracks: a few px between slots so the 24px label pills
+      // (centered in closedHeight) don't crowd each other.
+      if (isSmartTrack && track.collapsed) currentY += 4;
     }
   }
 

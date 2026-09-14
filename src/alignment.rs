@@ -496,6 +496,20 @@ pub fn extract_reads(
 mod integration_tests {
     use super::*;
     use rust_htslib::bam::record::{Aux, CigarString};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Unique path per call — shared fixed names race when cargo runs tests in parallel
+    // (CI: BamNotIndexable when two writers truncate the same BAM mid-index).
+    fn unique_temp_bam(stem: &str) -> std::path::PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "{}_{}_{}.bam",
+            stem,
+            std::process::id(),
+            seq
+        ))
+    }
 
     // Write a tiny single-read BAM (no MD tag) to a temp path, index it, and
     // return (path, url). Read: pos 100 (0-based) => 1-based 101, CIGAR 2S8M.
@@ -504,12 +518,17 @@ mod integration_tests {
     // 106 (C->G); the 2bp soft-clip must NOT shift those coords.
     fn write_no_md_bam() -> (std::path::PathBuf, Url) {
         let mut header = bam::Header::new();
+        header.push_record(
+            bam::header::HeaderRecord::new(b"HD")
+                .push_tag(b"VN", &"1.6")
+                .push_tag(b"SO", &"coordinate"),
+        );
         let mut sq = bam::header::HeaderRecord::new(b"SQ");
         sq.push_tag(b"SN", &"testchr");
         sq.push_tag(b"LN", &1000);
         header.push_record(&sq);
 
-        let bam_path = std::env::temp_dir().join("gs_refsnp_integration_test.bam");
+        let bam_path = unique_temp_bam("gs_refsnp_integration_test");
         {
             let mut w = bam::Writer::from_path(&bam_path, &header, bam::Format::Bam).unwrap();
             let mut rec = bam::Record::new();
@@ -590,11 +609,16 @@ mod integration_tests {
         // samtools packs `HP:i:1` as BAM type C (uint8). Matching only Aux::I32
         // silently dropped haplotags on every real HiFi BAM.
         let mut header = bam::Header::new();
+        header.push_record(
+            bam::header::HeaderRecord::new(b"HD")
+                .push_tag(b"VN", &"1.6")
+                .push_tag(b"SO", &"coordinate"),
+        );
         let mut sq = bam::header::HeaderRecord::new(b"SQ");
         sq.push_tag(b"SN", &"testchr");
         sq.push_tag(b"LN", &1000);
         header.push_record(&sq);
-        let bam_path = std::env::temp_dir().join("gs_hp_u8_test.bam");
+        let bam_path = unique_temp_bam("gs_hp_u8_test");
         {
             let mut w = bam::Writer::from_path(&bam_path, &header, bam::Format::Bam).unwrap();
             let mut rec = bam::Record::new();
