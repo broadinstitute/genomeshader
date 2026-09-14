@@ -13,7 +13,8 @@ the display features that are hard to cover with production callsets:
   * per-sample TRGT VCFs with unphased genotypes (GT uses `/`, no PS)
   * a gene-rich chr14 window (ARHGAP5 / ARHGAP5-AS1 / LOC105370440), a second
     contig (chr21), a coverage gap, extra BAMs (second flowcell, MD-stripped,
-    reads-only sample), and TSV/BED tracks for attach_data()
+    reads-only sample), per-sample diploid assembly BAMs (PacBio-derived hap1/hap2
+    contigs) for attach_assemblies(), and TSV/BED tracks for attach_data()
 
 Reads are simulated against real hg38 slices so the UCSC reference / gene /
 repeat tracks line up with the alleles in the reads. CRAM is written
@@ -51,10 +52,13 @@ ORIGIN = 32_000_000          # 1-based position of the first base we fetch
 SPAN = 20_000
 REGION_END = ORIGIN + SPAN - 1  # 32,019,999
 GENOME_BUILD = "hg38"
-SAMPLES = ("HG001", "HG002", "HG003", "HG004")
-VCF_ONLY_SAMPLE = "HG005"          # in the joint VCF, no BAM/CRAM
-ORPHAN_SAMPLE = "HG_ORPHAN"      # BAM only — not in any VCF
+# SYN* — synthetic IDs, not HG/NA/GM which the community reads as
+# 1000 Genomes / GIAB / HPRC / HGSVC3 / Coriell participants.
+SAMPLES = ("SYN001", "SYN002", "SYN003", "SYN004")
+VCF_ONLY_SAMPLE = "SYN005"          # in the joint VCF, no BAM/CRAM
+ORPHAN_SAMPLE = "SYN_ORPHAN"      # BAM only — not in any VCF
 VCF_SAMPLES = SAMPLES + (VCF_ONLY_SAMPLE,)
+PRIMARY_SAMPLE = SAMPLES[0]         # extra flowcell, MD-stripped copy, validation
 SEED = 42
 PHASE_SET = ORIGIN + 5_000       # FORMAT/PS for the main statistically-phased block
 PHASE_SET_2 = ORIGIN + 6_880     # second phase set (dense SNP cluster)
@@ -183,7 +187,7 @@ def catalog(rng: random.Random) -> List[Site]:
              note="common het/hom-alt mix; ribbons should switch phase across samples"),
         Site("snv_homalt", ORIGIN + 5_180, "snv",
              _g(h11, h11, r, r),
-             note="hom-alt in HG001/HG002, hom-ref in HG003/HG004"),
+             note="hom-alt in SYN001/SYN002, hom-ref in SYN003/SYN004"),
         Site("snv_multi", ORIGIN + 5_240, "snv",
              _g((0, 1), (0, 2), (1, 2), (0, 0)),
              alts_spec=["C", "T"],  # filled as two alts different from ref
@@ -220,7 +224,7 @@ def catalog(rng: random.Random) -> List[Site]:
              note="8bp deletion"),
         Site("ins_40bp", ORIGIN + 6_120, "ins",
              _g(h01, r, h11, r), alts_spec=["ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"],
-             note="40bp insertion — wide expandable gap, hom-alt in HG003"),
+             note="40bp insertion — wide expandable gap, hom-alt in SYN003"),
         Site("ins_multi", ORIGIN + 6_280, "ins",
              _g((0, 1), (0, 2), (1, 2), r),
              alts_spec=["GATTACA", "GATTACAGATTACA"],
@@ -230,13 +234,13 @@ def catalog(rng: random.Random) -> List[Site]:
              note="unphased 0/1 in an otherwise-phased VCF (no PS) — mixed phasing"),
         Site("compound_a", ORIGIN + 6_420, "snv",
              _g(h10, h01, r, r),
-             note="compound-het with compound_b in HG001 (this allele on hap1)"),
+             note="compound-het with compound_b in SYN001 (this allele on hap1)"),
         Site("compound_b", ORIGIN + 6_580, "snv",
              _g(h01, h10, r, r),
-             note="compound-het with compound_a in HG001 (this allele on hap2)"),
+             note="compound-het with compound_a in SYN001 (this allele on hap2)"),
         Site("snv_missing", ORIGIN + 6_640, "snv",
              _g(h01, h10, h01, miss),
-             note="missing GT (./.) in HG004"),
+             note="missing GT (./.) in SYN004"),
         # Tandem-repeat loci: also emitted as unphased TRGT VCFs.
         Site("tr_cag", ORIGIN + 6_740, "tr",
              _g((0, 1), (1, 1), (1, 2), (0, 0)),
@@ -263,7 +267,7 @@ def catalog(rng: random.Random) -> List[Site]:
              note="dense cluster base 6 — six SNVs in 40 bp"),
         Site("snv_halfcall", ORIGIN + 7_050, "snv",
              _g((0, None), h01, r, r),
-             note="half-call 0|. in HG001 (one allele missing, still in the phase set)"),
+             note="half-call 0|. in SYN001 (one allele missing, still in the phase set)"),
         Site("snv_homref", ORIGIN + 7_120, "snv",
              _g(r, r, r, r),
              extra_gts={VCF_ONLY_SAMPLE: (0, 0)},
@@ -289,10 +293,10 @@ def catalog(rng: random.Random) -> List[Site]:
                         "Transcript|ENST00000000001|protein_coding|5/10",
              },
              extra_gts={VCF_ONLY_SAMPLE: (0, 1)},
-             note="INFO-rich site (ClinVar+CSQ+GATK QC); HG005 (VCF-only) is 0|1 here"),
+             note="INFO-rich site (ClinVar+CSQ+GATK QC); SYN005 (VCF-only) is 0|1 here"),
         Site("snv_singleton", ORIGIN + 7_750, "snv",
              _g(h01, r, r, r),
-             note="rare singleton (only HG001 carries ALT)"),
+             note="rare singleton (only SYN001 carries ALT)"),
         Site("sv_del_180", ORIGIN + 8_000, "sv_seq",
              _g(h01, h10, r, r), del_len=180,
              note="180bp sequence-resolved deletion (long-read CIGAR D)"),
@@ -346,7 +350,7 @@ def catalog(rng: random.Random) -> List[Site]:
         Site("chr14_arhgap5_snv", 32_080_000, "snv",
              _g(h01, h10, h11, r), chrom=CONTIG3, phase_set=PHASE_SET_14,
              extra_gts={VCF_ONLY_SAMPLE: (0, 1)},
-             note="phased SNV in ARHGAP5 5'; HG005 is 0|1 here"),
+             note="phased SNV in ARHGAP5 5'; SYN005 is 0|1 here"),
         *[
             Site(
                 f"chr14_block_{i + 1}",
@@ -714,7 +718,11 @@ def add_noise(seq: str, cigar: List[Tuple[int, str]], rng: random.Random,
 
 
 def sam_header(sample: str, platform: str, rg_ids: Sequence[str]) -> str:
-    pl = "PACBIO" if platform == "pacbio" else "ILLUMINA"
+    pl = {
+        "pacbio": "PACBIO",
+        "illumina": "ILLUMINA",
+        "assembly": "ASSEMBLY",
+    }.get(platform, platform.upper())
     lines = [
         "@HD\tVN:1.6\tSO:unsorted",
         f"@SQ\tSN:{CONTIG}\tLN:{CONTIG_LENGTH}",
@@ -1071,6 +1079,103 @@ def bam_to_cram(bam: Path, cram: Path) -> None:
     run(["samtools", "index", str(cram)])
 
 
+def assembly_qname(sample: str, contig: str, hap: Optional[int] = None) -> str:
+    """Query / FASTA contig name. Diploid: ``SYN001#1#chr20``; haploid omits hap."""
+    if hap is None:
+        return f"{sample}#{contig}"
+    return f"{sample}#{hap}#{contig}"
+
+
+def emit_assembly_contig(
+    fh, *, qname: str, hap_seq: str, blocks: List[Block],
+    ref_seq: str, origin: int, contig: str, rg: str,
+) -> int:
+    """One chromosome-scale contig alignment. No HP tag (attach_assemblies assigns it)."""
+    sliced = slice_read(hap_seq, blocks, 0, len(hap_seq))
+    if sliced is None:
+        return 0
+    pos, cigar, rseq = sliced
+    if len(rseq) < 50:
+        return 0
+    cigar = merge_cigar(cigar)
+    qual = chr(33 + 60) * len(rseq)
+    nm = nm_tag(rseq, pos, cigar, ref_seq, origin)
+    md = compute_md(rseq, pos, cigar, ref_seq, origin)
+    tags = f"RG:Z:{rg}\tNM:i:{nm}\tMD:Z:{md}"
+    write_sam_record(
+        fh, qname=qname, flag=0, pos=pos, mapq=60, cigar=cigar,
+        seq=rseq, qual=qual, extra=tags, contig=contig,
+    )
+    return 1
+
+
+def write_assembly_fasta(path: Path, records: List[Tuple[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as fh:
+        for name, seq in records:
+            fh.write(f">{name}\n")
+            for i in range(0, len(seq), 80):
+                fh.write(seq[i:i + 80] + "\n")
+    run(["samtools", "faidx", str(path)])
+
+
+def write_assembly_bam(
+    out_bam: Path, tmp: Path, sample: str, sample_idx: int, hap: Optional[int],
+    windows: Sequence[Tuple[str, int, str]], sites: List[Site],
+) -> List[Tuple[str, str]]:
+    """Align one assembled haplotype to the reference windows.
+
+    ``hap`` is 0/1 for diploid (HP 1/2 after attach_assemblies) or None for a
+    haploid collapsed contig. Haplotypes are those of ``sample`` (as if an
+    assembler phased that sample's PacBio reads). FASTA contig names match
+    BAM QNAMEs. No HP tag is written. ``@RG SM`` is the VCF sample name.
+    """
+    hap_i = 0 if hap is None else hap
+    rg = f"{sample}.asm" if hap is None else f"{sample}.hap{hap + 1}"
+    sam = tmp / f"{sample}.hap{hap_i + 1 if hap is not None else 0}.sam"
+    fasta_records: List[Tuple[str, str]] = []
+    with sam.open("w") as fh:
+        fh.write(sam_header(sample, "assembly", [rg]))
+        for contig, origin, ref_seq in windows:
+            qname = assembly_qname(sample, contig, None if hap is None else hap + 1)
+            edits = hap_edits_for(sites, sample_idx, hap_i, contig)
+            hap_seq, blocks = build_haplotype(ref_seq, origin, edits)
+            n = emit_assembly_contig(
+                fh, qname=qname, hap_seq=hap_seq, blocks=blocks,
+                ref_seq=ref_seq, origin=origin, contig=contig, rg=rg,
+            )
+            if n:
+                fasta_records.append((qname, hap_seq))
+    sam_to_bam(sam, out_bam)
+    return fasta_records
+
+
+def write_assemblies(
+    out: Path, tmp: Path, sites: List[Site],
+    seq20: str, seq21: str, seq14: str,
+) -> None:
+    """Diploid hap1/hap2 assemblies for each SYN00* sequencing sample."""
+    windows = (
+        (CONTIG, ORIGIN, seq20),
+        (CONTIG2, ORIGIN2, seq21),
+        (CONTIG3, ORIGIN3, seq14),
+    )
+    asm_dir = out / "assemblies"
+    if asm_dir.exists():
+        shutil.rmtree(asm_dir)
+    for i, sample in enumerate(SAMPLES):
+        print(f"  simulating diploid assembly {sample}…")
+        for hap in (0, 1):
+            recs = write_assembly_bam(
+                out / "assemblies" / f"{sample}.hap{hap + 1}.bam", tmp,
+                sample, i, hap, windows, sites,
+            )
+            write_assembly_fasta(
+                out / "assemblies" / f"{sample}.hap{hap + 1}.fa", recs,
+            )
+            print(f"    hap{hap + 1}: {len(recs)} contig(s)")
+
+
 # ---------------------------------------------------------------------------
 # VCFs
 # ---------------------------------------------------------------------------
@@ -1305,10 +1410,15 @@ def write_docs(out: Path, sites: List[Site], bucket: Optional[str]) -> None:
         ]
         for s in SAMPLES
     }
-    sample_mapping["HG001"].extend([
-        f"{prefix}long_reads/HG001_fc2.bam",
-        f"{prefix}long_reads/HG001.nomd.bam",
+    sample_mapping["SYN001"].extend([
+        f"{prefix}long_reads/SYN001_fc2.bam",
+        f"{prefix}long_reads/SYN001.nomd.bam",
     ])
+    for s in SAMPLES:
+        sample_mapping[s].extend([
+            f"{prefix}assemblies/{s}.hap1.bam",
+            f"{prefix}assemblies/{s}.hap2.bam",
+        ])
     sample_mapping[ORPHAN_SAMPLE] = [f"{prefix}long_reads/{ORPHAN_SAMPLE}.bam"]
     manifest = {
         "name": "genomeshader-fake-testdata",
@@ -1323,6 +1433,9 @@ def write_docs(out: Path, sites: List[Site], bucket: Optional[str]) -> None:
         "read_samples": list(SAMPLES),
         "vcf_only_samples": [VCF_ONLY_SAMPLE],
         "reads_only_samples": [ORPHAN_SAMPLE],
+        "assembly_samples": {
+            s: {"ploidy": 2, "source": "pacbio"} for s in SAMPLES
+        },
         "phase_set": PHASE_SET,
         "phase_set_2": PHASE_SET_2,
         "phase_set_14": PHASE_SET_14,
@@ -1337,10 +1450,19 @@ def write_docs(out: Path, sites: List[Site], bucket: Optional[str]) -> None:
             "long_reads": [f"long_reads/{s}.bam" for s in SAMPLES],
             "short_reads": [f"short_reads/{s}.cram" for s in SAMPLES],
             "extra_long_reads": [
-                "long_reads/HG001_fc2.bam",
-                "long_reads/HG001.nomd.bam",
+                "long_reads/SYN001_fc2.bam",
+                "long_reads/SYN001.nomd.bam",
                 f"long_reads/{ORPHAN_SAMPLE}.bam",
             ],
+            "assemblies": {
+                s: {
+                    "hap1_bam": f"assemblies/{s}.hap1.bam",
+                    "hap2_bam": f"assemblies/{s}.hap2.bam",
+                    "hap1_fasta": f"assemblies/{s}.hap1.fa",
+                    "hap2_fasta": f"assemblies/{s}.hap2.fa",
+                }
+                for s in SAMPLES
+            },
             "tracks": [
                 "tracks/coverage.tsv",
                 "tracks/peaks.bed",
@@ -1380,21 +1502,25 @@ catalog lives at **{CONTIG}:{ORIGIN}-{REGION_END}**.
 
 | Path | What it is |
 |------|------------|
-| `long_reads/HG00{{1-4}}.bam` | PacBio-like **~17 kb (12–22 kb)** reads at **~15×**, **HP:i:1 / HP:i:2** haplotags, MD tags, mixed strand, soft-clips, chimeric/secondary |
-| `long_reads/HG001_fc2.bam` | Extra flowcell of HG001 (`@RG ID=pacbio2`); tests multi-file per sample |
-| `long_reads/HG001.nomd.bam` | Same reads with MD stripped — pileup should still work via CIGAR |
+| `long_reads/SYN00{{1-4}}.bam` | PacBio-like **~17 kb (12–22 kb)** reads at **~15×**, **HP:i:1 / HP:i:2** haplotags, MD tags, mixed strand, soft-clips, chimeric/secondary |
+| `long_reads/SYN001_fc2.bam` | Extra flowcell of SYN001 (`@RG ID=pacbio2`); tests multi-file per sample |
+| `long_reads/SYN001.nomd.bam` | Same reads with MD stripped — pileup should still work via CIGAR |
 | `long_reads/{ORPHAN_SAMPLE}.bam` | Reads-only sample (not in any VCF) |
-| `short_reads/HG00{{1-4}}.cram` | Illumina-like 151 bp paired reads at **~35×**, **no HP tag**, CRAM `no_ref` |
+| `short_reads/SYN00{{1-4}}.cram` | Illumina-like 151 bp paired reads at **~35×**, **no HP tag**, CRAM `no_ref` |
 | `variants/phased.snv_indel_sv.vcf.gz` | Joint callset: SNVs, MNPs, delins, SVs, BND, `*`, two phase sets, **{VCF_ONLY_SAMPLE}** VCF-only |
-| `trgt/HG00{{1-4}}.trgt.vcf.gz` | Per-sample TRGT-style tandem-repeat VCFs, **unphased** (`0/1`, no PS) |
+| `trgt/SYN00{{1-4}}.trgt.vcf.gz` | Per-sample TRGT-style tandem-repeat VCFs, **unphased** (`0/1`, no PS) |
+| `assemblies/SYN00{{1-4}}.hap1.bam` / `.hap2.bam` (+ `.fa`) | Diploid assemblies of each SYN00* sample (as if assembled from that sample's PacBio reads). **No HP tag**. `attach_assemblies("hifiasm", (hap1, hap2))` adds them as **hifiasm** evidence for that sample |
 | `tracks/coverage.tsv` | 10 bp binned HiFi depth (`value`, `max_depth`) for `attach_data` |
 | `tracks/peaks.bed` | Interval track over the showcase / SV / gap / chr14 / chr21 windows |
 | `tracks/snv_af.tsv` | Per-SNV allele frequency points for a scatter overlay |
 | `reference/` | The chr14 266 kb + chr20 20 kb + chr21 5 kb slices used to simulate reads |
 
 Samples with reads: **{', '.join(SAMPLES)}**. VCF-only: **{VCF_ONLY_SAMPLE}**. Reads-only: **{ORPHAN_SAMPLE}**.
-`@RG SM` matches the VCF sample names. Extra BAMs (`HG001_fc2`, `HG001.nomd`) also
-have `@RG SM:HG001`, so they join the same sample without `set_sample_mapping`.
+Each SYN00* sample also has a diploid assembly (`assemblies/{{sample}}.hap1.bam` / `.hap2.bam`) generated from that sample's haplotypes.
+IDs use a **SYN** prefix on purpose — not HG/NA/GM, which the community reads as
+1000 Genomes / GIAB / HPRC / HGSVC3 / Coriell samples.
+`@RG SM` matches the VCF sample names. Extra BAMs (`SYN001_fc2`, `SYN001.nomd`) also
+have `@RG SM:SYN001`, so they join the same sample without `set_sample_mapping`.
 
 ## Load (GCS)
 
@@ -1407,8 +1533,13 @@ s = gs.GenomeShader(genome_build="{GENOME_BUILD}",
                     gcs_session_dir=BUCKET + "/sessions")
 s.attach_variants("phased", f"{{BUCKET}}/variants/phased.snv_indel_sv.vcf.gz")
 s.attach_variants("TRGT", f"{{BUCKET}}/trgt/")          # unphased; ribbons off
-s.attach_reads(f"{{BUCKET}}/long_reads/", cohort="pacbio")
-s.attach_reads(f"{{BUCKET}}/short_reads/", cohort="illumina")
+s.attach_reads("pacbio", f"{{BUCKET}}/long_reads/")
+s.attach_reads("illumina", f"{{BUCKET}}/short_reads/")
+for sid in {list(SAMPLES)!r}:
+    s.attach_assemblies("hifiasm", (
+        f"{{BUCKET}}/assemblies/{{sid}}.hap1.bam",
+        f"{{BUCKET}}/assemblies/{{sid}}.hap2.bam",
+    ))
 cov = pd.read_csv(f"{{BUCKET}}/tracks/coverage.tsv", sep="\\t")
 peaks = pd.read_csv(f"{{BUCKET}}/tracks/peaks.bed", sep="\\t")
 s.attach_data("coverage", cov,
@@ -1435,7 +1566,8 @@ for untagged pileups. Attaching both maps each VCF sample to both files.
 | Second phase set | `{CONTIG}:{ORIGIN + 6_870}-{ORIGIN + 6_940}` | Six dense SNVs with `PS={PHASE_SET_2}`; ribbons should not jump to the main block |
 | Unphased / half-call | `{CONTIG}:{ORIGIN + 6_320}-{ORIGIN + 7_080}` | `unphased_het` (`0/1`) + `snv_halfcall` (`0|.`) in an otherwise-phased VCF |
 | Sequence-resolved SVs | `{CONTIG}:{ORIGIN + 7900}-{ORIGIN + 10000}` | 180 bp DEL + 90 bp INS; discordant Illumina pairs around the DEL |
-| Coverage gap | `{CONTIG}:{COVERAGE_GAP[0]}-{COVERAGE_GAP[1]}` | No reads; `peaks.bed` still marks the interval |
+| Coverage gap | `{CONTIG}:{COVERAGE_GAP[0]}-{COVERAGE_GAP[1]}` | No sequencing reads; SYN00* assembly contigs still span it |
+| Assemblies | `{CONTIG}:{SHOWCASE[0]}-{SHOWCASE[1]}` | Evidence: hifiasm → SYN001 hap1 (red) + hap2 (blue), same alleles as that sample's PacBio HP tags |
 | Deep pileup | `{CONTIG}:{DEEP_PILEUP[0]}-{DEEP_PILEUP[1]}` | Extra Illumina depth on top of the ~35× background |
 | Symbolic / BND | `{CONTIG}:{ORIGIN + 10400}-{ORIGIN + 18500}` | `<DEL>` `<DUP>` `<INV>` `<INS>` `<CNV>` + `BND` |
 | Both TRs | `{CONTIG}:{ORIGIN + 6700}-{ORIGIN + 11200}` | Phased track + unphased TRGT track at the same loci |
@@ -1453,27 +1585,29 @@ GT convention: `0` = REF, `1`/`2` = ALT1/ALT2, `|` = phased, `/` = unphased,
 ## Display checklist
 
 - [ ] Phased track draws ribbons; TRGT track does not (`variants_phased` follows `|` vs `/`)
-- [ ] Load HG001 long reads: ~17 kb molecules, ~15×, two haplotype colours + a few untagged (HP=0) reads
-- [ ] Load HG001 short reads: ~35×, no haplotype colour, paired-end SNPs/indels at the same sites
+- [ ] Load SYN001 long reads: ~17 kb molecules, ~15×, two haplotype colours + a few untagged (HP=0) reads
+- [ ] Load SYN001 short reads: ~35×, no haplotype colour, paired-end SNPs/indels at the same sites
 - [ ] Expand `ins_12bp` / `ins_40bp` / `ins_200bp` lollipops; insertion tiles match the ALT sequence
 - [ ] Soft-clips visible on some HiFi reads; reverse-strand arrows mixed in
 - [ ] Chimeric HiFi read (`SA` tag) with a supplementary alignment on chr21; one secondary (FLAG=256) + MAPQ=0 alignment
 - [ ] Illumina duplicate pair (FLAG=1024) and MAPQ=0 pair in the showcase
-- [ ] Compound-het: HG001 `compound_a` on hap1 and `compound_b` on hap2
+- [ ] Compound-het: SYN001 `compound_a` on hap1 and `compound_b` on hap2
 - [ ] `snv_multi` / `ins_multi` show two ALT alleles in the flow
 - [ ] `snv_lowqual` has FILTER=LowQual; `snv_vqsr` has FILTER=VQSRTranche99.90
-- [ ] `snv_missing` is `./.` in HG004; `snv_halfcall` is `0|.` in HG001
+- [ ] `snv_missing` is `./.` in SYN004; `snv_halfcall` is `0|.` in SYN001
 - [ ] `unphased_het` is `0/1` (no ribbon) next to fully phased neighbors
 - [ ] `mnp_3bp` is a 3 bp substitution; `delins` is a mixed delins (5bp→2bp)
 - [ ] Two phase sets on chr20: `dense_1`–`dense_6` use PS={PHASE_SET_2}; chr14 ARHGAP5 SNVs use PS={PHASE_SET_14}
 - [ ] Symbolic SVs show `<DEL>`/`<DUP>`/`<INV>`/`<INS>`/`<CNV>` labels; `bnd_breakend` is a breakend
 - [ ] `{VCF_ONLY_SAMPLE}` appears in the phased VCF genotype table with no read pileup
 - [ ] `{ORPHAN_SAMPLE}` has reads but no VCF column
-- [ ] `HG001.nomd.bam` still pileups (CIGAR-only)
+- [ ] Load SYN001 with Evidence: hifiasm: two long contigs, hap1 red + hap2 blue, matching SYN001's PacBio alleles
+- [ ] Assembly contigs still cover the sequencing coverage gap
+- [ ] `SYN001.nomd.bam` still pileups (CIGAR-only)
 - [ ] Coverage track dips to zero in the gap; peaks BED highlights the named intervals
 - [ ] Default chr14 locus shows UCSC genes (ARHGAP5-AS1 / ARHGAP5) plus planted SNVs/indels
 - [ ] Switching the locus to chr21 still shows genes/repeats + the planted SNVs
-- [ ] `snv_clinvar` INFO has CLNSIG / CSQ / SOMATIC; `snv_singleton` is het only in HG001
+- [ ] `snv_clinvar` INFO has CLNSIG / CSQ / SOMATIC; `snv_singleton` is het only in SYN001
 - [ ] `snv_homref` is 0|0 in every sample; `snv_noqual` has QUAL=.
 
 ## Regenerating
@@ -1503,10 +1637,10 @@ def upload(out: Path, dest: str) -> None:
 # Tracks
 # ---------------------------------------------------------------------------
 def write_tracks(out: Path, sites: List[Site]) -> None:
-    """Coverage (from HG001 HiFi) + fake interval peaks + SNV AF scatter."""
+    """Coverage (from SYN001 HiFi) + fake interval peaks + SNV AF scatter."""
     tracks = out / "tracks"
     tracks.mkdir(exist_ok=True)
-    bam = out / "long_reads" / "HG001.bam"
+    bam = out / "long_reads" / "SYN001.bam"
     cov = tracks / "coverage.tsv"
     with cov.open("w") as fh:
         fh.write("chrom\tstart\tvalue\tmax_depth\n")
@@ -1576,7 +1710,7 @@ def write_tracks(out: Path, sites: List[Site]) -> None:
 def validate(out: Path) -> None:
     import pysam
 
-    bam = pysam.AlignmentFile(out / "long_reads" / "HG001.bam", "rb")
+    bam = pysam.AlignmentFile(out / "long_reads" / "SYN001.bam", "rb")
     hps = []
     n = 0
     n_md = 0
@@ -1590,7 +1724,7 @@ def validate(out: Path) -> None:
         n_soft += int(any(op == 4 for op, _ in r.cigartuples or []))
     bam.close()
     hp_set = sorted(set(hps))
-    print(f"  long HG001: {n} reads, HP tags {hp_set}, MD={n_md}/{n}, "
+    print(f"  long SYN001: {n} reads, HP tags {hp_set}, MD={n_md}/{n}, "
           f"reverse={n_rev}, softclip_reads={n_soft}")
     if 1 not in hp_set or 2 not in hp_set:
         sys.exit(f"expected HP 1 and 2 in long BAM, got {hp_set}")
@@ -1599,7 +1733,7 @@ def validate(out: Path) -> None:
 
     lens = []
     interior = []
-    bam = pysam.AlignmentFile(out / "long_reads" / "HG001.bam", "rb")
+    bam = pysam.AlignmentFile(out / "long_reads" / "SYN001.bam", "rb")
     for r in bam.fetch(CONTIG, SHOWCASE[0] - 1, SHOWCASE[1]):
         if r.is_secondary or r.is_supplementary:
             continue
@@ -1609,21 +1743,21 @@ def validate(out: Path) -> None:
     bam.close()
     mean_len = (sum(lens) / len(lens)) if lens else 0
     mean_int = (sum(interior) / len(interior)) if interior else 0
-    print(f"  long HG001 showcase: {len(lens)} reads, mean length {mean_len:.0f} bp "
+    print(f"  long SYN001 showcase: {len(lens)} reads, mean length {mean_len:.0f} bp "
           f"(interior-start mean {mean_int:.0f} bp)")
     if mean_int < 12_000 or mean_int > 22_000:
         sys.exit(f"expected ~17 kb long reads, interior-start mean {mean_int:.0f}")
 
-    long_cov = mean_depth(out / "long_reads" / "HG001.bam",
+    long_cov = mean_depth(out / "long_reads" / "SYN001.bam",
                            f"{CONTIG}:{SHOWCASE[0]}-{SHOWCASE[1]}")
-    print(f"  long HG001 showcase coverage: {long_cov:.1f}x")
+    print(f"  long SYN001 showcase coverage: {long_cov:.1f}x")
     if not (11 <= long_cov <= 22):
         sys.exit(f"expected ~{LONG_READ_COVERAGE}x long-read coverage, got {long_cov:.1f}x")
 
-    # HG001 is 0|1 at snv_common (chr20:32005120): HP=1 matches REF, HP=2 carries ALT.
+    # SYN001 is 0|1 at snv_common (chr20:32005120): HP=1 matches REF, HP=2 carries ALT.
     # The site must show up as an MD mismatch, not a 1D1I delins.
     snv_pos = ORIGIN + 5_120  # snv_common
-    bam = pysam.AlignmentFile(out / "long_reads" / "HG001.bam", "rb")
+    bam = pysam.AlignmentFile(out / "long_reads" / "SYN001.bam", "rb")
     saw_hp1 = saw_hp2_mm = False
     for r in bam.fetch(CONTIG, snv_pos - 1, snv_pos):
         hp = r.get_tag("HP") if r.has_tag("HP") else 0
@@ -1655,7 +1789,7 @@ def validate(out: Path) -> None:
     if not saw_hp1 or not saw_hp2_mm:
         sys.exit(f"snv_common not covered by both haplotypes (hp1={saw_hp1}, hp2={saw_hp2_mm})")
 
-    cram = pysam.AlignmentFile(out / "short_reads" / "HG001.cram", "rc")
+    cram = pysam.AlignmentFile(out / "short_reads" / "SYN001.cram", "rc")
     n = 0
     tagged = 0
     paired = 0
@@ -1664,14 +1798,14 @@ def validate(out: Path) -> None:
         tagged += int(r.has_tag("HP"))
         paired += int(r.is_paired)
     cram.close()
-    print(f"  short HG001: {n} reads in showcase, HP-tagged={tagged}, paired={paired}")
+    print(f"  short SYN001: {n} reads in showcase, HP-tagged={tagged}, paired={paired}")
     if tagged:
         sys.exit("short CRAM should have no HP tags")
     if n < 20:
         sys.exit(f"too few short reads in showcase ({n})")
-    short_cov = mean_depth(out / "short_reads" / "HG001.cram",
+    short_cov = mean_depth(out / "short_reads" / "SYN001.cram",
                             f"{CONTIG}:{SHOWCASE[0]}-{SHOWCASE[1]}")
-    print(f"  short HG001 showcase coverage: {short_cov:.1f}x")
+    print(f"  short SYN001 showcase coverage: {short_cov:.1f}x")
     if not (25 <= short_cov <= 55):
         sys.exit(f"expected ~{SHORT_READ_COVERAGE}x short-read coverage, got {short_cov:.1f}x")
 
@@ -1692,12 +1826,12 @@ def validate(out: Path) -> None:
     if n_phased < 10:
         sys.exit("joint VCF expected statistically phased GTs")
 
-    tr = pysam.VariantFile(out / "trgt" / "HG001.trgt.vcf.gz")
+    tr = pysam.VariantFile(out / "trgt" / "SYN001.trgt.vcf.gz")
     recs = list(tr.fetch())
     tr.close()
-    print(f"  TRGT HG001: {len(recs)} records")
+    print(f"  TRGT SYN001: {len(recs)} records")
     for rec in recs:
-        gt = rec.samples["HG001"]
+        gt = rec.samples["SYN001"]
         if gt.phased:
             sys.exit(f"TRGT {rec.id} should be unphased, got phased {gt['GT']}")
 
@@ -1718,17 +1852,17 @@ def validate(out: Path) -> None:
     missing = required - set(by_id)
     if missing:
         sys.exit(f"missing VCF records: {sorted(missing)}")
-    if not by_id["unphased_het"].samples["HG001"].phased:
+    if not by_id["unphased_het"].samples["SYN001"].phased:
         pass
     else:
         sys.exit("unphased_het should not be statistically phased")
-    half = by_id["snv_halfcall"].samples["HG001"]
+    half = by_id["snv_halfcall"].samples["SYN001"]
     if half["GT"] != (0, None):
-        sys.exit(f"snv_halfcall HG001 GT={half['GT']}, expected (0, None)")
+        sys.exit(f"snv_halfcall SYN001 GT={half['GT']}, expected (0, None)")
     if not half.phased:
         sys.exit("snv_halfcall should keep the phase bit (0|.)")
     if by_id["snv_clinvar"].samples[VCF_ONLY_SAMPLE]["GT"] != (0, 1):
-        sys.exit("HG005 should be 0|1 at snv_clinvar")
+        sys.exit("SYN005 should be 0|1 at snv_clinvar")
     if "SOMATIC" not in by_id["snv_clinvar"].info:
         sys.exit("snv_clinvar missing SOMATIC flag")
     if by_id["snv_noqual"].qual is not None:
@@ -1739,18 +1873,18 @@ def validate(out: Path) -> None:
         sys.exit("star_overlap should have ALT=*")
     ps_values = set()
     for rec in by_id.values():
-        ps = rec.samples["HG001"].get("PS")
+        ps = rec.samples["SYN001"].get("PS")
         if ps not in (None, "."):
             ps_values.add(ps)
     if PHASE_SET not in ps_values or PHASE_SET_2 not in ps_values or PHASE_SET_14 not in ps_values:
         sys.exit(f"expected both phase sets plus chr14 PS, got {ps_values}")
     if by_id["chr14_arhgap5_snv"].samples[VCF_ONLY_SAMPLE]["GT"] != (0, 1):
-        sys.exit("HG005 should be 0|1 at chr14_arhgap5_snv")
+        sys.exit("SYN005 should be 0|1 at chr14_arhgap5_snv")
     vcf.close()
     print(f"  VCF extras: {len(by_id)} records, PS={sorted(ps_values)}, "
-          f"HG005 present, chr21+MNP/delins/BND/star ok")
+          f"SYN005 present, chr21+MNP/delins/BND/star ok")
 
-    bam = pysam.AlignmentFile(out / "long_reads" / "HG001.bam", "rb")
+    bam = pysam.AlignmentFile(out / "long_reads" / "SYN001.bam", "rb")
     n14 = sum(1 for _ in bam.fetch(CONTIG3, ORIGIN3 - 1, REGION3_END))
     n21 = sum(1 for _ in bam.fetch(CONTIG2, ORIGIN2 - 1, REGION2_END))
     n_gap = sum(1 for _ in bam.fetch(CONTIG, COVERAGE_GAP[0] - 1, COVERAGE_GAP[1]))
@@ -1778,10 +1912,10 @@ def validate(out: Path) -> None:
         sys.exit("expected a chimeric read with SA")
     if not n_sec:
         sys.exit("expected a secondary alignment")
-    if "HG001.pacbio2" not in rgs:
-        sys.exit(f"expected RG HG001.pacbio2, got {rgs}")
+    if "SYN001.pacbio2" not in rgs:
+        sys.exit(f"expected RG SYN001.pacbio2, got {rgs}")
 
-    cram = pysam.AlignmentFile(out / "short_reads" / "HG001.cram", "rc")
+    cram = pysam.AlignmentFile(out / "short_reads" / "SYN001.cram", "rc")
     n_dup = n_mq0 = n_disc = 0
     for r in cram.fetch(CONTIG, ORIGIN - 1, REGION_END):
         n_dup += int(r.is_duplicate)
@@ -1796,25 +1930,97 @@ def validate(out: Path) -> None:
     if not n_disc:
         sys.exit("expected discordant Illumina pairs around the 180bp DEL")
 
-    nomd = pysam.AlignmentFile(out / "long_reads" / "HG001.nomd.bam", "rb")
+    nomd = pysam.AlignmentFile(out / "long_reads" / "SYN001.nomd.bam", "rb")
     n = n_md = 0
     for r in nomd.fetch(CONTIG, SHOWCASE[0] - 1, SHOWCASE[1]):
         n += 1
         n_md += int(r.has_tag("MD"))
     nomd.close()
     if n == 0:
-        sys.exit("HG001.nomd.bam is empty in the showcase")
+        sys.exit("SYN001.nomd.bam is empty in the showcase")
     if n_md:
-        sys.exit(f"HG001.nomd.bam still has {n_md} MD tags")
+        sys.exit(f"SYN001.nomd.bam still has {n_md} MD tags")
 
     orphan = out / "long_reads" / f"{ORPHAN_SAMPLE}.bam"
     if not orphan.is_file():
         sys.exit(f"missing {orphan}")
-    if not (out / "long_reads" / "HG001_fc2.bam").is_file():
-        sys.exit("missing HG001_fc2.bam")
+    if not (out / "long_reads" / "SYN001_fc2.bam").is_file():
+        sys.exit("missing SYN001_fc2.bam")
     for rel in ("tracks/coverage.tsv", "tracks/peaks.bed", "tracks/snv_af.tsv"):
         if not (out / rel).is_file():
             sys.exit(f"missing {rel}")
+
+    def _asm_stats(path: Path):
+        bam = pysam.AlignmentFile(path, "rb")
+        n = n_hp = n_gap = 0
+        chroms = set()
+        for r in bam.fetch(until_eof=True):
+            if r.is_unmapped or r.is_secondary or r.is_supplementary:
+                continue
+            n += 1
+            n_hp += int(r.has_tag("HP"))
+            chroms.add(bam.get_reference_name(r.reference_id))
+            if r.reference_name == CONTIG and not (
+                r.reference_end < COVERAGE_GAP[0]
+                or (r.reference_start + 1) > COVERAGE_GAP[1]
+            ):
+                n_gap += 1
+        header_sms = set()
+        for rg in bam.header.get("RG", []):
+            if rg.get("SM"):
+                header_sms.add(rg["SM"])
+        bam.close()
+        return n, chroms, n_hp, n_gap, header_sms
+
+    def _base_at(path: Path, chrom: str, pos1: int) -> Optional[str]:
+        bam = pysam.AlignmentFile(path, "rb")
+        base = None
+        for r in bam.fetch(chrom, pos1 - 1, pos1):
+            if r.is_unmapped or r.is_secondary or r.is_supplementary:
+                continue
+            for qpos, rpos in r.get_aligned_pairs():
+                if rpos is not None and rpos + 1 == pos1 and qpos is not None:
+                    seq = r.query_sequence
+                    if seq:
+                        base = seq[qpos]
+                    break
+            if base is not None:
+                break
+        bam.close()
+        return base
+
+    expected_chroms = {CONTIG, CONTIG2, CONTIG3}
+    for sample in SAMPLES:
+        dip1 = out / "assemblies" / f"{sample}.hap1.bam"
+        dip2 = out / "assemblies" / f"{sample}.hap2.bam"
+        for p in (dip1, dip2, dip1.with_suffix(".fa"), dip2.with_suffix(".fa")):
+            if not p.is_file():
+                sys.exit(f"missing {p}")
+        n1, c1, hp1, g1, sm1 = _asm_stats(dip1)
+        n2, c2, hp2, g2, sm2 = _asm_stats(dip2)
+        print(f"  diploid {sample}: hap1={n1} hap2={n2} contigs, "
+              f"HP-tagged={hp1}/{hp2}, gap-spanning={g1}/{g2}, SM={sorted(sm1|sm2)}")
+        if n1 != 3 or n2 != 3 or c1 != expected_chroms or c2 != expected_chroms:
+            sys.exit(f"expected 3 diploid contigs per hap for {sample}, "
+                     f"got {n1}/{n2} {c1}/{c2}")
+        if hp1 or hp2:
+            sys.exit(f"{sample} assembly BAMs should have no HP tags")
+        if not g1 or not g2:
+            sys.exit(f"{sample} assembly should span the sequencing coverage gap")
+        if sm1 != {sample} or sm2 != {sample}:
+            sys.exit(f"{sample} assembly @RG SM should be {sample}, got {sm1}/{sm2}")
+
+    snv_pos = ORIGIN + 5_120  # snv_common; SYN001 is 0|1 so hap1=REF, hap2=ALT
+    dip1_path = out / "assemblies" / f"{PRIMARY_SAMPLE}.hap1.bam"
+    dip2_path = out / "assemblies" / f"{PRIMARY_SAMPLE}.hap2.bam"
+    b1 = _base_at(dip1_path, CONTIG, snv_pos)
+    b2 = _base_at(dip2_path, CONTIG, snv_pos)
+    print(f"  {PRIMARY_SAMPLE} snv_common bases: hap1={b1} hap2={b2}")
+    if b1 is None or b2 is None:
+        sys.exit(f"{PRIMARY_SAMPLE} assemblies do not cover snv_common")
+    if b1 == b2:
+        sys.exit(f"{PRIMARY_SAMPLE} hap1/hap2 should differ at snv_common, both {b1}")
+
     print("  validation ok")
 
 
@@ -1866,7 +2072,7 @@ def generate(out: Path, bucket: Optional[str], do_upload: bool) -> None:
                 contig=CONTIG3, origin=ORIGIN3, rg=f"{sample}.pacbio",
                 name_prefix=f"{sample}:hifi:{CONTIG3}",
             )
-            if sample == "HG001":
+            if sample == "SYN001":
                 n += emit_long_reads(
                     fh, sample, i, seq20, sites, rng,
                     contig=CONTIG, origin=ORIGIN, rg=f"{sample}.pacbio2",
@@ -1900,23 +2106,23 @@ def generate(out: Path, bucket: Optional[str], do_upload: bool) -> None:
         sam_to_bam(sam, bam)
         bam_to_cram(bam, out / "short_reads" / f"{sample}.cram")
 
-    # Second flowcell for HG001 (same SM, different filename).
-    print("  simulating HG001 flowcell 2…")
-    sam = tmp / "HG001_fc2.sam"
+    # Second flowcell for SYN001 (same SM, different filename).
+    print("  simulating SYN001 flowcell 2…")
+    sam = tmp / "SYN001_fc2.sam"
     with sam.open("w") as fh:
-        fh.write(sam_header("HG001", "pacbio", ["HG001.pacbio2"]))
+        fh.write(sam_header("SYN001", "pacbio", ["SYN001.pacbio2"]))
         emit_long_reads(
-            fh, "HG001", 0, seq20, sites, rng,
-            contig=CONTIG, origin=ORIGIN, rg="HG001.pacbio2",
-            name_prefix="HG001:hifi:fc2file", skip_gap=True,
+            fh, "SYN001", 0, seq20, sites, rng,
+            contig=CONTIG, origin=ORIGIN, rg="SYN001.pacbio2",
+            name_prefix="SYN001:hifi:fc2file", skip_gap=True,
             coverage=8, untagged=1,
         )
-    sam_to_bam(sam, out / "long_reads" / "HG001_fc2.bam")
+    sam_to_bam(sam, out / "long_reads" / "SYN001_fc2.bam")
 
-    # MD-stripped copy of HG001 — "SNPs unavailable" warning when loaded alone.
-    nomd = out / "long_reads" / "HG001.nomd.bam"
+    # MD-stripped copy of SYN001 — "SNPs unavailable" warning when loaded alone.
+    nomd = out / "long_reads" / "SYN001.nomd.bam"
     run(["samtools", "view", "-x", "MD", "-b", "-o", str(nomd),
-         str(out / "long_reads" / "HG001.bam")])
+         str(out / "long_reads" / "SYN001.bam")])
     run(["samtools", "index", str(nomd)])
 
     # Reads-only sample, not in any VCF.
@@ -1931,6 +2137,7 @@ def generate(out: Path, bucket: Optional[str], do_upload: bool) -> None:
         )
     sam_to_bam(sam, out / "long_reads" / f"{ORPHAN_SAMPLE}.bam")
 
+    write_assemblies(out, tmp, sites, seq20, seq21, seq14)
     write_tracks(out, sites)
     shutil.rmtree(tmp, ignore_errors=True)
     write_docs(out, sites, bucket)

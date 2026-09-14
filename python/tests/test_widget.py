@@ -46,7 +46,7 @@ def test_widget_reads_response():
     # Reads must be fetched for the CURRENTLY VIEWED window (passed from the
     # client), not the server's stale last-rendered locus.
     shader._fetch_reads_payload.assert_called_once_with(
-        sample_id="S1", samples=None, locus="chr1:100-200")
+        sample_id="S1", samples=None, locus="chr1:100-200", bam_url=None)
 
 
 def test_widget_reads_error():
@@ -171,6 +171,56 @@ def test_strategy_order_best_evidence_first():
     body = _body_html()
     assert body.index('value="best_evidence"') < body.index('value="random"')
     assert "strategy: 'best_evidence'" in _build_esm()   # JS state default (raw in ESM)
+
+
+def test_grouping_variable_row_wired():
+    body = _body_html()
+    assert 'id="addFacetSelect"' in body
+    assert 'id="activeFacetsList"' in body
+    assert 'id="participantGroupsSection"' in body
+    assert 'id="evidenceFilterSection"' in body
+    assert 'id="evidenceFilterList"' in body
+    assert 'id="readSetsSection"' not in body
+    assert 'data-left-tab="groups"' in body
+    assert 'id="groupingVariableSelect"' not in body
+    # Sample Search redesign: empty state + How-many slider (no stepper)
+    assert 'id="sampleEmptyState"' in body
+    assert 'id="sampleCountSection"' in body
+    assert 'id="sampleCountSlider"' in body
+    assert 'id="sampleCountHeader"' in body
+    assert 'id="sampleCountValue"' in body
+    assert 'id="sampleAllelePills"' in body
+    assert 'id="sampleChooseHeader"' in body
+    assert 'id="samplePreviewHeader"' in body
+    assert 'id="sampleCountStepper"' not in body
+    assert 'id="sampleCountMinus"' not in body
+    assert 'id="sampleCountInput"' not in body
+    # Hardcoded Super-pop stub is gone
+    assert ">Super-pop<" not in body
+    esm = _build_esm()
+    assert "activeFacets" in esm
+    assert "colorFacetKey" in esm
+    assert "compositeSampleIds" in esm
+    assert "evidenceFilter" in esm
+    assert "setEvidenceFilter" in esm
+    assert "resolvedSamples" in esm
+    assert "addMetadataFacet" in esm
+    assert "setColorFacetKey" in esm
+    assert "setMetadataFacetLevel" in esm
+    assert "invalidateViewportForFacets" in esm
+    assert "fillAlleleNodeGrouped" in esm
+    assert "clusterSmartTracksByGrouping" in esm
+    assert "sample_metadata_changed" in esm
+    assert "read_sets_changed" in esm
+    assert "isSmartTrackExcludedByFacets" in esm
+    assert "groupColorForSmartTrack" in esm
+    assert "buildGroupFrequencyRows" in esm or "__gsBuildGroupFrequencyRows" in esm
+    assert "variant-group-freq" in esm
+    assert "cycleGroupingVariable" not in esm
+    assert "groupingVariableItem" not in body
+    assert "groupingVariableLabel" not in body
+    # Evidence is Sample Search state, not a Groups facet kind.
+    assert 'kind: "readset"' not in esm and "kind: 'readset'" not in esm
 
 
 def test_comment_store_crud(tmp_path, monkeypatch):
@@ -402,6 +452,23 @@ def test_staged_reference_forwarded_to_fetch(tmp_path, monkeypatch):
         "Pf3D7_01_v3:100-200", ["gs://b/S1.bam"], "ACGTACGT", 100)
 
 
+def test_reads_payload_filters_to_requested_bam_url(tmp_path, monkeypatch):
+    # Multi-BAM samples fetch one file at a time when bam_url is set (one track
+    # per BAM on the frontend).
+    import polars as pl
+    s = _shader(tmp_path, monkeypatch)
+    s._last_locus = "Pf3D7_01_v3:1-100"
+    s.set_sample_mapping({"S1": ["gs://b/S1_long.bam", "gs://b/S1_short.bam"]})
+    s.reference = Mock(return_value="")
+    s._session.fetch_reads_for_locus = Mock(
+        return_value=pl.DataFrame({"sample_name": ["S1"], "reference_start": [7]}))
+
+    p = s._fetch_reads_payload(sample_id="S1", bam_url="gs://b/S1_long.bam")
+    assert p["bam_urls"] == ["gs://b/S1_long.bam"] and p["count"] == 1
+    s._session.fetch_reads_for_locus.assert_called_once_with(
+        "Pf3D7_01_v3:1-100", ["gs://b/S1_long.bam"], None, 1)
+
+
 def test_reads_payload_skips_sample_without_bam(tmp_path, monkeypatch):
     # VCF-only samples must not raise — Load draws only from attached BAMs.
     s = _shader(tmp_path, monkeypatch)
@@ -459,7 +526,14 @@ def test_fetch_variants_comm_handler(tmp_path, monkeypatch):
                          "contig": "c", "start": 1, "end": 9}, [])
     assert sent[0]["type"] == "fetch_variants_response"
     assert sent[0]["aggregate"] is True and sent[0]["region"]["end"] == 9
-    s.fetch_variants_payload.assert_called_once_with("c", 1, 9)
+    s.fetch_variants_payload.assert_called_once_with("c", 1, 9, sample_ids=None)
+
+    sent.clear()
+    s.fetch_variants_payload.reset_mock()
+    w._on_custom_msg(w, {"type": "fetch_variants", "request_id": "r2",
+                         "contig": "c", "start": 1, "end": 9,
+                         "sample_ids": ["S1", "S2"]}, [])
+    s.fetch_variants_payload.assert_called_once_with("c", 1, 9, sample_ids=["S1", "S2"])
 
 
 def test_fetch_track_data_comm_handler_offloads(tmp_path, monkeypatch):
