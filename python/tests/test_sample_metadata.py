@@ -150,6 +150,25 @@ def test_attach_metadata_on_shader(tmp_path, monkeypatch):
     assert s._sample_metadata_group_lookups()["pop"]["S1"] == "AFR"
 
 
+def test_attach_metadata_same_label_replaces(tmp_path, monkeypatch):
+    pytest.importorskip("genomeshader.genomeshader")
+    from unittest.mock import Mock, patch
+    import genomeshader as G
+
+    monkeypatch.setenv("GENOMESHADER_LOCAL_CACHE_DIR", str(tmp_path))
+    with patch("genomeshader.view.gs._init", return_value=Mock()):
+        s = G.GenomeShader(
+            genome_build="hg38",
+            gcs_session_dir="gs://test-bucket/genomeshader",
+        )
+    s.attach_metadata("1kg", {"sample": ["S1"], "pop": ["AFR"]})
+    s.attach_metadata("1kg", {"sample": ["S1", "S2"], "pop": ["EUR", "EAS"]})
+    got = s.get_metadata("1kg")
+    assert got.height == 2
+    assert got["pop"].to_list() == ["EUR", "EAS"]
+    assert list(s._sample_metadata_tables) == ["1kg"]
+
+
 def test_attach_metadata_multiple_labels(tmp_path, monkeypatch):
     pytest.importorskip("genomeshader.genomeshader")
     from unittest.mock import Mock, patch
