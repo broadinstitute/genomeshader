@@ -1,6 +1,6 @@
 :root {
   --sidebar-w: 360px;
-  --tracks-h: 280px;   /* ideogram + genes + repeats + ruler */
+  --tracks-h: 220px;   /* genes + repeats + reference (ideogram lives in the locus bar) */
   --flow-h: 500px;     /* sankey placeholder */
   --reads-h: 220px;    /* IGV-style reads area placeholder */
 
@@ -1250,7 +1250,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   z-index: 200 !important;
 }
 
-/* IGV-style always-visible locus bar (contig + position + Go), pinned at top. */
+/* IGV-style always-visible locus bar (contig + position + Go + ideogram), pinned at top. */
 #locusBar {
   position: absolute;
   left: 0;
@@ -1261,7 +1261,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 10px;
+  padding: 0 0 0 10px;
   box-sizing: border-box;
   background: var(--panel2);
   border-bottom: 1px solid var(--border);
@@ -1282,9 +1282,18 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   flex: 0 0 auto;
 }
 #locusBar .locus-pos {
+  flex: 0 1 180px;
+  min-width: 90px;
+  max-width: 180px;
+}
+#locusBar .locus-ideogram {
   flex: 1 1 auto;
-  min-width: 140px;
-  max-width: 360px;
+  min-width: 80px;
+  height: 20px;
+  display: block;
+  overflow: visible;
+  cursor: default;
+  pointer-events: auto;
 }
 #locusBar .locus-go {
   height: 24px;
@@ -1307,18 +1316,67 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   cursor: default;
   filter: none;
 }
-/* Live current-view readout, pinned to the right of the nav bar. */
+/* Cursor-position readout, pinned to the right of the nav bar. Fixed width so
+   digit/comma changes don't stretch the ideogram. */
 #locusBar .locus-readout {
-  margin-left: auto;
-  flex: 0 0 auto;
+  flex: 0 0 18ch;
+  width: 18ch;
+  min-width: 18ch;
+  max-width: 18ch;
+  box-sizing: border-box;
+  text-align: left;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 42%;
 }
+#locusBar .locus-lock,
+#locusBar .locus-fullscreen {
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Compact slot, flush to the fullscreen control (cancels the bar's 8px gap). */
+#locusBar .locus-lock {
+  flex: 0 0 32px;
+  width: 32px;
+  margin-right: -8px;
+}
+#locusBar .locus-fullscreen {
+  flex: 0 0 48px;
+  width: 48px;
+}
+#locusBar .locus-lock svg,
+#locusBar .locus-fullscreen svg {
+  width: 20px;
+  height: 20px;
+}
+#locusBar .locus-lock:hover,
+#locusBar .locus-fullscreen:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+#locusBar .locus-lock:active,
+#locusBar .locus-fullscreen:active { filter: brightness(0.95); }
+#locusBar .locus-lock.is-active,
+#locusBar .locus-fullscreen.is-active { color: var(--text); }
+#locusBar .locus-lock .icon-locked { display: none; }
+#locusBar .locus-lock.is-active .icon-unlocked { display: none; }
+#locusBar .locus-lock.is-active .icon-locked { display: block; }
+#locusBar .locus-fullscreen .icon-exit { display: none; }
+#locusBar .locus-fullscreen.is-active .icon-enter { display: none; }
+#locusBar .locus-fullscreen.is-active .icon-exit { display: block; }
 
 .main {
   position: absolute;

@@ -1,4 +1,4 @@
-// Tracks rendering (ideogram + genes + repeats + ruler)
+// Tracks rendering (genes + repeats + ruler; chromosome ideogram is in the locus bar)
 // -----------------------------
 // Track retry attempts to avoid infinite loops
 let renderTracksRetryCount = 0;
@@ -662,6 +662,169 @@ function drawTrackFeatures(entry, item, genomePos, opts) {
   }
 }
 
+// Chromosome ideogram in the locus bar: a full-contig overview (not a genomic
+// track). Always horizontal — it does not follow vertical-mode axis rotation.
+let _locusIdeogramRetry = 0;
+function renderLocusIdeogram() {
+  const svg = (typeof locusIdeogramSvg !== "undefined" && locusIdeogramSvg)
+    || (typeof byId === "function" && typeof root !== "undefined" ? byId(root, "locusIdeogram") : null)
+    || document.getElementById("locusIdeogram");
+  if (!svg) return;
+  clearSvg(svg);
+
+  const W = svg.clientWidth || svg.getBoundingClientRect().width;
+  const H = svg.clientHeight || svg.getBoundingClientRect().height;
+  if (!(W > 0) || !(H > 0)) {
+    if (_locusIdeogramRetry < MAX_RETRY_ATTEMPTS) {
+      _locusIdeogramRetry++;
+      requestAnimationFrame(() => renderLocusIdeogram());
+    }
+    return;
+  }
+  _locusIdeogramRetry = 0;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.style.cursor = (state.chromClickJump === true) ? "pointer" : "default";
+  svg.setAttribute("title", state.chromClickJump === true
+    ? "Click to stage a jump to this region"
+    : "Chromosome overview");
+
+  const padX = 2;
+  const bandX = padX;
+  const bandY = 2;
+  const bandW = Math.max(0, W - padX * 2);
+  const bandH = Math.max(8, H - 4);
+  if (!(bandW > 0) || !(bandH > 0)) return;
+
+  const chrLength = getChromosomeLength();
+  state.__ideogramHitRect = {
+    x: bandX, y: bandY, w: bandW, h: bandH,
+    svgW: W, svgH: H,
+    len: chrLength, contig: state.contig, vertical: false,
+  };
+
+  let ideogramData = [];
+  if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.ideogram_data) {
+    const data = window.GENOMESHADER_CONFIG.ideogram_data;
+    if (Array.isArray(data)) ideogramData = data;
+    else console.warn("Ideogram data is not in expected array format:", data);
+  }
+
+  let firstAcenEnd = null;
+  for (const band of ideogramData) {
+    if (band.gieStain === "acen" && firstAcenEnd === null) {
+      firstAcenEnd = band.chromEnd;
+    }
+  }
+  const defaultPFrac = 0.48;
+  const centromerePos = firstAcenEnd !== null ? firstAcenEnd : Math.floor(chrLength * defaultPFrac);
+  const pFrac = centromerePos / chrLength;
+  const qFrac = 1 - pFrac;
+
+  const pW = Math.max(10, Math.floor(bandW * pFrac));
+  const qW = Math.max(10, Math.floor(bandW * qFrac));
+  const pH = bandH, qH = bandH;
+  const pX = bandX;
+  const qX = bandX + pW;
+  const pY = bandY, qY = bandY;
+  if (!(pW > 0) || !(qW > 0) || !(pH > 0)) return;
+
+  const clipId = "locusChrClip";
+  const defs = el("defs");
+  const clip = el("clipPath", { id: clipId });
+  clip.appendChild(el("rect", { x: pX, y: pY, width: pW, height: pH, rx: 9 }));
+  clip.appendChild(el("rect", { x: qX, y: qY, width: qW, height: qH, rx: 9 }));
+  defs.appendChild(clip);
+  svg.appendChild(defs);
+
+  const armStroke = "rgba(127,127,127,0.22)";
+  const armFill = "rgba(127,127,127,0.12)";
+  svg.appendChild(el("rect", { x: pX, y: pY, width: pW, height: pH, rx: 9, fill: armFill, stroke: armStroke }));
+  svg.appendChild(el("rect", { x: qX, y: qY, width: qW, height: qH, rx: 9, fill: armFill, stroke: armStroke }));
+
+  const pArmLength = centromerePos;
+  const qArmLength = chrLength - centromerePos;
+  const bandInnerY = bandY - 2;
+  const bandInnerH = bandH + 4;
+
+  for (const band of ideogramData) {
+    const bandStart = band.chromStart;
+    const bandEnd = band.chromEnd;
+    const isCentromere = band.gieStain === "acen";
+    const isPArm = bandEnd <= centromerePos;
+    let bandPos, bandSize;
+    if (isPArm) {
+      const pFracStart = bandStart / pArmLength;
+      const pFracSize = (bandEnd - bandStart) / pArmLength;
+      bandPos = pX + (pFracStart * pW);
+      bandSize = pFracSize * pW;
+    } else {
+      const qFracStart = (bandStart - centromerePos) / qArmLength;
+      const qFracSize = (bandEnd - bandStart) / qArmLength;
+      bandPos = qX + (qFracStart * qW);
+      bandSize = qFracSize * qW;
+    }
+    const color = band.color || "#808080";
+    let fillColor;
+    if (isCentromere) {
+      fillColor = "rgba(255,77,77,0.35)";
+    } else {
+      const r = parseInt(color.slice(1, 3), 16);
+      const g = parseInt(color.slice(3, 5), 16);
+      const b = parseInt(color.slice(5, 7), 16);
+      const intensity = (r + g + b) / 3;
+      const opacity = 0.1 + (1 - intensity / 255) * 0.3;
+      fillColor = `rgba(${r},${g},${b},${opacity})`;
+    }
+    svg.appendChild(el("rect", {
+      x: bandPos, y: bandInnerY, width: Math.max(1, bandSize), height: bandInnerH,
+      fill: fillColor, stroke: "none", "stroke-width": 0,
+      "clip-path": `url(#${clipId})`
+    }));
+  }
+
+  const locusCenter = (renderStartBp() + renderEndBp()) / 2;
+  const isLocusPArm = locusCenter <= centromerePos;
+  let locusX, locusHighlightWidth = 12;
+  if (isLocusPArm) {
+    locusX = pX + ((locusCenter / pArmLength) * pW);
+  } else {
+    locusX = qX + (((locusCenter - centromerePos) / qArmLength) * qW);
+  }
+  const locusHighlightX = Math.max(
+    isLocusPArm ? pX : qX,
+    Math.min(
+      (isLocusPArm ? pX + pW : qX + qW) - locusHighlightWidth,
+      locusX - locusHighlightWidth / 2
+    )
+  );
+  svg.appendChild(el("rect", {
+    x: locusHighlightX,
+    y: (isLocusPArm ? pY : qY) - 1,
+    width: locusHighlightWidth,
+    height: (isLocusPArm ? pH : qH) + 2,
+    fill: "rgba(255,77,77,0.25)",
+    stroke: "rgba(255,77,77,0.95)",
+    "stroke-width": 1
+  }));
+
+  const _pl = state.__pendingLocus;
+  if (_pl && _pl.contig === state.contig && chrLength > 0) {
+    const pc = Math.max(1, Math.min(chrLength, (Number(_pl.start) + Number(_pl.end)) / 2));
+    const pIsP = pc <= centromerePos;
+    const spanFrac = Math.max(0, Number(_pl.end) - Number(_pl.start)) / chrLength;
+    const armX = pIsP ? pX : qX, armW = pIsP ? pW : qW, armLen = pIsP ? pArmLength : qArmLength;
+    const fr = pIsP ? (pc / armLen) : ((pc - centromerePos) / armLen);
+    const boxW = Math.max(12, spanFrac * armW);
+    const cx = armX + fr * armW;
+    const bx = Math.max(armX, Math.min(armX + armW - boxW, cx - boxW / 2));
+    svg.appendChild(el("rect", {
+      x: bx, y: (pIsP ? pY : qY) - 1, width: boxW, height: (pIsP ? pH : qH) + 2,
+      fill: "rgba(80,150,255,0.25)", stroke: "rgba(80,150,255,0.95)", "stroke-width": 1.5,
+    }));
+  }
+}
+
 function renderTracks() {
   clearSvg(tracksSvg);
   // Clear variant element references
@@ -716,8 +879,6 @@ function renderTracks() {
     ? (bp) => yGenomeCanonical(bp, tracksHeightPx())
     : (bp) => xGenomeCanonical(bp, W);
   
-  // Find track positions (needed to exclude ideogram from shading)
-  const ideogramLayout = layout.find(l => l.track.id === "ideogram");
   const genesLayout = layout.find(l => l.track.id === "genes");
   const repeatsLayout = layout.find(l => l.track.id === "repeats");
   const rulerLayout = layout.find(l => l.track.id === "ruler");
@@ -736,507 +897,61 @@ function renderTracks() {
     if (_co) { while (_co.firstChild) _co.removeChild(_co.firstChild); }
   }
 
-  // Calculate ideogram track bounds to exclude from shading (including track controls header)
-  let ideogramTrackStart = 0;
-  let ideogramTrackEnd = 0;
-  if (ideogramLayout && !ideogramLayout.track.collapsed) {
-    if (isVertical) {
-      // In vertical mode, ideogram is on the left side (x-axis)
-      // Use left/width to include the track controls header area
-      ideogramTrackStart = ideogramLayout.left;
-      ideogramTrackEnd = ideogramLayout.left + ideogramLayout.width;
-    } else {
-      // In horizontal mode, ideogram is at the top (y-axis)
-      // Use top/height to include the track controls header area
-      ideogramTrackStart = ideogramLayout.top;
-      ideogramTrackEnd = ideogramLayout.top + ideogramLayout.height;
-    }
-  }
-  
-  // Draw data bounds overlays across all tracks except ideogram (if data bounds
-  // exist and differ from view). Skip entirely when viewport variant loading is
+  // Draw data bounds overlays across annotation tracks (if data bounds exist
+  // and differ from view). Skip entirely when viewport variant loading is
   // on — data pages in across the whole contig, so the "out of data" grey is
   // misleading (and would otherwise linger over freshly-paged-in variants).
   const _vpOn = !!(window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.viewport_variant_loading);
   if (!_vpOn && dataBounds && (dataBounds.start > renderStartBp() || dataBounds.end < renderEndBp())) {
     const dataStartPos = genomePos(dataBounds.start);
     const dataEndPos = genomePos(dataBounds.end);
-    
-    // Find the tracks container bounds
-    const tracksContainer = document.getElementById("tracksContainer");
-    if (tracksContainer) {
-      const containerRect = tracksContainer.getBoundingClientRect();
-      const svgRect = tracksSvg.getBoundingClientRect();
-      
-      // Helper function to draw out-of-bounds shading (darker)
+
+    const tracksContainerEl = document.getElementById("tracksContainer");
+    if (tracksContainerEl) {
       const drawOutOfBoundsRect = (x, y, width, height) => {
         tracksSvg.appendChild(el("rect", {
           x: x,
           y: y,
           width: width,
           height: height,
-          fill: "rgba(127,127,127,0.15)", // Darker for out-of-bounds
+          fill: "rgba(127,127,127,0.15)",
           "pointer-events": "none",
           "class": "data-bounds-overlay"
         }));
       };
-      
+
       if (isVertical) {
-        // In vertical mode, Y axis is inverted: bottom (higher Y) = smaller bp, top (lower Y) = larger bp
-        // dataStartPos = Y position of dataBounds.start (smaller bp → higher Y, near bottom)
-        // dataEndPos = Y position of dataBounds.end (larger bp → lower Y, near top)
-        
-        // Out-of-bounds region below data (smaller bp than dataBounds.start)
-        // dataBounds.start > renderStartBp() means view extends to show bp < dataBounds.start
-        // In vertical mode: smaller bp → higher Y → bottom of screen
-        // So out-of-bounds is from dataStartPos to H (bottom)
         if (dataBounds.start > renderStartBp()) {
           const overlayY1 = Math.max(dataStartPos, 0);
           const overlayY2 = H;
           if (overlayY2 > overlayY1) {
-            if (ideogramTrackEnd > 0) {
-              // Left side of ideogram track
-              if (ideogramTrackStart > 0) {
-                drawOutOfBoundsRect(0, overlayY1, ideogramTrackStart, overlayY2 - overlayY1);
-              }
-              // Right side of ideogram track
-              if (ideogramTrackEnd < W) {
-                drawOutOfBoundsRect(ideogramTrackEnd, overlayY1, W - ideogramTrackEnd, overlayY2 - overlayY1);
-              }
-            } else {
-              // No ideogram track, draw full width
-              drawOutOfBoundsRect(0, overlayY1, W, overlayY2 - overlayY1);
-            }
+            drawOutOfBoundsRect(0, overlayY1, W, overlayY2 - overlayY1);
           }
         }
-        
-        // Out-of-bounds region above data (larger bp than dataBounds.end)
-        // dataBounds.end < renderEndBp() means view extends to show bp > dataBounds.end
-        // In vertical mode: larger bp → lower Y → top of screen
-        // So out-of-bounds is from 0 to dataEndPos (top)
         if (dataBounds.end < renderEndBp()) {
           const overlayY1 = 0;
           const overlayY2 = Math.min(dataEndPos, H);
           if (overlayY2 > overlayY1) {
-            if (ideogramTrackEnd > 0) {
-              // Left side of ideogram track
-              if (ideogramTrackStart > 0) {
-                drawOutOfBoundsRect(0, overlayY1, ideogramTrackStart, overlayY2 - overlayY1);
-              }
-              // Right side of ideogram track
-              if (ideogramTrackEnd < W) {
-                drawOutOfBoundsRect(ideogramTrackEnd, overlayY1, W - ideogramTrackEnd, overlayY2 - overlayY1);
-              }
-            } else {
-              // No ideogram track, draw full width
-              drawOutOfBoundsRect(0, overlayY1, W, overlayY2 - overlayY1);
-            }
+            drawOutOfBoundsRect(0, overlayY1, W, overlayY2 - overlayY1);
           }
         }
       } else {
-        // Horizontal mode - exclude ideogram track area
-        // Region before data start (out-of-bounds, darker)
         if (dataBounds.start > renderStartBp()) {
           const overlayX1 = 0;
           const overlayX2 = dataStartPos;
-          if (ideogramTrackEnd > 0) {
-            // Top side of ideogram track
-            if (ideogramTrackStart > 0) {
-              drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, ideogramTrackStart);
-            }
-            // Bottom side of ideogram track
-            if (ideogramTrackEnd < H) {
-              drawOutOfBoundsRect(overlayX1, ideogramTrackEnd, overlayX2 - overlayX1, H - ideogramTrackEnd);
-            }
-          } else {
-            // No ideogram track, draw full height
-            drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, H);
-          }
+          drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, H);
         }
-        
-        // Region after data end (out-of-bounds, darker)
         if (dataBounds.end < renderEndBp()) {
           const overlayX1 = dataEndPos;
           const overlayX2 = W;
-          if (ideogramTrackEnd > 0) {
-            // Top side of ideogram track
-            if (ideogramTrackStart > 0) {
-              drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, ideogramTrackStart);
-            }
-            // Bottom side of ideogram track
-            if (ideogramTrackEnd < H) {
-              drawOutOfBoundsRect(overlayX1, ideogramTrackEnd, overlayX2 - overlayX1, H - ideogramTrackEnd);
-            }
-          } else {
-            // No ideogram track, draw full height
-            drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, H);
-          }
+          drawOutOfBoundsRect(overlayX1, 0, overlayX2 - overlayX1, H);
         }
       }
     }
   }
 
   // repeats is optional (dropped when no repeats_track features) — don't require it here.
-  if (!ideogramLayout || !genesLayout || !referenceLayout || !flowLayout) return;
-
-  // Ideogram layout
-  if (!ideogramLayout.track.collapsed) {
-    // Validate layout properties before using them
-    const contentLeft = ideogramLayout.contentLeft;
-    const contentTop = ideogramLayout.contentTop;
-    if (isNaN(contentLeft) || isNaN(contentTop)) {
-      console.warn('Genomeshader: Invalid ideogram layout values', { contentLeft, contentTop });
-      return;
-    }
-    
-    let ideogramX, ideogramY, ideogramW, ideogramH;
-    if (isVertical) {
-      ideogramX = (isNaN(contentLeft) ? 0 : contentLeft) + 12;
-      ideogramW = 16;
-      // Leave space at bottom for chromosome label, start ideogram higher
-      ideogramY = 16;
-      // In vertical mode, ideogram spans the genomic axis (W dimension, which is SVG height)
-      // Leave space at bottom (about 40px) for the chromosome label
-      ideogramH = Math.max(0, W - 32 - 40);
-    } else {
-      ideogramY = (isNaN(contentTop) ? 0 : contentTop) + 12;
-      ideogramH = 16;
-      ideogramX = 16;
-      ideogramW = Math.max(0, W - 32);
-    }
-    
-    // Final validation of calculated values
-    if (isNaN(ideogramX) || isNaN(ideogramY) || isNaN(ideogramW) || isNaN(ideogramH) || 
-        ideogramW <= 0 || ideogramH <= 0) {
-      console.warn('Genomeshader: Invalid ideogram dimensions', { ideogramX, ideogramY, ideogramW, ideogramH });
-      return;
-    }
-
-    // Left gutter reserved for the contig name so the chromosome band starts
-    // after it (no overlap). Sized to the name length; the name is right-aligned
-    // against the band with a gap.
-    const contigName = String(state.contig || '');
-    const nameGutter = Math.max(70, 16 + Math.ceil(contigName.length * 8) + 14);
-
-    // --- Chromosome label
-    if (isVertical) {
-      // Position chromosome label at the bottom
-      const labelY = W - 16;
-      tracksSvg.appendChild(el("text", {
-        x: ideogramX + ideogramW/2 + 1,
-        y: labelY,
-        class: "svg-chr",
-        "text-anchor": "middle",
-        "dominant-baseline": "middle"
-      }, state.contig));
-    } else {
-      // Right-align the contig name in the gutter, ending 12px before the band.
-      tracksSvg.appendChild(el("text", {
-        x: nameGutter - 12,
-        y: ideogramY + ideogramH/2 + 1,
-        class: "svg-chr",
-        "text-anchor": "end",
-        "dominant-baseline": "middle"
-      }, state.contig));
-    }
-
-    // --- Ideogram (p/q arm rounded rects + cytobands clipped inside)
-    const bandX = isVertical ? ideogramX : nameGutter;
-    const bandY = isVertical ? ideogramY : ideogramY;
-    const bandW = isVertical ? ideogramW : Math.max(0, W - bandX - 16);
-    // In vertical mode, bandH should use the full available height
-    const bandH = isVertical ? ideogramH : ideogramH;
-    
-    // Validate band dimensions before using them
-    if (isNaN(bandX) || isNaN(bandY) || isNaN(bandW) || isNaN(bandH) ||
-        bandW <= 0 || bandH <= 0) {
-      console.warn('Genomeshader: Invalid band dimensions', { bandX, bandY, bandW, bandH, ideogramX, ideogramY, ideogramW, ideogramH, W, H });
-      return;
-    }
-
-    // Use global chromosome lengths for mapping cytoband positions
-    const chrLength = getChromosomeLength();
-
-    // Publish the ideogram band's screen rect + contig length so the
-    // click-chromosome-to-jump handler can map a click x -> genomic position
-    // across the WHOLE contig (the ideogram is a full-chromosome overview).
-    state.__ideogramHitRect = {
-      x: bandX, y: bandY, w: bandW, h: bandH,
-      len: chrLength, contig: state.contig, vertical: isVertical,
-    };
-    
-    // Get ideogram data from config (already parsed from JSON in Python)
-    let ideogramData = [];
-    if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.ideogram_data) {
-      const data = window.GENOMESHADER_CONFIG.ideogram_data;
-      // Data should already be an array, but ensure it is
-      if (Array.isArray(data)) {
-        ideogramData = data;
-      } else {
-        console.warn("Ideogram data is not in expected array format:", data);
-      }
-    }
-    
-    // Find centromere position to determine p/q arm split
-    // The first acen entry indicates the end of the p-arm
-    // The second acen entry indicates the start of the q-arm
-    let firstAcenEnd = null;
-    for (const band of ideogramData) {
-      if (band.gieStain === "acen") {
-        if (firstAcenEnd === null) {
-          // First acen band: its end marks where p-arm ends
-          firstAcenEnd = band.chromEnd;
-        }
-        // Second acen band marks where q-arm starts (we don't need to track this separately)
-      }
-    }
-    
-    // Calculate actual p/q arm proportions based on centromere position
-    // The split between p and q arms is at the end of the first acen band
-    // If no centromere found, use approximate position (p-arm is typically ~48% of chromosome)
-    const defaultPFrac = 0.48;
-    const centromerePos = firstAcenEnd !== null ? firstAcenEnd : Math.floor(chrLength * defaultPFrac);
-    const pFrac = centromerePos / chrLength;
-    const qFrac = 1 - pFrac;
-
-    let pX, pY, pW, pH, qX, qY, qW, qH;
-    if (isVertical) {
-      // In vertical mode, arms are vertical (p-arm bottom, q-arm top)
-      pH = Math.max(10, Math.floor(bandH * pFrac));
-      qH = Math.max(10, Math.floor(bandH * qFrac));
-      pW = qW = bandW;
-      pX = qX = bandX;
-      pY = bandY + bandH - pH; // p-arm at bottom
-      qY = bandY; // q-arm at top
-    } else {
-      // Horizontal mode: arms are horizontal
-      pW = Math.max(10, Math.floor(bandW * pFrac));
-      qW = Math.max(10, Math.floor(bandW * qFrac));
-      pH = qH = bandH;
-      pX = bandX;
-      qX = bandX + pW;
-      pY = qY = bandY;
-    }
-    
-    // Validate all calculated arm positions and dimensions
-    if (isNaN(pX) || isNaN(pY) || isNaN(pW) || isNaN(pH) ||
-        isNaN(qX) || isNaN(qY) || isNaN(qW) || isNaN(qH) ||
-        pW <= 0 || pH <= 0 || qW <= 0 || qH <= 0) {
-      console.warn('Genomeshader: Invalid arm dimensions', { pX, pY, pW, pH, qX, qY, qW, qH });
-      return;
-    }
-
-    // defs + clipPath that matches both arms
-    const defs = el("defs");
-    const clipId = "chrClip";
-    const clip = el("clipPath", { id: clipId });
-
-    const armStroke = "rgba(127,127,127,0.22)";
-    const armFill = "rgba(127,127,127,0.12)";
-
-    const pArm = el("rect", { x: pX, y: pY, width: pW, height: pH, rx: 9, fill: armFill, stroke: armStroke });
-    const qArm = el("rect", { x: qX, y: qY, width: qW, height: qH, rx: 9, fill: armFill, stroke: armStroke });
-
-    clip.appendChild(el("rect", { x: pX, y: pY, width: pW, height: pH, rx: 9 }));
-    clip.appendChild(el("rect", { x: qX, y: qY, width: qW, height: qH, rx: 9 }));
-
-    defs.appendChild(clip);
-    tracksSvg.appendChild(defs);
-
-    tracksSvg.appendChild(pArm);
-    tracksSvg.appendChild(qArm);
-    
-    // Calculate p-arm and q-arm lengths in base pairs
-    const pArmLength = centromerePos;
-    const qArmLength = chrLength - centromerePos;
-    
-    const bandInnerX = isVertical ? bandX - 2 : bandX;
-    const bandInnerY = isVertical ? bandY : bandY - 2;
-    const bandInnerW = isVertical ? bandW + 4 : bandW;
-    const bandInnerH = isVertical ? bandH : bandH + 4;
-    
-    // Render each cytoband
-    for (const band of ideogramData) {
-      const bandStart = band.chromStart;
-      const bandEnd = band.chromEnd;
-      const isCentromere = band.gieStain === "acen";
-      const isPArm = bandEnd <= centromerePos;
-      
-      // Determine which arm and calculate position
-      let bandPos, bandSize;
-      if (isPArm) {
-        // p-arm: map from 0 to pArmLength onto p-arm dimensions
-        const pFracStart = bandStart / pArmLength;
-        const pFracEnd = bandEnd / pArmLength;
-        const pFracSize = (bandEnd - bandStart) / pArmLength;
-        
-        if (isVertical) {
-          // p-arm is at bottom, so we go from bottom up
-          bandPos = pY + pH - (pFracEnd * pH);
-          bandSize = pFracSize * pH;
-        } else {
-          // p-arm is on left
-          bandPos = pX + (pFracStart * pW);
-          bandSize = pFracSize * pW;
-        }
-      } else {
-        // q-arm: map from centromerePos to chrLength onto q-arm dimensions
-        const qFracStart = (bandStart - centromerePos) / qArmLength;
-        const qFracEnd = (bandEnd - centromerePos) / qArmLength;
-        const qFracSize = (bandEnd - bandStart) / qArmLength;
-        
-        if (isVertical) {
-          // q-arm is at top
-          bandPos = qY + (qFracStart * qH);
-          bandSize = qFracSize * qH;
-        } else {
-          // q-arm is on right
-          bandPos = qX + (qFracStart * qW);
-          bandSize = qFracSize * qW;
-        }
-      }
-      
-      // Convert color from hex to rgba for better visibility
-      const color = band.color || "#808080";
-      let fillColor, strokeColor, strokeWidth;
-      if (isCentromere) {
-        fillColor = "rgba(255,77,77,0.35)";
-        strokeColor = "none";
-        strokeWidth = 0;
-      } else {
-        // Convert hex to rgba with opacity
-        const r = parseInt(color.slice(1, 3), 16);
-        const g = parseInt(color.slice(3, 5), 16);
-        const b = parseInt(color.slice(5, 7), 16);
-        // Adjust opacity based on color intensity (darker = more opaque)
-        const intensity = (r + g + b) / 3;
-        const opacity = 0.1 + (1 - intensity / 255) * 0.3;
-        fillColor = `rgba(${r},${g},${b},${opacity})`;
-        strokeColor = "none";
-        strokeWidth = 0;
-      }
-      
-      if (isVertical) {
-        tracksSvg.appendChild(el("rect", {
-          x: bandInnerX,
-          y: bandPos,
-          width: bandInnerW,
-          height: Math.max(1, bandSize),
-          fill: fillColor,
-          stroke: strokeColor,
-          "stroke-width": strokeWidth,
-          "clip-path": `url(#${clipId})`
-        }));
-      } else {
-        tracksSvg.appendChild(el("rect", {
-          x: bandPos,
-          y: bandInnerY,
-          width: Math.max(1, bandSize),
-          height: bandInnerH,
-          fill: fillColor,
-          stroke: strokeColor,
-          "stroke-width": strokeWidth,
-          "clip-path": `url(#${clipId})`
-        }));
-      }
-    }
-
-    // Locus highlight - small red rectangle showing current view position
-    const locusCenter = (renderStartBp() + renderEndBp()) / 2;
-    const locusFrac = locusCenter / chrLength;
-    
-    // Determine if locus is on p-arm or q-arm
-    const isLocusPArm = locusCenter <= centromerePos;
-    
-    if (isVertical) {
-      let locusY, locusHighlightHeight = 12;
-      if (isLocusPArm) {
-        // p-arm is at bottom
-        const pFrac = locusCenter / pArmLength;
-        locusY = pY + pH - (pFrac * pH);
-      } else {
-        // q-arm is at top
-        const qFrac = (locusCenter - centromerePos) / qArmLength;
-        locusY = qY + (qFrac * qH);
-      }
-      const locusHighlightY = Math.max(
-        isLocusPArm ? pY : qY,
-        Math.min(
-          (isLocusPArm ? pY + pH : qY + qH) - locusHighlightHeight,
-          locusY - locusHighlightHeight / 2
-        )
-      );
-      
-      tracksSvg.appendChild(el("rect", {
-        x: (isLocusPArm ? pX : qX) - 1,
-        y: locusHighlightY,
-        width: (isLocusPArm ? pW : qW) + 2,
-        height: locusHighlightHeight,
-        fill: "rgba(255,77,77,0.25)",
-        stroke: "rgba(255,77,77,0.95)",
-        "stroke-width": 1
-      }));
-    } else {
-      let locusX, locusHighlightWidth = 12;
-      if (isLocusPArm) {
-        // p-arm is on left
-        const pFrac = locusCenter / pArmLength;
-        locusX = pX + (pFrac * pW);
-      } else {
-        // q-arm is on right
-        const qFrac = (locusCenter - centromerePos) / qArmLength;
-        locusX = qX + (qFrac * qW);
-      }
-      const locusHighlightX = Math.max(
-        isLocusPArm ? pX : qX,
-        Math.min(
-          (isLocusPArm ? pX + pW : qX + qW) - locusHighlightWidth,
-          locusX - locusHighlightWidth / 2
-        )
-      );
-      
-      tracksSvg.appendChild(el("rect", {
-        x: locusHighlightX,
-        y: (isLocusPArm ? pY : qY) - 1,
-        width: locusHighlightWidth,
-        height: (isLocusPArm ? pH : qH) + 2,
-        fill: "rgba(255,77,77,0.25)",
-        stroke: "rgba(255,77,77,0.95)",
-        "stroke-width": 1
-      }));
-    }
-
-    // Staged chromosome-click target: a differently-coloured (blue) box over the
-    // clicked area. It's a PENDING jump (committed by Go), distinct from the red
-    // current-view box. Same arm-proportional mapping as the view box.
-    const _pl = state.__pendingLocus;
-    if (_pl && _pl.contig === state.contig && chrLength > 0) {
-      const pc = Math.max(1, Math.min(chrLength, (Number(_pl.start) + Number(_pl.end)) / 2));
-      const pIsP = pc <= centromerePos;
-      const spanFrac = Math.max(0, Number(_pl.end) - Number(_pl.start)) / chrLength;
-      if (isVertical) {
-        const armY = pIsP ? pY : qY, armH = pIsP ? pH : qH, armLen = pIsP ? pArmLength : qArmLength;
-        const fr = pIsP ? (pc / armLen) : ((pc - centromerePos) / armLen);
-        const boxH = Math.max(12, spanFrac * armH);
-        const cy = pIsP ? (pY + pH - fr * pH) : (qY + fr * qH);
-        const by = Math.max(armY, Math.min(armY + armH - boxH, cy - boxH / 2));
-        tracksSvg.appendChild(el("rect", {
-          x: (pIsP ? pX : qX) - 1, y: by, width: (pIsP ? pW : qW) + 2, height: boxH,
-          fill: "rgba(80,150,255,0.25)", stroke: "rgba(80,150,255,0.95)", "stroke-width": 1.5,
-        }));
-      } else {
-        const armX = pIsP ? pX : qX, armW = pIsP ? pW : qW, armLen = pIsP ? pArmLength : qArmLength;
-        const fr = pIsP ? (pc / armLen) : ((pc - centromerePos) / armLen);
-        const boxW = Math.max(12, spanFrac * armW);
-        const cx = armX + fr * armW;
-        const bx = Math.max(armX, Math.min(armX + armW - boxW, cx - boxW / 2));
-        tracksSvg.appendChild(el("rect", {
-          x: bx, y: (pIsP ? pY : qY) - 1, width: boxW, height: (pIsP ? pH : qH) + 2,
-          fill: "rgba(80,150,255,0.25)", stroke: "rgba(80,150,255,0.95)", "stroke-width": 1.5,
-        }));
-      }
-    }
-  }
+  if (!genesLayout || !referenceLayout || !flowLayout) return;
 
   // --- Genes / RepeatMasker via shared drawTrackFeatures (Phase 2)
   if (genesLayout && !genesLayout.track.collapsed) {
