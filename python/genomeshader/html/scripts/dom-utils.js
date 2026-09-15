@@ -1175,7 +1175,6 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
   let isActive = false;
   let overlay = null;
   let modal = null;
-  let topbar = null;
   let placeholder = null;
   let originalParent = null;
   let originalNextSibling = null;
@@ -1183,7 +1182,6 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
 
   const overlayId = `genomeshader-overlay-${viewId}`;
   const modalId = `genomeshader-modal-${viewId}`;
-  const topbarId = `genomeshader-topbar-${viewId}`;
   const placeholderId = `genomeshader-placeholder-${viewId}`;
   
   // Clean up any stale overlays from previous sessions on initialization
@@ -1227,65 +1225,16 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
       pointer-events: auto;
     `;
 
-    topbar = document.createElement('div');
-    topbar.id = topbarId;
-    topbar.style.cssText = `
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border, rgba(255,255,255,0.10));
-      background: var(--panel, #11151b);
-      flex-shrink: 0;
-    `;
-
-    const title = document.createElement('div');
-    title.textContent = 'Genomeshader — Full screen';
-    title.style.cssText = `
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text, rgba(255,255,255,0.92));
-    `;
-
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '\u00D7';  // U+00D7 (U+2715 tofu'd on some fonts)
-    closeBtn.setAttribute('aria-label', 'Close full screen');
-    closeBtn.style.cssText = `
-      width: 32px;
-      height: 32px;
-      border: 1px solid var(--border2, rgba(255,255,255,0.08));
-      background: var(--panel2, rgba(255,255,255,0.03));
-      color: var(--text, rgba(255,255,255,0.92));
-      border-radius: 8px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 18px;
-      line-height: 1;
-      transition: all 0.15s ease;
-    `;
-    closeBtn.addEventListener('mouseenter', () => {
-      closeBtn.style.filter = 'brightness(1.1)';
-    });
-    closeBtn.addEventListener('mouseleave', () => {
-      closeBtn.style.filter = '';
-    });
-    closeBtn.addEventListener('click', exit);
-
-    topbar.appendChild(title);
-    topbar.appendChild(closeBtn);
-
     const modalBody = document.createElement('div');
     modalBody.style.cssText = `
       flex: 1;
+      height: 100%;
       overflow: hidden;
       position: relative;
       pointer-events: auto;
       touch-action: none;
     `;
 
-    modal.appendChild(topbar);
     modal.appendChild(modalBody);
     overlay.appendChild(modal);
 
@@ -1437,7 +1386,6 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
       overlay.remove();
       overlay = null;
       modal = null;
-      topbar = null;
     }
 
     isActive = false;
@@ -1466,6 +1414,15 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
     if (fullscreenLabel) {
       fullscreenLabel.textContent = isActive ? 'Exit full screen' : 'Enter full screen';
     }
+    const barBtn = (typeof getElementById === "function" ? getElementById("locusFullscreenBtn") : null)
+      || document.getElementById("locusFullscreenBtn");
+    if (barBtn) {
+      const label = isActive ? "Exit full screen" : "Enter full screen";
+      barBtn.title = label;
+      barBtn.setAttribute("aria-label", label);
+      barBtn.setAttribute("aria-pressed", isActive ? "true" : "false");
+      barBtn.classList.toggle("is-active", !!isActive);
+    }
   }
 
   toggleEl.addEventListener('click', (e) => {
@@ -1476,6 +1433,17 @@ function installFocusMode({ viewerEl, toggleEl, viewId, onEnter, onExit }) {
       enter();
     }
   });
+
+  const barBtn = (typeof getElementById === "function" ? getElementById("locusFullscreenBtn") : null)
+    || document.getElementById("locusFullscreenBtn");
+  if (barBtn && !barBtn.__gsWired) {
+    barBtn.__gsWired = true;
+    barBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (isActive) exit();
+      else enter();
+    });
+  }
 
   updateToggleLabel();
 

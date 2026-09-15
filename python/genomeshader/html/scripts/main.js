@@ -1364,7 +1364,7 @@ function getTrackControlsEl() {
   return trackControls;
 }
 // Standard tracks that have hover-only controls
-const STANDARD_TRACKS = ["ideogram", "genes", "repeats", "reference", "flow"];
+const STANDARD_TRACKS = ["genes", "repeats", "reference", "flow"];
 function isFlowTrack(trackId) {
   return trackId === "flow" || (typeof trackId === "string" && trackId.startsWith("flow-"));
 }
@@ -2193,15 +2193,14 @@ function renderGenesPanel() {
 // HUD + renderAll
 // -----------------------------
 function renderHUD() {
-  // Match gsSyncLocusBar: floor(start) / ceil(end) so the status readout and
-  // the locus text box never disagree by one base.
+  // The right-hand locus readout is a single coordinate (cursor / last / midpoint).
+  // The view range lives in the locus text box.
   const s = Math.max(1, Math.floor(state.startBp));
   const e = Math.max(s, Math.ceil(state.endBp));
   const locusText = `${state.contig}:${s.toLocaleString()}-${e.toLocaleString()}`;
-  // The current-position indicator now lives in the top nav bar (right side).
   const readout = document.getElementById('locusReadout');
   if (readout) {
-    readout.textContent = locusText;
+    if (typeof gsPaintLocusReadout === "function") gsPaintLocusReadout();
     if (hud) hud.style.display = 'none';   // hide the old floating HUD
     return;
   }
@@ -2722,6 +2721,7 @@ function renderAll() {
   updateDerived();
   updateTracksHeight();
   renderTracks();
+  if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
   renderTrackControls();
   renderGenesPanel();
   updateFlowAndReadsPosition();
@@ -6405,6 +6405,7 @@ function clampSpan(span) {
 }
 
 function zoomByFactor(factor, anchorBp) {
+  if (state.lockView) return;
   const oldSpan = state.endBp - state.startBp;
   const newSpan = clampSpan(oldSpan / factor);
 
@@ -6818,6 +6819,14 @@ function bindInteractions(root, state, main) {
       }
     }
 
+    // Lock freezes zoom (wheel / pinch / dblclick). Drag-to-pan still works so
+    // you can nudge a screenshot into place without changing scale.
+    if (state.lockView) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
     const isPinchZoom = e.ctrlKey === true || e.metaKey === true;
     const isVertical = isVerticalMode();
     const dx = e.deltaX;
@@ -6937,6 +6946,9 @@ function bindInteractions(root, state, main) {
   };
 
   const onPointerMove = (e) => {
+    if (typeof gsUpdateHoverLocusFromEvent === "function") {
+      try { gsUpdateHoverLocusFromEvent(e, "view"); } catch (err) {}
+    }
     // Self-heal a stuck pan: if we think a drag is in progress but the mouse's
     // left button isn't actually held (buttons bit 1 clear), the pointerup was
     // lost (e.g. a right-click's context menu ate it). Reset so the view stops
@@ -6966,6 +6978,7 @@ function bindInteractions(root, state, main) {
     state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (state.pointers.size === 2) {
+      if (state.lockView) return;
       const pts = Array.from(state.pointers.values());
       const dx = pts[0].x - pts[1].x;
       const dy = pts[0].y - pts[1].y;
@@ -7030,11 +7043,8 @@ function bindInteractions(root, state, main) {
   };
 
   function endPointer(e) {
-    // Click on the Chromosome overview to STAGE a jump there (opt-in setting).
-    // Only when this pointer sequence was a click, not a pan.
-    if (typeof gsMaybeChromClickStage === "function") {
-      try { gsMaybeChromClickStage(e); } catch (err) {}
-    }
+    // Click on the Chromosome overview to STAGE a jump there (opt-in setting)
+    // is handled on #locusIdeogram itself (gsInitLocusBar).
     if (state.pendingFlowDrag && state.pendingFlowDrag.pointerId === e.pointerId) {
       state.pendingFlowDrag = null;   // was a click, not a drag
     }
@@ -7056,10 +7066,17 @@ function bindInteractions(root, state, main) {
     zoomByFactor(1.6, anchorBp);
   };
 
+  const onPointerLeave = (e) => {
+    const ideo = document.getElementById("locusIdeogram");
+    if (ideo && e.relatedTarget && (ideo === e.relatedTarget || ideo.contains(e.relatedTarget))) return;
+    if (typeof gsClearHoverLocus === "function") gsClearHoverLocus();
+  };
+
   // Attach event listeners
   main.addEventListener("wheel", onWheel, { passive: false });
   main.addEventListener("pointerdown", onPointerDown);
   main.addEventListener("pointermove", onPointerMove);
+  main.addEventListener("pointerleave", onPointerLeave);
   main.addEventListener("pointerup", onPointerUp);
   main.addEventListener("pointercancel", onPointerCancel);
   main.addEventListener("dblclick", onDblClick);
@@ -7070,6 +7087,7 @@ function bindInteractions(root, state, main) {
       main.removeEventListener("wheel", onWheel, { passive: false });
       main.removeEventListener("pointerdown", onPointerDown);
       main.removeEventListener("pointermove", onPointerMove);
+      main.removeEventListener("pointerleave", onPointerLeave);
       main.removeEventListener("pointerup", onPointerUp);
       main.removeEventListener("pointercancel", onPointerCancel);
       main.removeEventListener("dblclick", onDblClick);
@@ -7398,6 +7416,11 @@ new ResizeObserver(debounce(() => {
   }
   if (typeof scheduleRender === "function") scheduleRender(); else renderAll();
 }, 100)).observe(tracksSvg);
+if (typeof locusIdeogramSvg !== "undefined" && locusIdeogramSvg) {
+  new ResizeObserver(debounce(() => {
+    if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
+  }, 50)).observe(locusIdeogramSvg);
+}
 window.addEventListener("resize", () => {
   // Handle WebGPU canvas resize
   if (webgpuCore && webgpuSupported) {
