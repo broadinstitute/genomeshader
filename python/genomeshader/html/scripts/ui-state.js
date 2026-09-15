@@ -40,6 +40,9 @@ const state = {
   dragging: false,
   lastX: 0,
   lastY: 0,
+  // Locus-bar padlock: freeze zoom (wheel / pinch / dblclick). Drag-to-pan
+  // still works for last-pixel screenshot framing. Go / contig jumps still work.
+  lockView: false,
 
   // touch pinch
   pointers: new Map(),     // pointerId -> {x,y}
@@ -49,7 +52,6 @@ const state = {
 
   // track management (flow tracks are injected from config.variant_tracks when present)
   tracks: [
-    { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
     { id: "repeats", label: "RepeatMasker", collapsed: false, height: 40, minHeight: 30 },
     { id: "reference", label: "Reference", collapsed: false, height: 96, minHeight: 72 },
@@ -90,14 +92,22 @@ const state = {
     strategy: 'best_evidence',
     numSamples: 1,
     combineMode: 'AND', // 'AND' or 'OR'
+    evidenceFilter: null, // attach_reads label or null (All) — Sample Search only
     candidateSamples: [], // Will be populated when selection changes
-    allSampleIds: [] // All available sample IDs (populated from data)
+    allSampleIds: [], // All available sample IDs (populated from data)
+    resolvedSamples: [], // Strategy-resolved IDs shown as "on" in Preview / Load
   },
   
   // Smart tracks state
   smartTracks: [], // Array of Smart track instances
   smartTrackRenderers: new Map(), // Map<trackId, { webgpuCore, instancedRenderer, canvas, webgpuCanvas, container }>
   
+  // Groups tab: metadata facets only. Each entry: { key, level }.
+  // level null = All (unrestricted on that facet). AND across non-null levels.
+  activeFacets: [],
+  // Metadata column used for flow/ribbon/track color; null → flat palette.
+  colorFacetKey: null,
+
   // allele context menu state: { x, y, visible } or null
   alleleContextMenu: null,
 
@@ -138,6 +148,9 @@ setTimeout(() => {
   if (typeof updateAggregateRareAllelesControls === "function") {
     updateAggregateRareAllelesControls();
   }
+}, 0);
+setTimeout(() => {
+  if (typeof initSampleGroupingUI === "function") initSampleGroupingUI();
 }, 0);
 
 // Chromosome lengths for bounds checking
@@ -293,6 +306,7 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && w
 const main = byId(root, "main");
 const tracksSvg = byId(root, "tracksSvg");
 const tracksContainer = byId(root, "tracksContainer");
+const locusIdeogramSvg = byId(root, "locusIdeogram");
 const flow = byId(root, "flow");
 const flowCanvas = byId(root, "flowCanvas");
 const flowOverlay = byId(root, "flowOverlay");
@@ -314,6 +328,9 @@ let repeatHitTestData = []; // For tooltip hit testing
 // This avoids recalculating transitions on every pan/zoom
 const ribbonTransitionCache = new Map();
 const MAX_CACHE_SIZE = 1000; // Limit cache size to prevent unbounded growth
+if (typeof window !== "undefined") {
+  window.ribbonTransitionCache = ribbonTransitionCache;
+}
 let cachedVisibleVariantIds = null; // Track which variants were used for cache
 let cachedViewportRange = null; // Track the viewport range used for cache (with padding)
 

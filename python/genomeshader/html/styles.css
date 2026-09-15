@@ -1,6 +1,6 @@
 :root {
   --sidebar-w: 360px;
-  --tracks-h: 280px;   /* ideogram + genes + repeats + ruler */
+  --tracks-h: 220px;   /* genes + repeats + reference (ideogram lives in the locus bar) */
   --flow-h: 500px;     /* sankey placeholder */
   --reads-h: 220px;    /* IGV-style reads area placeholder */
 
@@ -461,7 +461,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   display: flex;
   flex-direction: column;
   padding: 9px 10px;
-  margin: 7px 0;
+  margin: 4px 0;
   border-radius: 10px;
   background: var(--panel2);
   border: 1px solid transparent;
@@ -686,7 +686,67 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   border: 1px solid transparent;
 }
 .group:hover { border-color: var(--border2); }
+.group.group-active {
+  border-color: var(--accent, #2b6fff);
+  background: color-mix(in srgb, var(--accent, #2b6fff) 12%, var(--panel2));
+}
 .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,0.16); color: var(--muted); }
+
+.smart-track-group-block {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin: 4px 0;
+}
+.smart-track-group-block.dragging-group {
+  opacity: 0.55;
+}
+.smart-track-group-rail {
+  flex: 0 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  cursor: grab;
+  border-radius: 4px;
+  user-select: none;
+}
+.smart-track-group-rail:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.smart-track-group-rail:active {
+  cursor: grabbing;
+}
+.smart-track-group-rail-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: currentColor;
+  line-height: 1;
+  max-height: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+.smart-track-group-items {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.smart-track-group-items .smart-track-item {
+  margin: 0;
+}
+
+.smart-track-item.group-filtered-out {
+  opacity: 0.42;
+}
 
 /* Gear button bottom-left (requested) */
 .gearBtn {
@@ -804,10 +864,268 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   filter: none;
 }
 
-/* Combine toggle (AND/OR) */
-.combineToggle.active {
-  background: var(--blue) !important;
+/* Combine toggle (AND/OR) — pill in Selection header */
+.combineTogglePill {
+  display: flex;
+  gap: 0;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  padding: 2px;
+  flex: 0 0 auto;
+}
+.combineTogglePill .combineToggle {
+  all: unset;
+  box-sizing: border-box;
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--muted);
+  line-height: 1.3;
+}
+.combineTogglePill .combineToggle.active {
+  background: var(--blue, #2b6fff) !important;
   color: white !important;
+}
+.combineTogglePill .combineToggle:disabled,
+.combineTogglePill.inert .combineToggle {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ---- Sample Search pane redesign ---- */
+.samplePaneCard {
+  padding: 9px 10px;
+  margin: 7px 0;
+  border-radius: 10px;
+  background: var(--panel2);
+  font-size: 11px;
+  color: var(--muted);
+  box-sizing: border-box;
+}
+.samplePaneGroupHeader {
+  margin-top: 0;
+  margin-bottom: 6px;
+}
+.samplePaneGroupHeader h3 {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.samplePaneDivider {
+  height: 0;
+  margin: 16px 0 14px;
+  border: none;
+  border-top: 1px solid var(--border2);
+  opacity: 0.9;
+}
+.sampleSearchCard {
+  margin-top: 0;
+  margin-bottom: 4px;
+}
+.sampleStrategyStack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.sampleEmptyState {
+  text-align: center;
+  padding: 18px 14px;
+}
+.sampleEmptyTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.sampleEmptyHint {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.sampleSelectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.sampleAllelePills {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.sampleAllelePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 6px 4px 10px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.3;
+  box-sizing: border-box;
+}
+.sampleAllelePillLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.sampleAllelePillRemove {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.sampleAllelePillRemove:hover {
+  color: var(--text);
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.sampleStepCard {
+  color: var(--text);
+}
+.sampleStepHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.sampleStepBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--blue, #2b6fff);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  flex: 0 0 auto;
+  line-height: 1;
+}
+.sampleStepTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sampleStrategySelect {
+  min-width: 110px;
+  max-width: 160px;
+  flex: 0 1 auto;
+  width: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.sampleStrategySelectFull {
+  display: block;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+.sampleCountRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sampleCountSlider {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.sampleCountSlider:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.sampleCountValue {
+  flex: 0 0 1.75em;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.samplePreviewChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+  color: var(--text);
+}
+.samplePreviewChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.3;
+  border: 1px solid var(--border2);
+  color: var(--muted);
+  background: transparent;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.samplePreviewChip.on {
+  color: var(--text);
+  border-color: var(--accent, #2b6fff);
+  background: color-mix(in srgb, var(--accent, #2b6fff) 12%, transparent);
+}
+.samplePreviewChip.dim {
+  color: var(--muted);
+  border-style: dashed;
+  opacity: 0.7;
+}
+.samplePreviewChip.more {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.sampleLoadBtn {
+  width: 100%;
+  margin: 7px 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  box-sizing: border-box;
 }
 
 /* Sample search results */
@@ -817,11 +1135,16 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   z-index: 5000;
 }
 /* Solid field so the sample IDs don't bleed into the panel behind it. */
-#sampleSearchInput {
-  background: var(--panel) !important;
-  color: var(--text) !important;
+#sampleSearchInput,
+.sampleSearchInput {
+  width: 100%;
+  padding: 6px 8px;
   border: 1px solid var(--border2) !important;
   border-radius: 6px;
+  background: var(--panel) !important;
+  color: var(--text) !important;
+  font-size: 12px;
+  box-sizing: border-box;
 }
 #sampleSearchInput::placeholder { color: var(--muted); }
 #sampleSearchResults {
@@ -927,7 +1250,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   z-index: 200 !important;
 }
 
-/* IGV-style always-visible locus bar (contig + position + Go), pinned at top. */
+/* IGV-style always-visible locus bar (contig + position + Go + ideogram), pinned at top. */
 #locusBar {
   position: absolute;
   left: 0;
@@ -938,7 +1261,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 10px;
+  padding: 0 0 0 10px;
   box-sizing: border-box;
   background: var(--panel2);
   border-bottom: 1px solid var(--border);
@@ -959,9 +1282,18 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   flex: 0 0 auto;
 }
 #locusBar .locus-pos {
+  flex: 0 1 180px;
+  min-width: 90px;
+  max-width: 180px;
+}
+#locusBar .locus-ideogram {
   flex: 1 1 auto;
-  min-width: 140px;
-  max-width: 360px;
+  min-width: 80px;
+  height: 20px;
+  display: block;
+  overflow: visible;
+  cursor: default;
+  pointer-events: auto;
 }
 #locusBar .locus-go {
   height: 24px;
@@ -984,18 +1316,67 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   cursor: default;
   filter: none;
 }
-/* Live current-view readout, pinned to the right of the nav bar. */
+/* Cursor-position readout, pinned to the right of the nav bar. Fixed width so
+   digit/comma changes don't stretch the ideogram. */
 #locusBar .locus-readout {
-  margin-left: auto;
-  flex: 0 0 auto;
+  flex: 0 0 18ch;
+  width: 18ch;
+  min-width: 18ch;
+  max-width: 18ch;
+  box-sizing: border-box;
+  text-align: left;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 42%;
 }
+#locusBar .locus-lock,
+#locusBar .locus-fullscreen {
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Compact slot, flush to the fullscreen control (cancels the bar's 8px gap). */
+#locusBar .locus-lock {
+  flex: 0 0 32px;
+  width: 32px;
+  margin-right: -8px;
+}
+#locusBar .locus-fullscreen {
+  flex: 0 0 48px;
+  width: 48px;
+}
+#locusBar .locus-lock svg,
+#locusBar .locus-fullscreen svg {
+  width: 20px;
+  height: 20px;
+}
+#locusBar .locus-lock:hover,
+#locusBar .locus-fullscreen:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+#locusBar .locus-lock:active,
+#locusBar .locus-fullscreen:active { filter: brightness(0.95); }
+#locusBar .locus-lock.is-active,
+#locusBar .locus-fullscreen.is-active { color: var(--text); }
+#locusBar .locus-lock .icon-locked { display: none; }
+#locusBar .locus-lock.is-active .icon-unlocked { display: none; }
+#locusBar .locus-lock.is-active .icon-locked { display: block; }
+#locusBar .locus-fullscreen .icon-exit { display: none; }
+#locusBar .locus-fullscreen.is-active .icon-enter { display: none; }
+#locusBar .locus-fullscreen.is-active .icon-exit { display: block; }
 
 .main {
   position: absolute;
@@ -1245,9 +1626,9 @@ svg.overlay {
 /* Collapsed: show only the icon rail, hide the tab content. */
 .app.sidebar-collapsed .sidebar-left-tab-content { display: none; }
 
-/* The settings menu renders inline inside the Settings tab (not a floating
-   popup). Override the .menu popup styling for this instance. */
-#ctxMenu.settings-panel {
+/* Settings-style menus render inline inside left tabs (not floating popups).
+   Override the .menu popup styling for these instances. */
+.menu.settings-panel {
   position: static !important;
   display: block !important;
   visibility: visible !important;
@@ -1482,6 +1863,12 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   display: flex !important;
   background: var(--panel) !important;
 }
+/* Smart-track label pill: same top offset open or closed so expanding doesn't
+   jump the controls up. 3px = (closedHeight 30 − pill 24) / 2, matching the
+   centered summary strip midline. */
+.main:not(.vertical) .track-control-container[data-track-id^="smart-track-"] .track-controls {
+  top: 3px;
+}
 /* The faint 8px indicator line is redundant now the labeled bar shows. */
 .track-collapsed-indicator {
   display: none !important;
@@ -1510,9 +1897,12 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   overflow: hidden;
   transition: max-width 0.2s ease;
   white-space: nowrap;
+  /* Above the track canvas so the expanded pill keeps receiving hover/clicks */
+  z-index: 100;
 }
 
-.track-controls[data-track-id^="smart-track-"]:hover {
+.track-controls[data-track-id^="smart-track-"]:hover,
+.track-controls[data-track-id^="smart-track-"]:focus-within {
   max-width: 300px; /* Enough for all controls */
 }
 
@@ -1995,6 +2385,14 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 /* Smart Track containers: allow pointer events for dragging */
 .track-control-container[data-track-id^="smart-track-"] {
   pointer-events: auto; /* Need pointer-events for drag detection */
+}
+/* Collapsed smart-track pills must keep pointer-events on the whole control
+   chrome. The generic collapsed rule above sets pointer-events:none so clicks
+   fall through on standard tracks — but that leaves only the label text and
+   individual buttons hittable, so moving across the flex gap onto revealed
+   buttons drops :hover and the max-width expand collapses. */
+.track-control-container.track-collapsed[data-track-id^="smart-track-"] .track-controls {
+  pointer-events: auto !important;
 }
 /* Ensure standard track controls overlay on top of track content */
 .track-control-container.standard-track .track-controls {

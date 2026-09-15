@@ -60,8 +60,8 @@ pub struct Session {
     loci: HashSet<(String, u64, u64)>,
     staged_tree: HashMap<String, IntervalMap<u64, PathBuf>>,
     cache_base_uri: Option<String>,
-    /// Each element is a group of variant files (one track). attach_variants adds a new group.
-    /// Each file is paired with an optional explicit index path (None = adjacent index).
+    /// Each element is a group of variant files (one track). attach_variants
+    /// adds a new group; extend_variants appends files to an existing group.
     variant_file_groups: Vec<Vec<(String, Option<String>)>>,
     /// Parallel to variant_file_groups: optional per-track sample subset (None = all).
     variant_group_samples: Vec<Option<Vec<String>>>,
@@ -96,6 +96,58 @@ impl ContigRouting {
 }
 
 impl Session {
+    fn contig_routing_for_group(group: &[(String, Option<String>)]) -> ContigRouting {
+        let dbg = gs_debug();
+        let mut routing = ContigRouting::default();
+        for (i, (file, idx)) in group.iter().enumerate() {
+            match variants::vcf_index_contigs(file, idx.as_deref()) {
+                Ok(contigs) => {
+                    if dbg {
+                        eprintln!("[gs {}] attach_variants: '{}' index -> {} contig(s)", crate::env::gs_ts(),
+                                  file, contigs.len());
+                    }
+                    for c in contigs {
+                        routing.by_contig.entry(c).or_default().push(i);
+                    }
+                }
+                Err(e) => {
+                    if dbg {
+                        eprintln!("[gs {}] attach_variants: '{}' index read FAILED ({}) \
+                                   -> always-query (idx hint: {:?})", crate::env::gs_ts(),
+                                  file, e, idx);
+                    }
+                    routing.always.push(i);
+                }
+            }
+        }
+        if dbg {
+            eprintln!("[gs {}] attach_variants: routing {} contig-mapped, {} always-query", crate::env::gs_ts(),
+                      routing.by_contig.len(), routing.always.len());
+        }
+        routing
+    }
+
+    fn validate_variant_files(variant_files: &[String], index_files: &[Option<String>]) -> PyResult<()> {
+        if index_files.len() != variant_files.len() {
+            return Err(
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("index_files ({}) must be parallel to variant_files ({})",
+                            index_files.len(), variant_files.len())
+                )
+            );
+        }
+        for variant_file in variant_files {
+            if !variant_file.ends_with(".bcf") && !variant_file.ends_with(".vcf") && !variant_file.ends_with(".vcf.gz") {
+                return Err(
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        format!("File '{}' is not a .bcf, .vcf, or .vcf.gz file.", variant_file)
+                    )
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn filter_reads_df(
         &self,
         df: DataFrame,
@@ -699,28 +751,13 @@ impl Session {
         Ok(PyDataFrame(df))
     }
 
-    /// Append a new variant track (group of files). Each call adds a separate track.
-    /// `index_files` is parallel to `variant_files`; each entry is an explicit
-    /// index path, or None to use the adjacent (default-named) index.
+    /// Append a new variant track (group of files). `index_files` is parallel
+    /// to `variant_files`; each entry is an explicit index path, or None to use
+    /// the adjacent (default-named) index. Same-label Python attach_variants
+    /// calls `extend_variants` instead of this, so one label stays one track.
     #[pyo3(signature = (variant_files, index_files, samples=None))]
     fn attach_variants(&mut self, variant_files: Vec<String>, index_files: Vec<Option<String>>, samples: Option<Vec<String>>) -> PyResult<()> {
-        if index_files.len() != variant_files.len() {
-            return Err(
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("index_files ({}) must be parallel to variant_files ({})",
-                            index_files.len(), variant_files.len())
-                )
-            );
-        }
-        for variant_file in &variant_files {
-            if !variant_file.ends_with(".bcf") && !variant_file.ends_with(".vcf") && !variant_file.ends_with(".vcf.gz") {
-                return Err(
-                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                        format!("File '{}' is not a .bcf, .vcf, or .vcf.gz file.", variant_file)
-                    )
-                );
-            }
-        }
+        Self::validate_variant_files(&variant_files, &index_files)?;
         let dbg = gs_debug();
         if dbg {
             eprintln!("[gs {}] attach_variants: {} file(s), samples_subset={}", crate::env::gs_ts(),
@@ -731,44 +768,56 @@ impl Session {
             variant_files.into_iter().zip(index_files.into_iter()).collect()
         );
         self.variant_group_samples.push(samples);
+        let routing = Self::contig_routing_for_group(self.variant_file_groups.last().unwrap());
+        self.variant_group_contigs.push(routing);
+        self.variant_df_cache.clear();
+        Ok(())
+    }
 
-        // Build the contig -> file routing for this group from each file's tabix
-        // index (one open per file, once, at attach — vs opening every file on
-        // every window query). Files without a readable tabix index are always
-        // queried so nothing is dropped.
-        let group = self.variant_file_groups.last().unwrap();
-        let mut routing = ContigRouting::default();
-        for (i, (file, idx)) in group.iter().enumerate() {
-            match variants::vcf_index_contigs(file, idx.as_deref()) {
-                Ok(contigs) => {
-                    if dbg {
-                        eprintln!("[gs {}] attach_variants: '{}' index -> {} contig(s)", crate::env::gs_ts(),
-                                  file, contigs.len());
-                    }
-                    for c in contigs {
-                        routing.by_contig.entry(c).or_default().push(i);
-                    }
-                }
-                // The index couldn't be read (missing/unreadable .tbi/.csi, auth,
-                // wrong path). We fall back to always-querying this file so nothing
-                // is dropped — but that error was previously SWALLOWED, hiding the
-                // root cause of a later fetch failure. Surface it in debug mode.
-                Err(e) => {
-                    if dbg {
-                        eprintln!("[gs {}] attach_variants: '{}' index read FAILED ({}) \
-                                   -> always-query (idx hint: {:?})", crate::env::gs_ts(),
-                                  file, e, idx);
-                    }
-                    routing.always.push(i);
-                }
+    /// Append files to an existing variant track (same Python attach_variants label).
+    #[pyo3(signature = (group_index, variant_files, index_files, samples=None))]
+    fn extend_variants(
+        &mut self,
+        group_index: usize,
+        variant_files: Vec<String>,
+        index_files: Vec<Option<String>>,
+        samples: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        if group_index >= self.variant_file_groups.len() {
+            return Err(
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("extend_variants: group_index {} out of range ({})",
+                            group_index, self.variant_file_groups.len())
+                )
+            );
+        }
+        Self::validate_variant_files(&variant_files, &index_files)?;
+        let mut existing: HashSet<String> = self.variant_file_groups[group_index]
+            .iter()
+            .map(|(f, _)| f.clone())
+            .collect();
+        for (file, idx) in variant_files.into_iter().zip(index_files.into_iter()) {
+            if existing.insert(file.clone()) {
+                self.variant_file_groups[group_index].push((file, idx));
             }
         }
-        if dbg {
-            eprintln!("[gs {}] attach_variants: routing {} contig-mapped, {} always-query", crate::env::gs_ts(),
-                      routing.by_contig.len(), routing.always.len());
+        match (&self.variant_group_samples[group_index], samples) {
+            (None, _) => {}
+            (Some(_), None) => {
+                self.variant_group_samples[group_index] = None;
+            }
+            (Some(old), Some(new)) => {
+                let mut union = old.clone();
+                for s in new {
+                    if !union.iter().any(|x| x == &s) {
+                        union.push(s);
+                    }
+                }
+                self.variant_group_samples[group_index] = Some(union);
+            }
         }
-        self.variant_group_contigs.push(routing);
-
+        let routing = Self::contig_routing_for_group(&self.variant_file_groups[group_index]);
+        self.variant_group_contigs[group_index] = routing;
         self.variant_df_cache.clear();
         Ok(())
     }
@@ -873,22 +922,42 @@ impl Session {
     /// Aggregate variant extractor for large cohorts (≥100k–1M samples): returns
     /// per-(variant,alt) rows with per-allele SAMPLE counts (n_ref/n_alt/
     /// n_missing) instead of the O(variants×samples) long format that OOMs at 1M.
-    /// No parquet caching (aggregates are cheap to recompute); no sample subset
-    /// (cohort-wide counts). Consumed by the Python aggregate payload builder.
-    fn get_locus_variant_aggregates(&mut self, locus: String) -> PyResult<PyDataFrame> {
+    /// No parquet caching (aggregates are cheap to recompute). Optional
+    /// `samples` restricts tallies (and group_counts) to that subset — used by
+    /// the Groups-tab multi-facet AND filter.
+    ///
+    /// `grouping` is optional: list of (column_name, labels_per_header_sample).
+    /// When set, each row gains a `group_counts` JSON column.
+    #[pyo3(signature = (locus, grouping=None, samples=None))]
+    fn get_locus_variant_aggregates(
+        &mut self,
+        locus: String,
+        grouping: Option<Vec<(String, Vec<String>)>>,
+        samples: Option<Vec<String>>,
+    ) -> PyResult<PyDataFrame> {
         let l_fmt = self.parse_locus(locus.clone())?;
         if self.variant_file_groups.is_empty() {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 "No variant files attached. Use attach_variants() first.".to_string(),
             ));
         }
+        let grouping_slice: Option<Vec<(String, Vec<String>)>> = grouping;
+        let grouping_ref: Option<&[(String, Vec<String>)]> =
+            grouping_slice.as_ref().map(|v| v.as_slice());
+        let samples_ref: Option<&[String]> = samples.as_ref().map(|v| v.as_slice());
         let mut combined_df: Option<DataFrame> = None;
         for (group_index, file_list) in self.variant_file_groups.iter().enumerate() {
             let mut group_df: Option<DataFrame> = None;
             for fi in self.routed_indices(group_index, &l_fmt.0) {
                 let (variant_file, index_file) = &file_list[fi];
                 match variants::extract_variant_aggregates(
-                    variant_file, index_file.as_deref(), &l_fmt.0, &l_fmt.1, &l_fmt.2,
+                    variant_file,
+                    index_file.as_deref(),
+                    &l_fmt.0,
+                    &l_fmt.1,
+                    &l_fmt.2,
+                    grouping_ref,
+                    samples_ref,
                 ) {
                     Ok(df) => {
                         group_df = Some(match group_df {

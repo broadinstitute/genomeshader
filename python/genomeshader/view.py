@@ -13,7 +13,7 @@ import time
 import sys
 import logging
 from datetime import datetime, timezone
-from typing import Union, List, Optional, Tuple, Sequence, Callable, Any
+from typing import Union, List, Optional, Tuple, Sequence, Callable, Any, Dict
 from pathlib import Path
 import importlib.resources
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -26,6 +26,7 @@ from IPython.display import display, HTML
 import json
 
 from . import data_tracks as _data_tracks
+from . import sample_metadata as _sample_metadata
 
 # Try to import Comm for Jupyter comms
 try:
@@ -127,7 +128,8 @@ def _build_variants_data_from_aggregates(rows):
     long-format builder minus sampleGenotypes/sampleAlleles, with
     perSampleOmitted=True. ALT order is resorted by descending sample support
     (matching the long-format builder), and allele keys are assigned a1..aN in
-    that order.
+    that order. When rows carry a ``group_counts`` JSON column, it is pivoted
+    into ``alleleSampleCountsByGroup``.
     """
     # Group rows by variant (position, ref_allele), preserving alt order + counts.
     groups = {}
@@ -143,10 +145,12 @@ def _build_variants_data_from_aggregates(rows):
                 "variant_id": r.get("variant_id"),
                 "filter_status": r.get("filter_status", "PASS"),
                 "info_fields": r.get("info_fields", "."),
+                "rows": [],
             }
             order.append(key)
         g = groups[key]
         g["alts"].append((r.get("alt_allele"), int(r.get("n_alt", 0) or 0), len(g["alts"])))
+        g["rows"].append(r)
 
     variants_data = []
     for key in order:
@@ -168,6 +172,15 @@ def _build_variants_data_from_aggregates(rows):
         vcf_id = g["vcf_id"]
         # Stable across overlapping overscan windows — see _build_variants_data_for_track.
         variant_display_id = str(vcf_id) if vcf_id else str(pos)
+        # Reorder the underlying alt rows to match alt_alleles before pivoting.
+        alt_order = {a: i for i, a in enumerate(alt_alleles)}
+        rows_sorted = sorted(
+            g["rows"],
+            key=lambda r: alt_order.get(r.get("alt_allele"), 10**9),
+        )
+        allele_sample_counts_by_group = _sample_metadata.pivot_aggregate_group_counts(
+            rows_sorted, allele_sample_counts, alt_alleles
+        )
         variants_data.append({
             "id": variant_display_id,
             "vcfId": str(vcf_id) if vcf_id else "",
@@ -179,6 +192,7 @@ def _build_variants_data_from_aggregates(rows):
             "alleles": ["ref"] + [f"a{i+1}" for i in range(len(alt_alleles))],
             "alleleFrequencies": allele_frequencies,
             "alleleSampleCounts": allele_sample_counts,
+            "alleleSampleCountsByGroup": allele_sample_counts_by_group,
             "perSampleOmitted": True,
             "isInsertion": is_insertion,
             "maxInsertionLength": max_ins,
@@ -438,10 +452,27 @@ class GenomeShader:
         # Format: {"VCF_sample1": ["BAM_sample1"], "VCF_sample2": ["BAM_sample2", "BAM_sample3"]}
         # If empty, assumes 1:1 identity mapping (VCF sample name == BAM sample name)
         self._sample_mapping: dict = {}
+        # Arbitrary sample metadata tables (phenotype / population / cohort),
+        # keyed by attach_metadata label. Drives Settings → Grouping.
+        # Each value: {"df": pl.DataFrame, "sample_col": str}
+        self._sample_metadata_tables: Dict[str, dict] = {}
+        # Haploid/diploid assemblies attached via attach_assemblies(label, ...):
+        # sample name -> {paths, ploidy, label}. Fetch-time haplotype/sample
+        # overrides are keyed on BAM URL in _assembly_haplotypes /
+        # _assembly_samples so a diploid pair renders as one phased sample
+        # (HP=1/2) and a haploid file as one unphased sample (HP=0). The label
+        # is the Evidence facet (same role as attach_reads "pacbio").
+        self._assemblies: dict = {}
+        self._assembly_haplotypes: dict = {}  # bam url/path -> 0, 1, or 2
+        self._assembly_samples: dict = {}     # bam url/path -> sample name
         # Union of VCF sample names renderable across attached variant tracks
         # (after any per-track `samples=` subset). Reads for samples outside this
         # set won't render, so they're reported by _reconcile_read_samples.
         self._vcf_sample_universe: set = set()
+        # Header sample names in VCF order (first successfully-read file wins).
+        # Used to align metadata group labels with genotype sample indices on the
+        # aggregate (large-cohort) path.
+        self._vcf_sample_order: List[str] = []
 
         # Background VCF-sample -> [read URL] index, built once both variants and
         # reads are attached (see _maybe_start_read_index). Matches by filename
@@ -449,10 +480,14 @@ class GenomeShader:
         # reads @RG SM headers for the leftovers (authoritative). Kept separate
         # from the user's explicit _sample_mapping, which always wins.
         self._read_index: dict = {}
-        self._pending_read_dirs: List[str] = []   # dirs to list in the background
+        self._pending_read_dirs: List[Tuple[str, str]] = []  # (dir, attach_reads label)
         self._read_index_thread = None
         self._read_index_done = threading.Event()
         self._read_index_lock = threading.Lock()
+        # BAM/CRAM URL -> attach_reads label (pacbio / illumina / …). Orthogonal
+        # to sample metadata: Groups tab can filter Smart Tracks by read set.
+        self._read_set_by_url: Dict[str, str] = {}
+        self._read_set_labels: List[str] = []  # attach order, unique
 
         # One entry per variant track: (track_name, list of paths). Order matches session's variant_file_groups.
         self._variant_datasets: List[Tuple[str, List[str]]] = []
@@ -1340,26 +1375,29 @@ class GenomeShader:
 
     def attach_reads(
         self,
-        gcs_paths: Union[str, List[str]],
-        cohort: str = "all",
+        label: str,
+        reads: Union[str, List[str]],
     ):
-        """
-        This function attaches reads from the provided GCS paths to the
-        current session. The GCS paths can be a single string or a list.
-        Each GCS path can be a direct path to a .bam or .cram file, or a
-        directory containing .bam and/or .cram files. The genome build
-        parameter specifies the reference genome build to use.
+        """Attach BAM/CRAM reads under a cohort label.
+
+        Calling again with the same ``label`` appends more files to that
+        dataset (the Evidence facet). Duplicate URLs for that label are ignored.
 
         Args:
-            gcs_paths (Union[str, List[str]]): The GCS paths to attach reads.
-            cohort (str, optional): An optional cohort label for the dataset.
-                Defaults to 'all'.
+            label: Cohort / dataset name (e.g. ``"pacbio"``, ``"illumina"``).
+            reads: One path or a list of paths to ``.bam`` / ``.cram`` files, or
+                a directory of such files (local or ``gs://``).
         """
         import traceback
         _cap = lambda seq, n=25: list(seq)[:n]
 
+        cohort = str(label)
+        gcs_paths = reads
         if isinstance(gcs_paths, str):
             gcs_paths = [gcs_paths]  # Convert single string to list
+
+        if cohort and cohort not in self._read_set_labels:
+            self._read_set_labels.append(cohort)
 
         self._debug_log("attach_reads_start", cohort=cohort, n_paths=len(gcs_paths),
                         paths=_cap([str(p) for p in gcs_paths]))
@@ -1380,6 +1418,7 @@ class GenomeShader:
                     print(f"GenomeShader ERROR: attach_reads '{gcs_path}' failed: {e}",
                           file=sys.stderr, flush=True)
                     raise
+                self._read_set_by_url[str(gcs_path)] = cohort
                 n_direct += 1
                 self._debug_log("session_attach_reads_done", path=gcs_path, cohort=cohort,
                                 ms=round((time.perf_counter() - _t) * 1000, 1))
@@ -1396,7 +1435,329 @@ class GenomeShader:
                         n_pending_dirs=len(self._pending_read_dirs),
                         vcf_universe_size=len(self._vcf_sample_universe))
         self._reconcile_read_samples()
+        self._push_read_sets_changed()
         self._debug_log("attach_reads_done", cohort=cohort)
+
+    # Filename suffixes that mark haplotype 1/2 of a diploid assembly. Longer
+    # tokens first so ".maternal" wins over ".mat". Stripped when inferring
+    # the shared sample name from hap1/hap2 filenames.
+    _ASSEMBLY_HAP_SUFFIXES = (
+        ".maternal", ".paternal",
+        "_maternal", "_paternal",
+        "-maternal", "-paternal",
+        ".hap1", ".hap2", ".hap0",
+        "_hap1", "_hap2", "_hap0",
+        "-hap1", "-hap2", "-hap0",
+        ".hp1", ".hp2",
+        "_hp1", "_hp2",
+        "-hp1", "-hp2",
+        ".h1", ".h2",
+        "_h1", "_h2",
+        "-h1", "-h2",
+        ".mat", ".pat",
+        "_mat", "_pat",
+        "-mat", "-pat",
+    )
+
+    def attach_assemblies(
+        self,
+        label: str,
+        assemblies: Union[str, Sequence[str], Sequence[Sequence[str]]],
+        sample: Optional[str] = None,
+    ):
+        """Attach haploid or diploid assembly BAMs under a dataset label.
+
+        Assemblies are FASTA contigs already aligned to the session reference.
+        They reuse the read-track renderer as extra evidence for a sample
+        (alongside Illumina / PacBio / ONT), not as a separate sample ID.
+
+        * **haploid** — a single path. Every alignment is haplotype 0 (grey,
+          no HP split), like an unphased BAM.
+        * **diploid** — a ``(hap1, hap2)`` pair. The first file is haplotype 1
+          and the second is haplotype 2, like a phased BAM, regardless of HP
+          tags in the files.
+
+        The first argument is the dataset label (same role as ``attach_reads``
+        ``"pacbio"`` / ``"illumina"``). Calling again with a label that already
+        exists appends more samples to that dataset.
+
+        Args:
+            label: Dataset name (e.g. ``"hifiasm"``, ``"hifiasm_diploid"``).
+            assemblies: One BAM/CRAM path (haploid), a two-path pair (diploid),
+                or a list of those for several samples at once. Local paths,
+                ``gs://``, and ``file://`` URLs are accepted.
+            sample: Display / load name. Default: filename stem with hap1/hap2
+                (and similar) suffixes stripped. Required when a diploid pair's
+                stems don't agree after stripping, or when attaching to a VCF
+                sample whose name does not match the files. Only valid when
+                attaching a single haploid file or a single diploid pair.
+
+        Examples:
+            >>> s.attach_assemblies("hifiasm_haploid", "gs://b/SYN001.bam")
+            >>> s.attach_assemblies(
+            ...     "hifiasm_diploid",
+            ...     ("gs://b/SYN001.hap1.bam", "gs://b/SYN001.hap2.bam"),
+            ... )
+            >>> for sid in samples:
+            ...     s.attach_assemblies("hifiasm_diploid", (
+            ...         f"{bucket}/{sid}.hap1.bam", f"{bucket}/{sid}.hap2.bam",
+            ...     ))
+        """
+        label = str(label).strip()
+        if not label:
+            raise ValueError("attach_assemblies label must be a non-empty name.")
+        groups = self._parse_assembly_groups(assemblies)
+        if sample is not None and len(groups) > 1:
+            raise ValueError(
+                "sample= can only be used when attaching one haploid file "
+                "or one diploid pair."
+            )
+        for group in groups:
+            self._attach_assembly_group(label, group, sample)
+
+    @staticmethod
+    def _parse_assembly_groups(
+        assemblies: Union[str, Sequence[str], Sequence[Sequence[str]]],
+    ) -> List[List[str]]:
+        """Normalize to groups of 1 (haploid) or 2 (diploid) paths."""
+        if assemblies is None:
+            raise ValueError(
+                "attach_assemblies requires a haploid path or a diploid "
+                "(hap1, hap2) pair."
+            )
+        if isinstance(assemblies, str):
+            return [[assemblies]]
+        if not isinstance(assemblies, (list, tuple)):
+            raise ValueError(
+                "assemblies must be a path, a (hap1, hap2) pair, "
+                "or a list of those."
+            )
+        if len(assemblies) == 0:
+            raise ValueError("assemblies is empty.")
+        nested = any(
+            isinstance(x, (list, tuple)) and not isinstance(x, (str, bytes))
+            for x in assemblies
+        )
+        if nested:
+            groups: List[List[str]] = []
+            for x in assemblies:
+                if isinstance(x, str):
+                    groups.append([x])
+                elif isinstance(x, (list, tuple)):
+                    groups.append([str(p) for p in x])
+                else:
+                    raise ValueError(f"Invalid assembly spec: {x!r}")
+            return groups
+        paths = [str(p) for p in assemblies]
+        if len(paths) in (1, 2):
+            return [paths]
+        raise ValueError(
+            "A flat list of assembly files must be one path (haploid) or two "
+            "(diploid hap1, hap2). For multiple samples, pass a list of pairs "
+            "or call attach_assemblies again with the same label."
+        )
+
+    def _attach_assembly_group(
+        self,
+        label: str,
+        paths: Sequence[str],
+        sample: Optional[str],
+    ) -> None:
+        paths = [str(p) for p in paths]
+        if not 1 <= len(paths) <= 2:
+            raise ValueError(
+                "attach_assemblies expects one BAM (haploid) or two BAMs "
+                f"(diploid); got {len(paths)} path(s)."
+            )
+        for p in paths:
+            low = p.lower()
+            if not (low.endswith(".bam") or low.endswith(".cram")):
+                raise ValueError(
+                    f"Assembly file '{p}' is not a .bam or .cram file."
+                )
+        if len(paths) == 2 and paths[0] == paths[1]:
+            raise ValueError(
+                "Diploid attach_assemblies requires two distinct BAM/CRAM files."
+            )
+
+        paths = [self._canonical_read_path(p) for p in paths]
+        sample_name = self._infer_assembly_sample_name(paths, sample)
+        ploidy = len(paths)
+        haplotypes = [0] if ploidy == 1 else [1, 2]
+
+        # Register before attach_reads so _reconcile_read_samples can skip
+        # assembly SM tags (often "unknown") as unrenderable extras.
+        prev = self._assemblies.get(sample_name)
+        if prev:
+            merged = list(prev.get("paths") or [])
+            for p in paths:
+                if p not in merged:
+                    merged.append(p)
+            prev["paths"] = merged
+            prev["ploidy"] = ploidy
+            prev["label"] = label
+            prev["cohort"] = label
+        else:
+            self._assemblies[sample_name] = {
+                "paths": list(paths),
+                "ploidy": ploidy,
+                "label": label,
+                "cohort": label,
+            }
+        for p, hap in zip(paths, haplotypes):
+            self._register_assembly_bam(p, hap, sample_name)
+
+        self.attach_reads(label, paths)
+        self._bind_assembly_paths(sample_name, paths)
+
+        self._debug_log(
+            "attach_assemblies_done",
+            sample=sample_name,
+            ploidy=ploidy,
+            paths=list(paths),
+            label=label,
+        )
+
+    def _bind_assembly_paths(self, sample_name: str, paths: Sequence[str]) -> None:
+        """Record assembly URLs without hiding that sample's sequencing BAMs.
+
+        ``_sample_mapping`` is exclusive in BAM resolution, so installing a
+        mapping that lists only the assembly files would drop PacBio/Illumina
+        for the same sample. Only create a mapping when this sample has no
+        other attached reads (standalone assembly-only IDs).
+        """
+        path_set = set(paths)
+        if sample_name in self._sample_mapping:
+            cur = list(self._sample_mapping[sample_name])
+            for p in paths:
+                if p not in cur:
+                    cur.append(p)
+            self._sample_mapping[sample_name] = cur
+            return
+        other = False
+        try:
+            with self._read_index_lock:
+                other = any(
+                    u not in path_set
+                    for u in (self._read_index.get(sample_name) or [])
+                )
+        except Exception:
+            pass
+        if not other:
+            try:
+                stem_urls = self._attached_reads_by_stem().get(sample_name) or []
+                other = any(u not in path_set for u in stem_urls)
+            except Exception:
+                pass
+        if not other:
+            self._sample_mapping[sample_name] = list(paths)
+
+    @staticmethod
+    def _canonical_read_path(path: str) -> str:
+        """Absolute local path, otherwise the URL/path unchanged."""
+        p = str(path).strip()
+        if p.startswith(("gs://", "file://", "http://", "https://", "s3://")):
+            return p
+        return os.path.abspath(os.path.expanduser(p))
+
+    @staticmethod
+    def _normalize_read_url(path: str) -> str:
+        """Canonical URL string matching rust-htslib's bam_path column."""
+        p = str(path).strip()
+        if p.startswith(("gs://", "file://", "http://", "https://", "s3://")):
+            return p
+        return Path(os.path.abspath(os.path.expanduser(p))).as_uri()
+
+    @classmethod
+    def _strip_assembly_hap_suffix(cls, stem: str) -> str:
+        low = stem.lower()
+        for suffix in cls._ASSEMBLY_HAP_SUFFIXES:
+            if low.endswith(suffix):
+                return stem[: -len(suffix)]
+        return stem
+
+    @classmethod
+    def _infer_assembly_sample_name(
+        cls, paths: Sequence[str], sample: Optional[str]
+    ) -> str:
+        if sample:
+            name = str(sample).strip()
+            if not name:
+                raise ValueError("sample= must be a non-empty name.")
+            return name
+        stems = [cls._strip_assembly_hap_suffix(cls._read_stem(p)) for p in paths]
+        stems = [s for s in stems if s]
+        if not stems:
+            raise ValueError(
+                "Could not infer a sample name from the assembly filename(s); "
+                "pass sample= explicitly."
+            )
+        unique = list(dict.fromkeys(stems))
+        if len(unique) > 1:
+            raise ValueError(
+                "Could not infer a shared sample name from "
+                f"{list(paths)!r} (stems {unique!r}). Pass sample= explicitly."
+            )
+        return unique[0]
+
+    def _register_assembly_bam(self, path: str, haplotype: int, sample: str):
+        """Index a BAM under every spelling extract_reads might emit."""
+        keys = {str(path), self._normalize_read_url(path)}
+        for k in keys:
+            self._assembly_haplotypes[k] = int(haplotype)
+            self._assembly_samples[k] = sample
+
+    def _assembly_haplotype_for(self, bam_path) -> Optional[int]:
+        if not bam_path:
+            return None
+        p = str(bam_path)
+        if p in self._assembly_haplotypes:
+            return self._assembly_haplotypes[p]
+        return self._assembly_haplotypes.get(self._normalize_read_url(p))
+
+    def _assembly_sample_for(self, bam_path) -> Optional[str]:
+        if not bam_path:
+            return None
+        p = str(bam_path)
+        if p in self._assembly_samples:
+            return self._assembly_samples[p]
+        return self._assembly_samples.get(self._normalize_read_url(p))
+
+    def _apply_assembly_read_overrides(self, reads_dict: dict) -> dict:
+        """Force assembly alignments to unphased (HP=0) or phased (HP=1/2).
+
+        Haploid/diploid assembly BAMs typically have no HP tag and may not
+        share an @RG SM. After the regular BAM extract, rewrite haplotype and
+        sample_name so the pileup matches an unphased or phased read BAM.
+        """
+        if not reads_dict or not self._assembly_haplotypes:
+            return reads_dict
+        bam_paths = reads_dict.get("bam_path")
+        if not bam_paths:
+            return reads_dict
+        n = len(bam_paths)
+        haplotypes = list(reads_dict.get("haplotype") or [])
+        sample_names = list(reads_dict.get("sample_name") or [])
+        if len(haplotypes) < n:
+            haplotypes.extend([0] * (n - len(haplotypes)))
+        if len(sample_names) < n:
+            sample_names.extend(["unknown"] * (n - len(sample_names)))
+        matched = False
+        for i, bam in enumerate(bam_paths):
+            hap = self._assembly_haplotype_for(bam)
+            if hap is None:
+                continue
+            matched = True
+            haplotypes[i] = hap
+            sm = self._assembly_sample_for(bam)
+            if sm is not None:
+                sample_names[i] = sm
+        if not matched:
+            return reads_dict
+        out = dict(reads_dict)
+        out["haplotype"] = haplotypes
+        out["sample_name"] = sample_names
+        return out
 
     def _reconcile_read_samples(self):
         """Kick off the background VCF-sample -> read-file index once BOTH
@@ -1413,6 +1774,12 @@ class GenomeShader:
                 bam_samples = set(self.get_bam_sample_names())
             except Exception:
                 bam_samples = set()
+            # Assembly BAMs often have no @RG SM (extractor reports "unknown")
+            # and are rendered via attach_assemblies' sample mapping, not VCF
+            # identity — don't warn about them as unrenderable extras.
+            if self._assemblies:
+                bam_samples.discard("unknown")
+                bam_samples -= set(self._assemblies)
             excluded = sorted(bam_samples - self._vcf_sample_universe)
             if excluded:
                 warnings.warn(
@@ -1423,8 +1790,8 @@ class GenomeShader:
 
     def attach_loci(self, loci: Union[str, List[str]]):
         """
-        Attaches loci to the current session from the provided list.
-        The loci can be a single string or a list of strings.
+        Adds loci to the current session. Further calls add more loci; a locus
+        already attached is ignored.
 
         Args:
             loci (Union[str, List[str]]): Loci to be attached.
@@ -1463,39 +1830,39 @@ class GenomeShader:
 
     def attach_variants(
         self,
-        track_name: str,
-        variant_files: Union[str, List[str]],
+        label: str,
+        variants: Union[str, List[str]],
         index: Optional[Union[str, List[Optional[str]]]] = None,
         samples: Optional[List[str]] = None,
     ):
         """
-        Attaches variant files (BCF/VCF) to the current session as a single
-        track. Multiple files are merged dynamically when querying a locus.
-        Use a user-defined track name for the variants/haplotypes track label.
+        Attach variant files (BCF/VCF) as a single named track.
+
+        Multiple files in one call are merged when querying a locus. Calling
+        again with the same ``label`` appends more files to that track (duplicate
+        paths are skipped) instead of opening a second identically-named track.
 
         Args:
-            track_name (str): Display name for the variant track (e.g. "TR-GT",
-                "WGS calls"). Used as the track title instead of "Variants/Haplotypes".
-            variant_files (Union[str, Path, List[Union[str, Path]]]): One or more paths
-                to variant files (str or pathlib.Path / PosixPath). Can be local paths
-                or GCS paths (gs://...). Supported formats: .bcf, .vcf, .vcf.gz.
-                A directory path lists all variant files in that directory.
-            index (Optional[Union[str, List[Optional[str]]]]): Explicit index path(s)
-                for non-adjacent / non-default-named indexes (.tbi/.csi). A single
-                path (for a single variant file), or a list parallel to
-                ``variant_files`` (use None for files whose index is adjacent). Local
-                or gs:// paths are both accepted. Omit to use the adjacent index next
-                to each file. Not supported for directory arguments.
-            samples (Optional[List[str]]): Restrict this track to these VCF samples.
-                Essential for large joint callsets: rendering every sample x variant
-                blows past the browser transport limit. Samples not present in the
-                VCF header are dropped with a warning. Omit to include all samples.
+            label: Display name for the variant track (e.g. ``"TR-GT"``,
+                ``"WGS calls"``). Re-using a label grows that track.
+            variants: One or more paths to variant files (str or pathlib.Path).
+                Local or ``gs://``; ``.bcf``, ``.vcf``, ``.vcf.gz``. A directory
+                path lists all variant files in that directory.
+            index: Explicit index path(s) for non-adjacent indexes (``.tbi``/
+                ``.csi``). A single path, or a list parallel to ``variants``
+                (use None for adjacent indexes). Omit to use the adjacent index.
+            samples: Restrict this track to these VCF samples. Samples not in
+                the VCF header are dropped with a warning. Omit for all samples.
+                A later attach with ``samples=None`` widens a previously-subset
+                track to all samples.
         """
         import genomeshader.genomeshader as gs
         import traceback
 
         _cap = lambda seq, n=25: list(seq)[:n]  # cap long lists in the debug log
 
+        track_name = label
+        variant_files = variants
         if isinstance(variant_files, (str, Path)):
             variant_files = [variant_files]
 
@@ -1520,7 +1887,7 @@ class GenomeShader:
                                 stage="index_normalize",
                                 error="single index requires a single variant file")
                 raise ValueError("a single index requires a single variant file; "
-                                 "pass a list of indexes parallel to variant_files")
+                                 "pass a list of indexes parallel to variants")
             index_list = [index]
         else:
             index_list = list(index)
@@ -1528,8 +1895,8 @@ class GenomeShader:
                 self._debug_log("attach_variants_error", track_name=str(track_name),
                                 stage="index_normalize",
                                 error=f"index list ({len(index_list)}) not parallel to "
-                                      f"variant_files ({len(variant_files)})")
-                raise ValueError("index list must be parallel to variant_files")
+                                      f"variants ({len(variant_files)})")
+                raise ValueError("index list must be parallel to variants")
 
         paths_to_attach: List[str] = []
         indexes_to_attach: List[Optional[str]] = []
@@ -1582,6 +1949,7 @@ class GenomeShader:
                         n_files=len(paths_to_attach))
         _t_hdr = time.perf_counter()
         header_samples: set = set()
+        header_order: List[str] = []
         header_errors: List[str] = []
         # Header read is DIRECT by default (fast). The earlier native crash is
         # fixed at the source (non-indexed header read + hidden OpenSSL symbols),
@@ -1600,6 +1968,8 @@ class GenomeShader:
                 names = (_vcf_sample_names_isolated(p, idx) if _isolate
                          else gs._vcf_sample_names(p, idx))
                 header_samples.update(names)
+                if not header_order:
+                    header_order = list(names)
                 self._debug_log("vcf_header_read", path=p, index=idx, n_samples=len(names),
                                 sample_head=_cap(names, 5),
                                 ms=round((time.perf_counter() - _t_one) * 1000, 1))
@@ -1617,6 +1987,8 @@ class GenomeShader:
                 f"{len(paths_to_attach)} file(s); attaching would produce an empty "
                 f"track. First error: {first}\n  -> {hint}"
             )
+        if header_order and not self._vcf_sample_order:
+            self._vcf_sample_order = list(header_order)
         print(f"GenomeShader:   {len(header_samples):,} sample(s) across header(s) "
               f"({time.perf_counter() - _t_hdr:.1f}s)", flush=True)
         self._debug_log("attach_variants_headers_done", track_name=str(track_name),
@@ -1641,38 +2013,61 @@ class GenomeShader:
         else:
             self._vcf_sample_universe.update(header_samples)
 
-        self._variant_datasets.append((str(track_name), paths_to_attach))
-        # The Rust indexing call: the most likely failure point (bad/missing
-        # index, unreadable BCF, auth). Log the attempt + outcome and re-raise so
-        # the traceback lands in the debug log instead of an empty one.
+        track_key = str(track_name)
+        existing_i = next(
+            (i for i, (name, _) in enumerate(self._variant_datasets) if name == track_key),
+            None,
+        )
         self._debug_log_resources("before_session_attach_variants")
-        self._debug_log("session_attach_variants_start", track_name=str(track_name),
-                        n_paths=len(paths_to_attach), n_subset=(None if subset is None else len(subset)))
         _t_idx = time.perf_counter()
         try:
-            self._session.attach_variants(paths_to_attach, indexes_to_attach, subset)
+            if existing_i is None:
+                self._variant_datasets.append((track_key, list(paths_to_attach)))
+                self._debug_log("session_attach_variants_start", track_name=track_key,
+                                n_paths=len(paths_to_attach),
+                                n_subset=(None if subset is None else len(subset)))
+                self._session.attach_variants(paths_to_attach, indexes_to_attach, subset)
+            else:
+                old_paths = list(self._variant_datasets[existing_i][1])
+                seen = set(old_paths)
+                add_paths: List[str] = []
+                add_indexes: List[Optional[str]] = []
+                for p, ix in zip(paths_to_attach, indexes_to_attach):
+                    if p in seen:
+                        continue
+                    seen.add(p)
+                    old_paths.append(p)
+                    add_paths.append(p)
+                    add_indexes.append(ix)
+                self._variant_datasets[existing_i] = (track_key, old_paths)
+                self._debug_log("session_extend_variants_start", track_name=track_key,
+                                group_index=existing_i, n_new=len(add_paths),
+                                n_subset=(None if subset is None else len(subset)))
+                self._session.extend_variants(
+                    existing_i, add_paths, add_indexes, subset)
         except Exception as e:
-            self._debug_log("session_attach_variants_error", track_name=str(track_name),
+            verb = "extend" if existing_i is not None else "indexing"
+            self._debug_log("session_attach_variants_error", track_name=track_key,
                             error=str(e), error_type=type(e).__name__,
                             paths=_cap(paths_to_attach), indexes=_cap(indexes_to_attach),
                             traceback=traceback.format_exc(),
                             ms=round((time.perf_counter() - _t_idx) * 1000, 1))
             print(f"GenomeShader ERROR: attach_variants '{track_name}' failed during "
-                  f"indexing: {e}", file=sys.stderr, flush=True)
+                  f"{verb}: {e}", file=sys.stderr, flush=True)
             raise
         print(f"GenomeShader:   indexed {len(paths_to_attach)} file(s) for contig routing "
               f"({time.perf_counter() - _t_idx:.1f}s)", flush=True)
-        self._debug_log("session_attach_variants_done", track_name=str(track_name),
+        self._debug_log("session_attach_variants_done", track_name=track_key,
                         n_paths=len(paths_to_attach),
                         vcf_universe_size=len(self._vcf_sample_universe),
                         n_datasets=len(self._variant_datasets),
                         ms=round((time.perf_counter() - _t_idx) * 1000, 1))
         self._reconcile_read_samples()
-        self._debug_log("attach_variants_done", track_name=str(track_name))
+        self._debug_log("attach_variants_done", track_name=track_key)
 
     def attach_data(
         self,
-        track_name: str,
+        label: str,
         data: Union[dict, Any, Callable],
         *,
         style: str = "line",
@@ -1690,11 +2085,17 @@ class GenomeShader:
     ):
         """Register a software-defined track (line / bar / scatter / interval).
 
-        ``data`` may be a dict, pandas.DataFrame, polars.DataFrame, or a
-        ``Callable[[str, int, int], DataFrame-like]`` invoked per visible region.
-        Column-name overrides let existing frames be used without renaming.
-        Multiple ``value_col`` names become overlaid series in one track.
+        Re-attaching the same ``label`` replaces the previous track (it does
+        not concatenate rows). Use a new label for another overlay.
+
+        Args:
+            label: Display name for the track.
+            data: A dict, pandas/polars DataFrame, or a
+                ``Callable[[str, int, int], DataFrame-like]`` invoked per visible
+                region. Column-name overrides let existing frames be used without
+                renaming. Multiple ``value_col`` names become overlaid series.
         """
+        track_name = label
         offset = self._data_track_palette_offset
         spec = _data_tracks.build_track_spec(
             track_name,
@@ -1850,6 +2251,186 @@ class GenomeShader:
             dict: The sample mapping dictionary.
         """
         return self._sample_mapping
+
+    def attach_metadata(
+        self,
+        label: str,
+        table,
+        sample_col: str = "sample",
+    ):
+        """Attach a named sample→metadata table for Grouping.
+
+        Args:
+            label: Name for this metadata table (e.g. ``"1kg"``, ``"phenotypes"``).
+                Re-attaching the same label **replaces** the previous table
+                (unlike attach_reads / attach_variants, which append).
+            table: A polars/pandas DataFrame, a column-oriented dict, or
+                ``{sample_id: {col: value}}``. Join keys are VCF sample names.
+            sample_col: Column in ``table`` holding the sample id (default
+                ``"sample"``).
+
+        Columns with 2..32 distinct values become Settings → Grouping → Variable
+        choices. IDs outside the VCF universe warn but do not fail; samples with
+        no row become ``"(unlabeled)"`` in the UI.
+        """
+        name = str(label).strip()
+        if not name:
+            raise ValueError("attach_metadata: label must be a non-empty string")
+        df = _sample_metadata.coerce_sample_metadata_table(table, sample_col=sample_col)
+        self._sample_metadata_tables[name] = {
+            "df": df,
+            "sample_col": sample_col,
+        }
+
+        if self._vcf_sample_universe:
+            present = set(str(s) for s in df[sample_col].to_list())
+            unknown = sorted(
+                s for s in present if s not in set(str(x) for x in self._vcf_sample_universe)
+            )
+            if unknown:
+                preview = ", ".join(unknown[:8])
+                more = f" (+{len(unknown) - 8} more)" if len(unknown) > 8 else ""
+                warnings.warn(
+                    f"attach_metadata({name!r}): {len(unknown)} sample id(s) are not in "
+                    f"the attached VCF universe and will be ignored for grouping: "
+                    f"{preview}{more}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        # Metadata changes invalidate cached per-window group counts.
+        self._agg_region_cache = []
+        self._push_sample_metadata_changed()
+
+    def get_metadata(self, label: Optional[str] = None) -> Optional[pl.DataFrame]:
+        """Return an attached metadata table (clone), or None if unset.
+
+        With no ``label``, returns the sole table when exactly one is attached,
+        otherwise raises if multiple are present (pass ``label`` explicitly).
+        """
+        tables = self._sample_metadata_tables
+        if not tables:
+            return None
+        if label is None:
+            if len(tables) == 1:
+                return next(iter(tables.values()))["df"].clone()
+            raise ValueError(
+                f"get_metadata: multiple tables attached "
+                f"({', '.join(sorted(tables))}); pass label=..."
+            )
+        entry = tables.get(str(label))
+        if entry is None:
+            return None
+        return entry["df"].clone()
+
+    def _merged_sample_metadata_df(self) -> Optional[pl.DataFrame]:
+        """Single frame used for grouping: outer-join all attached tables on sample id.
+
+        Column name collisions across tables are resolved as ``{label}__{col}``.
+        """
+        if not self._sample_metadata_tables:
+            return None
+        merged: Optional[pl.DataFrame] = None
+        # Prefer a stable sample column name in the merge.
+        sample_col_out = "sample"
+        for label, entry in self._sample_metadata_tables.items():
+            df = entry["df"]
+            sc = entry["sample_col"]
+            work = df.rename({sc: sample_col_out}) if sc != sample_col_out else df
+            # Prefix non-sample cols when multiple tables or name already taken.
+            rename = {}
+            for col in work.columns:
+                if col == sample_col_out:
+                    continue
+                if merged is not None and col in merged.columns:
+                    rename[col] = f"{label}__{col}"
+                elif len(self._sample_metadata_tables) > 1:
+                    # Disambiguate early when >1 table so Variable labels are stable.
+                    rename[col] = f"{label}__{col}"
+            if rename:
+                work = work.rename(rename)
+            if merged is None:
+                merged = work
+            else:
+                merged = merged.join(work, on=sample_col_out, how="outer")
+                right = f"{sample_col_out}_right"
+                if right in merged.columns:
+                    merged = merged.with_columns(
+                        pl.coalesce([pl.col(sample_col_out), pl.col(right)]).alias(sample_col_out)
+                    ).drop(right)
+        return merged
+
+    def _sample_metadata_config(self) -> Optional[dict]:
+        df = self._merged_sample_metadata_df()
+        summary = _sample_metadata.build_config_summary(
+            df,
+            sample_col="sample",
+            read_samples=self._samples_with_reads(),
+            vcf_universe=self._vcf_sample_universe or None,
+        )
+        if summary is None:
+            return None
+        summary["labels"] = list(self._sample_metadata_tables.keys())
+        if len(self._sample_metadata_tables) == 1:
+            summary["label"] = next(iter(self._sample_metadata_tables))
+        return summary
+
+    def _sample_metadata_group_lookups(self) -> Dict[str, Dict[str, str]]:
+        """column -> {sample_id -> group_label} for eligible grouping columns."""
+        df = self._merged_sample_metadata_df()
+        if df is None or len(df) == 0:
+            return {}
+        eligible = _sample_metadata.grouping_eligible_columns(df, sample_col="sample")
+        return {
+            col: _sample_metadata.sample_group_lookup(df, col, sample_col="sample")
+            for col in eligible
+        }
+
+    def _sample_metadata_grouping_for_rust(self) -> Optional[List[Tuple[str, List[str]]]]:
+        """Build (column, labels_per_header_sample_index) for aggregate extract.
+
+        Labels align with VCF header sample order. Returns None when metadata or
+        header order is unavailable.
+        """
+        lookups = self._sample_metadata_group_lookups()
+        if not lookups or not self._vcf_sample_order:
+            return None
+        out: List[Tuple[str, List[str]]] = []
+        for col, lookup in lookups.items():
+            labels = [
+                lookup.get(str(sid), _sample_metadata.UNLABELED)
+                for sid in self._vcf_sample_order
+            ]
+            out.append((col, labels))
+        return out or None
+
+    def _push_sample_metadata_changed(self) -> None:
+        """Notify a live widget that attach_metadata() changed grouping data."""
+        w = getattr(self, "_active_widget", None)
+        if w is None:
+            return
+        try:
+            w.send({
+                "type": "sample_metadata_changed",
+                "sample_metadata": self._sample_metadata_config(),
+            })
+        except Exception:
+            pass
+
+    def _push_read_sets_changed(self) -> None:
+        """Notify a live widget that read-set labels / BAM index updated."""
+        w = getattr(self, "_active_widget", None)
+        if w is None:
+            return
+        try:
+            w.send({
+                "type": "read_sets_changed",
+                "read_sets": self._read_sets_config(),
+                "read_bam_index": self._read_bam_index_snapshot(),
+                "read_samples": self._samples_with_reads(),
+            })
+        except Exception:
+            pass
     
     def get_bam_samples_for_vcf_samples(self, vcf_samples: List[str]) -> List[str]:
         """
@@ -1875,22 +2456,25 @@ class GenomeShader:
         for vcf_sample in vcf_samples:
             if self._sample_mapping and vcf_sample in self._sample_mapping:
                 bam_samples.update(self._sample_mapping[vcf_sample])  # explicit wins
-                continue
-            with self._read_index_lock:
-                hit = list(self._read_index.get(vcf_sample, []))
-            if hit:
-                bam_samples.update(hit)
-                continue
-            # Not in the index: an explicit .bam attach matched by filename stem,
-            # or the value is already a locator. Otherwise omit, so the caller
-            # reports a clean "no read file for sample" instead of trying to parse
-            # a bare sample name as a URL (the old behavior that hung "loading…").
-            if attached_by_stem is None:
-                attached_by_stem = self._attached_reads_by_stem()
-            if vcf_sample in attached_by_stem:
-                bam_samples.add(attached_by_stem[vcf_sample])
-            elif "://" in vcf_sample or vcf_sample.startswith("/"):
-                bam_samples.add(vcf_sample)
+            else:
+                with self._read_index_lock:
+                    hit = list(self._read_index.get(vcf_sample, []))
+                if hit:
+                    bam_samples.update(hit)
+                else:
+                    # Not in the index: an explicit .bam attach matched by filename stem,
+                    # or the value is already a locator. Otherwise omit, so the caller
+                    # reports a clean "no read file for sample" instead of trying to parse
+                    # a bare sample name as a URL (the old behavior that hung "loading…").
+                    if attached_by_stem is None:
+                        attached_by_stem = self._attached_reads_by_stem()
+                    if vcf_sample in attached_by_stem:
+                        bam_samples.update(attached_by_stem[vcf_sample])
+                    elif "://" in vcf_sample or vcf_sample.startswith("/"):
+                        bam_samples.add(vcf_sample)
+            asm = (getattr(self, "_assemblies", None) or {}).get(vcf_sample)
+            if asm:
+                bam_samples.update(asm.get("paths") or [])
         return list(bam_samples)
 
     @staticmethod
@@ -1901,6 +2485,76 @@ class GenomeShader:
             if base.endswith(ext):
                 return base[: -len(ext)]
         return base
+
+    def _read_bam_index_snapshot(self) -> dict:
+        """sample_id -> [BAM/CRAM urls] for the frontend (one smart track per URL).
+
+        Mirrors get_bam_samples_for_vcf_samples precedence: explicit mapping wins,
+        then the background read index, then attached-file filename stems. Used so
+        Load / sample search can open multi-BAM samples as separate tracks
+        (e.g. haplotagged long reads vs untagged short reads) instead of merging.
+        """
+        out: dict = {}
+        claimed = set()
+        if self._sample_mapping:
+            for k, v in self._sample_mapping.items():
+                urls = list(v) if isinstance(v, (list, tuple, set)) else [v]
+                out[str(k)] = list(dict.fromkeys(str(u) for u in urls if u))
+                claimed.add(str(k))
+        try:
+            with self._read_index_lock:
+                for k, urls in self._read_index.items():
+                    sk = str(k)
+                    if sk in claimed:
+                        continue
+                    out[sk] = list(dict.fromkeys(str(u) for u in (urls or []) if u))
+                    claimed.add(sk)
+        except Exception:
+            pass
+        try:
+            for stem, urls in self._attached_reads_by_stem().items():
+                if stem in claimed:
+                    continue
+                out[stem] = list(dict.fromkeys(str(u) for u in (urls or []) if u))
+        except Exception:
+            pass
+        # Assemblies are extra evidence for a sample (hap1/hap2 filenames do
+        # not stem-match the VCF ID). Union them after the exclusive mapping
+        # / index / stem pass so they never replace sequencing BAMs.
+        for sample, info in (getattr(self, "_assemblies", None) or {}).items():
+            sk = str(sample)
+            bucket = out.setdefault(sk, [])
+            for u in info.get("paths") or []:
+                su = str(u)
+                if su and su not in bucket:
+                    bucket.append(su)
+        return out
+
+    def _read_sets_config(self) -> Optional[dict]:
+        """Compact read-set facet for Groups tab (attach_reads labels).
+
+        Returns None when no labeled read sets exist. ``by_url`` maps each
+        BAM/CRAM URL to its attach label so Smart Tracks can filter independently
+        of sample metadata.
+        """
+        by_url = {str(u): str(lab) for u, lab in self._read_set_by_url.items() if u and lab}
+        labels = [str(x) for x in self._read_set_labels if x]
+        if not labels and by_url:
+            labels = sorted(set(by_url.values()))
+        if not labels:
+            return None
+        counts: Dict[str, int] = {lab: 0 for lab in labels}
+        for lab in by_url.values():
+            counts[lab] = counts.get(lab, 0) + 1
+        values = []
+        for i, lab in enumerate(labels):
+            color = _data_tracks.DEFAULT_PALETTE[i % len(_data_tracks.DEFAULT_PALETTE)]
+            values.append({
+                "name": lab,
+                "count": int(counts.get(lab, 0)),
+                "color": color,
+            })
+        return {"labels": values, "by_url": by_url}
 
     def _maybe_start_read_index(self):
         """Start the background VCF-sample -> read-URL index once BOTH variants
@@ -1939,13 +2593,16 @@ class GenomeShader:
                 urls.extend(self._session.get_attached_reads())
             except Exception as e:
                 self._debug_log("read_index_attached_error", error=str(e))
-            for path, _cohort in list(self._pending_read_dirs):
+            for path, cohort in list(self._pending_read_dirs):
                 try:
                     with self._dbg_time("read_index_dir_list", dir=path):
                         b = gs._gcs_list_files_of_type(path, ".bam")
                         c = gs._gcs_list_files_of_type(path, ".cram")
                     urls.extend(b); urls.extend(c)
-                    self._debug_log("read_index_dir_counts", dir=path, n_bam=len(b), n_cram=len(c))
+                    for u in list(b) + list(c):
+                        self._read_set_by_url[str(u)] = str(cohort)
+                    self._debug_log("read_index_dir_counts", dir=path, n_bam=len(b), n_cram=len(c),
+                                    cohort=str(cohort))
                 except Exception as e:
                     self._debug_log("read_index_dir_error", dir=path, error=str(e),
                                     traceback=__import__("traceback").format_exc())
@@ -1988,6 +2645,7 @@ class GenomeShader:
                   f"sample(s) mapped ({time.perf_counter() - t0:.1f}s)", flush=True)
             self._debug_log("read_index_ready", mapped=len(index), universe=len(samples),
                             ms=round((time.perf_counter() - t0) * 1000, 1))
+            self._push_read_sets_changed()
         except BaseException as e:
             self._debug_log("read_index_fatal", error=str(e), error_type=type(e).__name__,
                             traceback=__import__("traceback").format_exc())
@@ -1996,16 +2654,24 @@ class GenomeShader:
             self._read_index_done.set()
 
     def _attached_reads_by_stem(self) -> dict:
-        """{basename-stem -> url} for every attached BAM/CRAM, so a VCF sample
-        name resolves to its read file by filename (sample "X" -> ".../X.bam")
-        when no explicit sample mapping is set."""
+        """{basename-stem -> [url, ...]} for every attached BAM/CRAM.
+
+        A VCF sample name resolves to its read file(s) by filename
+        (sample "X" -> ".../X.bam") when no explicit sample mapping is set.
+        Multiple attaches can share a stem (e.g. long_reads/HG001.bam and
+        short_reads/HG001.bam); all are kept so the UI can open one track each.
+        """
         out: dict = {}
         try:
             for url in self._session.get_attached_reads():
                 base = str(url).rsplit("/", 1)[-1]
                 for ext in (".bam", ".cram"):
                     if base.endswith(ext):
-                        out[base[: -len(ext)]] = url
+                        stem = base[: -len(ext)]
+                        bucket = out.setdefault(stem, [])
+                        u = str(url)
+                        if u not in bucket:
+                            bucket.append(u)
                         break
         except Exception:
             pass
@@ -2020,6 +2686,9 @@ class GenomeShader:
         names = set()
         if self._sample_mapping:
             names.update(self._sample_mapping.keys())
+        assemblies = getattr(self, "_assemblies", None)
+        if assemblies:
+            names.update(assemblies.keys())
         try:
             names.update(self._attached_reads_by_stem().keys())
         except Exception:
@@ -2046,16 +2715,21 @@ class GenomeShader:
         """
         return self._session.get_bam_sample_names()
 
-    def _fetch_reads_payload(self, sample_id=None, samples=None, locus=None) -> dict:
+    def _fetch_reads_payload(self, sample_id=None, samples=None, locus=None,
+                             bam_url=None) -> dict:
         """Resolve reads for a sample selection into a JSON-serializable payload.
 
         Used by the anywidget host's reads message handler. Mirrors the comm
         handler's logic: last-rendered locus + sample(s) -> BAM URLs (via the
         sample mapping) -> fetched reads. Raises ValueError on bad input.
+
+        When ``bam_url`` is set, only that file is fetched (one smart track per
+        BAM). The URL must belong to the sample's resolved set.
         """
         locus = locus or self._last_locus
         self._debug_log("reads_payload_start", locus=locus, sample_id=sample_id,
-                        n_samples=(len(samples) if samples else (1 if sample_id else 0)))
+                        n_samples=(len(samples) if samples else (1 if sample_id else 0)),
+                        bam_url=bam_url)
         if not locus:
             raise ValueError("No locus available; render a locus first")
 
@@ -2064,6 +2738,24 @@ class GenomeShader:
             raise ValueError("No sample_id or samples provided")
 
         bam_urls = self.get_bam_samples_for_vcf_samples(vcf_samples)
+        if bam_url:
+            bam_url = str(bam_url)
+            if bam_url in bam_urls:
+                bam_urls = [bam_url]
+            elif not bam_urls and ("://" in bam_url or bam_url.startswith("/")):
+                # Explicit locator with no sample mapping yet.
+                bam_urls = [bam_url]
+            else:
+                self._debug_log("reads_skipped_bam_mismatch", locus=locus,
+                                sample_id=sample_id, bam_url=bam_url,
+                                resolved=list(bam_urls)[:20])
+                return {
+                    "reads": {},
+                    "count": 0,
+                    "bam_urls": [],
+                    "vcf_samples": vcf_samples,
+                    "sample_id": sample_id,
+                }
         self._debug_log("reads_bam_resolve", locus=locus, n_vcf_samples=len(vcf_samples),
                         n_bams=len(bam_urls), bam_urls=list(bam_urls)[:20])
         if not bam_urls:
@@ -2140,6 +2832,7 @@ class GenomeShader:
         if self._timing_enabled():
             print(f"[timing] reads {locus} x{len(bam_urls)} bam "
                   f"({source}): {(time.perf_counter() - t0) * 1000:.0f} ms, {count} reads")
+        reads_dict = self._apply_assembly_read_overrides(reads_dict or {})
         self._debug_log("reads_payload_done", locus=locus, source=source, count=count,
                         n_bams=len(bam_urls),
                         ms=round((time.perf_counter() - t0) * 1000, 1))
@@ -2604,21 +3297,28 @@ class GenomeShader:
                             too_wide=too_wide)
         return payload
 
-    def fetch_variants_payload(self, contig, start, end):
+    def fetch_variants_payload(self, contig, start, end, sample_ids=None):
         """Viewport variant fetch (P2): build the variant payload for one window,
         on demand, so the frontend can load a new region on pan/zoom without a
         full re-render. Reuses the same aggregate/long-format threshold as render
         (GENOMESHADER_VARIANT_AGG_MAX). Returns
         {variant_tracks, insertion_variants_lookup, region, aggregate}.
+
+        ``sample_ids`` — optional list restricting aggregate tallies / group_counts
+        to the Groups-tab composite AND filter.
         """
         start, end = int(start), int(end)
         locus = f"{contig}:{start}-{end}"
         region = {"contig": contig, "start": start, "end": end}
         _t0 = time.perf_counter()
+        sample_ids_list = None
+        if sample_ids is not None:
+            sample_ids_list = [str(s) for s in sample_ids if s is not None and str(s) != ""]
 
         def _log_result(n, aggregate, cached):
             self._debug_log("fetch_variants", locus=locus, span_bp=end - start,
                             n_variants=n, aggregate=aggregate, cached=cached,
+                            n_sample_filter=(len(sample_ids_list) if sample_ids_list is not None else None),
                             ms=round((time.perf_counter() - _t0) * 1000, 1))
 
         def _count(pl_tracks):
@@ -2644,7 +3344,11 @@ class GenomeShader:
 
         # Host cache (#77): serve a re-visited / covered window from RAM instead
         # of re-reading+parsing it from the VCF (the measured wall). Bounded+LRU.
+        # Include sample-filter fingerprint so facet changes don't reuse unfiltered.
         sig = self._variant_dataset_signature()
+        if sample_ids_list is not None:
+            filt = ",".join(sorted(sample_ids_list))
+            sig = f"{sig}|sf={hashlib.sha1(filt.encode('utf-8')).hexdigest()[:16]}"
         hit = self._agg_region_cache_get(sig, contig, start, end)
         if hit is not None:
             sub = self._subset_variant_payload(hit["payload"], start, end)
@@ -2666,7 +3370,9 @@ class GenomeShader:
         _t_read = time.perf_counter()
         if use_agg:
             try:
-                agg_df = self._session.get_locus_variant_aggregates(locus)
+                grouping = self._sample_metadata_grouping_for_rust()
+                agg_df = self._session.get_locus_variant_aggregates(
+                    locus, grouping, sample_ids_list)
                 if agg_df is not None and isinstance(agg_df, pl.DataFrame) and len(agg_df) > 0:
                     tracks, ins = self._build_variant_payload_from_aggregates(agg_df)
                     payload, aggregate = {"variant_tracks": tracks,
@@ -2737,7 +3443,15 @@ class GenomeShader:
         return contig, max(1, start), end
 
     def _variant_dataset_signature(self) -> str:
-        serialized = json.dumps(self._variant_datasets, sort_keys=True)
+        serialized = json.dumps(
+            {
+                "datasets": self._variant_datasets,
+                "sample_metadata": _sample_metadata.metadata_fingerprint(
+                    self._merged_sample_metadata_df()
+                ),
+            },
+            sort_keys=True,
+        )
         return self._cache_id(serialized)
 
     def _build_variant_payload(
@@ -3101,6 +3815,16 @@ class GenomeShader:
                 for sample_name, seen_keys in sample_alleles.items()
             }
 
+            allele_keys = ["."] + ["ref"] + [f"a{i+1}" for i in range(len(alt_alleles))]
+            group_lookups = self._sample_metadata_group_lookups()
+            allele_sample_counts_by_group = (
+                _sample_metadata.tally_allele_counts_by_group(
+                    sample_alleles, allele_keys, group_lookups
+                )
+                if group_lookups
+                else {}
+            )
+
             ref_len = len(ref_allele) if ref_allele else 0
             is_insertion = False
             max_insertion_length = 0
@@ -3144,6 +3868,7 @@ class GenomeShader:
                 "alleles": ["ref"] + [f"a{i+1}" for i in range(len(alt_alleles))],
                 "alleleFrequencies": allele_frequencies,
                 "alleleSampleCounts": allele_sample_counts,
+                "alleleSampleCountsByGroup": allele_sample_counts_by_group,
                 "sampleAlleles": variant_sample_alleles,
                 "sampleGenotypes": variant_genotypes,
                 "displayIds": variant_info.get("variant_display_ids", [variant_display_id]),
@@ -4584,7 +5309,9 @@ class GenomeShader:
                     _agg_max = 5000
                 if _agg_max >= 0 and self._variant_sample_count() > _agg_max:
                     try:
-                        agg_df = self._session.get_locus_variant_aggregates(locus_or_dataframe)
+                        grouping = self._sample_metadata_grouping_for_rust()
+                        agg_df = self._session.get_locus_variant_aggregates(
+                            locus_or_dataframe, grouping)
                         if agg_df is not None and isinstance(agg_df, pl.DataFrame) and len(agg_df) > 0:
                             variants_df = agg_df
                             samples_df = agg_df.clone()
@@ -4887,9 +5614,16 @@ class GenomeShader:
             'variant_max_span_bp': int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "1000000")),
             'debug': bool(getattr(self, "_debug", False)),  # frontend event logging -> debug_log comm
             'sample_mapping': self._sample_mapping,  # Sample mapping: VCF sample names -> BAM sample names
+            # sample_id -> [bam/cram urls]; frontend opens one smart track per URL
+            # so multi-BAM samples (long+short) don't merge into one summary.
+            'read_bam_index': self._read_bam_index_snapshot(),
             # VCF samples that have attached BAM/CRAM. Load / sample search draw
             # only from this set so VCF-only carriers don't raise a modal.
             'read_samples': self._samples_with_reads(),
+            # attach_reads labels (pacbio/illumina/…) — Groups tab read-set facet.
+            'read_sets': self._read_sets_config(),
+            # Compact sample metadata for Settings → Grouping (None when unset).
+            'sample_metadata': self._sample_metadata_config(),
             'cache_debug': self._cache_debug_delta(cache_debug_start),
             'ucsc_warm_debug': self._last_ucsc_warm_stats,
             # Software-defined tracks from attach_data(); static tracks include
@@ -5047,7 +5781,7 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             '<style>',
             styles,  # Insert styles directly (no f-string interpolation)
             f'/* Override html/body height rules for container embedding */\n#{container_id} {{\n  height: 600px;\n  display: block;\n  position: relative;\n}}',
-            f'/* Reset html/body styles within container - use :root for CSS variables */\n#{container_id} {{\n  --sidebar-w: 360px;\n  --tracks-h: 280px;\n  --flow-h: 500px;\n  --reads-h: 220px;\n}}',
+            f'/* Reset html/body styles within container - use :root for CSS variables */\n#{container_id} {{\n  --sidebar-w: 360px;\n  --tracks-h: 220px;\n  --flow-h: 500px;\n  --reads-h: 220px;\n}}',
             f'/* Use explicit positioning instead of grid for better Jupyter compatibility */\n#{container_id} .app {{\n  height: 100% !important;\n  width: 100% !important;\n  display: block !important;\n  position: relative !important;\n  overflow: hidden;\n}}',
             f'/* Sidebar: overlays on top of main content */\n#{container_id} .sidebar-left {{\n  position: absolute !important;\n  left: 0 !important;\n  top: 0 !important;\n  bottom: 0 !important;\n  width: var(--sidebar-w, 360px) !important;\n  z-index: 100 !important;\n  overflow-y: auto !important;\n  overflow-x: visible !important;\n  pointer-events: auto !important;\n  transition: width 0.2s ease;\n}}',
             f'/* Sidebar collapsed state */\n#{container_id} .app.sidebar-collapsed .sidebar-left {{\n  width: 8px !important;\n  padding: 0 !important;\n}}\n#{container_id} .app.sidebar-collapsed .sidebar-left > * {{\n  opacity: 0 !important;\n  pointer-events: none !important;\n}}\n#{container_id} .app.sidebar-collapsed .sidebar-left::after {{\n  pointer-events: auto !important;\n  opacity: 1 !important;\n  width: 8px !important;\n}}',

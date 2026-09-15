@@ -37,6 +37,16 @@ def test_extract_variants_sample_subset():
     assert set(one["sample_name"].to_list()) == {"S1"}
 
 
+def test_extend_variants_native_same_file_stays_one_track():
+    sess = gs._init(None)
+    sess.attach_variants([FIXTURE], [None], None)
+    sess.extend_variants(0, [FIXTURE], [None], None)
+    df = sess.get_locus_variants("chr1:1-1000")
+    assert len(df) == 8
+    with pytest.raises(ValueError, match="out of range"):
+        sess.extend_variants(9, [], [], None)
+
+
 # --------------------------------------------------------------------------- #
 # GenomeShader reconciliation (session mocked)                                #
 # --------------------------------------------------------------------------- #
@@ -60,6 +70,45 @@ def test_attach_variants_subset_passed_and_universe(shader):
 def test_attach_variants_all_samples_universe(shader):
     shader.attach_variants("t", FIXTURE)
     assert shader._vcf_sample_universe == {"S1", "S2"}
+
+
+def test_attach_variants_same_label_appends(shader, monkeypatch):
+    monkeypatch.setattr(gs, "_vcf_sample_names", lambda p, index=None: ["S1", "S2"])
+    shader.attach_variants("TRGT", "gs://b/s1.vcf.gz")
+    shader.attach_variants("TRGT", "gs://b/s2.vcf.gz")
+    assert shader._variant_datasets == [
+        ("TRGT", ["gs://b/s1.vcf.gz", "gs://b/s2.vcf.gz"]),
+    ]
+    shader._session.attach_variants.assert_called_once()
+    shader._session.extend_variants.assert_called_once_with(
+        0, ["gs://b/s2.vcf.gz"], [None], None)
+
+
+def test_attach_variants_same_label_skips_duplicate_path(shader):
+    shader.attach_variants("t", FIXTURE)
+    shader.attach_variants("t", FIXTURE)
+    assert shader._variant_datasets == [("t", [FIXTURE])]
+    shader._session.attach_variants.assert_called_once()
+    args = shader._session.extend_variants.call_args.args
+    assert args[0] == 0
+    assert args[1] == []
+
+
+def test_attach_variants_same_label_unions_sample_subset(shader, monkeypatch):
+    monkeypatch.setattr(gs, "_vcf_sample_names", lambda p, index=None: ["S1", "S2"])
+    shader.attach_variants("t", "gs://b/a.vcf.gz", samples=["S1"])
+    shader.attach_variants("t", "gs://b/b.vcf.gz", samples=["S2"])
+    shader._session.extend_variants.assert_called_once_with(
+        0, ["gs://b/b.vcf.gz"], [None], ["S2"])
+    assert shader._vcf_sample_universe == {"S1", "S2"}
+
+
+def test_attach_variants_different_labels_are_separate_tracks(shader):
+    shader.attach_variants("phased", FIXTURE)
+    shader.attach_variants("TRGT", FIXTURE)
+    assert [name for name, _ in shader._variant_datasets] == ["phased", "TRGT"]
+    assert shader._session.attach_variants.call_count == 2
+    shader._session.extend_variants.assert_not_called()
 
 
 def test_requested_sample_absent_warns(shader):

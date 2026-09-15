@@ -135,14 +135,14 @@ function getTrackLayout() {
   const isVertical = isVerticalMode();
   
   // Standard tracks that should have hover-only controls (no reserved space)
-  const standardTracks = ["ideogram", "genes", "repeats", "reference", "flow"];
+  const standardTracks = ["genes", "repeats", "reference", "flow"];
   function isStandardTrack(trackId) {
     return standardTracks.includes(trackId) || (typeof trackId === "string" && trackId.startsWith("flow-"));
   }
   // Annotation tracks now show an always-visible label at the top, so they must
   // reserve header space for it (content is offset below the label). The flow /
   // variant area keeps its full height with no reserved header.
-  const labelSpaceTracks = ["ideogram", "genes", "repeats", "reference"];
+  const labelSpaceTracks = ["genes", "repeats", "reference"];
   function reservesLabelSpace(trackId) {
     return !isStandardTrack(trackId) || labelSpaceTracks.includes(trackId);
   }
@@ -163,6 +163,12 @@ function getTrackLayout() {
       // Skip hidden tracks (they take no space)
       // Default to false for backwards compatibility
       if (track.hidden === true) {
+        continue;
+      }
+      // Participant-group / read-set facets: hide Smart Tracks outside active AND.
+      if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
+        continue;
+      } else if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
         continue;
       }
       
@@ -233,6 +239,12 @@ function getTrackLayout() {
       if (track.hidden === true) {
         continue;
       }
+      // Participant-group / read-set facets: hide Smart Tracks outside active AND.
+      if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
+        continue;
+      } else if (typeof isSmartTrackExcludedByGrouping === "function" && isSmartTrackExcludedByGrouping(track)) {
+        continue;
+      }
       
       // For standard tracks, don't reserve space for header (controls overlay on hover)
       // For Smart tracks, keep the header space when open, but not when collapsed (closed state)
@@ -292,7 +304,10 @@ function getTrackLayout() {
         contentLeft: 0,
         contentWidth: safeMainWidth
       });
-      currentY += effectiveHeight; // no gap between tracks
+      currentY += effectiveHeight;
+      // Collapsed smart tracks: a few px between slots so the 24px label pills
+      // (centered in closedHeight) don't crowd each other.
+      if (isSmartTrack && track.collapsed) currentY += 4;
     }
   }
 
@@ -315,7 +330,7 @@ function updateTracksHeight() {
       ? tracksLayout[tracksLayout.length - 1].top + tracksLayout[tracksLayout.length - 1].height
       : 0;
     // Use default height if calculation fails or returns 0
-    const finalHeight = totalH > 0 ? totalH : 280; // Default to 280px if calculation fails
+    const finalHeight = totalH > 0 ? totalH : 220;
     document.documentElement.style.setProperty('--tracks-h', `${finalHeight}px`);
   }
 }

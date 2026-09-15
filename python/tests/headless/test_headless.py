@@ -408,6 +408,365 @@ def test_zero_carrier_allele_label_is_honest(browser, tmp_path):
     page.close()
 
 
+def test_group_frequency_rows_helper(browser, tmp_path):
+    """Variants-tab per-group frequency helper: sample freq from group counts."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    rows = page.evaluate(
+        """() => {
+          if (!window.__gsBuildGroupFrequencyRows) return null;
+          return window.__gsBuildGroupFrequencyRows({
+            groupingVariable: 'status',
+            groupingFilter: 'case',
+            alleleKeys: ['a1'],
+            alleleSampleCountsByGroup: {
+              status: {
+                case: { ref: 1, a1: 2 },
+                control: { ref: 3, a1: 0 },
+              },
+            },
+            columnSpec: {
+              values: [
+                { value: 'case', count: 3, color: '#111' },
+                { value: 'control', count: 3, color: '#222' },
+              ],
+            },
+          });
+        }"""
+    )
+    assert rows is not None, "group frequency helper not exposed"
+    assert [r["group"] for r in rows] == ["case", "control"]
+    assert rows[0]["n"] == 2 and rows[0]["N"] == 3 and abs(rows[0]["freq"] - 2 / 3) < 1e-9
+    assert rows[0]["active"] is True and rows[0]["color"] == "#111"
+    assert rows[1]["n"] == 0 and rows[1]["active"] is False
+    empty = page.evaluate("() => window.__gsBuildGroupFrequencyRows({})")
+    assert empty == []
+    page.close()
+
+
+def test_active_facets_helpers(browser, tmp_path):
+    """Metadata facets AND independently of Sample Search evidenceFilter."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          if (!window.compositeSampleIds || !window.compositeLabelSuffix) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.sample_metadata = {
+            columns: [
+              { name: 'sex', values: [
+                { value: 'female', count: 2, color: '#a' },
+                { value: 'male', count: 1, color: '#b' },
+              ]},
+              { name: 'super_pop', values: [
+                { value: 'EUR', count: 2, color: '#c' },
+                { value: 'AFR', count: 1, color: '#d' },
+              ]},
+            ],
+            by_id: {
+              S1: { sex: 'female', super_pop: 'EUR' },
+              S2: { sex: 'female', super_pop: 'AFR' },
+              S3: { sex: 'male', super_pop: 'EUR' },
+            },
+          };
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S1: ['gs://x/S1.pb.bam'],
+            S2: ['gs://x/S2.pb.bam', 'gs://x/S2.il.bam'],
+            S3: ['gs://x/S3.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 2, color: '#1' },
+              { name: 'illumina', count: 2, color: '#2' },
+            ],
+            by_url: {
+              'gs://x/S1.pb.bam': 'pacbio',
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S2.il.bam': 'illumina',
+              'gs://x/S3.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.activeFacets = [
+            { key: 'super_pop', level: 'EUR' },
+            { key: 'sex', level: 'female' },
+          ];
+          state.colorFacetKey = 'sex';
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          const metaIds = window.compositeSampleIds();
+          const suffix = window.compositeLabelSuffix();
+          const urlsS1 = window.__GS_bamUrlsForSample('S1');
+          const urlsS3 = window.__GS_bamUrlsForSample('S3');
+          // Evidence does not affect compositeSampleIds (AF scope).
+          const metaOnly = metaIds.slice().sort();
+          // Flat color when no metadata facets
+          state.activeFacets = [];
+          state.colorFacetKey = null;
+          const flatColor = window.getColorFacetKey();
+          return {
+            metaOnly, suffix, flatColor,
+            urlsS1, urlsS3,
+            evidence: state.sampleSelection.evidenceFilter,
+          };
+        }"""
+    )
+    assert result is not None
+    assert result["metaOnly"] == ["S1"], result
+    assert result["suffix"] == " · EUR", result["suffix"]
+    assert result["flatColor"] is None
+    assert result["urlsS1"] == ["gs://x/S1.pb.bam"], result
+    assert result["urlsS3"] == [], result  # illumina-only under pacbio filter
+    assert result["evidence"] == "pacbio"
+    page.close()
+
+
+def test_evidence_filter_excludes_from_candidate_pool(browser, tmp_path):
+    """Evidence filter narrows UI sample lists via filterSamplesForUi."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const fn = window.__GS_filterSamplesForUi;
+          if (!fn || !window.__GS_bamUrlsForSample) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_samples = ['S1', 'S2', 'S3'];
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S1: ['gs://x/S1.pb.bam'],
+            S2: ['gs://x/S2.pb.bam', 'gs://x/S2.il.bam'],
+            S3: ['gs://x/S3.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 2 },
+              { name: 'illumina', count: 2 },
+            ],
+            by_url: {
+              'gs://x/S1.pb.bam': 'pacbio',
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S2.il.bam': 'illumina',
+              'gs://x/S3.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          const filtered = fn(['S1', 'S2', 'S3']);
+          state.sampleSelection.evidenceFilter = null;
+          const all = fn(['S1', 'S2', 'S3']);
+          return { filtered, all };
+        }"""
+    )
+    assert result is not None
+    assert result["filtered"] == ["S1", "S2"], result
+    assert result["all"] == ["S1", "S2", "S3"], result
+    page.close()
+
+
+def test_spawn_skips_null_fallback_when_evidence_empty(browser, tmp_path):
+    """Active evidence with no matching BAM must not fall through to [null] fetch."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const spawn = window.__GS_spawnSmartTracksForSample;
+          if (!spawn) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S3: ['gs://x/S3.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [{ name: 'pacbio', count: 0 }, { name: 'illumina', count: 1 }],
+            by_url: { 'gs://x/S3.il.bam': 'illumina' },
+          };
+          const state = window.__GS_STATE;
+          const before = (state.smartTracks || []).length;
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          const promises = spawn('S3', 'random', [], null);
+          const after = (state.smartTracks || []).length;
+          return { nPromises: promises.length, before, after };
+        }"""
+    )
+    assert result is not None
+    assert result["nPromises"] == 0, result
+    assert result["after"] == result["before"], result
+    page.close()
+
+
+def test_load_by_id_bypasses_evidence_filter(browser, tmp_path):
+    """Load-by-ID must open every BAM even when Narrow/Evidence is set."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const bam = window.__GS_bamUrlsForSample;
+          if (!bam) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S2: ['gs://x/S2.pb.bam', 'gs://x/S2.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 1 },
+              { name: 'illumina', count: 1 },
+            ],
+            by_url: {
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S2.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          return {
+            filtered: bam('S2'),
+            bypass: bam('S2', { applyEvidence: false }),
+          };
+        }"""
+    )
+    assert result is not None
+    assert result["filtered"] == ["gs://x/S2.pb.bam"], result
+    assert result["bypass"] == ["gs://x/S2.pb.bam", "gs://x/S2.il.bam"], result
+    page.close()
+
+
+def test_preview_resolved_samples_stable_across_refresh(browser, tmp_path):
+    """Preview caches resolvedSamples so Random does not re-roll on refresh/Load."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const resolve = window.__GS_resolvePreviewSelection;
+          const select = window.selectSamplesForStrategy;
+          if (!resolve || !select) return null;
+          const state = window.__GS_STATE;
+          state.selectedAlleles = new Set(['t1|v1|0']);
+          state.sampleSelection.strategy = 'random';
+          state.sampleSelection.numSamples = 2;
+          state.sampleSelection.combineMode = 'AND';
+          state.sampleSelection.evidenceFilter = null;
+          state.sampleSelection.candidateSamples = ['A', 'B', 'C', 'D', 'E', 'F'];
+          state.sampleSelection.allSampleIds = ['A', 'B', 'C', 'D', 'E', 'F'];
+          state.sampleSelection._candidateSig = 'force';
+          state.sampleSelection._resolvedSig = null;
+          state.sampleSelection.resolvedSamples = [];
+          // Stub allele parsing so resolve can run without real variants.
+          // resolvePreviewSelection calls selectSamplesForStrategy with candidates.
+          const first = resolve();
+          const second = resolve();
+          const loadPath = (state.sampleSelection.resolvedSamples || []).slice();
+          // Clearing only the candidate sig (as pan/zoom cache-hit would) must
+          // still reuse the same resolved set when resolve runs again.
+          const third = resolve();
+          return { first, second, loadPath, third, sig: state.sampleSelection._resolvedSig };
+        }"""
+    )
+    assert result is not None
+    assert len(result["first"]) == 2, result
+    assert result["first"] == result["second"] == result["loadPath"] == result["third"], result
+    assert result["sig"], result
+    page.close()
+
+
+def test_carriers_controls_pool_is_evidence_filtered(browser, tmp_path):
+    """Carriers+controls eligible pool must apply Evidence, not just Groups."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const poolFn = window.__GS_getEligibleSamplePool;
+          const filterUi = window.__GS_filterSamplesForUi;
+          if (!poolFn || !filterUi) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_samples = ['S1', 'S2', 'S3'];
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S1: ['gs://x/S1.pb.bam'],
+            S2: ['gs://x/S2.pb.bam', 'gs://x/S2.il.bam'],
+            S3: ['gs://x/S3.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 2 },
+              { name: 'illumina', count: 2 },
+            ],
+            by_url: {
+              'gs://x/S1.pb.bam': 'pacbio',
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S2.il.bam': 'illumina',
+              'gs://x/S3.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.sampleSelection.strategy = 'carriers_controls';
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          state.sampleSelection.candidateSamples = ['S1'];
+          state.sampleSelection.allSampleIds = ['S1', 'S2', 'S3'];
+          const pool = poolFn();
+          const filteredAll = filterUi(['S1', 'S2', 'S3']);
+          return { pool, filteredAll };
+        }"""
+    )
+    assert result is not None
+    assert result["filteredAll"] == ["S1", "S2"], result
+    assert result["pool"] == ["S1", "S2"], result
+    page.close()
+
+
+def test_choose_load_counts_track_evidence(browser, tmp_path):
+    """Choose/Load {x of y} must shrink when Evidence narrows the eligible pool."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    result = page.evaluate(
+        """() => {
+          const poolFn = window.__GS_getEligibleSamplePool;
+          const resolve = window.__GS_resolvePreviewSelection;
+          if (!poolFn || !resolve) return null;
+          window.GENOMESHADER_CONFIG = window.GENOMESHADER_CONFIG || {};
+          window.GENOMESHADER_CONFIG.read_samples = ['S1', 'S2', 'S3', 'S4'];
+          window.GENOMESHADER_CONFIG.read_bam_index = {
+            S1: ['gs://x/S1.pb.bam'],
+            S2: ['gs://x/S2.pb.bam'],
+            S3: ['gs://x/S3.il.bam'],
+            S4: ['gs://x/S4.il.bam'],
+          };
+          window.GENOMESHADER_CONFIG.read_sets = {
+            labels: [
+              { name: 'pacbio', count: 2 },
+              { name: 'illumina', count: 2 },
+            ],
+            by_url: {
+              'gs://x/S1.pb.bam': 'pacbio',
+              'gs://x/S2.pb.bam': 'pacbio',
+              'gs://x/S3.il.bam': 'illumina',
+              'gs://x/S4.il.bam': 'illumina',
+            },
+          };
+          const state = window.__GS_STATE;
+          state.selectedAlleles = new Set(['t1|v1|0']);
+          state.sampleSelection.strategy = 'best_evidence';
+          state.sampleSelection.numSamples = 3;
+          state.sampleSelection.candidateSamples = ['S1', 'S2', 'S3', 'S4'];
+          state.sampleSelection.allSampleIds = ['S1', 'S2', 'S3', 'S4'];
+          state.sampleSelection.evidenceFilter = null;
+          state.sampleSelection._resolvedSig = null;
+          const yAll = poolFn().length;
+          state.sampleSelection.evidenceFilter = 'pacbio';
+          state.sampleSelection._resolvedSig = null;
+          const yPb = poolFn().length;
+          // Clamp numSamples to the narrowed pool via resolve.
+          resolve();
+          return {
+            yAll, yPb,
+            numAfter: state.sampleSelection.numSamples,
+            resolved: state.sampleSelection.resolvedSamples,
+          };
+        }"""
+    )
+    assert result is not None
+    assert result["yAll"] == 4, result
+    assert result["yPb"] == 2, result
+    assert result["numAfter"] == 2, result
+    assert len(result["resolved"]) == 2, result
+    page.close()
+
+
 def test_comment_time_has_timezone(browser, tmp_path):
     """Comment timestamps must render with a timezone token (regression: the old
     formatter dropped the zone entirely)."""
@@ -653,12 +1012,12 @@ def test_clear_cache_button_dispatches_comm(browser, tmp_path):
 
 
 def test_hud_stays_visible(browser, tmp_path):
-    """The current-position indicator now lives in the top nav bar (#locusReadout)
-    and shows the current contig:start-end (the floating HUD is hidden)."""
+    """The cursor-position indicator lives in the top nav bar (#locusReadout)
+    as a single coordinate (view midpoint until the mouse moves)."""
     page, _ = _open(browser, tmp_path, "horizontal")
     _wait_ready(page)
     txt = page.evaluate("() => (document.getElementById('locusReadout')||{}).textContent || ''")
-    assert ":" in txt and "-" in txt, f"nav-bar position readout not populated: {txt!r}"
+    assert ":" in txt and "-" not in txt, f"nav-bar position readout not populated: {txt!r}"
     page.close()
 
 
