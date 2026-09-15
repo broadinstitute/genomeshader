@@ -18,6 +18,8 @@ def test_coerce_column_dict_and_row_map():
     assert set(df["sample"].to_list()) == {"S1", "S2"}
     by_sample = {r["sample"]: r["pop"] for r in df.iter_rows(named=True)}
     assert by_sample == {"S1": "AFR", "S2": "EUR"}
+    assert df["sample"].to_list() == ["S1", "S2"]
+    assert df["pop"].to_list() == ["AFR", "EUR"]
 
     df2 = sm.coerce_sample_metadata_table(
         {"S1": {"pop": "AFR", "sex": "F"}, "S2": {"pop": "EUR", "sex": "M"}}

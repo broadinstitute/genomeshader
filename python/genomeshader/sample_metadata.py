@@ -57,9 +57,10 @@ def coerce_sample_metadata_table(
             f"available: {list(df.columns)}"
         )
 
-    # Dedup on sample id (last wins); stringify the id column.
+    # Dedup on sample id (last wins). Hash-unique without maintain_order
+    # reshuffles rows (seen on CI as EUR/EAS vs EAS/EUR).
     out = df.with_columns(pl.col(sample_col).cast(pl.Utf8).alias(sample_col))
-    out = out.unique(subset=[sample_col], keep="last")
+    out = out.unique(subset=[sample_col], keep="last", maintain_order=True)
     return out
 
 
