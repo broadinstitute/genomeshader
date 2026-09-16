@@ -186,16 +186,22 @@ function renderSmartTrack(trackId) {
   // Calculate total content height if reads are loaded (horizontal mode)
   let totalContentHeight = H;
   if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
-    // When collapsed (closed state), use minimal padding; otherwise use normal padding
-    const top = track.collapsed ? 2 : 8;
-    const bottom = track.collapsed ? 2 : 12;
+    // Summary strip: nearly the 24px label tall, centered in closedHeight when
+    // collapsed (and at the same y when expanded so it doesn't jump).
+    const labelH = 24;
+    const closedSlot = track.closedHeight || 30;
+    const summaryH = Math.max(12, labelH - 2);           // ~22px
+    const summaryY = Math.max(0, Math.floor((closedSlot - summaryH) / 2));
+    const top = summaryY;
+    const bottom = track.collapsed ? summaryY : 12;
     const rowH = 18;
-    // Expanded tracks keep a pinned aggregate-overview row at the top (the same
-    // sample-wide summary the collapsed view shows), so reserve a row + gap.
-    const overviewH = track.collapsed ? 0 : (rowH + 4);
+    // Expanded: reserve the centered summary strip + a small gap before reads.
+    const overviewH = track.collapsed ? 0 : (summaryY + summaryH + 4 - top);
     // If collapsed (closed state), limit to single row; otherwise use all rows
     const maxRows = track.collapsed ? 1 : (track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1);
-    totalContentHeight = top + overviewH + maxRows * rowH + bottom;
+    totalContentHeight = track.collapsed
+      ? closedSlot
+      : (top + overviewH + maxRows * rowH + bottom);
     
     // Set up grid layout for scrolling
     // CRITICAL: Set explicit height FIRST (this overrides the CSS height: 100%)
@@ -439,6 +445,220 @@ function renderSmartTrack(trackId) {
   // (window.__GS_BASE_COLORS), so read SNPs match the reference/variant bases.
   const BASE_RGB = (typeof window !== "undefined" && window.__GS_BASE_COLORS) ||
     { 'A': [0, 200, 0], 'C': [0, 0, 255], 'G': [255, 165, 0], 'T': [255, 0, 0] };
+
+  // Haplotagged collapsed / overview summaries: when both HP1 and HP2 are
+  // present, paint CIGAR into stacked halves inside one rounded capsule
+  // (HP1 top / HP2 bottom in horizontal; HP1 left / HP2 right in vertical).
+  // Untagged (HP=0) elements stay full height/width; overlap alpha is per-haplotype.
+  const HAP_BODY_COLORS = { 1: [255, 100, 100], 2: [100, 100, 255] };
+
+  function haplotypeKey(hap) {
+    if (hap === 1) return 1;
+    if (hap === 2) return 2;
+    return 0;
+  }
+
+  function haplotypeBands(reads, y, h, gapPx = 0) {
+    let has1 = false, has2 = false;
+    for (const read of reads) {
+      if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+      if (read.haplotype === 1) has1 = true;
+      else if (read.haplotype === 2) has2 = true;
+      if (has1 && has2) break;
+    }
+    const full = { y, h };
+    if (!(has1 && has2) || h < 4) {
+      return { split: false, full, bandFor(_hap) { return full; } };
+    }
+    // Integer halves that abut with no gap (equal when h is even).
+    const usable = Math.max(2, h - gapPx);
+    const half = Math.floor(usable / 2);
+    const hp1 = { y, h: half };
+    const hp2 = { y: y + half + gapPx, h: usable - half };
+    return {
+      split: true,
+      full,
+      hp1,
+      hp2,
+      bandFor(hap) {
+        const k = haplotypeKey(hap);
+        if (k === 1) return hp1;
+        if (k === 2) return hp2;
+        return full;
+      }
+    };
+  }
+
+  // Vertical-mode analogue: split the column cross-axis (HP1 left / HP2 right).
+  function haplotypeBandsCross(reads, x, w, gapPx = 0) {
+    let has1 = false, has2 = false;
+    for (const read of reads) {
+      if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+      if (read.haplotype === 1) has1 = true;
+      else if (read.haplotype === 2) has2 = true;
+      if (has1 && has2) break;
+    }
+    const full = { x, w };
+    if (!(has1 && has2) || w < 4) {
+      return { split: false, full, bandFor(_hap) { return full; } };
+    }
+    const usable = Math.max(2, w - gapPx);
+    const half = Math.floor(usable / 2);
+    const hp1 = { x, w: half };
+    const hp2 = { x: x + half + gapPx, w: usable - half };
+    return {
+      split: true,
+      full,
+      hp1,
+      hp2,
+      bandFor(hap) {
+        const k = haplotypeKey(hap);
+        if (k === 1) return hp1;
+        if (k === 2) return hp2;
+        return full;
+      }
+    };
+  }
+
+  function accumulateOverlap(reads, hapFilter) {
+    const map = new Map();
+    for (const read of reads) {
+      if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+      if (haplotypeKey(read.haplotype) !== hapFilter) continue;
+      if (!read.elements || !read.elements.length) continue;
+      for (const elem of read.elements) {
+        if (elem.start < renderStartBp() || elem.start > renderEndBp()) continue;
+        if (elem.type === 3) {
+          for (let bp = elem.start; bp <= elem.end; bp++) {
+            if (bp >= renderStartBp() && bp <= renderEndBp()) {
+              map.set(bp, (map.get(bp) || 0) + 1);
+            }
+          }
+        } else if (elem.type === 1 || elem.type === 2) {
+          map.set(elem.start, (map.get(elem.start) || 0) + 1);
+        }
+      }
+    }
+    return map;
+  }
+
+  function readSpanExtents(reads) {
+    let mn = Infinity, mx = -Infinity;
+    const perHap = {
+      0: [Infinity, -Infinity],
+      1: [Infinity, -Infinity],
+      2: [Infinity, -Infinity]
+    };
+    for (const read of reads) {
+      if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+      mn = Math.min(mn, read.start);
+      mx = Math.max(mx, read.end);
+      const k = haplotypeKey(read.haplotype);
+      perHap[k][0] = Math.min(perHap[k][0], read.start);
+      perHap[k][1] = Math.max(perHap[k][1], read.end);
+    }
+    return { mn, mx, perHap };
+  }
+
+  // Draw the sample-wide aggregate CIGAR summary (collapsed track body, or the
+  // pinned overview row of an expanded track). One rounded gray capsule; when
+  // both haplotypes are present, HP1/HP2 CIGAR paint into stacked halves.
+  function drawAggregateSummary(reads, y, h, opts) {
+    const bands = (opts && opts.bands) || haplotypeBands(reads, y, h);
+    const cutGaps = !!(opts && opts.cutGaps);
+    const { mn, mx, perHap } = readSpanExtents(reads);
+    if (mn === Infinity) return bands;
+
+    const x1 = xGenomeCanonical(mn, genomeW);
+    const x2 = xGenomeCanonical(mx, genomeW);
+    const w = Math.max(4, x2 - x1);
+
+    // Single outer capsule (rounded in Canvas2D; axis-aligned via WebGPU).
+    if (instancedRenderer && webgpuSupported) {
+      instancedRenderer.addRect(
+        x1 * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
+        [150 / 255, 150 / 255, 150 / 255, 0.15]
+      );
+    } else {
+      ctx.fillStyle = `rgba(150,150,150,0.15)`;
+      ctx.beginPath();
+      roundRect(ctx, x1, y, w, h, 3);
+      ctx.fill();
+    }
+    if (cutGaps) cutReadBodyAtExpandedInsertionGaps(mn, mx, x1, y, w, h);
+
+    // Haplotype-colored washes inside the capsule when split (flush halves —
+    // no overlap bias, so the color join sits on the true midline).
+    if (bands.split) {
+      for (const hap of [1, 2]) {
+        const [hs, he] = perHap[hap];
+        if (hs === Infinity) continue;
+        const band = bands.bandFor(hap);
+        const hx1 = xGenomeCanonical(hs, genomeW);
+        const hx2 = xGenomeCanonical(he, genomeW);
+        const hw = Math.max(4, hx2 - hx1);
+        const [cr, cg, cb] = HAP_BODY_COLORS[hap];
+        drawMarkerRect(hx1, band.y, hw, band.h, cr, cg, cb, 0.15);
+        if (cutGaps) cutReadBodyAtExpandedInsertionGaps(hs, he, hx1, band.y, hw, band.h);
+      }
+    }
+
+    const ovMaps = {
+      0: accumulateOverlap(reads, 0),
+      1: accumulateOverlap(reads, 1),
+      2: accumulateOverlap(reads, 2)
+    };
+
+    for (const read of reads) {
+      if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+      if (!read.elements || !read.elements.length) continue;
+      const hap = haplotypeKey(read.haplotype);
+      const band = bands.bandFor(hap);
+      const ovMap = ovMaps[hap];
+      const ey = band.y;
+      const eh = band.h;
+
+      for (const el of read.elements) {
+        if (el.start < renderStartBp() || el.start > renderEndBp()) continue;
+        const ex = xGenomeCanonical(el.start, genomeW);
+        const base = el.type === 2 ? 0.25 : (el.type === 3 ? 0.2 : 0.25);
+        let ov;
+        if (el.type === 3) {
+          let t = 0, c = 0;
+          for (let bp = el.start; bp <= el.end; bp++) {
+            if (bp >= renderStartBp() && bp <= renderEndBp()) {
+              t += ovMap.get(bp) || 0;
+              c++;
+            }
+          }
+          ov = c ? t / c : 0;
+        } else {
+          ov = ovMap.get(el.start) || 0;
+        }
+        const a = Math.min(0.8, base * (1 + (ov - 1) * 0.25));
+        if (el.type === 2) {
+          drawMarkerRect(ex - variantMarkerW / 2, ey, variantMarkerW, eh, 200, 100, 255, a);
+        } else if (el.type === 3) {
+          const ex2 = xGenomeCanonical(el.end, genomeW);
+          drawMarkerRect(ex, ey + eh / 4, Math.max(1, ex2 - ex), Math.max(1, eh / 2), 0, 0, 0, a);
+        } else {
+          const nuc = el.sequence ? el.sequence.toUpperCase() : '?';
+          const [r, g, b] = BASE_RGB[nuc] || [156, 39, 176];
+          const nextX = xGenomeCanonical(el.start + 1, genomeW);
+          const gapAfterPx = getGapAfterBpPx(el.start, state.expandedInsertions);
+          const bw = Math.max(1, Math.abs(nextX - ex) - gapAfterPx);
+          // Flush to the band edges so HP1/HP2 tiles meet with no dark seam
+          // (the old ey+1 / eh-2 inset left a 2px gap between halves).
+          drawMarkerRect(
+            ex + bw / 2 - variantMarkerW / 2, ey,
+            variantMarkerW, Math.max(1, eh),
+            r, g, b, 1
+          );
+        }
+      }
+    }
+    return bands;
+  }
   
   const colText = cssVar("--muted");
   const grid = cssVar("--grid2");
@@ -522,13 +742,76 @@ function renderSmartTrack(trackId) {
     // Draw reads if available
     if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
       const maxCols = Math.floor((H - left - 12) / colW);
-      for (const read of track.readsLayout.reads) {
-        // Collapsed (closed): aggregate the WHOLE sample onto a single column —
-        // draw every read's body + variant/SNP markers at column 0 (like the
-        // horizontal collapsed branch stacks all reads on row 0). Previously the
-        // vertical branch skipped every read but row 0, so a collapsed track
-        // showed only one read's variants instead of the sample-wide summary.
-        if (!track.collapsed && read.row >= maxCols) continue;
+      const vReads = track.readsLayout.reads;
+
+      if (track.collapsed) {
+        // Aggregate onto one column. When both HP1 and HP2 are present, split
+        // the column cross-axis (HP1 left / HP2 right); untagged stays full width.
+        const cx = left + 2;
+        const cw = colW - 4;
+        const bands = haplotypeBandsCross(vReads, cx, cw);
+        const { mn, mx, perHap } = readSpanExtents(vReads);
+        if (mn !== Infinity) {
+          const y1 = yGenomeCanonical(mn, coordHeight);
+          const y2 = yGenomeCanonical(mx, coordHeight);
+          const y = Math.min(y1, y2);
+          const h = Math.max(4, Math.abs(y2 - y1));
+
+          // Single gray capsule for the sample span.
+          if (instancedRenderer && webgpuSupported) {
+            instancedRenderer.addRect(
+              cx * dpr, (y - _scrollOffset) * dpr, cw * dpr, h * dpr,
+              [150 / 255, 150 / 255, 150 / 255, 0.15]
+            );
+          } else {
+            ctx.fillStyle = `rgba(150,150,150,0.15)`;
+            ctx.beginPath();
+            roundRect(ctx, cx, y, cw, h, 3);
+            ctx.fill();
+          }
+
+          // Haplotype washes inside the capsule when split.
+          if (bands.split) {
+            for (const hap of [1, 2]) {
+              const [hs, he] = perHap[hap];
+              if (hs === Infinity) continue;
+              const band = bands.bandFor(hap);
+              const hy1 = yGenomeCanonical(hs, coordHeight);
+              const hy2 = yGenomeCanonical(he, coordHeight);
+              const hy = Math.min(hy1, hy2);
+              const hh = Math.max(4, Math.abs(hy2 - hy1));
+              const [cr, cg, cb] = HAP_BODY_COLORS[hap];
+              drawMarkerRect(band.x, hy, band.w, hh, cr, cg, cb, 0.15);
+            }
+          }
+
+          for (const read of vReads) {
+            if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+            if (!read.elements || !read.elements.length) continue;
+            const band = bands.bandFor(read.haplotype);
+            const ex = band.x;
+            const ew = band.w;
+            for (const elem of read.elements) {
+              if (elem.start < renderStartBp() || elem.start > renderEndBp()) continue;
+              const ey = yGenomeCanonical(elem.start, coordHeight);
+              if (elem.type === 2) {
+                drawMarkerRect(ex, ey - variantMarkerW / 2, ew, variantMarkerW, 200, 100, 255, 0.9);
+              } else if (elem.type === 3) {
+                const ey2 = yGenomeCanonical(elem.end, coordHeight);
+                const delY = Math.min(ey, ey2);
+                const delH = Math.max(2, Math.abs(ey2 - ey));
+                drawMarkerRect(ex + ew / 4, delY, Math.max(1, ew / 2), delH, 0, 0, 0, 0.4);
+              } else if (elem.type === 1) {
+                const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
+                const [dr, dg, db] = BASE_RGB[nuc] || [156, 39, 176];
+                drawMarkerRect(ex + 1, ey - variantMarkerW / 2, Math.max(1, ew - 2), variantMarkerW, dr, dg, db, 1);
+              }
+            }
+          }
+        }
+      } else {
+      for (const read of vReads) {
+        if (read.row >= maxCols) continue;
         if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
         
         let color, alpha;
@@ -546,7 +829,7 @@ function renderSmartTrack(trackId) {
         
         const y1 = yGenomeCanonical(read.start, coordHeight);
         const y2 = yGenomeCanonical(read.end, coordHeight);
-        const col = track.collapsed ? 0 : read.row;   // collapsed => all reads on col 0
+        const col = read.row;
         const x = left + col * colW + 2;
         const w = colW - 4;
         const y = Math.min(y1, y2);
@@ -565,13 +848,10 @@ function renderSmartTrack(trackId) {
           ctx.fill();
         }
 
-        // Strand direction arrow (the read orientation / pair indicator that the
-        // horizontal branch draws). The genome axis is Y here (higher bp = up), so
-        // a forward read's 3' end points UP, a reverse read's DOWN. Base spans the
-        // read column width; must be on the SAME layer as the body (WebGPU triangle
-        // when active, else the Canvas2D fallback). Skip when collapsed — the
-        // aggregate stacks every read on one column, so per-read arrows just clutter.
-        if (h >= 6 && !track.collapsed) {
+        // Strand direction arrow. Genome axis is Y (higher bp = up): forward
+        // points UP, reverse DOWN. Same layer as the body (WebGPU triangle when
+        // active, else Canvas2D fallback).
+        if (h >= 6) {
           const arrowSize = Math.max(3, Math.min(7, h * 0.5));
           const acx = x + w / 2;
           let tx0, ty0, tx1, ty1, tx2, ty2;
@@ -595,7 +875,7 @@ function renderSmartTrack(trackId) {
             ctx.fill();
           }
         }
-        // Draw insertion/deletion/diff markers (vertical mode)
+        // Draw insertion/deletion/diff markers (vertical mode, expanded)
         if (read.elements && read.elements.length > 0) {
           for (const elem of read.elements) {
             if (elem.start < renderStartBp() || elem.start > renderEndBp()) continue;
@@ -604,30 +884,24 @@ function renderSmartTrack(trackId) {
             const ew = w;
             
             if (elem.type === 2) { // Insertion - purple tick
-              const insH = track.collapsed ? variantMarkerW : 2;
-              drawMarkerRect(ex, ey - insH/2, ew, insH, 200, 100, 255, 0.9);
+              drawMarkerRect(ex, ey - 1, ew, 2, 200, 100, 255, 0.9);
             } else if (elem.type === 3) { // Deletion - black gap
               const ey2 = yGenomeCanonical(elem.end, coordHeight);
               const delY = Math.min(ey, ey2);
               const delH = Math.max(2, Math.abs(ey2 - ey));
               drawMarkerRect(ex + ew/4, delY, ew/2, delH, 0, 0, 0, 0.4);
             } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
-              // Calculate actual base height
               const nextBp = elem.start + 1;
               const nextY = (nextBp <= renderEndBp() ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(renderEndBp(), coordHeight));
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
               const actualBaseHeight = Math.max(1, Math.abs(nextY - ey) - gapAfterPx);
 
-              // Color based on nucleotide (shared reference palette).
               const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
               const [dr, dg, db] = BASE_RGB[nuc] || [156, 39, 176];
 
-              // Draw background. Collapsed => fixed variant-track width (along the
-              // genome axis), centered on the base; expanded => true per-base size.
-              const drawHeight = track.collapsed ? variantMarkerW : Math.max(1, actualBaseHeight - BASE_TILE_INSET_PX);
+              const drawHeight = Math.max(1, actualBaseHeight - BASE_TILE_INSET_PX);
               drawMarkerRect(ex + 1, ey - drawHeight/2, ew - 2, drawHeight, dr, dg, db, 1);
-              // SNP base letter (vertical mode) on the text overlay.
-              if (!track.collapsed && drawHeight >= 8 && (tctx || ctx)) {
+              if (drawHeight >= 8 && (tctx || ctx)) {
                 const lctx = tctx || ctx;
                 lctx.save();
                 lctx.fillStyle = 'white';
@@ -643,6 +917,7 @@ function renderSmartTrack(trackId) {
           }
         }
       }
+      }
     } else if (track.loading) {
       ctx.fillStyle = cssVar("--muted");
       ctx.font = "14px system-ui, sans-serif";
@@ -653,14 +928,19 @@ function renderSmartTrack(trackId) {
     // (variant->read guide lines removed by request)
   } else {
     // Horizontal mode
-    // When collapsed (closed state), use minimal padding; otherwise use normal padding
-    const top = track.collapsed ? 2 : 8;
-    const bottom = track.collapsed ? 2 : 12;
+    // Summary strip geometry: nearly the 24px label tall, vertically centered in
+    // the closed slot so label + summary share the same midline open or closed.
+    const labelH = 24;
+    const closedSlot = track.closedHeight || 30;
+    const summaryH = Math.max(12, labelH - 2);           // ~22px
+    const summaryY = Math.max(0, Math.floor((closedSlot - summaryH) / 2));
+    const top = summaryY;
+    const bottom = track.collapsed ? summaryY : 12;
     const rowH = 18;
     // Pinned aggregate-overview strip at the top of an expanded track (0 when
     // collapsed, since the whole track already IS the overview). Reads render
-    // below it and scroll under it. See drawSampleOverview() below.
-    const overviewH = track.collapsed ? 0 : (rowH + 4);
+    // below it and scroll under it.
+    const overviewH = track.collapsed ? 0 : (summaryY + summaryH + 4 - top);
     const readsTop = top + overviewH;
 
     let totalRows = Math.floor((H - top - bottom) / rowH);
@@ -672,15 +952,20 @@ function renderSmartTrack(trackId) {
       const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
       const endRow = Math.min(totalRows, Math.ceil((scrollTop + H) / rowH) + 1);
       
-      ctx.strokeStyle = grid;
-      ctx.lineWidth = 1;
-      for (let i = startRow; i < endRow; i++) {
-        const y = readsTop + i*rowH + rowH/2;
-        if (y >= -rowH && y <= totalContentHeight + rowH) {
-          ctx.beginPath();
-          ctx.moveTo(16, y);
-          ctx.lineTo(W-16, y);
-          ctx.stroke();
+      // Row grid lines only when expanded — on a collapsed summary they land at
+      // rowH/2 (legacy 18px row), which sits above the true midline of the taller
+      // summary strip and looks like a haplotype divide drawn too high.
+      if (!track.collapsed) {
+        ctx.strokeStyle = grid;
+        ctx.lineWidth = 1;
+        for (let i = startRow; i < endRow; i++) {
+          const y = readsTop + i*rowH + rowH/2;
+          if (y >= -rowH && y <= totalContentHeight + rowH) {
+            ctx.beginPath();
+            ctx.moveTo(16, y);
+            ctx.lineTo(W-16, y);
+            ctx.stroke();
+          }
         }
       }
     } else {
@@ -704,72 +989,11 @@ function renderSmartTrack(trackId) {
       const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
       const endRow = Math.min(totalRows, Math.ceil((scrollTop + H) / rowH) + 1);
       
-      // When collapsed, build overlap map for CIGAR elements only
-      let elementOverlapMap = new Map(); // Map<genomicPosition, count>
-      
       if (track.collapsed) {
-        // Build overlap map for CIGAR elements
-        for (const read of track.readsLayout.reads) {
-          if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
-          
-          // Track CIGAR element overlaps
-          if (read.elements && read.elements.length > 0) {
-            for (const elem of read.elements) {
-              if (elem.start < renderStartBp() || elem.start > renderEndBp()) continue;
-              
-              if (elem.type === 2) { // Insertion - single position
-                elementOverlapMap.set(elem.start, (elementOverlapMap.get(elem.start) || 0) + 1);
-              } else if (elem.type === 3) { // Deletion - span from start to end
-                for (let bp = elem.start; bp <= elem.end; bp++) {
-                  if (bp >= renderStartBp() && bp <= renderEndBp()) {
-                    elementOverlapMap.set(bp, (elementOverlapMap.get(bp) || 0) + 1);
-                  }
-                }
-              } else if (elem.type === 1) { // Diff - single position
-                elementOverlapMap.set(elem.start, (elementOverlapMap.get(elem.start) || 0) + 1);
-              }
-            }
-          }
-        }
-        
-        // Draw single pseudo-read spanning from first read start to last read end
-        let minStart = Infinity;
-        let maxEnd = -Infinity;
-        for (const read of track.readsLayout.reads) {
-          if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
-          minStart = Math.min(minStart, read.start);
-          maxEnd = Math.max(maxEnd, read.end);
-        }
-        
-        if (minStart !== Infinity && maxEnd !== -Infinity) {
-          // Use canonical mapping so collapsed pseudo-read aligns with insertion-expanded coordinates.
-          const x1 = xGenomeCanonical(minStart, genomeW);
-          const x2 = xGenomeCanonical(maxEnd, genomeW);
-          
-          const y = top + 0 * rowH + 2;
-          const h = rowH - 4;
-          const x = x1;
-          const w = Math.max(4, x2 - x1);
-          
-          if (y + h >= 0 && y <= totalContentHeight) {
-            // Draw pseudo-read with neutral gray color and high translucency
-            const color = [150, 150, 150];
-            const alpha = 0.15;
-            
-            if (instancedRenderer && webgpuSupported) {
-              instancedRenderer.addRect(
-                x * dpr, (y - _scrollOffset) * dpr,
-                w * dpr, h * dpr,
-                [color[0]/255, color[1]/255, color[2]/255, alpha]
-              );
-            } else {
-              ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
-              ctx.beginPath();
-              roundRect(ctx, x, y, w, h, 3);
-              ctx.fill();
-            }
-            cutReadBodyAtExpandedInsertionGaps(minStart, maxEnd, x, y, w, h);
-          }
+        // One capsule (HP1/HP2 stacked when both present), sized/centered to
+        // match the track label midline.
+        if (summaryY + summaryH >= 0 && summaryY <= totalContentHeight) {
+          drawAggregateSummary(track.readsLayout.reads, summaryY, summaryH, { cutGaps: true });
         }
       } else {
         // Expanded state: Render individual reads
@@ -853,15 +1077,14 @@ function renderSmartTrack(trackId) {
         }
       }
       
-      // Third pass: Render CIGAR elements (front layer) - drawn after reads
+      // Third pass: per-read CIGAR elements (expanded only). Collapsed CIGAR is
+      // already painted by drawAggregateSummary above (with haplotype bands).
+      if (!track.collapsed) {
       for (const read of track.readsLayout.reads) {
-        // When collapsed, process all reads; when expanded, only visible rows
-        if (!track.collapsed && (read.row < startRow || read.row > endRow)) continue;
+        if (read.row < startRow || read.row > endRow) continue;
         if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
         
-        // When collapsed, draw all elements at the same y position (row 0)
-        // When expanded, use the read's assigned row
-        const y = track.collapsed ? (top + 0 * rowH + 2) : (readsTop + read.row * rowH + 2);
+        const y = readsTop + read.row * rowH + 2;
         const h = rowH - 4;
         
         // Draw insertion/deletion/diff markers (horizontal mode)
@@ -872,41 +1095,17 @@ function renderSmartTrack(trackId) {
             const ey = y;
             const eh = h;
             
-            // Calculate base alpha for CIGAR elements (front layer - higher base opacity)
-            let baseElemAlpha;
+            let elemAlpha;
             if (elem.type === 2) { // Insertion
-              baseElemAlpha = track.collapsed ? 0.25 : 0.9;
+              elemAlpha = 0.9;
             } else if (elem.type === 3) { // Deletion
-              baseElemAlpha = track.collapsed ? 0.2 : 0.4;
+              elemAlpha = 0.4;
             } else { // Diff
-              baseElemAlpha = track.collapsed ? 0.25 : 1.0;
-            }
-            
-            // Accumulate opacity based on overlap when collapsed
-            let elemAlpha = baseElemAlpha;
-            if (track.collapsed) {
-              let overlap = 0;
-              if (elem.type === 2 || elem.type === 1) { // Insertion or Diff - single position
-                overlap = elementOverlapMap.get(elem.start) || 0;
-              } else if (elem.type === 3) { // Deletion - span
-                // Average overlap across deletion span
-                let totalOverlap = 0;
-                let count = 0;
-                for (let bp = elem.start; bp <= elem.end; bp++) {
-                  if (bp >= renderStartBp() && bp <= renderEndBp()) {
-                    totalOverlap += (elementOverlapMap.get(bp) || 0);
-                    count++;
-                  }
-                }
-                overlap = count > 0 ? totalOverlap / count : 0;
-              }
-              // Accumulate opacity: min(0.8, baseAlpha * (1 + overlapCount * 0.25))
-              elemAlpha = Math.min(0.8, baseElemAlpha * (1 + (overlap - 1) * 0.25));
+              elemAlpha = 1.0;
             }
             
             if (elem.type === 2) { // Insertion - purple tick
-              const insW = track.collapsed ? variantMarkerW : 2;
-              drawMarkerRect(ex - insW/2, ey, insW, eh, 200, 100, 255, elemAlpha);
+              drawMarkerRect(ex - 1, ey, 2, eh, 200, 100, 255, elemAlpha);
             } else if (elem.type === 3) { // Deletion - black gap
               const ex2 = xGenomeCanonical(elem.end, genomeW);
               drawMarkerRect(ex, ey + eh/4, ex2 - ex, eh/2, 0, 0, 0, elemAlpha);
@@ -921,16 +1120,11 @@ function renderSmartTrack(trackId) {
               const nuc = elem.sequence ? elem.sequence.toUpperCase() : '?';
               const [r, g, b] = BASE_RGB[nuc] || [156, 39, 176];
 
-              // Draw background. Collapsed => fixed variant-track width, centered
-              // on the base; expanded => the true per-base width. SNP tiles use
-              // full opacity so their color matches the reference/variant track
-              // (density is shown by the tile itself, not by muting the hue).
-              const drawWidth = track.collapsed ? variantMarkerW : Math.max(1, actualBaseWidth - BASE_TILE_INSET_PX);
-              const drawX = track.collapsed ? (ex + actualBaseWidth/2 - drawWidth/2) : ex;
+              const drawWidth = Math.max(1, actualBaseWidth - BASE_TILE_INSET_PX);
+              const drawX = ex;
               drawMarkerRect(drawX, ey + 1, drawWidth, eh - 2, r, g, b, 1);
-              // SNP base letter on the text overlay (above WebGPU), when there's
-              // room and the track is expanded.
-              if (!track.collapsed && drawWidth >= 8 && (tctx || ctx)) {
+              // SNP base letter on the text overlay (above WebGPU), when there's room.
+              if (drawWidth >= 8 && (tctx || ctx)) {
                 const lctx = tctx || ctx;
                 lctx.fillStyle = 'white';
                 lctx.font = `bold ${Math.min(10, eh - 4)}px monospace`;
@@ -941,6 +1135,7 @@ function renderSmartTrack(trackId) {
             }
           }
         }
+      }
       }
 
       // Draw expanded insertion gap overlays on top of reads/CIGAR so the gap is explicit.
@@ -968,21 +1163,17 @@ function renderSmartTrack(trackId) {
         ctx.restore();
       }
 
-      // Aggregate OVERVIEW row: the sample-wide SNP/indel/deletion summary the
-      // collapsed track shows, kept as the first row of the EXPANDED track so
-      // the overview stays available once reads are displayed. Reads sit below
-      // it (readsTop). ponytail: mirrors the collapsed aggregation rather than
-      // refactoring the entangled collapsed passes; drawMarkerRect handles the
-      // WebGPU layer + scroll offset, so it stays aligned with the pileup.
+      // Aggregate OVERVIEW row: same geometry as the collapsed summary so it
+      // stays aligned with the track label when the track is opened.
       if (!track.collapsed && overviewH > 0) {
         const oReads = track.readsLayout.reads;
         // Pin the overview to the track's viewport top so it stays in-line with
         // the (pinned) sample name as the read pileup scrolls under it. World-Y =
-        // top + scrollOffset makes screen-Y = top after drawMarkerRect/ctx
-        // subtract the scroll offset.
+        // summaryY + scrollOffset makes screen-Y = summaryY after drawMarkerRect
+        // subtracts the scroll offset.
         const so = _scrollOffset || 0;
-        const oy = top + 2 + so;
-        const oh = rowH - 4;
+        const oy = summaryY + so;
+        const oh = summaryH;
         // Opaque occluder on the SAME (WebGPU) layer as the reads, so rows
         // scrolled up behind the pinned overview don't bleed through. Use the
         // pane bg (--bg is opaque; --smart-track-bg may be a translucent tint).
@@ -1000,67 +1191,17 @@ function renderSmartTrack(trackId) {
             if (m) { const p = m[1].split(",").map(v => parseFloat(v)); r = p[0] || 0; g = p[1] || 0; b = p[2] || 0; }
           }
           if ([r, g, b].every(Number.isFinite)) {
-            drawMarkerRect(16, top + so, Math.max(0, W - 32), overviewH - 1, r, g, b, 1);
+            drawMarkerRect(16, so, Math.max(0, W - 32), overviewH - 1, r, g, b, 1);
           }
         })();
-        const ovMap = new Map();
-        let mn = Infinity, mx = -Infinity;
-        for (const read of oReads) {
-          if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
-          mn = Math.min(mn, read.start); mx = Math.max(mx, read.end);
-          if (!read.elements) continue;
-          for (const el of read.elements) {
-            if (el.start < renderStartBp() || el.start > renderEndBp()) continue;
-            if (el.type === 3) {
-              for (let bp = el.start; bp <= el.end; bp++)
-                if (bp >= renderStartBp() && bp <= renderEndBp())
-                  ovMap.set(bp, (ovMap.get(bp) || 0) + 1);
-            } else {
-              ovMap.set(el.start, (ovMap.get(el.start) || 0) + 1);
-            }
-          }
-        }
-        if (mn !== Infinity) {
-          const bx1 = xGenomeCanonical(mn, genomeW), bx2 = xGenomeCanonical(mx, genomeW);
-          drawMarkerRect(bx1, oy, Math.max(4, bx2 - bx1), oh, 150, 150, 150, 0.15);
-          for (const read of oReads) {
-            if (read.end < renderStartBp() || read.start > renderEndBp() || !read.elements) continue;
-            for (const el of read.elements) {
-              if (el.start < renderStartBp() || el.start > renderEndBp()) continue;
-              const ex = xGenomeCanonical(el.start, genomeW);
-              const base = el.type === 2 ? 0.25 : (el.type === 3 ? 0.2 : 0.25);
-              let ov;
-              if (el.type === 3) {
-                let t = 0, c = 0;
-                for (let bp = el.start; bp <= el.end; bp++)
-                  if (bp >= renderStartBp() && bp <= renderEndBp()) { t += ovMap.get(bp) || 0; c++; }
-                ov = c ? t / c : 0;
-              } else {
-                ov = ovMap.get(el.start) || 0;
-              }
-              const a = Math.min(0.8, base * (1 + (ov - 1) * 0.25));
-              if (el.type === 2) {           // insertion tick
-                drawMarkerRect(ex - variantMarkerW / 2, oy, variantMarkerW, oh, 200, 100, 255, a);
-              } else if (el.type === 3) {    // deletion gap
-                const ex2 = xGenomeCanonical(el.end, genomeW);
-                drawMarkerRect(ex, oy + oh / 4, ex2 - ex, oh / 2, 0, 0, 0, a);
-              } else {                        // SNP tile (reference base palette)
-                const nuc = el.sequence ? el.sequence.toUpperCase() : '?';
-                const [r, g, b] = BASE_RGB[nuc] || [156, 39, 176];
-                const nextX = xGenomeCanonical(el.start + 1, genomeW);
-                const bw = Math.max(1, Math.abs(nextX - ex));
-                drawMarkerRect(ex + bw / 2 - variantMarkerW / 2, oy + 1, variantMarkerW, oh - 2, r, g, b, 1);
-              }
-            }
-          }
-          // Separator line under the overview row (pinned with the strip).
-          ctx.strokeStyle = cssVar("--border2") || grid;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(16, top + overviewH - 2 + so);
-          ctx.lineTo(W - 16, top + overviewH - 2 + so);
-          ctx.stroke();
-        }
+        drawAggregateSummary(oReads, oy, oh, { cutGaps: false });
+        // Separator line under the overview row (pinned with the strip).
+        ctx.strokeStyle = cssVar("--border2") || grid;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(16, overviewH - 2 + so);
+        ctx.lineTo(W - 16, overviewH - 2 + so);
+        ctx.stroke();
       }
     } else if (track.loading) {
       ctx.fillStyle = cssVar("--muted");
@@ -1377,9 +1518,17 @@ function renderTrackControls() {
       container.style.left = "0";
       container.style.right = "0";
       container.style.top = `${item.top}px`;
-      // Container should cover full track height to allow resize handle at bottom
-      // Controls are positioned absolutely at top, so they only occupy their space
-      container.style.height = track.collapsed ? "24px" : `${item.height}px`;
+      // Collapsed smart tracks use closedHeight (taller than the 24px label) so
+      // the summary can match the label and leave a gap between tracks. Other
+      // collapsed tracks keep the legacy 24px control strip.
+      const isSmart = track.id.startsWith("smart-track-");
+      if (track.collapsed) {
+        container.style.height = isSmart
+          ? `${Math.max(item.height || 0, track.closedHeight || 24)}px`
+          : "24px";
+      } else {
+        container.style.height = `${item.height}px`;
+      }
     }
     container.dataset.trackId = track.id;
     // Mark collapsed containers (incl. smart tracks) so the collapsed CSS applies
@@ -1388,12 +1537,12 @@ function renderTrackControls() {
     // smart tracks previously never got the class -> stayed horizontal/clipped.)
     if (track.collapsed) container.classList.add("track-collapsed");
 
+    // Check if this is a Smart track (declare once for this track)
+    const isSmartTrack = track.id.startsWith("smart-track-");
+
     const controls = document.createElement("div");
     controls.className = "track-controls";
     controls.dataset.trackId = track.id;
-    
-    // Check if this is a Smart track (declare once for this track)
-    const isSmartTrack = track.id.startsWith("smart-track-");
     
     // Only a fully hidden track (which takes no layout space) drops controls.
     // Collapsed tracks keep their control bar (label + expand ▶) visible — see
@@ -5571,43 +5720,45 @@ function setupCanvasHover() {
     });
   }
   
-  // Function to load a Smart Track for a specific sample
+  // Function to load a Smart Track for a specific sample.
+  // Multi-BAM samples open as one track per BAM (long vs short reads stay separate).
   function loadSmartTrackForSample(sampleId) {
-    // One track per sample: if this sample is already loaded, don't load it again.
-    if (sampleId && (state.smartTracks || []).some(t => t.sampleId === sampleId)) {
-      return;
-    }
     // VCF-only samples have no BAM — don't fetch or raise a modal.
     if (sampleId && hasAttachedReadUniverse() && !attachedReadSampleSet().has(sampleId)) {
       return;
     }
-    // Use currently selected alleles if any, otherwise use empty set
+    if (sampleId && typeof isSampleFullyLoaded === "function" && isSampleFullyLoaded(sampleId)) {
+      return;
+    }
+    // Legacy dedupe when the BAM index isn't in config yet.
+    if (sampleId && typeof bamUrlsForSample === "function"
+        && !bamUrlsForSample(sampleId).length
+        && (state.smartTracks || []).some(t => t.sampleId === sampleId)) {
+      return;
+    }
     const selectedAlleles = state.selectedAlleles.size > 0
       ? Array.from(state.selectedAlleles)
       : [];
-    
-    // Use current strategy, or 'random' as fallback
     const strategy = state.sampleSelection.strategy || 'random';
-    
-    // Create Smart Track
-    const track = createSmartTrack(strategy, selectedAlleles);
-    track.sampleId = sampleId;   // claim the sample now so rapid re-clicks dedupe
 
-    // Set sampleType for carriers_controls strategy
+    let sampleType = null;
     if (strategy === 'carriers_controls') {
       const combineMode = state.sampleSelection.combineMode;
       const carriers = window.computeCandidateSamplesForAlleles 
         ? window.computeCandidateSamplesForAlleles(selectedAlleles, combineMode)
         : [];
-      const carriersSet = new Set(carriers);
-      track.sampleType = carriersSet.has(sampleId) ? 'carrier' : 'control';
+      sampleType = new Set(carriers).has(sampleId) ? 'carrier' : 'control';
     }
-    
-    // Fetch reads for the specific sample
-    fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
-      .catch(err => {
-        console.error('Failed to load reads for Smart track:', err);
-      });
+
+    if (typeof spawnSmartTracksForSample === "function") {
+      spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleType);
+    } else {
+      const track = createSmartTrack(strategy, selectedAlleles);
+      track.sampleId = sampleId;
+      if (sampleType) track.sampleType = sampleType;
+      fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+        .catch(err => { console.error('Failed to load reads for Smart track:', err); });
+    }
   }
   
   // Main update function for selection display
@@ -5720,11 +5871,11 @@ function setupCanvasHover() {
       const numSamples = state.sampleSelection.numSamples || 1;
       
       // Select samples based on strategy (will pick new random samples each time for Random strategy)
-      // Load UNIQUE samples only, capped at what the slider/button promised. Some
-      // strategies pad by cycling/reusing candidates (returning duplicate sample
-      // IDs), which would create duplicate tracks and blow past the button count.
-      // Unique, not-already-loaded, capped at the requested count (one track/sample).
-      const _loadedIds = (state.smartTracks || []).map(t => t.sampleId).filter(Boolean);
+      // Load UNIQUE samples only, capped at what the slider/button promised. A sample
+      // counts as loaded only when every BAM for it has a track (multi-BAM samples
+      // open as one track per file).
+      const _loadedIds = [...new Set((state.smartTracks || []).map(t => t.sampleId).filter(Boolean))]
+        .filter((id) => (typeof isSampleFullyLoaded === "function" ? isSampleFullyLoaded(id) : true));
       const toLoad = gsSelectSamplesToLoad(
         selectSamplesForStrategy(strategy, candidates, numSamples), _loadedIds, numSamples);
 
@@ -5737,25 +5888,25 @@ function setupCanvasHover() {
         }
       }
 
-      // Create Smart tracks based on selected samples (add, don't replace)
+      // Create Smart tracks based on selected samples (add, don't replace).
+      // One track per BAM when a sample resolves to multiple files.
       const trackPromises = [];
-      for (let i = 0; i < toLoad.length; i++) {
-        const track = createSmartTrack(strategy, selectedAlleles);
-        const sampleId = toLoad[i];
-        track.sampleId = sampleId;   // claim the sample now so rapid re-clicks dedupe
-
-        // Set sampleType for carriers_controls strategy
-        if (strategy === 'carriers_controls' && sampleTypes[sampleId]) {
-          track.sampleType = sampleTypes[sampleId];
+      for (const sampleId of toLoad) {
+        const st = sampleTypes[sampleId] || null;
+        if (typeof spawnSmartTracksForSample === "function") {
+          trackPromises.push(...spawnSmartTracksForSample(
+            sampleId, strategy, selectedAlleles, st));
+        } else {
+          const track = createSmartTrack(strategy, selectedAlleles);
+          track.sampleId = sampleId;
+          if (st) track.sampleType = st;
+          trackPromises.push(
+            fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+              .catch(err => {
+                console.error('Failed to load reads for Smart track:', err);
+              })
+          );
         }
-        
-        // Fetch reads
-        trackPromises.push(
-          fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
-            .catch(err => {
-              console.error('Failed to load reads for Smart track:', err);
-            })
-        );
       }
       
       // Re-enable button after all tracks are created (reads may still be loading)
@@ -5789,11 +5940,10 @@ function setupCanvasHover() {
       const numSamples = state.sampleSelection.numSamples || 1;
       
       // Select samples based on strategy
-      // Load UNIQUE samples only, capped at what the slider/button promised. Some
-      // strategies pad by cycling/reusing candidates (returning duplicate sample
-      // IDs), which would create duplicate tracks and blow past the button count.
-      // Unique, not-already-loaded, capped at the requested count (one track/sample).
-      const _loadedIds = (state.smartTracks || []).map(t => t.sampleId).filter(Boolean);
+      // Load UNIQUE samples only, capped at what the slider/button promised. A sample
+      // counts as loaded only when every BAM for it has a track.
+      const _loadedIds = [...new Set((state.smartTracks || []).map(t => t.sampleId).filter(Boolean))]
+        .filter((id) => (typeof isSampleFullyLoaded === "function" ? isSampleFullyLoaded(id) : true));
       const toLoad = gsSelectSamplesToLoad(
         selectSamplesForStrategy(strategy, candidates, numSamples), _loadedIds, numSamples);
 
@@ -5806,25 +5956,25 @@ function setupCanvasHover() {
         }
       }
 
-      // Create Smart tracks based on selected samples (add, don't replace)
+      // Create Smart tracks based on selected samples (add, don't replace).
+      // One track per BAM when a sample resolves to multiple files.
       const trackPromises = [];
-      for (let i = 0; i < toLoad.length; i++) {
-        const track = createSmartTrack(strategy, selectedAlleles);
-        const sampleId = toLoad[i];
-        track.sampleId = sampleId;   // claim the sample now so rapid re-clicks dedupe
-
-        // Set sampleType for carriers_controls strategy
-        if (strategy === 'carriers_controls' && sampleTypes[sampleId]) {
-          track.sampleType = sampleTypes[sampleId];
+      for (const sampleId of toLoad) {
+        const st = sampleTypes[sampleId] || null;
+        if (typeof spawnSmartTracksForSample === "function") {
+          trackPromises.push(...spawnSmartTracksForSample(
+            sampleId, strategy, selectedAlleles, st));
+        } else {
+          const track = createSmartTrack(strategy, selectedAlleles);
+          track.sampleId = sampleId;
+          if (st) track.sampleType = st;
+          trackPromises.push(
+            fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
+              .catch(err => {
+                console.error('Failed to load reads for Smart track:', err);
+              })
+          );
         }
-        
-        // Fetch reads
-        trackPromises.push(
-          fetchReadsForSmartTrack(track.id, strategy, track.selectedAlleles, sampleId)
-            .catch(err => {
-              console.error('Failed to load reads for Smart track:', err);
-            })
-        );
       }
       
       // Re-enable button after all tracks are created (reads may still be loading)

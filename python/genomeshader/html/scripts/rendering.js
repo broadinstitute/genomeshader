@@ -292,7 +292,10 @@ function getTrackLayout() {
         contentLeft: 0,
         contentWidth: safeMainWidth
       });
-      currentY += effectiveHeight; // no gap between tracks
+      currentY += effectiveHeight;
+      // Collapsed smart tracks: a few px between slots so the 24px label pills
+      // (centered in closedHeight) don't crowd each other.
+      if (isSmartTrack && track.collapsed) currentY += 4;
     }
   }
 

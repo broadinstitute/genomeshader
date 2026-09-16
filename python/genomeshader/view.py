@@ -1888,7 +1888,7 @@ class GenomeShader:
             if attached_by_stem is None:
                 attached_by_stem = self._attached_reads_by_stem()
             if vcf_sample in attached_by_stem:
-                bam_samples.add(attached_by_stem[vcf_sample])
+                bam_samples.update(attached_by_stem[vcf_sample])
             elif "://" in vcf_sample or vcf_sample.startswith("/"):
                 bam_samples.add(vcf_sample)
         return list(bam_samples)
@@ -1901,6 +1901,40 @@ class GenomeShader:
             if base.endswith(ext):
                 return base[: -len(ext)]
         return base
+
+    def _read_bam_index_snapshot(self) -> dict:
+        """sample_id -> [BAM/CRAM urls] for the frontend (one smart track per URL).
+
+        Mirrors get_bam_samples_for_vcf_samples precedence: explicit mapping wins,
+        then the background read index, then attached-file filename stems. Used so
+        Load / sample search can open multi-BAM samples as separate tracks
+        (e.g. haplotagged long reads vs untagged short reads) instead of merging.
+        """
+        out: dict = {}
+        claimed = set()
+        if self._sample_mapping:
+            for k, v in self._sample_mapping.items():
+                urls = list(v) if isinstance(v, (list, tuple, set)) else [v]
+                out[str(k)] = list(dict.fromkeys(str(u) for u in urls if u))
+                claimed.add(str(k))
+        try:
+            with self._read_index_lock:
+                for k, urls in self._read_index.items():
+                    sk = str(k)
+                    if sk in claimed:
+                        continue
+                    out[sk] = list(dict.fromkeys(str(u) for u in (urls or []) if u))
+                    claimed.add(sk)
+        except Exception:
+            pass
+        try:
+            for stem, urls in self._attached_reads_by_stem().items():
+                if stem in claimed:
+                    continue
+                out[stem] = list(dict.fromkeys(str(u) for u in (urls or []) if u))
+        except Exception:
+            pass
+        return out
 
     def _maybe_start_read_index(self):
         """Start the background VCF-sample -> read-URL index once BOTH variants
@@ -1996,16 +2030,24 @@ class GenomeShader:
             self._read_index_done.set()
 
     def _attached_reads_by_stem(self) -> dict:
-        """{basename-stem -> url} for every attached BAM/CRAM, so a VCF sample
-        name resolves to its read file by filename (sample "X" -> ".../X.bam")
-        when no explicit sample mapping is set."""
+        """{basename-stem -> [url, ...]} for every attached BAM/CRAM.
+
+        A VCF sample name resolves to its read file(s) by filename
+        (sample "X" -> ".../X.bam") when no explicit sample mapping is set.
+        Multiple attaches can share a stem (e.g. long_reads/HG001.bam and
+        short_reads/HG001.bam); all are kept so the UI can open one track each.
+        """
         out: dict = {}
         try:
             for url in self._session.get_attached_reads():
                 base = str(url).rsplit("/", 1)[-1]
                 for ext in (".bam", ".cram"):
                     if base.endswith(ext):
-                        out[base[: -len(ext)]] = url
+                        stem = base[: -len(ext)]
+                        bucket = out.setdefault(stem, [])
+                        u = str(url)
+                        if u not in bucket:
+                            bucket.append(u)
                         break
         except Exception:
             pass
@@ -2046,16 +2088,21 @@ class GenomeShader:
         """
         return self._session.get_bam_sample_names()
 
-    def _fetch_reads_payload(self, sample_id=None, samples=None, locus=None) -> dict:
+    def _fetch_reads_payload(self, sample_id=None, samples=None, locus=None,
+                             bam_url=None) -> dict:
         """Resolve reads for a sample selection into a JSON-serializable payload.
 
         Used by the anywidget host's reads message handler. Mirrors the comm
         handler's logic: last-rendered locus + sample(s) -> BAM URLs (via the
         sample mapping) -> fetched reads. Raises ValueError on bad input.
+
+        When ``bam_url`` is set, only that file is fetched (one smart track per
+        BAM). The URL must belong to the sample's resolved set.
         """
         locus = locus or self._last_locus
         self._debug_log("reads_payload_start", locus=locus, sample_id=sample_id,
-                        n_samples=(len(samples) if samples else (1 if sample_id else 0)))
+                        n_samples=(len(samples) if samples else (1 if sample_id else 0)),
+                        bam_url=bam_url)
         if not locus:
             raise ValueError("No locus available; render a locus first")
 
@@ -2064,6 +2111,24 @@ class GenomeShader:
             raise ValueError("No sample_id or samples provided")
 
         bam_urls = self.get_bam_samples_for_vcf_samples(vcf_samples)
+        if bam_url:
+            bam_url = str(bam_url)
+            if bam_url in bam_urls:
+                bam_urls = [bam_url]
+            elif not bam_urls and ("://" in bam_url or bam_url.startswith("/")):
+                # Explicit locator with no sample mapping yet.
+                bam_urls = [bam_url]
+            else:
+                self._debug_log("reads_skipped_bam_mismatch", locus=locus,
+                                sample_id=sample_id, bam_url=bam_url,
+                                resolved=list(bam_urls)[:20])
+                return {
+                    "reads": {},
+                    "count": 0,
+                    "bam_urls": [],
+                    "vcf_samples": vcf_samples,
+                    "sample_id": sample_id,
+                }
         self._debug_log("reads_bam_resolve", locus=locus, n_vcf_samples=len(vcf_samples),
                         n_bams=len(bam_urls), bam_urls=list(bam_urls)[:20])
         if not bam_urls:
@@ -4887,6 +4952,9 @@ class GenomeShader:
             'variant_max_span_bp': int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "1000000")),
             'debug': bool(getattr(self, "_debug", False)),  # frontend event logging -> debug_log comm
             'sample_mapping': self._sample_mapping,  # Sample mapping: VCF sample names -> BAM sample names
+            # sample_id -> [bam/cram urls]; frontend opens one smart track per URL
+            # so multi-BAM samples (long+short) don't merge into one summary.
+            'read_bam_index': self._read_bam_index_snapshot(),
             # VCF samples that have attached BAM/CRAM. Load / sample search draw
             # only from this set so VCF-only carriers don't raise a modal.
             'read_samples': self._samples_with_reads(),

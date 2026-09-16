@@ -48,6 +48,24 @@ def test_falls_back_to_attached_by_filename_stem():
     assert o.get_bam_samples_for_vcf_samples(["FP0008-C"]) == ["gs://b/bam/FP0008-C.bam"]
 
 
+def test_multiple_attached_same_stem_all_resolve():
+    # long_reads/HG001.bam + short_reads/HG001.bam share a stem — both must
+    # resolve so the UI can open one smart track per BAM.
+    o = _obj(attached=["gs://b/long_reads/HG001.bam", "gs://b/short_reads/HG001.bam"])
+    urls = o.get_bam_samples_for_vcf_samples(["HG001"])
+    assert set(urls) == {"gs://b/long_reads/HG001.bam", "gs://b/short_reads/HG001.bam"}
+
+
+def test_read_bam_index_snapshot_lists_multi_bam_sample():
+    o = _obj(mapping={"S1": ["gs://x/s1_long.bam", "gs://x/s1_short.bam"]},
+             attached=["gs://b/HG001.bam"])
+    for name in ("_read_bam_index_snapshot",):
+        setattr(o, name, types.MethodType(getattr(GenomeShader, name), o))
+    snap = o._read_bam_index_snapshot()
+    assert snap["S1"] == ["gs://x/s1_long.bam", "gs://x/s1_short.bam"]
+    assert snap["HG001"] == ["gs://b/HG001.bam"]
+
+
 def test_unmatched_plain_name_resolves_to_nothing():
     o = _obj(attached=["gs://b/other.bam"])
     assert o.get_bam_samples_for_vcf_samples(["NOPE"]) == []
