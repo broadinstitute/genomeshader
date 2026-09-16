@@ -950,8 +950,10 @@ function renderTracks() {
     }
   }
 
-  // repeats is optional (dropped when no repeats_track features) — don't require it here.
-  if (!genesLayout || !referenceLayout || !flowLayout) return;
+  // Genes / reference / flow are independently hideable. Do not abort the
+  // whole pass when one is off — genes paint to a shared WebGPU canvas, and
+  // returning here skips the GPU submit so the previous frame's gene bodies
+  // stay on screen after the track control has already disappeared.
 
   // --- Genes / RepeatMasker via shared drawTrackFeatures (Phase 2)
   if (genesLayout && !genesLayout.track.collapsed) {
@@ -1108,7 +1110,9 @@ function renderTracks() {
     // (flow) canvas so they sit on the variants — the standalone Indel track
     // is gone. Full-viewer overlay -> same genome x-mapping as the tracks SVG.
     const flowIndelOverlay = document.getElementById('flowIndelOverlay');
-    if (!flowIndelOverlay) return;
+    if (!flowIndelOverlay) {
+      // Overlay missing — still draw reference / other tracks below.
+    } else {
     while (flowIndelOverlay.firstChild) flowIndelOverlay.removeChild(flowIndelOverlay.firstChild);
     // The overlay is a SCREEN-space SVG over #main, and the lollipop coords
     // (baseX = contentLeft, cy = genomePos) are screen pixels — so its
@@ -1303,10 +1307,11 @@ function renderTracks() {
     }
   }
 
+    } // flowIndelOverlay present
   }
 
   // --- Reference track
-  if (!referenceLayout.track.collapsed) {
+  if (referenceLayout && !referenceLayout.track.collapsed) {
     let referenceX, referenceY, referenceW, referenceH;
     if (isVertical) {
       referenceX = referenceLayout.contentLeft + 8;

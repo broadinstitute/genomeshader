@@ -40,8 +40,8 @@ const state = {
   dragging: false,
   lastX: 0,
   lastY: 0,
-  // Locus-bar padlock: freeze zoom (wheel / pinch / dblclick). Drag-to-pan
-  // still works for last-pixel screenshot framing. Go / contig jumps still work.
+  // Locus-bar padlock + Settings "Lock viewport": freeze pan and zoom.
+  // Go / contig jumps still work. Default off (unlocked).
   lockView: false,
 
   // touch pinch

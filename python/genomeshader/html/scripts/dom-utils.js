@@ -72,6 +72,7 @@ const orientationItem = getElementById("orientationItem");
 const orientationLabel = getElementById("orientationLabel");
 const lockAllelesItem = getElementById("lockAllelesItem");
 const lockAllelesToggle = getElementById("lockAllelesToggle");
+const lockViewportItem = getElementById("lockViewportItem");
 const chromClickJumpItem = getElementById("chromClickJumpItem");
 const chromClickJumpToggle = getElementById("chromClickJumpToggle");
 const aggregateRareAllelesItem = getElementById("aggregateRareAllelesItem");
@@ -1079,6 +1080,13 @@ if (lockAllelesItem && lockAllelesToggle) {
   });
   lockAllelesToggle.addEventListener("change", () => {
     setLockAlleles(lockAllelesToggle.checked);
+  });
+}
+if (lockViewportItem) {
+  lockViewportItem.addEventListener("click", () => {
+    if (typeof gsSetViewLock === "function") {
+      gsSetViewLock(!(state.lockView === true));
+    }
   });
 }
 if (chromClickJumpItem && chromClickJumpToggle) {

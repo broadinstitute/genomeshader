@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 pytest.importorskip("genomeshader.genomeshader")
 
 from genomeshader.view import GenomeShader, init as gs_init
+from genomeshader.view import _ucsc_groups_for_tracks
 
 
 def _shader(tmp_path, monkeypatch, **kwargs):
@@ -103,3 +104,73 @@ def test_init_passes_allow_ucsc_api(tmp_path, monkeypatch):
         s = gs_init("gs://test-bucket/genomeshader", allow_ucsc_api=False)
     assert s.genome_build is None
     assert s._ucsc_api_enabled() is False
+
+
+def test_ucsc_groups_fallback_labels_and_order():
+    groups = _ucsc_groups_for_tracks([
+        {"group": "varRep"},
+        {"group": "genes"},
+        {"group": ""},
+        {"group": "hprc"},
+    ])
+    ids = [g["id"] for g in groups]
+    assert ids == ["genes", "varRep", "hprc", ""]
+    by_id = {g["id"]: g["label"] for g in groups}
+    assert by_id["genes"] == "Genes and Gene Predictions"
+    assert by_id["varRep"] == "Variation"
+    assert by_id[""] == "Other"
+
+
+def test_ucsc_groups_prefer_fetched_grp_rows():
+    groups = _ucsc_groups_for_tracks(
+        [{"group": "genes"}, {"group": "mystery"}],
+        fetched=[
+            {"id": "genes", "label": "Custom Genes Name", "priority": 1},
+            {"id": "unused", "label": "Not Present", "priority": 0},
+        ],
+    )
+    by_id = {g["id"]: g["label"] for g in groups}
+    assert by_id["genes"] == "Custom Genes Name"
+    assert "unused" not in by_id
+    assert by_id["mystery"] == "mystery"
+
+
+def test_list_ucsc_tracks_keeps_group_and_drops_signal(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch, genome="hg38")
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"hg38": {
+                "wgEncodeGencodeV50": {
+                    "shortLabel": "All GENCODE V50",
+                    "longLabel": "GENCODE V50 comprehensive",
+                    "type": "genePred",
+                    "group": "genes",
+                },
+                "noyvertSv": {
+                    "shortLabel": "1KG Boehringer ONT SVs",
+                    "type": "bigBed 9 +",
+                    "group": "varRep",
+                },
+                "phyloP100way": {
+                    "shortLabel": "Cons 100 Vert",
+                    "type": "bigWig",
+                    "group": "compGeno",
+                },
+            }}
+
+    with patch.object(s, "_http_get_json", return_value=Resp()), \
+         patch.object(s, "_fetch_ucsc_grp", return_value=[
+             {"id": "genes", "label": "Genes and Gene Predictions", "priority": 3},
+             {"id": "varRep", "label": "Variation", "priority": 3.55},
+         ]):
+        payload = s.list_ucsc_tracks("hg38")
+    assert payload is not None
+    tracks = payload["tracks"]
+    assert [t["track"] for t in tracks] == ["noyvertSv", "wgEncodeGencodeV50"]
+    gencode = tracks[1]
+    assert gencode["group"] == "genes"
+    assert gencode["longLabel"] == "GENCODE V50 comprehensive"
+    assert [g["id"] for g in payload["groups"]] == ["genes", "varRep"]

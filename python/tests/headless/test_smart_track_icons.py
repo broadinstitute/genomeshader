@@ -48,6 +48,8 @@ def test_sidebar_icons_match_on_track_menu(browser):
              const before = sel => { const el = document.querySelector(sel);
                return el ? getComputedStyle(el, '::before').content.replace(/^"|"$/g, '') : null; };
              const text = sel => { const el = document.querySelector(sel); return el ? el.textContent.trim() : null; };
+             const first = document.querySelector('.smart-track-item');
+             const grip = first && first.querySelector('.smart-track-item-grip');
              return {
                sb_reload:  before('.smart-track-item-btn.refresh'),
                sb_shuffle: before('.smart-track-item-btn.shuffle'),
@@ -55,10 +57,17 @@ def test_sidebar_icons_match_on_track_menu(browser):
                ot_reload:  text('.smart-track-reload-btn'),
                ot_shuffle: text('.smart-track-shuffle-btn'),
                ot_close:   text('.smart-track-close-btn'),
+               gripCount: document.querySelectorAll('.smart-track-item-grip').length,
+               gripFirst: !!(grip && first && first.firstElementChild === first.querySelector('.smart-track-item-header')
+                 && first.querySelector('.smart-track-item-header').firstElementChild === grip),
+               gripSvg: !!(grip && grip.querySelector('svg')),
              };
         }""")
     assert g["ot_reload"] and g["sb_reload"], f"icons missing: {g}"
     assert g["sb_reload"] == g["ot_reload"], f"reload icon differs: {g}"
     assert g["sb_shuffle"] == g["ot_shuffle"], f"shuffle icon differs: {g}"
     assert g["sb_close"] == g["ot_close"], f"close icon differs: {g}"
+    assert g["gripCount"] >= 1, f"drag grip missing: {g}"
+    assert g["gripFirst"] is True, f"grip should be leftmost in the row: {g}"
+    assert g["gripSvg"] is True, f"grip svg missing: {g}"
     page.close()
