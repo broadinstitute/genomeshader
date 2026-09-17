@@ -461,7 +461,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   display: flex;
   flex-direction: column;
   padding: 9px 10px;
-  margin: 7px 0;
+  margin: 4px 0;
   border-radius: 10px;
   background: var(--panel2);
   border: 1px solid transparent;
@@ -686,7 +686,67 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   border: 1px solid transparent;
 }
 .group:hover { border-color: var(--border2); }
+.group.group-active {
+  border-color: var(--accent, #2b6fff);
+  background: color-mix(in srgb, var(--accent, #2b6fff) 12%, var(--panel2));
+}
 .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,0.16); color: var(--muted); }
+
+.smart-track-group-block {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin: 4px 0;
+}
+.smart-track-group-block.dragging-group {
+  opacity: 0.55;
+}
+.smart-track-group-rail {
+  flex: 0 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  cursor: grab;
+  border-radius: 4px;
+  user-select: none;
+}
+.smart-track-group-rail:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.smart-track-group-rail:active {
+  cursor: grabbing;
+}
+.smart-track-group-rail-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: currentColor;
+  line-height: 1;
+  max-height: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+.smart-track-group-items {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.smart-track-group-items .smart-track-item {
+  margin: 0;
+}
+
+.smart-track-item.group-filtered-out {
+  opacity: 0.42;
+}
 
 /* Gear button bottom-left (requested) */
 .gearBtn {
@@ -1245,9 +1305,9 @@ svg.overlay {
 /* Collapsed: show only the icon rail, hide the tab content. */
 .app.sidebar-collapsed .sidebar-left-tab-content { display: none; }
 
-/* The settings menu renders inline inside the Settings tab (not a floating
-   popup). Override the .menu popup styling for this instance. */
-#ctxMenu.settings-panel {
+/* Settings-style menus render inline inside left tabs (not floating popups).
+   Override the .menu popup styling for these instances. */
+.menu.settings-panel {
   position: static !important;
   display: block !important;
   visibility: visible !important;

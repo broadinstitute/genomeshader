@@ -373,18 +373,26 @@ function _cacheSmartReads(sampleId, reads, bamUrls, bamUrl) {
 
 // BAM/CRAM URLs resolved for a sample (from config). Empty when unknown —
 // fetch_reads will resolve on the kernel. Multi-URL samples get one track each.
+// evidenceFilter (Sample Search) narrows by attach_reads label; metadata facets
+// are applied at the candidate-pool layer, not here.
 function bamUrlsForSample(sampleId) {
   if (!sampleId) return [];
   const cfg = window.GENOMESHADER_CONFIG || {};
   const idx = cfg.read_bam_index || {};
+  let urls = [];
   if (Array.isArray(idx[sampleId]) && idx[sampleId].length) {
-    return idx[sampleId].slice();
+    urls = idx[sampleId].slice();
+  } else {
+    const sm = cfg.sample_mapping || {};
+    if (Array.isArray(sm[sampleId]) && sm[sampleId].length) {
+      urls = sm[sampleId].slice();
+    }
   }
-  const sm = cfg.sample_mapping || {};
-  if (Array.isArray(sm[sampleId]) && sm[sampleId].length) {
-    return sm[sampleId].slice();
+  const filter = (state.sampleSelection && state.sampleSelection.evidenceFilter) || null;
+  if (filter && typeof getReadSetForUrl === "function") {
+    urls = urls.filter((u) => String(getReadSetForUrl(u) || "") === String(filter));
   }
-  return [];
+  return urls;
 }
 
 function isSampleBamTrackLoaded(sampleId, bamUrl) {
@@ -414,6 +422,15 @@ function spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleTy
     ? selectedAlleles
     : new Set(selectedAlleles || []);
   const urls = bamUrlsForSample(sampleId);
+  if (!urls.length) {
+    const evidence = state.sampleSelection && state.sampleSelection.evidenceFilter;
+    if (evidence) {
+      if (window.__GS_STATUS) {
+        window.__GS_STATUS(`No ${evidence} reads for ${sampleId}`, { autoHide: 3500 });
+      }
+      return promises;
+    }
+  }
   const bamList = urls.length
     ? urls.filter((u) => !isSampleBamTrackLoaded(sampleId, u))
     : [null];
@@ -428,6 +445,9 @@ function spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleTy
           console.error("Failed to load reads for Smart track:", err);
         })
     );
+  }
+  if (typeof clusterSmartTracksByGrouping === "function") {
+    clusterSmartTracksByGrouping();
   }
   return promises;
 }
@@ -837,9 +857,13 @@ function updateSmartTrackLabel(track) {
     const multi = siblings.length > 1
       || (state.smartTracks || []).filter((t) => t.sampleId === track.sampleId).length > 1;
     if (multi && bam && typeof getBasename === "function") {
-      newLabel = track.sampleId + " · " + getBasename(bam);
+      const readSet = (typeof getReadSetForUrl === "function") ? getReadSetForUrl(bam) : null;
+      let base = track.sampleId + " · " + (readSet || getBasename(bam));
+      const suffix = (typeof compositeLabelSuffix === "function") ? compositeLabelSuffix() : "";
+      newLabel = suffix ? (base + suffix) : base;
     } else {
-      newLabel = track.sampleId;
+      const suffix = (typeof compositeLabelSuffix === "function") ? compositeLabelSuffix() : "";
+      newLabel = track.sampleId + (suffix || "");
     }
   } else if (track.bamUrls && track.bamUrls.length > 0) {
     // Fallback to BAM basenames if sampleId not available
@@ -900,6 +924,98 @@ function editSmartTrackLabel(trackId, newLabel) {
 
 // Right sidebar for Tracks (layout order, visibility, labels)
 // -----------------------------
+
+// Reorder loaded Smart Tracks into blocks by the active grouping column.
+// Within each group, preserve the previous relative order (load / drag order).
+function clusterSmartTracksByGrouping() {
+  const col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+  if (!col || typeof getSampleGroupValue !== "function") {
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+    return;
+  }
+  const smartIds = new Set(
+    (state.smartTracks || []).map(t => t.id).filter(id => String(id).startsWith("smart-track-"))
+  );
+  if (!smartIds.size) {
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+    return;
+  }
+
+  const spec = typeof getGroupingColumnSpec === "function" ? getGroupingColumnSpec(col) : null;
+  const groupOrder = (spec && Array.isArray(spec.values))
+    ? spec.values.map(v => String(v.value))
+    : [];
+
+  const nonSmart = [];
+  const byGroup = new Map(); // group -> [track] in prior relative order
+  for (const track of state.tracks) {
+    if (!smartIds.has(track.id)) {
+      nonSmart.push(track);
+      continue;
+    }
+    const sampleId = (typeof smartTrackSampleId === "function")
+      ? smartTrackSampleId(track)
+      : ((state.smartTracks || []).find(st => st.id === track.id) || {}).sampleId || track.label;
+    const g = String(getSampleGroupValue(sampleId, col) || "(unlabeled)");
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g).push(track);
+  }
+
+  const orderedGroups = [];
+  // Prefer current layout order so sidebar group-rail drags stick across reloads.
+  for (const track of state.tracks) {
+    if (!smartIds.has(track.id)) continue;
+    const sampleId = (typeof smartTrackSampleId === "function")
+      ? smartTrackSampleId(track)
+      : ((state.smartTracks || []).find(st => st.id === track.id) || {}).sampleId || track.label;
+    const g = String(getSampleGroupValue(sampleId, col) || "(unlabeled)");
+    if (byGroup.has(g) && orderedGroups.indexOf(g) < 0) orderedGroups.push(g);
+  }
+  for (const g of groupOrder) {
+    if (byGroup.has(g) && orderedGroups.indexOf(g) < 0) orderedGroups.push(g);
+  }
+  for (const g of byGroup.keys()) {
+    if (orderedGroups.indexOf(g) < 0) orderedGroups.push(g);
+  }
+
+  // Keep non-smart tracks in their relative order; splice smart tracks after flow
+  // as a contiguous grouped block (matching createSmartTrack insertion).
+  const flowIdx = nonSmart.findIndex(t => t.id === "flow" || String(t.id).startsWith("flow-"));
+  const clusteredSmart = [];
+  for (const g of orderedGroups) {
+    clusteredSmart.push(...byGroup.get(g));
+  }
+  let next;
+  if (flowIdx >= 0) {
+    next = [
+      ...nonSmart.slice(0, flowIdx + 1),
+      ...clusteredSmart,
+      ...nonSmart.slice(flowIdx + 1),
+    ];
+  } else {
+    next = [...nonSmart, ...clusteredSmart];
+  }
+  state.tracks = next;
+
+  // Align smartTracks array with layout order among smart ids
+  if (Array.isArray(state.smartTracks) && state.smartTracks.length) {
+    const smartMap = new Map(state.smartTracks.map(t => [t.id, t]));
+    const orderedSmart = clusteredSmart.map(t => smartMap.get(t.id)).filter(Boolean);
+    const seen = new Set(orderedSmart.map(t => t.id));
+    for (const t of state.smartTracks) {
+      if (!seen.has(t.id)) orderedSmart.push(t);
+    }
+    state.smartTracks = orderedSmart;
+  }
+
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof renderAll === "function") renderAll();
+}
+
+if (typeof window !== "undefined") {
+  window.clusterSmartTracksByGrouping = clusterSmartTracksByGrouping;
+}
 
 // Render Tracks list in right sidebar (all layout tracks, not just smart samples)
 function renderSmartTracksSidebar() {
@@ -980,6 +1096,14 @@ function renderSmartTracksSidebar() {
   const handleContainerDragover = (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
+    const draggingGroup = smartTracksList.querySelector('.smart-track-group-block.dragging-group');
+    if (!draggingGroup) return;
+    const afterElement = getDragAfterTopLevel(smartTracksList, e.clientY, draggingGroup);
+    if (afterElement == null) {
+      smartTracksList.appendChild(draggingGroup);
+    } else {
+      smartTracksList.insertBefore(draggingGroup, afterElement);
+    }
   };
   
   // Store handlers to allow removal later
@@ -989,6 +1113,56 @@ function renderSmartTracksSidebar() {
   // Add drop handler to container
   smartTracksList.addEventListener('dragover', handleContainerDragover);
   smartTracksList.addEventListener('drop', handleContainerDrop);
+
+  let currentGroupKey = null;
+  let currentGroupItems = null;
+  const groupingCol = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+
+  const closeGroupBlock = () => {
+    currentGroupKey = null;
+    currentGroupItems = null;
+  };
+
+  const ensureGroupBlock = (groupName, groupColor) => {
+    if (currentGroupKey === groupName && currentGroupItems) return currentGroupItems;
+    const block = document.createElement("div");
+    block.className = "smart-track-group-block";
+    block.dataset.groupValue = groupName;
+    const rail = document.createElement("div");
+    rail.className = "smart-track-group-rail";
+    rail.draggable = true;
+    rail.title = (groupingCol ? `${groupingCol}: ${groupName}` : groupName) + " — drag to reorder group";
+    if (groupColor) rail.style.color = groupColor;
+    const railLabel = document.createElement("span");
+    railLabel.className = "smart-track-group-rail-label";
+    railLabel.textContent = groupName;
+    rail.appendChild(railLabel);
+    const items = document.createElement("div");
+    items.className = "smart-track-group-items";
+    block.appendChild(rail);
+    block.appendChild(items);
+
+    rail.addEventListener("dragstart", (e) => {
+      e.stopPropagation();
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", "group:" + groupName);
+      // Avoid individual items being treated as the drag source.
+      block.classList.add("dragging-group");
+      document.querySelectorAll(".smart-track-item.dragging").forEach((el) => {
+        el.classList.remove("dragging");
+      });
+    });
+    rail.addEventListener("dragend", (e) => {
+      e.stopPropagation();
+      block.classList.remove("dragging-group");
+      applyTrackOrderFromDom();
+    });
+
+    smartTracksList.appendChild(block);
+    currentGroupKey = groupName;
+    currentGroupItems = items;
+    return items;
+  };
   
   tracksInOrder.forEach((track) => {
     const isSmart = track.id.startsWith('smart-track-');
@@ -996,10 +1170,29 @@ function renderSmartTracksSidebar() {
       ? (state.smartTracks || []).find(st => st.id === track.id)
       : null;
 
+    let appendParent = smartTracksList;
+    if (isSmart && groupingCol && typeof getSampleGroupValue === "function") {
+      const sampleId = (typeof smartTrackSampleId === "function")
+        ? smartTrackSampleId(track)
+        : ((smartMeta && smartMeta.sampleId) || track.sampleId || track.label);
+      const g = String(getSampleGroupValue(sampleId, groupingCol) || "(unlabeled)");
+      const color = (typeof getGroupColor === "function") ? getGroupColor(groupingCol, g) : null;
+      appendParent = ensureGroupBlock(g, color);
+    } else {
+      closeGroupBlock();
+    }
+
     const item = document.createElement('div');
     item.className = 'smart-track-item';
     item.dataset.trackId = track.id;
     item.draggable = true;
+
+    if (isSmart) {
+      if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
+        item.classList.add("group-filtered-out");
+        item.title = "Hidden by active Groups filters";
+      }
+    }
     
     const header = document.createElement('div');
     header.className = 'smart-track-item-header';
@@ -1138,6 +1331,11 @@ function renderSmartTracksSidebar() {
     
     // Drag and drop handlers
     item.addEventListener('dragstart', (e) => {
+      // Don't start an item drag while a group rail drag is active.
+      if (smartTracksList.querySelector('.smart-track-group-block.dragging-group')) {
+        e.preventDefault();
+        return;
+      }
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', track.id);
       item.classList.add('dragging');
@@ -1151,13 +1349,18 @@ function renderSmartTracksSidebar() {
     item.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
+      // Group reordering is handled on the list container.
+      if (smartTracksList.querySelector('.smart-track-group-block.dragging-group')) return;
       
       const afterElement = getDragAfterElement(smartTracksList, e.clientY);
       const dragging = document.querySelector('.smart-track-item.dragging');
+      if (!dragging) return;
       if (afterElement == null) {
-        smartTracksList.appendChild(dragging);
+        // Prefer appending inside the last open group items tray when present.
+        const lastGroupItems = smartTracksList.querySelector('.smart-track-group-block:last-child .smart-track-group-items');
+        (lastGroupItems || smartTracksList).appendChild(dragging);
       } else {
-        smartTracksList.insertBefore(dragging, afterElement);
+        afterElement.parentNode.insertBefore(dragging, afterElement);
       }
     });
     
@@ -1167,7 +1370,7 @@ function renderSmartTracksSidebar() {
       e.stopPropagation();
     });
     
-    smartTracksList.appendChild(item);
+    appendParent.appendChild(item);
   });
 }
 
@@ -1184,6 +1387,23 @@ function getDragAfterElement(container, y) {
     } else {
       return closest;
     }
+  }, { offset: Number.NEGATIVE_INFINITY }).element;
+}
+
+// Top-level reorder target for whole group blocks (and ungrouped track rows).
+function getDragAfterTopLevel(container, y, draggingEl) {
+  const children = [...container.children].filter((el) => {
+    if (el === draggingEl) return false;
+    return el.classList.contains('smart-track-group-block')
+      || el.classList.contains('smart-track-item');
+  });
+  return children.reduce((closest, child) => {
+    const box = child.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    if (offset < 0 && offset > closest.offset) {
+      return { offset: offset, element: child };
+    }
+    return closest;
   }, { offset: Number.NEGATIVE_INFINITY }).element;
 }
 

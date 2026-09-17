@@ -1543,6 +1543,15 @@ function renderTrackControls() {
     const controls = document.createElement("div");
     controls.className = "track-controls";
     controls.dataset.trackId = track.id;
+
+    // Grouping Variable: tint Smart Track control pills with the sample's group color.
+    if (isSmartTrack && typeof groupColorForSmartTrack === "function") {
+      const gColor = groupColorForSmartTrack(track);
+      if (gColor) {
+        controls.style.borderLeft = `3px solid ${gColor}`;
+        controls.classList.add("group-tinted");
+      }
+    }
     
     // Only a fully hidden track (which takes no layout space) drops controls.
     // Collapsed tracks keep their control bar (label + expand ▶) visible — see
@@ -4371,6 +4380,130 @@ function setupCanvasHover() {
       changeRow.appendChild(changeValue);
       card.appendChild(changeRow);
 
+      // Per-group sample frequency (Groups → color facet), when metadata is attached.
+      (function appendGroupFrequency() {
+        const col = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+        if (!col || typeof buildGroupFrequencyRows !== "function") return;
+        const byGroupAll = variant.alleleSampleCountsByGroup;
+        if (!byGroupAll || !byGroupAll[col]) return;
+        const spec = (typeof getGroupingColumnSpec === "function")
+          ? getGroupingColumnSpec(col)
+          : null;
+        const keys = alleleKeys.length ? alleleKeys.slice() : ["ref"];
+        const rows = buildGroupFrequencyRows({
+          groupingVariable: col,
+          colorFacetKey: col,
+          groupingFilter: (typeof getColorFacetLevel === "function") ? getColorFacetLevel() : null,
+          alleleKeys: keys,
+          alleleSampleCountsByGroup: byGroupAll,
+          columnSpec: spec,
+        });
+        if (!rows.length) return;
+
+        const section = document.createElement("div");
+        section.className = "variant-group-freq";
+        section.style.margin = "8px 0 4px";
+
+        const head = document.createElement("div");
+        head.style.display = "flex";
+        head.style.alignItems = "baseline";
+        head.style.justifyContent = "space-between";
+        head.style.gap = "8px";
+        head.style.marginBottom = "4px";
+        const headTitle = document.createElement("div");
+        headTitle.style.fontWeight = "600";
+        headTitle.textContent = `Frequency by ${col}`;
+        const headHint = document.createElement("div");
+        headHint.style.fontSize = "10px";
+        headHint.style.color = "var(--muted)";
+        headHint.textContent = "sample freq";
+        headHint.title = "Fraction of samples in each group that carry the selected allele(s)";
+        head.appendChild(headTitle);
+        head.appendChild(headHint);
+        section.appendChild(head);
+
+        const alleleHint = document.createElement("div");
+        alleleHint.style.fontSize = "10px";
+        alleleHint.style.color = "var(--muted)";
+        alleleHint.style.marginBottom = "6px";
+        const keyLabel = keys.map((k) => {
+          if (k === "ref") return "REF";
+          if (typeof k === "string" && k.startsWith("a")) return `ALT${k.slice(1)}`;
+          return String(k);
+        }).join(", ");
+        alleleHint.textContent = `Selected: ${keyLabel}`;
+        section.appendChild(alleleHint);
+
+        for (const row of rows) {
+          const rowEl = document.createElement("button");
+          rowEl.type = "button";
+          rowEl.className = "variant-group-freq-row" + (row.active ? " active" : "");
+          rowEl.title = row.active
+            ? `Clear filter (${row.group})`
+            : `Filter to ${row.group}`;
+          rowEl.style.cssText = [
+            "display:grid",
+            "grid-template-columns:minmax(52px,0.9fr) 1fr auto",
+            "align-items:center",
+            "gap:8px",
+            "width:100%",
+            "margin:0 0 4px",
+            "padding:5px 6px",
+            "border-radius:6px",
+            "border:1px solid " + (row.active ? "var(--accent, #2b6fff)" : "var(--border2)"),
+            "background:" + (row.active
+              ? "color-mix(in srgb, var(--accent, #2b6fff) 12%, var(--panel))"
+              : "var(--panel)"),
+            "color:var(--text)",
+            "cursor:pointer",
+            "text-align:left",
+            "font:inherit",
+          ].join(";");
+
+          const nameEl = document.createElement("span");
+          nameEl.style.cssText = "font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+          if (row.color) {
+            nameEl.style.borderLeft = `3px solid ${row.color}`;
+            nameEl.style.paddingLeft = "6px";
+          }
+          nameEl.textContent = row.group;
+          rowEl.appendChild(nameEl);
+
+          const track = document.createElement("div");
+          track.className = "variant-group-freq-track";
+          track.style.cssText = "height:8px;border-radius:999px;background:rgba(127,127,127,0.18);overflow:hidden;";
+          const fill = document.createElement("div");
+          fill.style.cssText = [
+            "height:100%",
+            "width:" + Math.max(0, Math.min(100, row.freq * 100)).toFixed(1) + "%",
+            "border-radius:999px",
+            "background:" + (row.color || "var(--accent, #2b6fff)"),
+          ].join(";");
+          track.appendChild(fill);
+          rowEl.appendChild(track);
+
+          const pct = document.createElement("span");
+          pct.style.cssText = "font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;";
+          const pctVal = (row.freq * 100);
+          pct.textContent = `${row.n}/${row.N} (${pctVal < 10 ? pctVal.toFixed(1) : Math.round(pctVal)}%)`;
+          rowEl.appendChild(pct);
+
+          rowEl.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const key = (typeof getColorFacetKey === "function") ? getColorFacetKey() : null;
+            if (key && typeof setMetadataFacetLevel === "function") {
+              setMetadataFacetLevel(key, row.active ? null : row.group);
+            } else if (typeof setGroupingFilter === "function") {
+              setGroupingFilter(row.active ? null : row.group);
+            }
+          });
+          section.appendChild(rowEl);
+        }
+
+        card.appendChild(section);
+      })();
+
       const infoDivider = document.createElement('div');
       infoDivider.style.height = '1px';
       infoDivider.style.background = 'var(--border2)';
@@ -4549,6 +4682,7 @@ function setupCanvasHover() {
     if (strategySectionEl) {
       strategySectionEl.style.display = hasSelection ? 'block' : 'none';
     }
+    if (typeof renderEvidenceFilter === "function") renderEvidenceFilter();
     
     // Enable/disable controls based on selection
     const disabled = !hasSelection;
@@ -4578,7 +4712,7 @@ function setupCanvasHover() {
     const currentRoot = getCurrentRoot();
     const previewEl = byId(currentRoot, 'samplePreview');
     const previewListEl = byId(currentRoot, 'samplePreviewList');
-    const candidates = state.sampleSelection.candidateSamples;
+    const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
     
     if (!previewEl || !previewListEl) return;
     
@@ -4608,7 +4742,7 @@ function setupCanvasHover() {
     const currentRoot = getCurrentRoot();
     const replaceBtn = byId(currentRoot, 'loadSamplesReplace');
     const addBtn = byId(currentRoot, 'loadSamplesAdd');
-    const candidates = state.sampleSelection.candidateSamples;
+    const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
     const numSamples = state.sampleSelection.numSamples || 1;
 
     // The selectable pool depends on the strategy: carriers+controls draws from
@@ -4618,7 +4752,7 @@ function setupCanvasHover() {
     const strategy = state.sampleSelection.strategy;
     let pool = candidates.length;
     if (strategy === 'carriers_controls') {
-      const allN = (state.sampleSelection.allSampleIds || []).length;
+      const allN = applyGroupingSampleFilter(state.sampleSelection.allSampleIds || []).length;
       if (allN > pool) pool = allN;
     }
     const samplesToLoad = Math.min(numSamples, pool);
@@ -4688,7 +4822,40 @@ function setupCanvasHover() {
     const allowed = attachedReadSampleSet();
     return list.filter((id) => allowed.has(id));
   }
-  if (typeof window !== "undefined") window.__GS_filterToAttachedReads = filterToAttachedReads;
+  function applyGroupingSampleFilter(ids) {
+    const list = Array.isArray(ids) ? ids : Array.from(ids || []);
+    if (typeof compositeSampleIds === "function") {
+      const allowed = compositeSampleIds();
+      if (allowed != null) {
+        const set = new Set(allowed.map(String));
+        return list.filter((id) => set.has(String(id)));
+      }
+    }
+    return list;
+  }
+  function filterEvidenceEligible(ids) {
+    const list = Array.isArray(ids) ? ids : Array.from(ids || []);
+    const evidence = state.sampleSelection && state.sampleSelection.evidenceFilter;
+    if (!evidence) return list;
+    return list.filter((id) => {
+      if (typeof bamUrlsForSample === "function") {
+        return bamUrlsForSample(id).length > 0;
+      }
+      if (typeof sampleHasEvidence === "function") {
+        return sampleHasEvidence(id, evidence);
+      }
+      return true;
+    });
+  }
+  function filterSamplesForUi(ids) {
+    return filterEvidenceEligible(applyGroupingSampleFilter(filterToAttachedReads(ids)));
+  }
+  if (typeof window !== "undefined") {
+    window.__GS_filterToAttachedReads = filterToAttachedReads;
+    window.__GS_applyGroupingSampleFilter = applyGroupingSampleFilter;
+    window.__GS_filterEvidenceEligible = filterEvidenceEligible;
+    window.__GS_filterSamplesForUi = filterSamplesForUi;
+  }
 
   // Recompute candidate samples based on strategy and selection
   function recomputeCandidateSamples() {
@@ -4700,6 +4867,7 @@ function setupCanvasHover() {
     // AND/OR toggle) recomputes. The candidate carriers of a variant don't change
     // when we re-fetch the same variant in a new window, so freezing is correct.
     const sig = (state.sampleSelection.combineMode || "") + "|"
+      + (state.sampleSelection.evidenceFilter || "") + "|"
       + Array.from(state.selectedAlleles).sort().join(",");
     if (sig === state.sampleSelection._candidateSig) {
       updateSamplePreview();
@@ -4796,8 +4964,8 @@ function setupCanvasHover() {
       }
     }
     
-    // Convert to sorted array — only samples with attached BAM/CRAM.
-    state.sampleSelection.candidateSamples = filterToAttachedReads(
+    // Convert to sorted array — only samples with attached BAM/CRAM (+ group pill).
+    state.sampleSelection.candidateSamples = filterSamplesForUi(
       Array.from(candidateSamplesSet).sort());
 
     // Scale mode: when the per-sample map is omitted from the payload (large
@@ -4808,7 +4976,7 @@ function setupCanvasHover() {
     if (omitted && candidateSamplesSet.size === 0 && typeof window.__GS_SEND === "function") {
       _fetchCarriersForSelection(selectedAllelePairs, combineMode)
         .then((ids) => {
-          state.sampleSelection.candidateSamples = filterToAttachedReads(ids);
+          state.sampleSelection.candidateSamples = filterSamplesForUi(ids);
           updateSamplePreview();
           try { if (typeof updateLoadButtonText === "function") updateLoadButtonText(); } catch (e) {}
         })
@@ -5065,7 +5233,7 @@ function setupCanvasHover() {
       }
     }
     
-    return filterToAttachedReads(Array.from(candidateSamplesSet).sort());
+    return filterSamplesForUi(Array.from(candidateSamplesSet).sort());
   }
   
   // Export for use in smart-tracks.js
@@ -5173,8 +5341,8 @@ function setupCanvasHover() {
       // Carriers are samples with selected alleles (candidates)
       // Controls are samples without selected alleles
       
-      // Get all available samples
-      const allSamples = state.sampleSelection.allSampleIds || [];
+      // Get all available samples (respect active Participant-group pill)
+      const allSamples = applyGroupingSampleFilter(state.sampleSelection.allSampleIds || []);
       if (allSamples.length === 0) {
         // Fallback: if allSampleIds not populated, just use candidates (or empty)
         if (!candidates || candidates.length === 0) {
@@ -5602,6 +5770,7 @@ function setupCanvasHover() {
   
   // Export for use in smart-tracks.js
   window.selectSamplesForStrategy = selectSamplesForStrategy;
+  window.recomputeCandidateSamples = recomputeCandidateSamples;
   
   // Strategy change handler
   function onStrategyChange() {
@@ -5670,7 +5839,7 @@ function setupCanvasHover() {
         }
         if (ids.length) state.sampleSelection.allSampleIds = ids;
       }
-      return ids;
+      return applyGroupingSampleFilter(ids);
     };
 
     searchInput.addEventListener('input', () => {
@@ -5866,7 +6035,7 @@ function setupCanvasHover() {
       replaceBtn.disabled = true;
       
       const strategy = state.sampleSelection.strategy;
-      const candidates = state.sampleSelection.candidateSamples;
+      const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
@@ -5935,7 +6104,7 @@ function setupCanvasHover() {
       addBtn.disabled = true;
       
       const strategy = state.sampleSelection.strategy;
-      const candidates = state.sampleSelection.candidateSamples;
+      const candidates = applyGroupingSampleFilter(state.sampleSelection.candidateSamples || []);
       const selectedAlleles = Array.from(state.selectedAlleles);
       const numSamples = state.sampleSelection.numSamples || 1;
       
@@ -6001,6 +6170,7 @@ function setupCanvasHover() {
   
   // Export updateSelectionDisplay so it can be called after selection changes
   window.updateSelectionDisplay = updateSelectionDisplay;
+  window.renderVariantsTabSelection = renderVariantsTabSelection;
 }
 
 function ensureFlowContainers(flowLayouts) {

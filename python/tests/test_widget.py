@@ -173,6 +173,43 @@ def test_strategy_order_best_evidence_first():
     assert "strategy: 'best_evidence'" in _build_esm()   # JS state default (raw in ESM)
 
 
+def test_grouping_variable_row_wired():
+    body = _body_html()
+    assert 'id="addFacetSelect"' in body
+    assert 'id="activeFacetsList"' in body
+    assert 'id="participantGroupsSection"' in body
+    assert 'id="evidenceFilterSection"' in body
+    assert 'id="evidenceFilterList"' in body
+    assert 'id="readSetsSection"' not in body
+    assert 'data-left-tab="groups"' in body
+    assert 'id="groupingVariableSelect"' not in body
+    # Hardcoded Super-pop stub is gone
+    assert ">Super-pop<" not in body
+    esm = _build_esm()
+    assert "activeFacets" in esm
+    assert "colorFacetKey" in esm
+    assert "compositeSampleIds" in esm
+    assert "evidenceFilter" in esm
+    assert "setEvidenceFilter" in esm
+    assert "addMetadataFacet" in esm
+    assert "setColorFacetKey" in esm
+    assert "setMetadataFacetLevel" in esm
+    assert "invalidateViewportForFacets" in esm
+    assert "fillAlleleNodeGrouped" in esm
+    assert "clusterSmartTracksByGrouping" in esm
+    assert "sample_metadata_changed" in esm
+    assert "read_sets_changed" in esm
+    assert "isSmartTrackExcludedByFacets" in esm
+    assert "groupColorForSmartTrack" in esm
+    assert "buildGroupFrequencyRows" in esm or "__gsBuildGroupFrequencyRows" in esm
+    assert "variant-group-freq" in esm
+    assert "cycleGroupingVariable" not in esm
+    assert "groupingVariableItem" not in body
+    assert "groupingVariableLabel" not in body
+    # Evidence is Sample Search state, not a Groups facet kind.
+    assert 'kind: "readset"' not in esm and "kind: 'readset'" not in esm
+
+
 def test_comment_store_crud(tmp_path, monkeypatch):
     # Point the session dir at a local folder so the store uses its os fallback.
     s = _shader(tmp_path, monkeypatch)
@@ -476,7 +513,14 @@ def test_fetch_variants_comm_handler(tmp_path, monkeypatch):
                          "contig": "c", "start": 1, "end": 9}, [])
     assert sent[0]["type"] == "fetch_variants_response"
     assert sent[0]["aggregate"] is True and sent[0]["region"]["end"] == 9
-    s.fetch_variants_payload.assert_called_once_with("c", 1, 9)
+    s.fetch_variants_payload.assert_called_once_with("c", 1, 9, sample_ids=None)
+
+    sent.clear()
+    s.fetch_variants_payload.reset_mock()
+    w._on_custom_msg(w, {"type": "fetch_variants", "request_id": "r2",
+                         "contig": "c", "start": 1, "end": 9,
+                         "sample_ids": ["S1", "S2"]}, [])
+    s.fetch_variants_payload.assert_called_once_with("c", 1, 9, sample_ids=["S1", "S2"])
 
 
 def test_fetch_track_data_comm_handler_offloads(tmp_path, monkeypatch):

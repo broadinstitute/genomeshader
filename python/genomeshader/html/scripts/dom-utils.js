@@ -78,6 +78,7 @@ const aggregateRareAllelesItem = getElementById("aggregateRareAllelesItem");
 const aggregateRareAllelesToggle = getElementById("aggregateRareAllelesToggle");
 const aggregateRareAllelesCutoffItem = getElementById("aggregateRareAllelesCutoffItem");
 const aggregateRareAllelesCutoffInput = getElementById("aggregateRareAllelesCutoffInput");
+const addFacetSelect = getElementById("addFacetSelect");
 
 // Debug: Check if elements are found
 
@@ -259,11 +260,638 @@ function updateAggregateRareAllelesControls() {
   }
 }
 
+function getStoredFacetsState() {
+  try {
+    const raw = gsLocalStorage.getItem("genomeshader.activeFacets");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.facets)) {
+        // Drop legacy kind:"readset" entries; metadata-only (tolerate missing kind).
+        const facets = parsed.facets
+          .filter((f) => f && f.key && f.kind !== "readset")
+          .map((f) => ({
+            key: String(f.key),
+            level: f.level == null || f.level === "" ? null : String(f.level),
+          }));
+        return {
+          facets,
+          colorFacetKey: parsed.colorFacetKey != null ? String(parsed.colorFacetKey) : null,
+        };
+      }
+    }
+  } catch (e) { /* ignore */ }
+  // Migrate legacy single Variable key.
+  const legacy = gsLocalStorage.getItem("genomeshader.groupingVariable");
+  if (legacy) {
+    return {
+      facets: [{ key: String(legacy), level: null }],
+      colorFacetKey: String(legacy),
+    };
+  }
+  return { facets: [], colorFacetKey: null };
+}
+function setStoredFacetsState() {
+  const payload = {
+    facets: (state.activeFacets || []).map((f) => ({
+      key: f.key,
+      level: f.level == null ? null : String(f.level),
+    })),
+    colorFacetKey: state.colorFacetKey || null,
+  };
+  gsLocalStorage.setItem("genomeshader.activeFacets", JSON.stringify(payload));
+  gsLocalStorage.removeItem("genomeshader.groupingVariable");
+}
+
+function getSampleMetadataConfig() {
+  const cfg = (typeof window !== "undefined" && window.GENOMESHADER_CONFIG) || {};
+  return cfg.sample_metadata || null;
+}
+
+function getGroupingEligibleColumns() {
+  const meta = getSampleMetadataConfig();
+  if (!meta || !Array.isArray(meta.columns)) return [];
+  return meta.columns.map(c => c && c.name).filter(Boolean);
+}
+
+function getGroupingColumnSpec(columnName) {
+  const meta = getSampleMetadataConfig();
+  if (!meta || !Array.isArray(meta.columns) || !columnName) return null;
+  return meta.columns.find(c => c && c.name === columnName) || null;
+}
+
+function getGroupColor(columnName, groupValue) {
+  const spec = getGroupingColumnSpec(columnName);
+  if (!spec || !Array.isArray(spec.values)) return null;
+  const hit = spec.values.find(v => v && String(v.value) === String(groupValue));
+  return hit && hit.color ? hit.color : null;
+}
+
+function getSampleGroupValue(sampleId, columnName) {
+  if (!columnName) return null;
+  const meta = getSampleMetadataConfig();
+  if (!meta || !meta.by_id) return "(unlabeled)";
+  const attrs = meta.by_id[String(sampleId)];
+  if (!attrs || attrs[columnName] == null || attrs[columnName] === "") return "(unlabeled)";
+  return String(attrs[columnName]);
+}
+
+function smartTrackSampleId(track) {
+  if (!track) return null;
+  if (track.sampleId) return String(track.sampleId);
+  const smartMeta = (typeof state !== "undefined" && Array.isArray(state.smartTracks))
+    ? state.smartTracks.find(st => st && st.id === track.id)
+    : null;
+  if (smartMeta && smartMeta.sampleId) return String(smartMeta.sampleId);
+  return track.label ? String(track.label) : null;
+}
+
+function getMetadataFacets() {
+  return (state.activeFacets || []).filter((f) => f && f.key);
+}
+
+function getColorFacetKey() {
+  return state.colorFacetKey || null;
+}
+
+function getColorFacetLevel() {
+  const key = getColorFacetKey();
+  if (!key) return null;
+  const f = getMetadataFacets().find((x) => x.key === key);
+  return f && f.level != null && f.level !== "" ? String(f.level) : null;
+}
+
+function getEvidenceFilter() {
+  return (state.sampleSelection && state.sampleSelection.evidenceFilter) || null;
+}
+
+function sampleHasEvidence(sampleId, evidenceLabel) {
+  if (!sampleId || !evidenceLabel) return false;
+  const cfg = (typeof window !== "undefined" && window.GENOMESHADER_CONFIG) || {};
+  const idx = cfg.read_bam_index || {};
+  const sm = cfg.sample_mapping || {};
+  let urls = [];
+  if (Array.isArray(idx[sampleId]) && idx[sampleId].length) urls = idx[sampleId];
+  else if (Array.isArray(sm[sampleId]) && sm[sampleId].length) urls = sm[sampleId];
+  if (!urls.length) return false;
+  return urls.some((u) => String(getReadSetForUrl(u) || "") === String(evidenceLabel));
+}
+
+/** Metadata-facet AND sample-ID set, or null when unrestricted. Evidence is excluded. */
+function compositeSampleIds() {
+  const facets = getMetadataFacets().filter(
+    (f) => f.level != null && f.level !== ""
+  );
+  if (!facets.length) return null;
+
+  const meta = getSampleMetadataConfig();
+  const cfg = (typeof window !== "undefined" && window.GENOMESHADER_CONFIG) || {};
+  const universe = new Set();
+  if (meta && meta.by_id) {
+    Object.keys(meta.by_id).forEach((sid) => universe.add(String(sid)));
+  }
+  const rs = cfg.read_samples;
+  if (Array.isArray(rs)) rs.forEach((sid) => universe.add(String(sid)));
+  const idx = cfg.read_bam_index || {};
+  Object.keys(idx).forEach((sid) => universe.add(String(sid)));
+  if (!universe.size && meta && Array.isArray(meta.sample_ids)) {
+    meta.sample_ids.forEach((sid) => universe.add(String(sid)));
+  }
+
+  const out = [];
+  for (const sid of universe) {
+    let ok = true;
+    for (const f of facets) {
+      const g = String(getSampleGroupValue(sid, f.key) || "(unlabeled)");
+      if (g !== String(f.level)) { ok = false; break; }
+    }
+    if (ok) out.push(sid);
+  }
+  return out;
+}
+
+/**
+ * Non-color active metadata levels for track labels, keys alphabetical.
+ * Platform identity comes from the BAM URL, not this suffix.
+ */
+function compositeLabelSuffix() {
+  const colorKey = getColorFacetKey();
+  const parts = [];
+  const facets = getMetadataFacets().filter(
+    (f) => f.level != null && f.level !== ""
+  );
+  facets.sort((a, b) => String(a.key).localeCompare(String(b.key)));
+  for (const f of facets) {
+    if (colorKey && f.key === colorKey) continue;
+    parts.push(String(f.level));
+  }
+  return parts.length ? (" · " + parts.join(" · ")) : "";
+}
+
+function isSmartTrackExcludedByFacets(track) {
+  if (!track || !String(track.id || "").startsWith("smart-track-")) return false;
+  const ids = compositeSampleIds();
+  if (ids == null) return false;
+  const sid = smartTrackSampleId(track);
+  return !sid || ids.indexOf(String(sid)) < 0;
+}
+
+function isSmartTrackExcludedByGrouping(track) {
+  return isSmartTrackExcludedByFacets(track);
+}
+
+function groupColorForSmartTrack(track) {
+  const col = getColorFacetKey();
+  if (!col || !track) return null;
+  const sid = smartTrackSampleId(track);
+  const g = getSampleGroupValue(sid, col);
+  if (g == null) return null;
+  return (typeof getGroupColor === "function") ? getGroupColor(col, g) : null;
+}
+
+function syncColorFacetKey() {
+  const metaKeys = getMetadataFacets().map((f) => f.key);
+  if (!metaKeys.length) {
+    state.colorFacetKey = null;
+    return;
+  }
+  if (!state.colorFacetKey || metaKeys.indexOf(state.colorFacetKey) < 0) {
+    state.colorFacetKey = metaKeys[0];
+  }
+}
+
+function notifyFacetsChanged() {
+  setStoredFacetsState();
+  renderActiveFacets();
+  updateAddFacetSelect();
+  if (window.ribbonTransitionCache && typeof window.ribbonTransitionCache.clear === "function") {
+    window.ribbonTransitionCache.clear();
+  }
+  if (typeof window.clusterSmartTracksByGrouping === "function") {
+    window.clusterSmartTracksByGrouping();
+  }
+  if (state.sampleSelection) state.sampleSelection._candidateSig = null;
+  if (typeof recomputeCandidateSamples === "function") recomputeCandidateSamples();
+  else if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof renderVariantsTabSelection === "function") renderVariantsTabSelection();
+  else if (typeof window !== "undefined" && typeof window.renderVariantsTabSelection === "function") {
+    window.renderVariantsTabSelection();
+  }
+  if (typeof window.invalidateViewportForFacets === "function") {
+    window.invalidateViewportForFacets();
+  }
+  if (typeof renderAll === "function") renderAll();
+}
+
+function notifyEvidenceFilterChanged() {
+  if (state.sampleSelection) state.sampleSelection._candidateSig = null;
+  renderEvidenceFilter();
+  if (typeof recomputeCandidateSamples === "function") recomputeCandidateSamples();
+  else if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof renderAll === "function") renderAll();
+}
+
+function addMetadataFacet(columnName) {
+  const cols = getGroupingEligibleColumns();
+  if (!columnName || cols.indexOf(columnName) < 0) return;
+  if (getMetadataFacets().some((f) => f.key === columnName)) return;
+  state.activeFacets = (state.activeFacets || []).concat([{
+    key: String(columnName), level: null,
+  }]);
+  syncColorFacetKey();
+  notifyFacetsChanged();
+}
+
+function removeMetadataFacet(columnName) {
+  state.activeFacets = (state.activeFacets || []).filter(
+    (f) => !(f && f.key === columnName)
+  );
+  syncColorFacetKey();
+  notifyFacetsChanged();
+}
+
+function setMetadataFacetLevel(columnName, level) {
+  const f = getMetadataFacets().find((x) => x.key === columnName);
+  if (!f) return;
+  if (level == null || level === "" || String(level) === String(f.level)) {
+    f.level = null;
+  } else {
+    f.level = String(level);
+  }
+  notifyFacetsChanged();
+}
+
+function setColorFacetKey(columnName) {
+  const metaKeys = getMetadataFacets().map((f) => f.key);
+  if (!columnName || metaKeys.indexOf(columnName) < 0) return;
+  if (state.colorFacetKey === columnName) return;
+  state.colorFacetKey = columnName;
+  notifyFacetsChanged();
+}
+
+function setEvidenceFilter(label) {
+  if (!state.sampleSelection) return;
+  const cur = state.sampleSelection.evidenceFilter;
+  if (label == null || label === "" || String(label) === String(cur)) {
+    state.sampleSelection.evidenceFilter = null;
+  } else {
+    state.sampleSelection.evidenceFilter = String(label);
+  }
+  notifyEvidenceFilterChanged();
+}
+
+// Compat alias used by older call sites / tests.
+function setReadSetFilter(label) {
+  setEvidenceFilter(label);
+}
+
+function updateAddFacetSelect() {
+  const sel = addFacetSelect || getElementById("addFacetSelect");
+  if (!sel) return;
+  const cols = getGroupingEligibleColumns();
+  const active = new Set(getMetadataFacets().map((f) => f.key));
+  const available = cols.filter((c) => !active.has(c));
+  sel.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = available.length
+    ? "Add variable…"
+    : (cols.length ? "All variables added" : "No metadata attached");
+  sel.appendChild(placeholder);
+  for (const col of available) {
+    const opt = document.createElement("option");
+    opt.value = col;
+    opt.textContent = col;
+    sel.appendChild(opt);
+  }
+  sel.disabled = available.length === 0;
+  sel.value = "";
+}
+
+function renderActiveFacets() {
+  const list = getElementById("activeFacetsList");
+  const hint = getElementById("participantGroupsHint");
+  if (!list) return;
+  list.innerHTML = "";
+  const facets = getMetadataFacets();
+  if (!facets.length) {
+    if (hint) {
+      hint.style.display = "";
+      const eligible = getGroupingEligibleColumns();
+      hint.textContent = eligible.length
+        ? "Add a Variable above to list participant groups."
+        : "Attach sample metadata to enable participant groups.";
+    }
+    return;
+  }
+  if (hint) hint.style.display = "none";
+
+  for (const facet of facets) {
+    const col = facet.key;
+    const spec = getGroupingColumnSpec(col);
+    const block = document.createElement("div");
+    block.className = "active-facet-block";
+    block.style.marginBottom = "14px";
+    block.dataset.facetKey = col;
+
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;";
+    const title = document.createElement("div");
+    title.style.cssText = "font-weight:600;font-size:12px;color:var(--text);";
+    title.textContent = col;
+    header.appendChild(title);
+
+    const controls = document.createElement("div");
+    controls.style.cssText = "display:flex;align-items:center;gap:8px;font-size:11px;";
+    const colorLabel = document.createElement("label");
+    colorLabel.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--muted);";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "colorFacetKey";
+    radio.value = col;
+    radio.checked = getColorFacetKey() === col;
+    radio.addEventListener("change", (e) => {
+      e.stopPropagation();
+      setColorFacetKey(col);
+    });
+    colorLabel.appendChild(radio);
+    colorLabel.appendChild(document.createTextNode("Color by"));
+    controls.appendChild(colorLabel);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.textContent = "×";
+    removeBtn.title = "Remove variable";
+    removeBtn.setAttribute("aria-label", "Remove " + col);
+    removeBtn.style.cssText = "border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;padding:0 2px;";
+    removeBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      removeMetadataFacet(col);
+    });
+    controls.appendChild(removeBtn);
+    header.appendChild(controls);
+    block.appendChild(header);
+
+    const pills = document.createElement("div");
+    const values = (spec && Array.isArray(spec.values)) ? spec.values : [];
+    const allRow = document.createElement("div");
+    allRow.className = "group" + (facet.level == null ? " group-active" : "");
+    const allLabel = document.createElement("span");
+    allLabel.textContent = "All";
+    const allPill = document.createElement("span");
+    allPill.className = "pill";
+    const total = values.reduce((n, v) => n + (Number(v.count) || 0), 0);
+    allPill.textContent = String(total);
+    allRow.appendChild(allLabel);
+    allRow.appendChild(allPill);
+    allRow.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setMetadataFacetLevel(col, null);
+    });
+    pills.appendChild(allRow);
+
+    for (const entry of values) {
+      const val = String(entry.value);
+      const row = document.createElement("div");
+      row.className = "group" + (facet.level === val ? " group-active" : "");
+      if (entry.color) row.style.borderLeft = `3px solid ${entry.color}`;
+      const label = document.createElement("span");
+      label.textContent = val;
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      if (entry.color) {
+        pill.style.background = entry.color;
+        pill.style.color = "#fff";
+      }
+      pill.textContent = String(entry.count != null ? entry.count : 0);
+      row.appendChild(label);
+      row.appendChild(pill);
+      row.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setMetadataFacetLevel(col, val);
+      });
+      pills.appendChild(row);
+    }
+    block.appendChild(pills);
+    list.appendChild(block);
+  }
+}
+
+function getReadSetsConfig() {
+  const cfg = (typeof window !== "undefined" && window.GENOMESHADER_CONFIG) || {};
+  return cfg.read_sets || null;
+}
+
+function getReadSetForUrl(url) {
+  if (!url) return null;
+  const rs = getReadSetsConfig();
+  if (!rs || !rs.by_url) return null;
+  const hit = rs.by_url[String(url)];
+  return hit != null && hit !== "" ? String(hit) : null;
+}
+
+function getReadSetColor(label) {
+  const rs = getReadSetsConfig();
+  if (!rs || !Array.isArray(rs.labels)) return null;
+  const hit = rs.labels.find((e) => e && String(e.name) === String(label));
+  return hit && hit.color ? hit.color : null;
+}
+
+function smartTrackReadSet(track) {
+  if (!track) return null;
+  const url = (track.requestedBamUrl)
+    || (Array.isArray(track.bamUrls) && track.bamUrls.length === 1 ? track.bamUrls[0] : null);
+  return getReadSetForUrl(url);
+}
+
+function renderEvidenceFilter() {
+  const section = getElementById("evidenceFilterSection");
+  const list = getElementById("evidenceFilterList");
+  if (!section || !list) return;
+  const rs = getReadSetsConfig();
+  const labels = (rs && Array.isArray(rs.labels)) ? rs.labels : [];
+  if (!labels.length) {
+    section.style.display = "none";
+    list.innerHTML = "";
+    return;
+  }
+  section.style.display = "";
+  list.innerHTML = "";
+
+  const activeLevel = getEvidenceFilter();
+  const allRow = document.createElement("div");
+  allRow.className = "group" + (activeLevel == null ? " group-active" : "");
+  const allLabel = document.createElement("span");
+  allLabel.textContent = "All";
+  const allPill = document.createElement("span");
+  allPill.className = "pill";
+  const total = labels.reduce((n, v) => n + (Number(v.count) || 0), 0);
+  allPill.textContent = String(total);
+  allRow.appendChild(allLabel);
+  allRow.appendChild(allPill);
+  allRow.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setEvidenceFilter(null);
+  });
+  list.appendChild(allRow);
+
+  for (const entry of labels) {
+    const val = String(entry.name);
+    const row = document.createElement("div");
+    row.className = "group" + (activeLevel === val ? " group-active" : "");
+    if (entry.color) row.style.borderLeft = `3px solid ${entry.color}`;
+    const labelEl = document.createElement("span");
+    labelEl.textContent = val;
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    if (entry.color) {
+      pill.style.background = entry.color;
+      pill.style.color = "#fff";
+    }
+    pill.textContent = String(entry.count != null ? entry.count : 0);
+    row.appendChild(labelEl);
+    row.appendChild(pill);
+    row.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setEvidenceFilter(val);
+    });
+    list.appendChild(row);
+  }
+}
+
+function onReadSetsChanged(payload) {
+  const cfg = window.GENOMESHADER_CONFIG || (window.GENOMESHADER_CONFIG = {});
+  if (payload && Object.prototype.hasOwnProperty.call(payload, "read_sets")) {
+    cfg.read_sets = payload.read_sets || null;
+  }
+  if (payload && payload.read_bam_index) cfg.read_bam_index = payload.read_bam_index;
+  if (payload && payload.read_samples) cfg.read_samples = payload.read_samples;
+  const rs = getReadSetsConfig();
+  const names = (rs && Array.isArray(rs.labels)) ? rs.labels.map((e) => String(e.name)) : [];
+  const cur = getEvidenceFilter();
+  if (cur && names.indexOf(String(cur)) < 0 && state.sampleSelection) {
+    state.sampleSelection.evidenceFilter = null;
+  }
+  renderEvidenceFilter();
+  if (state.sampleSelection) state.sampleSelection._candidateSig = null;
+  if (typeof recomputeCandidateSamples === "function") recomputeCandidateSamples();
+  else if (typeof updateSampleSelectionUI === "function") updateSampleSelectionUI();
+  if (typeof updateTracksHeight === "function") updateTracksHeight();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof renderAll === "function") renderAll();
+}
+
+function initSampleGroupingUI() {
+  const stored = getStoredFacetsState();
+  const cols = getGroupingEligibleColumns();
+  state.activeFacets = [];
+  for (const f of (stored.facets || [])) {
+    if (!f || !f.key) continue;
+    if (cols.indexOf(f.key) >= 0) {
+      state.activeFacets.push({
+        key: String(f.key),
+        level: f.level == null || f.level === "" ? null : String(f.level),
+      });
+    }
+  }
+  state.colorFacetKey = stored.colorFacetKey;
+  syncColorFacetKey();
+  updateAddFacetSelect();
+  renderActiveFacets();
+  renderEvidenceFilter();
+}
+
+function onSampleMetadataChanged(meta) {
+  const cfg = window.GENOMESHADER_CONFIG || (window.GENOMESHADER_CONFIG = {});
+  cfg.sample_metadata = meta || null;
+  const cols = getGroupingEligibleColumns();
+  state.activeFacets = (state.activeFacets || []).filter(
+    (f) => f && f.key && cols.indexOf(f.key) >= 0
+  );
+  for (const f of state.activeFacets) f.level = null;
+  syncColorFacetKey();
+  setStoredFacetsState();
+  updateAddFacetSelect();
+  renderActiveFacets();
+  if (typeof window.clusterSmartTracksByGrouping === "function") {
+    window.clusterSmartTracksByGrouping();
+  }
+  if (typeof renderVariantsTabSelection === "function") renderVariantsTabSelection();
+  else if (typeof window !== "undefined" && typeof window.renderVariantsTabSelection === "function") {
+    window.renderVariantsTabSelection();
+  }
+  if (typeof renderAll === "function") renderAll();
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("genomeshader_msg", function (ev) {
+    const msg = ev && ev.detail;
+    if (!msg || !msg.type) return;
+    if (msg.type === "sample_metadata_changed") {
+      onSampleMetadataChanged(msg.sample_metadata || null);
+    } else if (msg.type === "read_sets_changed") {
+      onReadSetsChanged(msg);
+    }
+  });
+}
+
+if (typeof window !== "undefined") {
+  window.getSampleMetadataConfig = getSampleMetadataConfig;
+  window.getGroupingColumnSpec = getGroupingColumnSpec;
+  window.getGroupColor = getGroupColor;
+  window.getSampleGroupValue = getSampleGroupValue;
+  window.smartTrackSampleId = smartTrackSampleId;
+  window.getMetadataFacets = getMetadataFacets;
+  window.getColorFacetKey = getColorFacetKey;
+  window.getColorFacetLevel = getColorFacetLevel;
+  window.getEvidenceFilter = getEvidenceFilter;
+  window.sampleHasEvidence = sampleHasEvidence;
+  window.compositeSampleIds = compositeSampleIds;
+  window.compositeLabelSuffix = compositeLabelSuffix;
+  window.isSmartTrackExcludedByFacets = isSmartTrackExcludedByFacets;
+  window.isSmartTrackExcludedByGrouping = isSmartTrackExcludedByGrouping;
+  window.groupColorForSmartTrack = groupColorForSmartTrack;
+  window.getReadSetsConfig = getReadSetsConfig;
+  window.getReadSetForUrl = getReadSetForUrl;
+  window.getReadSetColor = getReadSetColor;
+  window.smartTrackReadSet = smartTrackReadSet;
+  window.setEvidenceFilter = setEvidenceFilter;
+  window.setReadSetFilter = setReadSetFilter;
+  window.addMetadataFacet = addMetadataFacet;
+  window.removeMetadataFacet = removeMetadataFacet;
+  window.setMetadataFacetLevel = setMetadataFacetLevel;
+  window.setColorFacetKey = setColorFacetKey;
+  window.renderActiveFacets = renderActiveFacets;
+  window.renderEvidenceFilter = renderEvidenceFilter;
+  window.onReadSetsChanged = onReadSetsChanged;
+  window.initSampleGroupingUI = initSampleGroupingUI;
+  window.onSampleMetadataChanged = onSampleMetadataChanged;
+  window.setGroupingVariable = function (columnName) {
+    state.activeFacets = [];
+    if (columnName) addMetadataFacet(columnName);
+    else { syncColorFacetKey(); notifyFacetsChanged(); }
+  };
+  window.setGroupingFilter = function (groupValue) {
+    const key = getColorFacetKey() || (getMetadataFacets()[0] && getMetadataFacets()[0].key);
+    if (!key) return;
+    setMetadataFacetLevel(key, groupValue);
+  };
+  window.renderParticipantGroups = renderActiveFacets;
+}
+
 const stored = getStoredTheme();
 document.documentElement.setAttribute("data-theme", stored ?? "auto");
 updateThemeLabel();
 
-// Left panel tabs (samples / settings). Settings now lives inline in its own
+// Left panel tabs (samples / groups / settings). Settings lives inline in its own
 // left tab instead of a floating popup, so openMenu just switches to it.
 function getActiveLeftTab() {
   return gsLocalStorage.getItem("genomeshader.leftTab") || "samples";
@@ -390,6 +1018,13 @@ themeItem.addEventListener("click", () => {
   setTheme(next);
   renderAll();
 });
+
+if (addFacetSelect) {
+  addFacetSelect.addEventListener("change", () => {
+    const val = addFacetSelect.value;
+    if (val) addMetadataFacet(val);
+  });
+}
 
 orientationItem.addEventListener("click", () => {
   const cur = getStoredOrientation() ?? "horizontal";
