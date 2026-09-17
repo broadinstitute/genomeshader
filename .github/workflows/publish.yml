@@ -103,7 +103,11 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64
-          - os: macos-latest
+          # macos-latest is Apple Silicon. Targeting x86_64 there is a
+          # cross-compile, and openssl-sys cannot find an Intel OpenSSL.
+          # macos-15-intel is the last GitHub-hosted Intel runner (until ~2027).
+          # https://github.blog/changelog/2025-09-19-github-actions-macos-13-runner-image-is-closing-down/
+          - os: macos-15-intel
             target: x86_64
           - os: macos-latest
             target: aarch64
