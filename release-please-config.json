@@ -18,7 +18,11 @@
       ],
       "release-draft": false,
       "extra-files": [
-        "Cargo.toml"
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.package.version"
+        }
       ]
     }
   },
