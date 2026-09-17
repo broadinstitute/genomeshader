@@ -14,6 +14,7 @@ pub enum ElementType {
     INSERTION,
     DELETION,
     SOFTCLIP,
+    REFSKIP,
 }
 
 impl ElementType {
@@ -24,6 +25,7 @@ impl ElementType {
             ElementType::INSERTION => 2,
             ElementType::DELETION => 3,
             ElementType::SOFTCLIP => 4,
+            ElementType::REFSKIP => 5,
         }
     }
 }
@@ -35,6 +37,10 @@ impl ElementType {
 /// bases. Insertions/soft-clips don't appear in MD (they don't consume the
 /// reference), so the walk stays aligned with `ref_pos`. This lets us surface
 /// SNPs for ordinary `M`-CIGAR reads, not just the rare `=`/`X` extended CIGAR.
+///
+/// Extract_reads walks MD in lockstep with CIGAR (`MdWalker`) so intron skips
+/// don't shift coordinates; this helper is the contiguous-ref case used in tests.
+#[cfg(test)]
 fn md_mismatch_positions(md: &str, ref_start: u32) -> Vec<u32> {
     let mut out = Vec::new();
     let b = md.as_bytes();
@@ -100,9 +106,68 @@ fn ref_mismatches_in_run(
     out
 }
 
+/// Walk an MD tag in lockstep with CIGAR so intron skips (`N`) don't shift
+/// mismatch coordinates. MD does not encode `N`; a naive walk from POS treats
+/// the exons as contiguous and places post-splice SNPs in the intron.
+struct MdWalker<'a> {
+    bytes: &'a [u8],
+    i: usize,
+    pending_matches: u32,
+}
+
+impl<'a> MdWalker<'a> {
+    fn new(md: &'a str) -> Self {
+        Self { bytes: md.as_bytes(), i: 0, pending_matches: 0 }
+    }
+
+    /// Genomic (1-based) mismatch positions inside a CIGAR `M`/`=`/`X` run.
+    fn mismatches_in_match_run(&mut self, ref_pos: u32, len: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut consumed = 0u32;
+        while consumed < len {
+            if self.pending_matches > 0 {
+                let take = self.pending_matches.min(len - consumed);
+                self.pending_matches -= take;
+                consumed += take;
+                continue;
+            }
+            if self.i >= self.bytes.len() {
+                break;
+            }
+            let c = self.bytes[self.i];
+            if c.is_ascii_digit() {
+                let mut n: u32 = 0;
+                while self.i < self.bytes.len() && self.bytes[self.i].is_ascii_digit() {
+                    n = n.saturating_mul(10).saturating_add((self.bytes[self.i] - b'0') as u32);
+                    self.i += 1;
+                }
+                self.pending_matches = n;
+            } else if c == b'^' {
+                self.skip_deletion();
+            } else if c.is_ascii_alphabetic() {
+                out.push(ref_pos + consumed);
+                consumed += 1;
+                self.i += 1;
+            } else {
+                self.i += 1;
+            }
+        }
+        out
+    }
+
+    fn skip_deletion(&mut self) {
+        if self.i < self.bytes.len() && self.bytes[self.i] == b'^' {
+            self.i += 1;
+        }
+        while self.i < self.bytes.len() && self.bytes[self.i].is_ascii_alphabetic() {
+            self.i += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod md_tests {
-    use super::{md_mismatch_positions, ref_mismatches_in_run};
+    use super::{md_mismatch_positions, ref_mismatches_in_run, MdWalker};
 
     #[test]
     fn parses_matches_mismatches_and_deletions() {
@@ -146,6 +211,15 @@ mod md_tests {
             vec![(100u32, b'T')]
         );
     }
+
+    #[test]
+    fn md_walker_skips_introns() {
+        // 10M + 5N + 10M with MD "10A9": mismatch is the first base of exon 2
+        // (genomic 116), not the first intron base (111).
+        let mut w = MdWalker::new("10A9");
+        assert_eq!(w.mismatches_in_match_run(101, 10), Vec::<u32>::new());
+        assert_eq!(w.mismatches_in_match_run(116, 10), vec![116]);
+    }
 }
 
 pub fn get_rg_to_sm_mapping(bam: &IndexedReader) -> HashMap<String, String> {
@@ -186,6 +260,8 @@ pub fn extract_reads(
     let mut element_types = Vec::new();
     let mut sequence = Vec::new();
     let mut has_md = Vec::new();  // per-element: did this read carry an MD tag (=> SNPs computable)?
+    let mut is_paireds = Vec::new();
+    let mut is_primaries = Vec::new();
 
     let mut mask = HashMap::new();
 
@@ -208,16 +284,15 @@ pub fn extract_reads(
         };
 
         // Mismatch (SNP) positions from the MD tag, so ordinary M-CIGAR reads show
-        // SNPs (not just =/X extended-CIGAR reads). read_has_md drives the "SNPs
-        // unavailable" warning when a BAM lacks MD.
-        let read_has_md;
-        let md_mm: Vec<u32> = match record.aux(b"MD") {
-            Ok(Aux::String(s)) => {
-                read_has_md = true;
-                md_mismatch_positions(s, (record.reference_start() as u32) + 1)
-            }
-            _ => { read_has_md = false; Vec::new() }
+        // SNPs (not just =/X extended-CIGAR reads). Walk MD in lockstep with CIGAR
+        // so N intron skips don't shift later mismatch coordinates. read_has_md
+        // drives the "SNPs unavailable" warning when a BAM lacks MD.
+        let md_owned: Option<String> = match record.aux(b"MD") {
+            Ok(Aux::String(s)) => Some(s.to_owned()),
+            _ => None,
         };
+        let read_has_md = md_owned.is_some();
+        let mut md_walker = md_owned.as_deref().map(MdWalker::new);
         // "SNPs displayable" for this read: true if it carries MD, or if a
         // staged reference was supplied to diff M-run bases against.
         let snps_displayable = read_has_md || ref_seq.is_some();
@@ -248,6 +323,10 @@ pub fn extract_reads(
                 Cigar::Match(len) => {
                     // Handle Match case (consumes query, ref). M merges match+
                     // mismatch, so emit a DIFF per MD-tag mismatch inside this run.
+                    let md_mm: Vec<u32> = match md_walker.as_mut() {
+                        Some(w) => w.mismatches_in_match_run(ref_pos, *len),
+                        None => Vec::new(),
+                    };
                     for &mpos in &md_mm {
                         if mpos >= ref_pos && mpos < ref_pos + len {
                             let ridx = (read_pos as usize - 1) + (mpos - ref_pos) as usize;
@@ -367,15 +446,25 @@ pub fn extract_reads(
                         })
                         .or_insert(*len as usize);
 
+                    if let Some(w) = md_walker.as_mut() {
+                        w.skip_deletion();
+                    }
+
                     ref_pos += len;
                 }
                 Cigar::Equal(len) => {
                     // Handle Equal case (consumes query, ref)
+                    if let Some(w) = md_walker.as_mut() {
+                        let _ = w.mismatches_in_match_run(ref_pos, *len);
+                    }
                     ref_pos += len;
                     read_pos += len;
                 }
                 Cigar::Diff(len) => {
                     // Handle Difference case (consumes query, ref)
+                    if let Some(w) = md_walker.as_mut() {
+                        let _ = w.mismatches_in_match_run(ref_pos, *len);
+                    }
                     let cigar_seq: &[u8] = &[record.seq()[(read_pos - 1) as usize]];
 
                     reference_contigs.push(chr.to_owned());
@@ -407,7 +496,28 @@ pub fn extract_reads(
                     read_pos += len;
                 }
                 Cigar::RefSkip(len) => {
-                    // Handle Reference Skip case (consumes ref)
+                    // Intron / reference skip (CIGAR N). Consumes ref, not query.
+                    // Emitted so the viewer can split the read body and draw a
+                    // splice connector instead of filling the intron.
+                    reference_contigs.push(chr.to_owned());
+                    reference_starts.push(ref_pos);
+                    reference_ends.push(ref_pos + *len);
+                    is_forwards.push(!record.is_reverse());
+                    query_names.push(String::from_utf8_lossy(record.qname()).into_owned());
+                    haplotypes.push(hap);
+
+                    if let Ok(Aux::String(rg)) = record.aux(b"RG") {
+                        read_groups.push(rg.to_owned());
+                        sample_names.push(rg_sm_map.get(rg).unwrap().to_owned());
+                    } else {
+                        read_groups.push("unknown".to_string());
+                        sample_names.push("unknown".to_string());
+                    }
+
+                    element_types.push(ElementType::REFSKIP);
+                    sequence.push(String::from_utf8_lossy(&[]).into_owned());
+                    has_md.push(read_has_md);
+
                     ref_pos += len;
                 }
                 Cigar::SoftClip(len) => {
@@ -454,6 +564,15 @@ pub fn extract_reads(
                 }
             }
         }
+
+        // Pairing flags are per-alignment; copy onto every CIGAR element row
+        // of this record so the column lengths stay aligned.
+        let paired = record.is_paired();
+        let primary = !record.is_secondary() && !record.is_supplementary();
+        while is_paireds.len() < query_names.len() {
+            is_paireds.push(paired);
+            is_primaries.push(primary);
+        }
     }
 
     let mut column_width = Vec::new();
@@ -485,6 +604,8 @@ pub fn extract_reads(
             Series::new("element_type", element_types),
             Series::new("sequence", sequence),
             Series::new("has_md", has_md),
+            Series::new("is_paired", is_paireds),
+            Series::new("is_primary", is_primaries),
             Series::new("column_width", column_width)
         ]
     ).unwrap();
@@ -649,6 +770,168 @@ mod integration_tests {
             }
         }
         assert!(n >= 1);
+    }
+
+    #[test]
+    fn extract_reads_emits_pairing_flags() {
+        let mut header = bam::Header::new();
+        header.push_record(
+            bam::header::HeaderRecord::new(b"HD")
+                .push_tag(b"VN", &"1.6")
+                .push_tag(b"SO", &"coordinate"),
+        );
+        let mut sq = bam::header::HeaderRecord::new(b"SQ");
+        sq.push_tag(b"SN", &"testchr");
+        sq.push_tag(b"LN", &1000);
+        header.push_record(&sq);
+        let bam_path = unique_temp_bam("gs_pair_flags_test");
+        {
+            let mut w = bam::Writer::from_path(&bam_path, &header, bam::Format::Bam).unwrap();
+            let cigar10 = CigarString(vec![Cigar::Match(10)]);
+
+            let mut r1 = bam::Record::new();
+            r1.set(b"pe", Some(&cigar10), b"ACGTACGTAC", &[30u8; 10]);
+            r1.set_tid(0);
+            r1.set_pos(100);
+            r1.set_mapq(60);
+            r1.set_mtid(0);
+            r1.set_mpos(300);
+            r1.set_paired();
+            r1.set_first_in_template();
+            w.write(&r1).unwrap();
+
+            // Coordinate-sorted: 100, 150, 200, 300.
+            let mut se = bam::Record::new();
+            se.set(b"se", Some(&cigar10), b"CCCCCCCCCC", &[30u8; 10]);
+            se.set_tid(0);
+            se.set_pos(150);
+            se.set_mapq(60);
+            se.set_mtid(-1);
+            se.set_mpos(-1);
+            w.write(&se).unwrap();
+
+            let mut supp = bam::Record::new();
+            supp.set(b"pe", Some(&cigar10), b"GGGGGGGGGG", &[30u8; 10]);
+            supp.set_tid(0);
+            supp.set_pos(200);
+            supp.set_mapq(60);
+            supp.set_mtid(0);
+            supp.set_mpos(100);
+            supp.set_paired();
+            supp.set_supplementary();
+            w.write(&supp).unwrap();
+
+            let mut r2 = bam::Record::new();
+            r2.set(b"pe", Some(&cigar10), b"TGCATGCATG", &[30u8; 10]);
+            r2.set_tid(0);
+            r2.set_pos(300);
+            r2.set_mapq(60);
+            r2.set_mtid(0);
+            r2.set_mpos(100);
+            r2.set_paired();
+            r2.set_last_in_template();
+            r2.set_reverse();
+            w.write(&r2).unwrap();
+        }
+        bam::index::build(&bam_path, None, bam::index::Type::Bai, 1).unwrap();
+        let url = Url::from_file_path(&bam_path).unwrap();
+        let mut bam = IndexedReader::from_path(url.to_file_path().unwrap()).unwrap();
+        let df = extract_reads(
+            &mut bam, &url, &"all".to_string(), &"testchr".to_string(),
+            &100u64, &400u64, None, 0,
+        ).unwrap();
+
+        let et = df.column("element_type").unwrap().u8().unwrap();
+        let qn = df.column("query_name").unwrap();
+        let paired = df.column("is_paired").unwrap().bool().unwrap();
+        let primary = df.column("is_primary").unwrap().bool().unwrap();
+        let rs = df.column("reference_start").unwrap().u32().unwrap();
+
+        let mut seen = Vec::new();
+        for i in 0..df.height() {
+            if et.get(i) != Some(0u8) {
+                continue;
+            }
+            let name = match qn.get(i).unwrap() {
+                AnyValue::String(s) => s.to_string(),
+                AnyValue::StringOwned(s) => s.to_string(),
+                _ => String::new(),
+            };
+            seen.push((
+                name,
+                rs.get(i).unwrap(),
+                paired.get(i).unwrap(),
+                primary.get(i).unwrap(),
+            ));
+        }
+        seen.sort_by_key(|t| t.1);
+        assert_eq!(
+            seen,
+            vec![
+                ("pe".to_string(), 101u32, true, true),
+                ("se".to_string(), 151u32, false, true),
+                ("pe".to_string(), 201u32, true, false),
+                ("pe".to_string(), 301u32, true, true),
+            ]
+        );
+        assert_eq!(df.height(), paired.len());
+        assert_eq!(df.height(), primary.len());
+    }
+
+    #[test]
+    fn extract_reads_emits_refskip() {
+        let mut header = bam::Header::new();
+        header.push_record(
+            bam::header::HeaderRecord::new(b"HD")
+                .push_tag(b"VN", &"1.6")
+                .push_tag(b"SO", &"coordinate"),
+        );
+        let mut sq = bam::header::HeaderRecord::new(b"SQ");
+        sq.push_tag(b"SN", &"testchr");
+        sq.push_tag(b"LN", &1000);
+        header.push_record(&sq);
+        let bam_path = unique_temp_bam("gs_refskip_test");
+        {
+            let mut w = bam::Writer::from_path(&bam_path, &header, bam::Format::Bam).unwrap();
+            let mut rec = bam::Record::new();
+            // 10M 5N 10M at 0-based 100 => exons 101-110 and 116-125, intron 111-115.
+            let cigar = CigarString(vec![Cigar::Match(10), Cigar::RefSkip(5), Cigar::Match(10)]);
+            rec.set(b"spl", Some(&cigar), b"ACGTACGTACAGTACGTACA", &[30u8; 20]);
+            rec.set_tid(0);
+            rec.set_pos(100);
+            rec.set_mapq(60);
+            rec.set_mtid(-1);
+            rec.set_mpos(-1);
+            rec.push_aux(b"MD", Aux::String("10A9")).unwrap();
+            w.write(&rec).unwrap();
+        }
+        bam::index::build(&bam_path, None, bam::index::Type::Bai, 1).unwrap();
+        let url = Url::from_file_path(&bam_path).unwrap();
+        let mut bam = IndexedReader::from_path(url.to_file_path().unwrap()).unwrap();
+        let df = extract_reads(
+            &mut bam, &url, &"all".to_string(), &"testchr".to_string(),
+            &100u64, &130u64, None, 0,
+        ).unwrap();
+
+        let et = df.column("element_type").unwrap().u8().unwrap();
+        let rs = df.column("reference_start").unwrap().u32().unwrap();
+        let re = df.column("reference_end").unwrap().u32().unwrap();
+
+        let mut skips = Vec::new();
+        let mut diffs = Vec::new();
+        let mut reads = Vec::new();
+        for i in 0..df.height() {
+            match et.get(i) {
+                Some(0u8) => reads.push((rs.get(i).unwrap(), re.get(i).unwrap())),
+                Some(1u8) => diffs.push(rs.get(i).unwrap()),
+                Some(5u8) => skips.push((rs.get(i).unwrap(), re.get(i).unwrap())),
+                _ => {}
+            }
+        }
+        assert_eq!(reads, vec![(101u32, 125u32)]);
+        assert_eq!(skips, vec![(111u32, 116u32)]);
+        // MD "10A9" mismatch is the first base of exon 2, not the intron.
+        assert_eq!(diffs, vec![116u32]);
     }
 }
 

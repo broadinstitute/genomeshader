@@ -206,13 +206,6 @@ def _build_esm() -> str:
         "    };\n"
         "    const viewId = window.GENOMESHADER_VIEW_ID;\n"
         "    const cid = 'genomeshader-root-' + viewId;\n"
-        "    const style = document.createElement('style');\n"
-        "    style.textContent = " + json.dumps(css) + ";\n"
-        "    el.appendChild(style);\n"
-        "    const ostyle = document.createElement('style');\n"
-        "    ostyle.textContent = " + json.dumps(override_css) +
-        ".split(" + json.dumps(_CID_PLACEHOLDER) + ").join(cid);\n"
-        "    el.appendChild(ostyle);\n"
         "    const container = document.createElement('div');\n"
         "    container.id = cid;\n"
         "    container.setAttribute('style', 'width:100%;position:relative;overflow:visible;background:var(--bg,#0b0d10);isolation:isolate;');\n"
@@ -233,6 +226,17 @@ def _build_esm() -> str:
         "    }\n"
         "    gsApplyHeight();\n"
         "    container.innerHTML = " + json.dumps(body) + ";\n"
+        # Keep the stylesheet inside #genomeshader-root so it travels with the
+        # viewer when fullscreen moves that node into the overlay. Sibling
+        # <style> tags on `el` would stay in the notebook cell and stop
+        # matching once the container left.
+        "    const style = document.createElement('style');\n"
+        "    style.textContent = " + json.dumps(css) + ";\n"
+        "    container.appendChild(style);\n"
+        "    const ostyle = document.createElement('style');\n"
+        "    ostyle.textContent = " + json.dumps(override_css) +
+        ".split(" + json.dumps(_CID_PLACEHOLDER) + ").join(cid);\n"
+        "    container.appendChild(ostyle);\n"
         "    el.appendChild(container);\n"
         "    model.on('change:height', function () {\n"
         "      gsApplyHeight();\n"

@@ -8,6 +8,8 @@ the display features that are hard to cover with production callsets:
     chimeric, secondary)
   * short-read CRAMs (~35×, 151 bp paired, no haplotag, plus discordant /
     duplicate / MAPQ=0 pairs)
+  * spliced RNA: Illumina PE CRAMs + Iso-Seq BAMs over ARHGAP5 (CIGAR ``N``
+    intron skips for split-read display)
   * a joint VCF of SNVs, MNPs, delins, indels, and SVs with statistical phasing
     (`0|1`, two FORMAT/PS blocks), plus mixed unphased / half-call / missing GTs
   * per-sample TRGT VCFs with unphased genotypes (GT uses `/`, no PS)
@@ -94,6 +96,22 @@ REGION3_END = ORIGIN3 + SPAN3 - 1  # 32,254,546
 SHOWCASE3 = (32_079_800, 32_082_600)
 SHOWCASE3_GENES = (32_075_000, 32_090_000)
 PHASE_SET_14 = 32_080_000
+
+# NM_001173.3 ARHGAP5 (+) exons, 1-based inclusive (UCSC ncbiRefSeq hg38).
+# Compact split-read window covers e4–e7 (three nearby junctions).
+ARHGAP5_EXONS = (
+    (32_077_304, 32_077_435),  # e1 132 bp
+    (32_090_502, 32_094_386),  # e2 3885 bp
+    (32_117_143, 32_117_287),  # e3 145 bp
+    (32_146_263, 32_146_340),  # e4 78 bp
+    (32_149_902, 32_150_033),  # e5 132 bp
+    (32_152_423, 32_152_528),  # e6 106 bp
+    (32_154_621, 32_159_728),  # e7 5108 bp
+)
+RNA_LOCUS = (32_146_000, 32_159_800)  # e4 through e7 TES; three junctions in view
+RNA_EXONS = ARHGAP5_EXONS[3:]         # e4–e7
+RNA_SHORT_COVERAGE = 30
+RNA_LONG_MOLECULES = 10
 
 
 def other_base(b: str, rng: random.Random, extra: Optional[str] = None) -> str:
@@ -623,6 +641,8 @@ def nm_tag(seq: str, pos: int, cigar: List[Tuple[int, str]], ref: str, origin: i
                 rpos += n
         elif op == "S":
             q += n
+        elif op == "N":
+            rpos += n
     return nm
 
 
@@ -721,6 +741,8 @@ def sam_header(sample: str, platform: str, rg_ids: Sequence[str]) -> str:
     pl = {
         "pacbio": "PACBIO",
         "illumina": "ILLUMINA",
+        "isoseq": "PACBIO",
+        "rna_illumina": "ILLUMINA",
         "assembly": "ASSEMBLY",
     }.get(platform, platform.upper())
     lines = [
@@ -1060,6 +1082,168 @@ def emit_short_reads(fh, sample: str, sample_idx: int, seq: str, sites: List[Sit
                   f"{sample}:illumina:duplicate", duplicate=True)
         emit_pair(20_002, showcase[0] - origin + 80, 1, 360,
                   f"{sample}:illumina:mapq0", mapq=0)
+    return n
+
+
+def _exon_len(exons: Sequence[Tuple[int, int]], i: int) -> int:
+    e0, e1 = exons[i]
+    return e1 - e0 + 1
+
+
+def transcript_length(exons: Sequence[Tuple[int, int]]) -> int:
+    return sum(e1 - e0 + 1 for e0, e1 in exons)
+
+
+def spliced_read(
+    ref: str, origin: int, exons: Sequence[Tuple[int, int]],
+    tx_start: int, length: int,
+) -> Optional[Tuple[int, List[Tuple[int, str]], str]]:
+    """Walk concatenated exons from 0-based ``tx_start`` for ``length`` bases.
+
+    Returns (1-based leftmost POS, CIGAR with N intron skips, query sequence).
+    """
+    if length <= 0 or tx_start < 0:
+        return None
+    tx_len = transcript_length(exons)
+    if tx_start + length > tx_len:
+        return None
+    cigar: List[Tuple[int, str]] = []
+    pieces: List[str] = []
+    first_pos: Optional[int] = None
+    prev_i: Optional[int] = None
+    remaining_start = tx_start
+    remaining = length
+    for i, (e0, e1) in enumerate(exons):
+        elen = e1 - e0 + 1
+        if remaining <= 0:
+            break
+        if remaining_start >= elen:
+            remaining_start -= elen
+            continue
+        take = min(elen - remaining_start, remaining)
+        gstart = e0 + remaining_start
+        if first_pos is None:
+            first_pos = gstart
+        if prev_i is not None:
+            skip = e0 - exons[prev_i][1] - 1
+            if skip > 0:
+                cigar.append((skip, "N"))
+        cigar.append((take, "M"))
+        i0 = gstart - origin
+        pieces.append(ref[i0:i0 + take])
+        remaining -= take
+        remaining_start = 0
+        prev_i = i
+    if first_pos is None or remaining != 0:
+        return None
+    return first_pos, cigar, "".join(pieces)
+
+
+def _ref_span(cigar: List[Tuple[int, str]]) -> int:
+    return sum(n for n, op in cigar if op in "MDN")
+
+
+def emit_rna_short_reads(
+    fh, sample: str, sample_idx: int, ref: str, origin: int,
+    rng: random.Random, exons: Sequence[Tuple[int, int]],
+    *, coverage: float = RNA_SHORT_COVERAGE, name_prefix: str = "rnaseq",
+) -> int:
+    """Paired Illumina RNA-seq over ``exons``. Junction-spanning reads get CIGAR N."""
+    rg = f"{sample}.rna.illumina"
+    n = 0
+    read_len = SHORT_READ_LEN
+    tx_len = transcript_length(exons)
+    if tx_len < read_len * 2 + 20:
+        return 0
+    step = max(1, int(round(2 * read_len / coverage)))
+
+    def emit_pair(i, tx1, frag):
+        nonlocal n
+        tx2 = tx1 + frag - read_len
+        if tx1 < 0 or tx2 < 0 or tx2 + read_len > tx_len:
+            return
+        a = spliced_read(ref, origin, exons, tx1, read_len)
+        b = spliced_read(ref, origin, exons, tx2, read_len)
+        if a is None or b is None:
+            return
+        pos1, cig1, seq1 = a
+        pos2, cig2, seq2 = b
+        seq1 = add_noise(seq1, cig1, rng, 0.003)
+        seq2 = add_noise(seq2, cig2, rng, 0.003)
+        md1 = compute_md(seq1, pos1, cig1, ref, origin)
+        md2 = compute_md(seq2, pos2, cig2, ref, origin)
+        nm1 = nm_tag(seq1, pos1, cig1, ref, origin)
+        nm2 = nm_tag(seq2, pos2, cig2, ref, origin)
+        end2 = pos2 + _ref_span(cig2) - 1
+        tlen = end2 - pos1 + 1
+        qname = f"{sample}:{name_prefix}:{i}"
+        write_sam_record(
+            fh, qname=qname, flag=99, pos=pos1, mapq=60, cigar=cig1,
+            seq=seq1, qual=chr(33 + 35) * len(seq1), rnext="=", pnext=pos2,
+            tlen=tlen,
+            extra=f"RG:Z:{rg}\tNM:i:{nm1}\tMD:Z:{md1}\tNH:i:1\tXS:A:+",
+            contig=CONTIG3,
+        )
+        write_sam_record(
+            fh, qname=qname, flag=147, pos=pos2, mapq=60, cigar=cig2,
+            seq=seq2, qual=chr(33 + 35) * len(seq2), rnext="=",
+            pnext=pos1, tlen=-tlen,
+            extra=f"RG:Z:{rg}\tNM:i:{nm2}\tMD:Z:{md2}\tNH:i:1\tXS:A:+",
+            contig=CONTIG3,
+        )
+        n += 2
+
+    for i, tx1 in enumerate(range(0, max(1, tx_len - 420), step)):
+        frag = rng.randint(320, 420)
+        emit_pair(i, tx1 + rng.randint(0, max(0, step - 1)), frag)
+    # Extra junction-spanning pairs so split alignments are dense at each intron.
+    tx = 0
+    for ei in range(len(exons) - 1):
+        tx += _exon_len(exons, ei)
+        for k, off in enumerate((-90, -60, -30, -10)):
+            emit_pair(10_000 + ei * 10 + k, tx + off, 360)
+    return n
+
+
+def emit_rna_long_reads(
+    fh, sample: str, sample_idx: int, ref: str, origin: int,
+    rng: random.Random, exons: Sequence[Tuple[int, int]],
+    *, n_molecules: int = RNA_LONG_MOLECULES, skip_exon: Optional[int] = None,
+    name_prefix: str = "isoseq",
+) -> int:
+    """Iso-Seq-like molecules over ``exons``. ``skip_exon`` is 0-based (alt isoform)."""
+    rg = f"{sample}.isoseq"
+    used = list(exons)
+    if skip_exon is not None and 0 < skip_exon < len(used) - 1:
+        used = [e for i, e in enumerate(used) if i != skip_exon]
+    tx_len = transcript_length(used)
+    n = 0
+    for k in range(n_molecules):
+        # Mix of full-length transcripts and 3'-truncated molecules that still
+        # start in exon 4 so every read crosses at least one splice junction.
+        if k % 3 == 2:
+            length = rng.randint(min(tx_len, 900), tx_len)
+            tx0 = 0
+        else:
+            tx0, length = 0, tx_len
+        sliced = spliced_read(ref, origin, used, tx0, length)
+        if sliced is None:
+            continue
+        pos, cig, seq = sliced
+        seq = add_noise(seq, cig, rng, 0.001)
+        if k % 4 == 1:
+            clip = "".join(rng.choice("ACGT") for _ in range(18))
+            seq = clip + seq
+            cig = [(18, "S")] + cig
+        md = compute_md(seq, pos, cig, ref, origin)
+        nm = nm_tag(seq, pos, cig, ref, origin)
+        write_sam_record(
+            fh, qname=f"{sample}:{name_prefix}:{k}", flag=0, pos=pos, mapq=60,
+            cigar=cig, seq=seq, qual=chr(33 + 40) * len(seq),
+            extra=f"RG:Z:{rg}\tNM:i:{nm}\tMD:Z:{md}\tNH:i:1",
+            contig=CONTIG3,
+        )
+        n += 1
     return n
 
 
@@ -1407,6 +1591,8 @@ def write_docs(out: Path, sites: List[Site], bucket: Optional[str]) -> None:
         s: [
             f"{prefix}long_reads/{s}.bam",
             f"{prefix}short_reads/{s}.cram",
+            f"{prefix}rna_short/{s}.cram",
+            f"{prefix}rna_long/{s}.bam",
         ]
         for s in SAMPLES
     }
@@ -1444,11 +1630,14 @@ def write_docs(out: Path, sites: List[Site], bucket: Optional[str]) -> None:
         "chr21_locus": f"{CONTIG2}:{SHOWCASE2[0]}-{SHOWCASE2[1]}",
         "chr14_locus": f"{CONTIG3}:{SHOWCASE3[0]}-{SHOWCASE3[1]}",
         "chr14_region": f"{CONTIG3}:{ORIGIN3}-{REGION3_END}",
+        "rna_locus": f"{CONTIG3}:{RNA_LOCUS[0]}-{RNA_LOCUS[1]}",
         "files": {
             "phased_vcf": "variants/phased.snv_indel_sv.vcf.gz",
             "trgt_vcfs": [f"trgt/{s}.trgt.vcf.gz" for s in SAMPLES],
             "long_reads": [f"long_reads/{s}.bam" for s in SAMPLES],
             "short_reads": [f"short_reads/{s}.cram" for s in SAMPLES],
+            "rna_short": [f"rna_short/{s}.cram" for s in SAMPLES],
+            "rna_long": [f"rna_long/{s}.bam" for s in SAMPLES],
             "extra_long_reads": [
                 "long_reads/SYN001_fc2.bam",
                 "long_reads/SYN001.nomd.bam",
@@ -1507,6 +1696,8 @@ catalog lives at **{CONTIG}:{ORIGIN}-{REGION_END}**.
 | `long_reads/SYN001.nomd.bam` | Same reads with MD stripped — pileup should still work via CIGAR |
 | `long_reads/{ORPHAN_SAMPLE}.bam` | Reads-only sample (not in any VCF) |
 | `short_reads/SYN00{{1-4}}.cram` | Illumina-like 151 bp paired reads at **~35×**, **no HP tag**, CRAM `no_ref` |
+| `rna_short/SYN00{{1-4}}.cram` | Illumina PE RNA-seq over ARHGAP5 exons 4–7; CIGAR ``N`` intron skips. SYN003 also has an exon-5-skip isoform |
+| `rna_long/SYN00{{1-4}}.bam` | Iso-Seq molecules over the same exons; some 18 bp 5' soft-clips. SYN003 includes exon-5-skip transcripts |
 | `variants/phased.snv_indel_sv.vcf.gz` | Joint callset: SNVs, MNPs, delins, SVs, BND, `*`, two phase sets, **{VCF_ONLY_SAMPLE}** VCF-only |
 | `trgt/SYN00{{1-4}}.trgt.vcf.gz` | Per-sample TRGT-style tandem-repeat VCFs, **unphased** (`0/1`, no PS) |
 | `assemblies/SYN00{{1-4}}.hap1.bam` / `.hap2.bam` (+ `.fa`) | Diploid assemblies of each SYN00* sample (as if assembled from that sample's PacBio reads). **No HP tag**. `attach_assemblies("hifiasm", (hap1, hap2))` adds them as **hifiasm** evidence for that sample |
@@ -1535,6 +1726,8 @@ s.attach_variants("phased", f"{{BUCKET}}/variants/phased.snv_indel_sv.vcf.gz")
 s.attach_variants("TRGT", f"{{BUCKET}}/trgt/")          # unphased; ribbons off
 s.attach_reads("pacbio", f"{{BUCKET}}/long_reads/")
 s.attach_reads("illumina", f"{{BUCKET}}/short_reads/")
+s.attach_reads("illumina_rna", f"{{BUCKET}}/rna_short/")
+s.attach_reads("isoseq", f"{{BUCKET}}/rna_long/")
 for sid in {list(SAMPLES)!r}:
     s.attach_assemblies("hifiasm", (
         f"{{BUCKET}}/assemblies/{{sid}}.hap1.bam",
@@ -1561,6 +1754,7 @@ for untagged pileups. Attaching both maps each VCF sample to both files.
 | Genes (default) | `{CONTIG3}:{SHOWCASE3[0]}-{SHOWCASE3[1]}` | ARHGAP5 5' haplotype block (~2.8 kb); UCSC genes populated |
 | ARHGAP5 + INS | `{CONTIG3}:{SHOWCASE3_GENES[0]}-{SHOWCASE3_GENES[1]}` | ARHGAP5-AS1 + 8 bp INS + 12 bp DEL just off the right edge |
 | Full chr14 window | `{CONTIG3}:{ORIGIN3}-{REGION3_END}` | LOC105370440, ARHGAP5, RNU6-7/8 over 266 kb |
+| Spliced RNA | `{CONTIG3}:{RNA_LOCUS[0]}-{RNA_LOCUS[1]}` | ARHGAP5 e4–e7 junctions; Illumina PE + Iso-Seq CIGAR ``N``. SYN003 skips exon 5 |
 | Showcase (planted catalog) | `{CONTIG}:{SHOWCASE[0]}-{SHOWCASE[1]}` | SNVs, 1bp+12bp+40bp insertions, small dels, compound-het, missing GT, CAG TR |
 | Haplotype block | `{CONTIG}:{ORIGIN + 5290}-{ORIGIN + 5320}` | Three consecutive phased SNVs; ribbons stay in phase |
 | Second phase set | `{CONTIG}:{ORIGIN + 6_870}-{ORIGIN + 6_940}` | Six dense SNVs with `PS={PHASE_SET_2}`; ribbons should not jump to the main block |
@@ -1587,6 +1781,8 @@ GT convention: `0` = REF, `1`/`2` = ALT1/ALT2, `|` = phased, `/` = unphased,
 - [ ] Phased track draws ribbons; TRGT track does not (`variants_phased` follows `|` vs `/`)
 - [ ] Load SYN001 long reads: ~17 kb molecules, ~15×, two haplotype colours + a few untagged (HP=0) reads
 - [ ] Load SYN001 short reads: ~35×, no haplotype colour, paired-end SNPs/indels at the same sites
+- [ ] Load SYN001 `illumina_rna` / `isoseq` at `{CONTIG3}:{RNA_LOCUS[0]}-{RNA_LOCUS[1]}`: CIGAR ``N`` skips over ARHGAP5 introns 4–6; some Iso-Seq 5' soft-clips
+- [ ] SYN003 RNA includes an exon-5-skip isoform (larger ``N`` from e4 to e6)
 - [ ] Expand `ins_12bp` / `ins_40bp` / `ins_200bp` lollipops; insertion tiles match the ALT sequence
 - [ ] Soft-clips visible on some HiFi reads; reverse-strand arrows mixed in
 - [ ] Chimeric HiFi read (`SA` tag) with a supplementary alignment on chr21; one secondary (FLAG=256) + MAPQ=0 alignment
@@ -1681,6 +1877,7 @@ def write_tracks(out: Path, sites: List[Site]) -> None:
             (CONTIG, "coverage_gap", COVERAGE_GAP[0], COVERAGE_GAP[1]),
             (CONTIG3, "ARHGAP5_5p", SHOWCASE3_GENES[0], SHOWCASE3_GENES[1]),
             (CONTIG3, "ARHGAP5_body", 32_077_304, 32_159_728),
+            (CONTIG3, "ARHGAP5_rna", RNA_LOCUS[0], RNA_LOCUS[1]),
         ):
             fh.write(f"{chrom}\t{start}\t{end}\t{name}\n")
     af_path = tracks / "snv_af.tsv"
@@ -2021,13 +2218,122 @@ def validate(out: Path) -> None:
     if b1 == b2:
         sys.exit(f"{PRIMARY_SAMPLE} hap1/hap2 should differ at snv_common, both {b1}")
 
+    intron_e4_e5 = RNA_EXONS[1][0] - RNA_EXONS[0][1] - 1
+    intron_e4_e6 = RNA_EXONS[2][0] - RNA_EXONS[0][1] - 1  # exon-5 skip
+    cram = pysam.AlignmentFile(out / "rna_short" / "SYN001.cram", "rc")
+    n = n_n = n_paired = 0
+    n_skip_e5 = 0
+    for r in cram.fetch(CONTIG3, RNA_LOCUS[0] - 1, RNA_LOCUS[1]):
+        n += 1
+        n_paired += int(r.is_paired)
+        n_n += int(any(op == 3 for op, _ in r.cigartuples or []))
+        n_skip_e5 += int(any(op == 3 and ln == intron_e4_e6 for op, ln in r.cigartuples or []))
+    cram.close()
+    print(f"  RNA short SYN001: {n} reads, paired={n_paired}, N-CIGAR={n_n}")
+    if n < 40:
+        sys.exit(f"too few RNA short reads ({n})")
+    if n_paired != n:
+        sys.exit("RNA short CRAM should be fully paired")
+    if n_n < 10:
+        sys.exit(f"expected junction-spanning RNA short reads, got {n_n} with CIGAR N")
+    if n_skip_e5:
+        sys.exit("SYN001 RNA short should be the canonical isoform (no e4→e6 skip)")
+
+    cram = pysam.AlignmentFile(out / "rna_short" / "SYN003.cram", "rc")
+    n3 = n3_skip = 0
+    for r in cram.fetch(CONTIG3, RNA_LOCUS[0] - 1, RNA_LOCUS[1]):
+        n3 += 1
+        n3_skip += int(any(op == 3 and ln == intron_e4_e6 for op, ln in r.cigartuples or []))
+    cram.close()
+    print(f"  RNA short SYN003: {n3} reads, e5-skip={n3_skip}")
+    if n3_skip < 4:
+        sys.exit(f"expected SYN003 RNA short exon-5 skip (N={intron_e4_e6}), got {n3_skip}")
+
+    bam = pysam.AlignmentFile(out / "rna_long" / "SYN001.bam", "rb")
+    n = n_n = n_s = 0
+    for r in bam.fetch(CONTIG3, RNA_LOCUS[0] - 1, RNA_LOCUS[1]):
+        n += 1
+        n_n += int(any(op == 3 for op, _ in r.cigartuples or []))
+        n_s += int(any(op == 4 for op, _ in r.cigartuples or []))
+    bam.close()
+    print(f"  RNA long SYN001: {n} molecules, N-CIGAR={n_n}, softclip={n_s}")
+    if n < RNA_LONG_MOLECULES:
+        sys.exit(f"too few Iso-Seq molecules ({n})")
+    if n_n < 2:
+        sys.exit("expected Iso-Seq CIGAR N intron skips")
+    if not n_s:
+        sys.exit("expected some Iso-Seq 5' soft-clips")
+
+    bam = pysam.AlignmentFile(out / "rna_long" / "SYN003.bam", "rb")
+    n3 = n3_skip = 0
+    for r in bam.fetch(CONTIG3, RNA_LOCUS[0] - 1, RNA_LOCUS[1]):
+        n3 += 1
+        n3_skip += int(any(op == 3 and ln == intron_e4_e6 for op, ln in r.cigartuples or []))
+    bam.close()
+    print(f"  RNA long SYN003: {n3} molecules, e5-skip={n3_skip}")
+    if n3_skip < 2:
+        sys.exit(f"expected SYN003 Iso-Seq exon-5 skip (N={intron_e4_e6}), got {n3_skip}")
+    if intron_e4_e5 <= 0 or intron_e4_e6 <= intron_e4_e5:
+        sys.exit(f"unexpected intron sizes e4-e5={intron_e4_e5} e4-e6={intron_e4_e6}")
+
     print("  validation ok")
+
+
+def generate_rna_reads(out: Path, tmp: Path, seq14: str) -> None:
+    """Spliced Illumina PE CRAMs + Iso-Seq BAMs over ARHGAP5 exons 4–7."""
+    tmp.mkdir(parents=True, exist_ok=True)
+    for i, sample in enumerate(SAMPLES):
+        rna_rng = random.Random(SEED + 17 + i)
+        print(f"  simulating {sample} RNA short reads…")
+        sam = tmp / f"{sample}.rna_illumina.sam"
+        with sam.open("w") as fh:
+            fh.write(sam_header(sample, "rna_illumina", [f"{sample}.rna.illumina"]))
+            n = emit_rna_short_reads(
+                fh, sample, i, seq14, ORIGIN3, rna_rng, RNA_EXONS,
+            )
+            if sample == "SYN003":
+                n += emit_rna_short_reads(
+                    fh, sample, i, seq14, ORIGIN3, rna_rng,
+                    RNA_EXONS[:1] + RNA_EXONS[2:],
+                    coverage=10, name_prefix="rnaseq.skipe5",
+                )
+        print(f"    {n} RNA short records")
+        bam = tmp / f"{sample}.rna_illumina.bam"
+        sam_to_bam(sam, bam)
+        bam_to_cram(bam, out / "rna_short" / f"{sample}.cram")
+
+        print(f"  simulating {sample} RNA long reads…")
+        sam = tmp / f"{sample}.isoseq.sam"
+        with sam.open("w") as fh:
+            fh.write(sam_header(sample, "isoseq", [f"{sample}.isoseq"]))
+            n = emit_rna_long_reads(
+                fh, sample, i, seq14, ORIGIN3, rna_rng, RNA_EXONS,
+            )
+            if sample == "SYN003":
+                n += emit_rna_long_reads(
+                    fh, sample, i, seq14, ORIGIN3, rna_rng, RNA_EXONS,
+                    n_molecules=4, skip_exon=1, name_prefix="isoseq.skipe5",
+                )
+        print(f"    {n} RNA long records")
+        sam_to_bam(sam, out / "rna_long" / f"{sample}.bam")
+
+
+def _ensure_rna_peak(out: Path) -> None:
+    peaks = out / "tracks" / "peaks.bed"
+    if not peaks.is_file():
+        return
+    text = peaks.read_text()
+    if "ARHGAP5_rna" in text:
+        return
+    with peaks.open("a") as fh:
+        fh.write(f"{CONTIG3}\t{RNA_LOCUS[0]}\t{RNA_LOCUS[1]}\tARHGAP5_rna\n")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def generate(out: Path, bucket: Optional[str], do_upload: bool) -> None:
+def generate(out: Path, bucket: Optional[str], do_upload: bool,
+             rna_only: bool = False) -> None:
     require_tools()
     rng = random.Random(SEED)
     out.mkdir(parents=True, exist_ok=True)
@@ -2046,101 +2352,111 @@ def generate(out: Path, bucket: Optional[str], do_upload: bool) -> None:
         CONTIG3: (ORIGIN3, seq14),
     }, rng)
 
-    write_phased_vcf(out / "variants" / "phased.snv_indel_sv.vcf.gz", sites)
-    for i, sample in enumerate(SAMPLES):
-        write_trgt_vcf(out / "trgt" / f"{sample}.trgt.vcf.gz", sample, i, sites)
-
     tmp = out / ".tmp_sam"
     tmp.mkdir(exist_ok=True)
-    for i, sample in enumerate(SAMPLES):
-        print(f"  simulating {sample} long reads…")
-        sam = tmp / f"{sample}.hifi.sam"
-        with sam.open("w") as fh:
-            fh.write(sam_header(sample, "pacbio", [f"{sample}.pacbio", f"{sample}.pacbio2"]))
-            n = emit_long_reads(
-                fh, sample, i, seq20, sites, rng,
-                contig=CONTIG, origin=ORIGIN, rg=f"{sample}.pacbio",
-                name_prefix=f"{sample}:hifi", skip_gap=True, extra_stutter=True,
-            )
-            n += emit_long_reads(
-                fh, sample, i, seq21, sites, rng,
-                contig=CONTIG2, origin=ORIGIN2, rg=f"{sample}.pacbio",
-                name_prefix=f"{sample}:hifi:{CONTIG2}",
-            )
-            n += emit_long_reads(
-                fh, sample, i, seq14, sites, rng,
-                contig=CONTIG3, origin=ORIGIN3, rg=f"{sample}.pacbio",
-                name_prefix=f"{sample}:hifi:{CONTIG3}",
-            )
-            if sample == "SYN001":
-                n += emit_long_reads(
+
+    if rna_only:
+        if not (out / "long_reads" / f"{PRIMARY_SAMPLE}.bam").is_file():
+            sys.exit("--rna-only requires an existing dataset "
+                     f"(missing {out / 'long_reads' / (PRIMARY_SAMPLE + '.bam')})")
+    else:
+        write_phased_vcf(out / "variants" / "phased.snv_indel_sv.vcf.gz", sites)
+        for i, sample in enumerate(SAMPLES):
+            write_trgt_vcf(out / "trgt" / f"{sample}.trgt.vcf.gz", sample, i, sites)
+
+        for i, sample in enumerate(SAMPLES):
+            print(f"  simulating {sample} long reads…")
+            sam = tmp / f"{sample}.hifi.sam"
+            with sam.open("w") as fh:
+                fh.write(sam_header(sample, "pacbio", [f"{sample}.pacbio", f"{sample}.pacbio2"]))
+                n = emit_long_reads(
                     fh, sample, i, seq20, sites, rng,
-                    contig=CONTIG, origin=ORIGIN, rg=f"{sample}.pacbio2",
-                    name_prefix=f"{sample}:hifi:fc2", skip_gap=True,
-                    untagged=0, max_reads=4,
+                    contig=CONTIG, origin=ORIGIN, rg=f"{sample}.pacbio",
+                    name_prefix=f"{sample}:hifi", skip_gap=True, extra_stutter=True,
                 )
-        print(f"    {n} long records")
-        sam_to_bam(sam, out / "long_reads" / f"{sample}.bam")
+                n += emit_long_reads(
+                    fh, sample, i, seq21, sites, rng,
+                    contig=CONTIG2, origin=ORIGIN2, rg=f"{sample}.pacbio",
+                    name_prefix=f"{sample}:hifi:{CONTIG2}",
+                )
+                n += emit_long_reads(
+                    fh, sample, i, seq14, sites, rng,
+                    contig=CONTIG3, origin=ORIGIN3, rg=f"{sample}.pacbio",
+                    name_prefix=f"{sample}:hifi:{CONTIG3}",
+                )
+                if sample == "SYN001":
+                    n += emit_long_reads(
+                        fh, sample, i, seq20, sites, rng,
+                        contig=CONTIG, origin=ORIGIN, rg=f"{sample}.pacbio2",
+                        name_prefix=f"{sample}:hifi:fc2", skip_gap=True,
+                        untagged=0, max_reads=4,
+                    )
+            print(f"    {n} long records")
+            sam_to_bam(sam, out / "long_reads" / f"{sample}.bam")
 
-        print(f"  simulating {sample} short reads…")
-        sam = tmp / f"{sample}.illumina.sam"
+            print(f"  simulating {sample} short reads…")
+            sam = tmp / f"{sample}.illumina.sam"
+            with sam.open("w") as fh:
+                fh.write(sam_header(sample, "illumina", [f"{sample}.illumina"]))
+                n = emit_short_reads(
+                    fh, sample, i, seq20, sites, rng,
+                    contig=CONTIG, origin=ORIGIN, span=SPAN,
+                    showcase=SHOWCASE, deep=DEEP_PILEUP, skip_gap=True,
+                )
+                n += emit_short_reads(
+                    fh, sample, i, seq21, sites, rng,
+                    contig=CONTIG2, origin=ORIGIN2, span=SPAN2,
+                    showcase=SHOWCASE2,
+                )
+                n += emit_short_reads(
+                    fh, sample, i, seq14, sites, rng,
+                    contig=CONTIG3, origin=ORIGIN3, span=SPAN3,
+                    showcase=SHOWCASE3,
+                )
+            print(f"    {n} short records")
+            bam = tmp / f"{sample}.illumina.bam"
+            sam_to_bam(sam, bam)
+            bam_to_cram(bam, out / "short_reads" / f"{sample}.cram")
+
+        # Second flowcell for SYN001 (same SM, different filename).
+        print("  simulating SYN001 flowcell 2…")
+        sam = tmp / "SYN001_fc2.sam"
         with sam.open("w") as fh:
-            fh.write(sam_header(sample, "illumina", [f"{sample}.illumina"]))
-            n = emit_short_reads(
-                fh, sample, i, seq20, sites, rng,
-                contig=CONTIG, origin=ORIGIN, span=SPAN,
-                showcase=SHOWCASE, deep=DEEP_PILEUP, skip_gap=True,
+            fh.write(sam_header("SYN001", "pacbio", ["SYN001.pacbio2"]))
+            emit_long_reads(
+                fh, "SYN001", 0, seq20, sites, rng,
+                contig=CONTIG, origin=ORIGIN, rg="SYN001.pacbio2",
+                name_prefix="SYN001:hifi:fc2file", skip_gap=True,
+                coverage=8, untagged=1,
             )
-            n += emit_short_reads(
-                fh, sample, i, seq21, sites, rng,
-                contig=CONTIG2, origin=ORIGIN2, span=SPAN2,
-                showcase=SHOWCASE2,
+        sam_to_bam(sam, out / "long_reads" / "SYN001_fc2.bam")
+
+        # MD-stripped copy of SYN001 — "SNPs unavailable" warning when loaded alone.
+        nomd = out / "long_reads" / "SYN001.nomd.bam"
+        run(["samtools", "view", "-x", "MD", "-b", "-o", str(nomd),
+             str(out / "long_reads" / "SYN001.bam")])
+        run(["samtools", "index", str(nomd)])
+
+        # Reads-only sample, not in any VCF.
+        print("  simulating reads-only orphan…")
+        sam = tmp / "orphan.sam"
+        with sam.open("w") as fh:
+            fh.write(sam_header(ORPHAN_SAMPLE, "pacbio", [f"{ORPHAN_SAMPLE}.pacbio"]))
+            emit_long_reads(
+                fh, ORPHAN_SAMPLE, -1, seq20, sites, rng,
+                contig=CONTIG, origin=ORIGIN, rg=f"{ORPHAN_SAMPLE}.pacbio",
+                name_prefix=f"{ORPHAN_SAMPLE}:hifi", skip_gap=True,
             )
-            n += emit_short_reads(
-                fh, sample, i, seq14, sites, rng,
-                contig=CONTIG3, origin=ORIGIN3, span=SPAN3,
-                showcase=SHOWCASE3,
-            )
-        print(f"    {n} short records")
-        bam = tmp / f"{sample}.illumina.bam"
-        sam_to_bam(sam, bam)
-        bam_to_cram(bam, out / "short_reads" / f"{sample}.cram")
+        sam_to_bam(sam, out / "long_reads" / f"{ORPHAN_SAMPLE}.bam")
 
-    # Second flowcell for SYN001 (same SM, different filename).
-    print("  simulating SYN001 flowcell 2…")
-    sam = tmp / "SYN001_fc2.sam"
-    with sam.open("w") as fh:
-        fh.write(sam_header("SYN001", "pacbio", ["SYN001.pacbio2"]))
-        emit_long_reads(
-            fh, "SYN001", 0, seq20, sites, rng,
-            contig=CONTIG, origin=ORIGIN, rg="SYN001.pacbio2",
-            name_prefix="SYN001:hifi:fc2file", skip_gap=True,
-            coverage=8, untagged=1,
-        )
-    sam_to_bam(sam, out / "long_reads" / "SYN001_fc2.bam")
+        write_assemblies(out, tmp, sites, seq20, seq21, seq14)
+        write_tracks(out, sites)
 
-    # MD-stripped copy of SYN001 — "SNPs unavailable" warning when loaded alone.
-    nomd = out / "long_reads" / "SYN001.nomd.bam"
-    run(["samtools", "view", "-x", "MD", "-b", "-o", str(nomd),
-         str(out / "long_reads" / "SYN001.bam")])
-    run(["samtools", "index", str(nomd)])
-
-    # Reads-only sample, not in any VCF.
-    print("  simulating reads-only orphan…")
-    sam = tmp / "orphan.sam"
-    with sam.open("w") as fh:
-        fh.write(sam_header(ORPHAN_SAMPLE, "pacbio", [f"{ORPHAN_SAMPLE}.pacbio"]))
-        emit_long_reads(
-            fh, ORPHAN_SAMPLE, -1, seq20, sites, rng,
-            contig=CONTIG, origin=ORIGIN, rg=f"{ORPHAN_SAMPLE}.pacbio",
-            name_prefix=f"{ORPHAN_SAMPLE}:hifi", skip_gap=True,
-        )
-    sam_to_bam(sam, out / "long_reads" / f"{ORPHAN_SAMPLE}.bam")
-
-    write_assemblies(out, tmp, sites, seq20, seq21, seq14)
-    write_tracks(out, sites)
+    generate_rna_reads(out, tmp, seq14)
     shutil.rmtree(tmp, ignore_errors=True)
     write_docs(out, sites, bucket)
+    if rna_only:
+        _ensure_rna_peak(out)
 
     print("validating…")
     try:
@@ -2151,6 +2467,7 @@ def generate(out: Path, bucket: Optional[str], do_upload: bool) -> None:
     print()
     print(f"dataset: {out.resolve()}")
     print(f"default locus: {CONTIG3}:{SHOWCASE3[0]}-{SHOWCASE3[1]}")
+    print(f"rna locus:      {CONTIG3}:{RNA_LOCUS[0]}-{RNA_LOCUS[1]}")
     print(f"chr20 locus:    {CONTIG}:{SHOWCASE[0]}-{SHOWCASE[1]}")
     print(f"chr21 locus:    {CONTIG2}:{SHOWCASE2[0]}-{SHOWCASE2[1]}")
     if do_upload and bucket:
@@ -2167,9 +2484,12 @@ def main() -> None:
     p.add_argument("--bucket", default=None,
                    help="gs:// prefix to bake into README sample_mapping "
                         "(defaults to --upload if set)")
+    p.add_argument("--rna-only", action="store_true",
+                   help="only (re)generate spliced RNA CRAMs/BAMs on an existing dataset")
     args = p.parse_args()
     bucket = args.bucket or args.upload
-    generate(args.output, bucket=bucket, do_upload=bool(args.upload))
+    generate(args.output, bucket=bucket, do_upload=bool(args.upload),
+             rna_only=args.rna_only)
 
 
 if __name__ == "__main__":

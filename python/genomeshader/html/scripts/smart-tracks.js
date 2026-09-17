@@ -2,11 +2,15 @@
 // -----------------------------
 
 // Process raw reads data into a layout structure (used by Smart Tracks)
-function processReadsData(rawReads) {
+function processReadsData(rawReads, opts) {
   if (!rawReads || !rawReads.query_name) return null;
+  opts = opts || {};
+  const asPairs = !!opts.asPairs;
   
   // Convert column-oriented data to row-oriented.
   const numRows = rawReads.query_name.length;
+  const pairedCol = rawReads.is_paired;
+  const primaryCol = rawReads.is_primary;
 
   // One entry per alignment, grouped by CONTIGUITY not query_name: the Rust
   // extractor emits each read as a READ row (element_type 0) immediately
@@ -14,7 +18,8 @@ function processReadsData(rawReads) {
   // wrong — paired-end mates share a query_name, so it merged a pair into a
   // single read and stapled the mate's SNP/indel markers onto it, painting them
   // outside the (shorter) kept read. Contiguity keeps mates separate and each
-  // read's markers confined to that read.
+  // read's markers confined to that read. "Show as pairs" only shares a *row*
+  // (and a connector); it never merges the two objects.
   const readArray = [];
   let current = null;
   for (let i = 0; i < numRows; i++) {
@@ -26,6 +31,9 @@ function processReadsData(rawReads) {
         isForward: rawReads.is_forward[i],
         haplotype: rawReads.haplotype[i],
         sample: rawReads.sample_name[i],
+        isPaired: !!(pairedCol && pairedCol[i]),
+        isPrimary: primaryCol ? !!primaryCol[i] : true,
+        mate: null,
         elements: []
       };
       readArray.push(current);
@@ -42,43 +50,102 @@ function processReadsData(rawReads) {
   // Sort by start position
   readArray.sort((a, b) => a.start - b.start);
 
-  // No read cap: canvases are virtualized (viewport-sized + scroll offset),
-  // so an arbitrarily deep pileup no longer inflates the canvas past the GPU
-  // limit. All reads render.
+  const units = [];
+  if (asPairs) {
+    const buckets = new Map();
+    for (const read of readArray) {
+      if (read.isPaired && read.isPrimary) {
+        const list = buckets.get(read.name);
+        if (list) list.push(read);
+        else buckets.set(read.name, [read]);
+      }
+    }
+    const paired = new Set();
+    for (const list of buckets.values()) {
+      if (list.length !== 2) continue;
+      const a = list[0].start <= list[1].start ? list[0] : list[1];
+      const b = a === list[0] ? list[1] : list[0];
+      a.mate = b;
+      b.mate = a;
+      paired.add(a);
+      paired.add(b);
+      units.push({
+        start: Math.min(a.start, b.start),
+        end: Math.max(a.end, b.end),
+        reads: [a, b],
+      });
+    }
+    for (const read of readArray) {
+      if (!paired.has(read)) units.push({ start: read.start, end: read.end, reads: [read] });
+    }
+  } else {
+    for (const read of readArray) {
+      units.push({ start: read.start, end: read.end, reads: [read] });
+    }
+  }
+  units.sort((a, b) => a.start - b.start);
 
-  // Improved greedy packing: assign reads to rows, checking if read fits anywhere in each row
+  // Greedy packing of units (a pair occupies its full insert, so nothing else
+  // slots into the inner gap). Same 10bp neighbor padding as unpaired packing.
   const rows = [];
-  for (const read of readArray) {
+  for (const unit of units) {
     let placed = false;
-    // Try to place in existing rows
     for (let r = 0; r < rows.length; r++) {
-      // Check if read can fit in this row (doesn't overlap with any existing read)
       let canFit = true;
-      for (const existingRead of rows[r]) {
-        // Check for overlap: read overlaps if it starts before existing ends and ends after existing starts
-        if (!(read.end < existingRead.start - 10 || read.start > existingRead.end + 10)) {
+      for (const existing of rows[r]) {
+        if (!(unit.end < existing.start - 10 || unit.start > existing.end + 10)) {
           canFit = false;
           break;
         }
       }
       if (canFit) {
-        read.row = r;
-        rows[r].push(read);
-        // Keep row sorted by start position for better packing
+        for (const read of unit.reads) read.row = r;
+        rows[r].push(unit);
         rows[r].sort((a, b) => a.start - b.start);
         placed = true;
         break;
       }
     }
     if (!placed) {
-      read.row = rows.length;
-      rows.push([read]);
+      for (const read of unit.reads) read.row = rows.length;
+      rows.push([unit]);
     }
   }
-  
-  // Only log in debug mode or for first few calls to avoid console spam
-  // console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
+
   return { reads: readArray, rowCount: rows.length };
+}
+
+// CIGAR N (element_type 5) intron skips. Aligned blocks are the exons; the
+// full READ start/end still spans the intron for packing.
+const ELEMENT_REFSKIP = 5;
+
+function alignedBlocks(read) {
+  if (!read) return [];
+  const skips = [];
+  if (read.elements) {
+    for (const e of read.elements) {
+      if (e.type === ELEMENT_REFSKIP) skips.push({ start: e.start, end: e.end });
+    }
+    skips.sort((a, b) => a.start - b.start);
+  }
+  if (!skips.length) return [{ start: read.start, end: read.end }];
+  const blocks = [];
+  let pos = read.start;
+  for (const s of skips) {
+    if (s.start > pos) blocks.push({ start: pos, end: s.start });
+    if (s.end > pos) pos = s.end;
+  }
+  if (read.end > pos) blocks.push({ start: pos, end: read.end });
+  return blocks;
+}
+
+function layoutSmartTrackReads(track) {
+  if (!track) return;
+  if (!track.readsData) {
+    track.readsLayout = null;
+    return;
+  }
+  track.readsLayout = processReadsData(track.readsData, { asPairs: !!track.showPairs });
 }
 
 // Default / maximum open height for a sample (Smart) track. Expanded tracks
@@ -122,6 +189,7 @@ if (typeof window !== "undefined") {
 // Exposed for the headless harness to regression-test read grouping (paired-end
 // mates share a query_name; markers must stay confined to their own read).
 if (typeof window !== "undefined") window.__GS_processReadsData = processReadsData;
+if (typeof window !== "undefined") window.__GS_alignedBlocks = alignedBlocks;
 
 // Create a new Smart track
 function createSmartTrack(strategy, selectedAlleles) {
@@ -149,6 +217,7 @@ function createSmartTrack(strategy, selectedAlleles) {
     // and centered inside this slot.
     closedHeight: 30,
     minHeight: 50,
+    showPairs: false,
     strategy: strategy,
     selectedAlleles: new Set(selectedAlleles),
     sampleId: null,
@@ -556,7 +625,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
     const hit = _smartReadsCache.get(cacheKey);
     track.loading = false;
     track.readsData = hit.reads;
-    track.readsLayout = processReadsData(hit.reads);
+    layoutSmartTrackReads(track);
     track.sampleId = sampleId;
     track.bamUrls = hit.bamUrls || [];
     track.requestedBamUrl = hit.bamUrl || requestedBam;
@@ -642,7 +711,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
           }
         } catch (e) {}
         track.readsData = response.reads;
-        track.readsLayout = processReadsData(response.reads);
+        layoutSmartTrackReads(track);
         track.sampleId = sampleId || response.sample_id || null;
         track.bamUrls = response.bam_urls || [];
         track.requestedBamUrl = requestedBam || (track.bamUrls.length === 1 ? track.bamUrls[0] : null);
@@ -715,6 +784,8 @@ function removeSmartTrack(trackId) {
   // Clean up WebGPU renderer
   removeSmartTrackWebGPU(trackId);
   
+  if (state.expandedTrackConfigId === trackId) state.expandedTrackConfigId = null;
+
   // Update layout and re-render
   updateTracksHeight();
   renderAll();
@@ -974,6 +1045,107 @@ function editSmartTrackLabel(trackId, newLabel) {
   editTrackLabel(trackId, newLabel);
 }
 
+function trackKindLabel(track) {
+  const id = (track && track.id) || "";
+  if (id.indexOf("smart-track-") === 0) return "Reads";
+  if (id.indexOf("ucsc-") === 0) return "UCSC";
+  if (id.indexOf("data-") === 0) return "Data";
+  if (id === "flow" || id.indexOf("flow-") === 0) return "Variants";
+  if (id === "genes") return "Genes";
+  if (id === "repeats") return "Repeats";
+  if (id === "reference") return "Reference";
+  return "Track";
+}
+
+function toggleTrackConfig(trackId) {
+  if (!trackId) {
+    state.expandedTrackConfigId = null;
+  } else if (state.expandedTrackConfigId === trackId) {
+    state.expandedTrackConfigId = null;
+  } else {
+    const exists = (state.tracks || []).some(t => t.id === trackId);
+    state.expandedTrackConfigId = exists ? trackId : null;
+  }
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+}
+
+function fillTrackConfigPanel(host, track) {
+  const isSmart = typeof track.id === "string" && track.id.indexOf("smart-track-") === 0;
+  const smartMeta = isSmart
+    ? (state.smartTracks || []).find(st => st.id === track.id)
+    : null;
+
+  const kind = document.createElement("div");
+  kind.className = "track-inspector-type track-config-type";
+  kind.textContent = trackKindLabel(track);
+  host.appendChild(kind);
+
+  const visRow = document.createElement("div");
+  visRow.className = "track-inspector-row";
+  const visLabel = document.createElement("label");
+  const visCb = document.createElement("input");
+  visCb.type = "checkbox";
+  visCb.className = "track-config-visible";
+  visCb.checked = !(track.hidden === true);
+  visCb.addEventListener("change", () => {
+    track.hidden = !visCb.checked;
+    if (smartMeta) smartMeta.hidden = track.hidden;
+    if (typeof updateTracksHeight === "function") updateTracksHeight();
+    if (typeof renderAll === "function") renderAll();
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  });
+  visLabel.appendChild(visCb);
+  visLabel.appendChild(document.createTextNode("Show in view"));
+  visRow.appendChild(visLabel);
+  host.appendChild(visRow);
+
+  const colRow = document.createElement("div");
+  colRow.className = "track-inspector-row";
+  const colLabel = document.createElement("label");
+  const colCb = document.createElement("input");
+  colCb.type = "checkbox";
+  colCb.className = "track-config-collapsed";
+  colCb.checked = !!track.collapsed;
+  colCb.addEventListener("change", () => {
+    track.collapsed = colCb.checked;
+    if (smartMeta) smartMeta.collapsed = track.collapsed;
+    if (typeof updateTracksHeight === "function") updateTracksHeight();
+    if (typeof renderAll === "function") renderAll();
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  });
+  colLabel.appendChild(colCb);
+  colLabel.appendChild(document.createTextNode(
+    isSmart ? "Collapse to summary" : "Collapse track"
+  ));
+  colRow.appendChild(colLabel);
+  host.appendChild(colRow);
+
+  if (isSmart) {
+    const pairRow = document.createElement("div");
+    pairRow.className = "track-inspector-row";
+    const pairLabel = document.createElement("label");
+    const pairCb = document.createElement("input");
+    pairCb.type = "checkbox";
+    pairCb.className = "track-config-show-pairs";
+    pairCb.checked = !!track.showPairs;
+    pairCb.addEventListener("change", () => {
+      const target = (smartMeta && smartMeta.readsData) ? smartMeta
+        : (track && track.readsData ? track : (smartMeta || track));
+      target.showPairs = pairCb.checked;
+      if (track && track !== target) track.showPairs = target.showPairs;
+      if (smartMeta && smartMeta !== target) smartMeta.showPairs = target.showPairs;
+      layoutSmartTrackReads(target);
+      if (typeof updateTracksHeight === "function") updateTracksHeight();
+      if (typeof renderAll === "function") renderAll();
+      if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+    });
+    pairLabel.appendChild(pairCb);
+    pairLabel.appendChild(document.createTextNode("Show as pairs"));
+    pairRow.appendChild(pairLabel);
+    host.appendChild(pairRow);
+  }
+}
+
 // Right sidebar for Tracks (layout order, visibility, labels)
 // -----------------------------
 
@@ -1071,7 +1243,11 @@ if (typeof window !== "undefined") {
 
 // Render Tracks list in right sidebar (all layout tracks, not just smart samples)
 function renderSmartTracksSidebar() {
-  const smartTracksList = document.getElementById('smartTracksList');
+  // Fullscreen moves #genomeshader-root into the overlay modal. Prefer the
+  // live root so we rebuild the visible list, not a leftover node.
+  const scope = (typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document;
+  const smartTracksList = (typeof byId === "function" ? byId(scope, "smartTracksList") : null)
+    || document.getElementById('smartTracksList');
   if (!smartTracksList) return;
   
   smartTracksList.innerHTML = '';
@@ -1238,6 +1414,8 @@ function renderSmartTracksSidebar() {
     item.className = 'smart-track-item';
     item.dataset.trackId = track.id;
     item.draggable = true;
+    const configOpen = state.expandedTrackConfigId === track.id;
+    if (configOpen) item.classList.add('config-open');
 
     if (isSmart) {
       if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
@@ -1381,6 +1559,32 @@ function renderSmartTracksSidebar() {
       controls.appendChild(shuffleBtn);
       controls.appendChild(closeBtn);
     }
+
+    const gearBtn = document.createElement('button');
+    gearBtn.className = 'smart-track-item-gear' + (configOpen ? ' active' : '');
+    gearBtn.type = 'button';
+    gearBtn.title = configOpen ? 'Hide track options' : 'Track options';
+    gearBtn.setAttribute('aria-label', 'Track options');
+    gearBtn.setAttribute('aria-expanded', configOpen ? 'true' : 'false');
+    gearBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+      + '<circle cx="12" cy="12" r="3"></circle>'
+      + '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 1 1-2.83-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>'
+      + '</svg>';
+    // Don't preventDefault on pointerdown: the fullscreen overlay sets
+    // touch-action:none on its body, and cancelling pointerdown there
+    // suppresses the subsequent click — so the drawer would not open or close.
+    // stopPropagation + clearing draggable is enough to keep the row from
+    // starting an HTML5 drag.
+    gearBtn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      item.draggable = false;
+    });
+    gearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      toggleTrackConfig(track.id);
+    });
+    controls.appendChild(gearBtn);
     
     header.appendChild(grip);
     header.appendChild(label);
@@ -1388,7 +1592,19 @@ function renderSmartTracksSidebar() {
     header.appendChild(controls);
     
     item.appendChild(header);
-    
+
+    if (configOpen) {
+      const config = document.createElement('div');
+      config.className = 'smart-track-item-config';
+      config.addEventListener('pointerdown', (e) => e.stopPropagation());
+      fillTrackConfigPanel(config, track);
+      item.appendChild(config);
+    }
+
+    item.addEventListener('mousedown', (e) => {
+      item.draggable = !e.target.closest('.smart-track-item-config, .smart-track-item-gear, button, input');
+    });
+
     // Drag and drop handlers
     item.addEventListener('dragstart', (e) => {
       // Don't start an item drag while a group rail drag is active.
@@ -1399,6 +1615,7 @@ function renderSmartTracksSidebar() {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', track.id);
       item.classList.add('dragging');
+      item.dataset.gsDragged = '1';
     });
     
     item.addEventListener('dragend', (e) => {
@@ -1634,7 +1851,8 @@ if (typeof document !== 'undefined') {
 // Tab switching for right sidebar
 function getActiveTab() {
   const stored = gsLocalStorage.getItem("genomeshader.rightSidebarTab");
-  return stored || "smart-tracks"; // Default to smart-tracks
+  if (!stored || stored === "track") return "smart-tracks";
+  return stored;
 }
 function setActiveTab(tabName) {
   gsLocalStorage.setItem("genomeshader.rightSidebarTab", tabName);
@@ -1653,8 +1871,8 @@ function updateActiveTab() {
     }
   });
   
-  // Update command strip icons
-  const icons = document.querySelectorAll('.command-strip-icon');
+  // Update command strip icons (right rail only — left icons use data-left-tab)
+  const icons = document.querySelectorAll('.sidebar-right-command-strip .command-strip-icon');
   icons.forEach(icon => {
     if (icon.dataset.tab === activeTab) {
       icon.classList.add('active');
@@ -1681,7 +1899,7 @@ function initializeRightSidebar() {
     const handleRightSidebarToggle = (e) => {
       // Don't intercept clicks on form elements, command strip icons, or their containers
       const target = e.target;
-      if (target.closest('input, button.command-strip-icon, .smart-track-item, .sidebar-right-command-strip, .sidebar-close-btn, .sidebar-right-resize-handle')) {
+      if (target.closest('input, button, select, label, .smart-track-item, .smart-track-item-gear, .smart-track-item-config, .sidebar-right-command-strip, .sidebar-close-btn, .sidebar-right-resize-handle')) {
         return;
       }
       
@@ -1757,6 +1975,7 @@ function initializeRightSidebar() {
 // pixel test exercises the real read + SNP draw. Same window.__GS_* seam pattern
 // as window.__GS_processReadsData above; no production code calls it.
 if (typeof window !== "undefined") {
+  window.toggleTrackConfig = toggleTrackConfig;
   window.__GS_TEST_seedSmartTrack = async function (sampleId, rawReads, opts) {
     opts = opts || {};
     const track = createSmartTrack(opts.strategy || "best", opts.selectedAlleles || []);
@@ -1764,7 +1983,8 @@ if (typeof window !== "undefined") {
     track.label = sampleId;
     track.collapsed = opts.collapsed === true; // default expanded (rows visible)
     track.readsData = rawReads;
-    track.readsLayout = processReadsData(rawReads);
+    if (opts.showPairs != null) track.showPairs = !!opts.showPairs;
+    layoutSmartTrackReads(track);
     // initSmartTrackWebGPU (started by createSmartTrack) is async; wait for the
     // per-track renderer to come up before we paint.
     for (let i = 0; i < 80 && !state.smartTrackRenderers.has(track.id); i++) {

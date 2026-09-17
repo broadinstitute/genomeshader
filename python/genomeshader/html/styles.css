@@ -465,6 +465,10 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   border-color: var(--border2);
   background: var(--panel);
 }
+.smart-track-item.config-open {
+  border-color: var(--border2);
+  background: var(--panel);
+}
 .smart-track-item.dragging {
   opacity: 0.5;
   border-color: var(--blue);
@@ -642,6 +646,40 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   justify-content: center;
   padding: 0;
   background: white;
+}
+
+.smart-track-item-gear {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.smart-track-item-gear svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.smart-track-item-gear:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+.smart-track-item-gear.active {
+  color: var(--blue);
+  background: var(--panel);
+}
+.smart-track-item-config {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border2);
+  cursor: default;
 }
 
 .sidebarHeader {
@@ -953,6 +991,50 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   font-size: 11px;
   color: var(--muted);
   line-height: 1.4;
+}
+
+/* Inline track-options drawer under a Tracks-list row */
+.track-inspector-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--text);
+}
+.track-inspector-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--text);
+}
+.track-inspector-type {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 4px 0 8px;
+}
+.track-inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.track-inspector-actions button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.track-inspector-actions button:hover {
+  border-color: var(--blue);
+  color: var(--blue);
 }
 
 .sampleSelectionHeader {

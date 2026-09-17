@@ -50,6 +50,9 @@ const state = {
   pinchStartSpan: null,
   pinchAnchorBp: null,
 
+  // Track id whose inline config drawer is open in the Tracks list. Null = none.
+  expandedTrackConfigId: null,
+
   // track management (flow tracks are injected from config.variant_tracks when present)
   tracks: [
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },

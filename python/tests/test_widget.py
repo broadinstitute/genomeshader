@@ -198,6 +198,22 @@ def test_no_right_panel_settings_button():
     assert 'data-left-tab="settings"' in body       # left panel settings tab stays
 
 
+def test_track_config_gear_in_tracks_list():
+    body = _body_html()
+    assert 'data-tab="track"' not in body
+    assert 'id="tab-track"' not in body
+    assert 'id="selectedTrackContent"' not in body
+    esm = _build_esm()
+    assert "expandedTrackConfigId" in esm
+    assert "toggleTrackConfig" in esm
+    assert "smart-track-item-gear" in esm
+    assert "fillTrackConfigPanel" in esm
+    assert "Show as pairs" in esm
+    assert "layoutSmartTrackReads" in esm
+    assert "function selectTrack" not in esm
+    assert "window.selectTrack" not in esm
+
+
 def test_settings_interaction_section():
     body = _body_html()
     assert body.index(">Display<") < body.index(">Interaction<")
@@ -459,6 +475,29 @@ def test_reads_payload_disk_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("GENOMESHADER_NO_READS_CACHE", "1")
     s._fetch_reads_payload(sample_id="S1")
     assert s._session.fetch_reads_for_locus.call_count == 2
+
+
+def test_reads_cache_misses_without_pairing_columns(tmp_path, monkeypatch):
+    import json
+    import polars as pl
+    s = _shader(tmp_path, monkeypatch)
+    s._last_locus = "Pf3D7_01_v3:1-100"
+    s.set_sample_mapping({"S1": ["gs://b/S1.bam"]})
+    s.reference = Mock(return_value="")
+    s._session.fetch_reads_for_locus = Mock(
+        return_value=pl.DataFrame({
+            "query_name": ["pe"], "sample_name": ["S1"],
+            "is_paired": [True], "is_primary": [True],
+        }))
+    cache_path = s._reads_cache_path("Pf3D7_01_v3:1-100", ["gs://b/S1.bam"])
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps({
+        "reads": {"query_name": ["pe"], "sample_name": ["S1"]},
+        "count": 1,
+    }))
+    payload = s._fetch_reads_payload(sample_id="S1")
+    s._session.fetch_reads_for_locus.assert_called_once()
+    assert payload["reads"]["is_paired"] == [True]
 
 
 def test_widget_reads_through_real_payload(tmp_path, monkeypatch):
