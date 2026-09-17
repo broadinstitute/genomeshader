@@ -1012,12 +1012,12 @@ def test_clear_cache_button_dispatches_comm(browser, tmp_path):
 
 
 def test_hud_stays_visible(browser, tmp_path):
-    """The current-position indicator now lives in the top nav bar (#locusReadout)
-    and shows the current contig:start-end (the floating HUD is hidden)."""
+    """The cursor-position indicator lives in the top nav bar (#locusReadout)
+    as a single coordinate (view midpoint until the mouse moves)."""
     page, _ = _open(browser, tmp_path, "horizontal")
     _wait_ready(page)
     txt = page.evaluate("() => (document.getElementById('locusReadout')||{}).textContent || ''")
-    assert ":" in txt and "-" in txt, f"nav-bar position readout not populated: {txt!r}"
+    assert ":" in txt and "-" not in txt, f"nav-bar position readout not populated: {txt!r}"
     page.close()
 
 

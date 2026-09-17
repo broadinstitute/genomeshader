@@ -76,7 +76,7 @@ def _container_override_css(cid: str) -> str:
     c = "#" + cid
     return "\n".join([
         f"{c} {{ height:1200px; display:block; position:relative; overflow:visible;"
-        f" --sidebar-w:360px; --sidebar-right-w:240px; --tracks-h:280px; --flow-h:500px; --reads-h:220px; }}",
+        f" --sidebar-w:360px; --sidebar-right-w:240px; --tracks-h:220px; --flow-h:500px; --reads-h:220px; }}",
         # Flex row: sidebar-left | main | sidebar-right. As siblings they cannot
         # overlap — main flexes to fill whatever the panels leave, so expanding a
         # panel narrows the tracks instead of occluding them. Overrides the inline

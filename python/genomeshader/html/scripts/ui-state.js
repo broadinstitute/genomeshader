@@ -40,6 +40,9 @@ const state = {
   dragging: false,
   lastX: 0,
   lastY: 0,
+  // Locus-bar padlock: freeze zoom (wheel / pinch / dblclick). Drag-to-pan
+  // still works for last-pixel screenshot framing. Go / contig jumps still work.
+  lockView: false,
 
   // touch pinch
   pointers: new Map(),     // pointerId -> {x,y}
@@ -49,7 +52,6 @@ const state = {
 
   // track management (flow tracks are injected from config.variant_tracks when present)
   tracks: [
-    { id: "ideogram", label: "Chromosome", collapsed: false, height: 38, minHeight: 20 },
     { id: "genes", label: "Genes", collapsed: false, height: 50, minHeight: 30 },
     { id: "repeats", label: "RepeatMasker", collapsed: false, height: 40, minHeight: 30 },
     { id: "reference", label: "Reference", collapsed: false, height: 96, minHeight: 72 },
@@ -304,6 +306,7 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && w
 const main = byId(root, "main");
 const tracksSvg = byId(root, "tracksSvg");
 const tracksContainer = byId(root, "tracksContainer");
+const locusIdeogramSvg = byId(root, "locusIdeogram");
 const flow = byId(root, "flow");
 const flowCanvas = byId(root, "flowCanvas");
 const flowOverlay = byId(root, "flowOverlay");
