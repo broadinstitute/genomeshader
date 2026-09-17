@@ -2837,6 +2837,13 @@ class GenomeShader:
                 if isinstance(cached, dict) and "reads" in cached:
                     reads_dict = cached["reads"]
                     count = int(cached.get("count", 0))
+                    # v4 keys can still hold a payload fetched through a stale
+                    # parquet cache that predates is_paired / is_primary.
+                    if (isinstance(reads_dict, dict)
+                            and reads_dict.get("query_name")
+                            and "is_paired" not in reads_dict):
+                        reads_dict = None
+                        count = None
             except Exception:
                 reads_dict = None
         source = "disk" if reads_dict is not None else "fetch"
@@ -2895,7 +2902,9 @@ class GenomeShader:
     # v2: reference-diffed SNPs + has_md("snps displayable") column.
     # v3: flush v2 payloads written before the extension was rebuilt (no has_md
     #     column / no reference-diffed SNPs) so the widget can't serve them.
-    _READS_CACHE_VERSION = "v3"
+    # v4: is_paired / is_primary columns for paired-end layout.
+    # v5: CIGAR N (REFSKIP) elements for split-read display.
+    _READS_CACHE_VERSION = "v5"
 
     # ----------------------------------------------------------------- debug
     def _setup_debug_logging(self):

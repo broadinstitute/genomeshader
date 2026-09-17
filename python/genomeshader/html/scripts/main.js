@@ -616,6 +616,7 @@ function renderSmartTrack(trackId) {
       const eh = band.h;
 
       for (const el of read.elements) {
+        if (el.type === 5) continue; // intron skip — not a CIGAR marker
         if (el.start < renderStartBp() || el.start > renderEndBp()) continue;
         const ex = xGenomeCanonical(el.start, genomeW);
         const base = el.type === 2 ? 0.25 : (el.type === 3 ? 0.2 : 0.25);
@@ -711,6 +712,40 @@ function renderSmartTrack(trackId) {
       if (!(clipWidth > 0)) continue;
       ctx.fillStyle = smartTrackBg;
       ctx.fillRect(clipStart, y, clipWidth, h);
+    }
+  }
+
+  // Pair packing keeps two mate objects; this is the insert-gap connector only.
+  // Draw once from the left/upstream mate. Overlapping mates have no gap.
+  function pairConnectorGap(read) {
+    const mate = read && read.mate;
+    if (!mate || read.start >= mate.start) return null;
+    if (!(read.end < mate.start)) return null;
+    return { a: read, b: mate };
+  }
+  function drawPairConnectorRect(x, y, w, h) {
+    if (!(w > 0.5) || !(h > 0.5)) return;
+    // Light gray so the insert line reads on both dark and light track backgrounds.
+    if (instancedRenderer && webgpuSupported) {
+      instancedRenderer.addRect(
+        x * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
+        [200 / 255, 200 / 255, 200 / 255, 0.9]
+      );
+    } else {
+      ctx.fillStyle = "rgba(200,200,200,0.9)";
+      ctx.fillRect(x, y, w, h);
+    }
+  }
+  function drawSpliceConnectorRect(x, y, w, h) {
+    if (!(w > 0.5) || !(h > 0.5)) return;
+    if (instancedRenderer && webgpuSupported) {
+      instancedRenderer.addRect(
+        x * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
+        [180 / 255, 180 / 255, 180 / 255, 0.95]
+      );
+    } else {
+      ctx.fillStyle = "rgba(180,180,180,0.95)";
+      ctx.fillRect(x, y, w, h);
     }
   }
   
@@ -809,6 +844,16 @@ function renderSmartTrack(trackId) {
       } else {
       for (const read of vReads) {
         if (read.row >= maxCols) continue;
+        const gap = pairConnectorGap(read);
+        if (!gap) continue;
+        const y1 = yGenomeCanonical(gap.a.end, coordHeight);
+        const y2 = yGenomeCanonical(gap.b.start, coordHeight);
+        const x = left + read.row * colW + 2;
+        const w = colW - 4;
+        drawPairConnectorRect(x + w / 2 - 1.5, Math.min(y1, y2), 3, Math.abs(y2 - y1));
+      }
+      for (const read of vReads) {
+        if (read.row >= maxCols) continue;
         if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
         
         let color, alpha;
@@ -824,52 +869,62 @@ function renderSmartTrack(trackId) {
         }
         if (!read.isForward) alpha *= 0.7;
         
-        const y1 = yGenomeCanonical(read.start, coordHeight);
-        const y2 = yGenomeCanonical(read.end, coordHeight);
         const col = read.row;
         const x = left + col * colW + 2;
         const w = colW - 4;
-        const y = Math.min(y1, y2);
-        const h = Math.max(4, Math.abs(y2 - y1));
-        
-        if (instancedRenderer && webgpuSupported) {
-          instancedRenderer.addRect(
-            x * dpr, (y - _scrollOffset) * dpr,
-            w * dpr, h * dpr,
-            [color[0]/255, color[1]/255, color[2]/255, alpha]
-          );
-        } else {
-          ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
-          ctx.beginPath();
-          roundRect(ctx, x, y, w, h, 3);
-          ctx.fill();
+        const blocks = alignedBlocks(read);
+        for (const elem of (read.elements || [])) {
+          if (elem.type !== 5) continue;
+          const sy1 = yGenomeCanonical(elem.start, coordHeight);
+          const sy2 = yGenomeCanonical(elem.end, coordHeight);
+          drawSpliceConnectorRect(x + w / 2 - 1, Math.min(sy1, sy2), 2, Math.abs(sy2 - sy1));
         }
-
-        // Strand direction arrow. Genome axis is Y (higher bp = up): forward
-        // points UP, reverse DOWN. Same layer as the body (WebGPU triangle when
-        // active, else Canvas2D fallback).
-        if (h >= 6) {
-          const arrowSize = Math.max(3, Math.min(7, h * 0.5));
-          const acx = x + w / 2;
-          let tx0, ty0, tx1, ty1, tx2, ty2;
-          if (read.isForward) {
-            tx0 = x + 1;     ty0 = y + arrowSize + 1;
-            tx1 = acx;       ty1 = y + 1;
-            tx2 = x + w - 1; ty2 = y + arrowSize + 1;
-          } else {
-            tx0 = x + 1;     ty0 = y + h - arrowSize - 1;
-            tx1 = acx;       ty1 = y + h - 1;
-            tx2 = x + w - 1; ty2 = y + h - arrowSize - 1;
-          }
+        for (let bi = 0; bi < blocks.length; bi++) {
+          const block = blocks[bi];
+          const y1 = yGenomeCanonical(block.start, coordHeight);
+          const y2 = yGenomeCanonical(block.end, coordHeight);
+          const y = Math.min(y1, y2);
+          const h = Math.max(blocks.length === 1 ? 4 : 1, Math.abs(y2 - y1));
+          
           if (instancedRenderer && webgpuSupported) {
-            instancedRenderer.addTriangle(
-              tx0 * dpr, (ty0 - _scrollOffset) * dpr, tx1 * dpr, (ty1 - _scrollOffset) * dpr,
-              tx2 * dpr, (ty2 - _scrollOffset) * dpr, [1, 1, 1], 0.95);
+            instancedRenderer.addRect(
+              x * dpr, (y - _scrollOffset) * dpr,
+              w * dpr, h * dpr,
+              [color[0]/255, color[1]/255, color[2]/255, alpha]
+            );
           } else {
-            ctx.fillStyle = `rgba(255,255,255,0.9)`;
+            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
             ctx.beginPath();
-            ctx.moveTo(tx0, ty0); ctx.lineTo(tx1, ty1); ctx.lineTo(tx2, ty2);
+            roundRect(ctx, x, y, w, h, 3);
             ctx.fill();
+          }
+
+          // Strand direction arrow on the 3' exon. Genome axis is Y (higher bp = up):
+          // forward points UP, reverse DOWN.
+          const isThreePrime = read.isForward ? bi === blocks.length - 1 : bi === 0;
+          if (isThreePrime && h >= 6) {
+            const arrowSize = Math.max(3, Math.min(7, h * 0.5));
+            const acx = x + w / 2;
+            let tx0, ty0, tx1, ty1, tx2, ty2;
+            if (read.isForward) {
+              tx0 = x + 1;     ty0 = y + arrowSize + 1;
+              tx1 = acx;       ty1 = y + 1;
+              tx2 = x + w - 1; ty2 = y + arrowSize + 1;
+            } else {
+              tx0 = x + 1;     ty0 = y + h - arrowSize - 1;
+              tx1 = acx;       ty1 = y + h - 1;
+              tx2 = x + w - 1; ty2 = y + h - arrowSize - 1;
+            }
+            if (instancedRenderer && webgpuSupported) {
+              instancedRenderer.addTriangle(
+                tx0 * dpr, (ty0 - _scrollOffset) * dpr, tx1 * dpr, (ty1 - _scrollOffset) * dpr,
+                tx2 * dpr, (ty2 - _scrollOffset) * dpr, [1, 1, 1], 0.95);
+            } else {
+              ctx.fillStyle = `rgba(255,255,255,0.9)`;
+              ctx.beginPath();
+              ctx.moveTo(tx0, ty0); ctx.lineTo(tx1, ty1); ctx.lineTo(tx2, ty2);
+              ctx.fill();
+            }
           }
         }
         // Draw insertion/deletion/diff markers (vertical mode, expanded)
@@ -1012,65 +1067,80 @@ function renderSmartTrack(trackId) {
           }
           if (!read.isForward) baseAlpha *= 0.7;
           
-          // Use canonical mapping so read spans align with insertion-expanded coordinates.
-          const x1 = xGenomeCanonical(read.start, genomeW);
-          const x2 = xGenomeCanonical(read.end, genomeW);
-          
           const y = readsTop + read.row * rowH + 2;
           const h = rowH - 4;
 
-          // Calculate drawing position and width
-          const x = x1;
-          const w = Math.max(4, x2 - x1);
-          
           if (y + h < 0 || y > totalContentHeight) continue;
-          
-          if (instancedRenderer && webgpuSupported) {
-            instancedRenderer.addRect(
-              x * dpr, (y - _scrollOffset) * dpr,
-              w * dpr, h * dpr,
-              [color[0]/255, color[1]/255, color[2]/255, baseAlpha]
-            );
-          } else {
-            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${baseAlpha})`;
-            ctx.beginPath();
-            roundRect(ctx, x, y, w, h, 3);
-            ctx.fill();
+
+          for (const elem of (read.elements || [])) {
+            if (elem.type !== 5) continue;
+            const sx1 = xGenomeCanonical(elem.start, genomeW);
+            const sx2 = xGenomeCanonical(elem.end, genomeW);
+            drawSpliceConnectorRect(Math.min(sx1, sx2), y + h / 2 - 1, Math.abs(sx2 - sx1), 2);
           }
-          cutReadBodyAtExpandedInsertionGaps(read.start, read.end, x, y, w, h);
-          
-          // Draw direction arrow. It MUST go on the same layer as the read body:
-          // when WebGPU is active the body is drawn via instancedRenderer, so a
-          // ctx (Canvas2D) arrow lands on a hidden layer and never shows — draw
-          // it as a WebGPU triangle instead. Keep the ctx path for the fallback.
-          const arrowSize = Math.max(3, Math.min(7, w * 0.5));
-          const cy = y + h / 2;
-          let ax0, ay0, ax1, ay1, ax2, ay2;
-          if (read.isForward) {
-            // triangle pointing right, at the read's 3' (right) end
-            ax0 = x + w - arrowSize - 1; ay0 = cy - arrowSize / 2;
-            ax1 = x + w - 1;             ay1 = cy;
-            ax2 = x + w - arrowSize - 1; ay2 = cy + arrowSize / 2;
-          } else {
-            // triangle pointing left, at the read's 3' (left) end
-            ax0 = x + arrowSize + 1; ay0 = cy - arrowSize / 2;
-            ax1 = x + 1;             ay1 = cy;
-            ax2 = x + arrowSize + 1; ay2 = cy + arrowSize / 2;
+
+          const blocks = alignedBlocks(read);
+          for (let bi = 0; bi < blocks.length; bi++) {
+            const block = blocks[bi];
+            const x1 = xGenomeCanonical(block.start, genomeW);
+            const x2 = xGenomeCanonical(block.end, genomeW);
+            const x = x1;
+            const w = Math.max(blocks.length === 1 ? 4 : 1, x2 - x1);
+            
+            if (instancedRenderer && webgpuSupported) {
+              instancedRenderer.addRect(
+                x * dpr, (y - _scrollOffset) * dpr,
+                w * dpr, h * dpr,
+                [color[0]/255, color[1]/255, color[2]/255, baseAlpha]
+              );
+            } else {
+              ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${baseAlpha})`;
+              ctx.beginPath();
+              roundRect(ctx, x, y, w, h, 3);
+              ctx.fill();
+            }
+            cutReadBodyAtExpandedInsertionGaps(block.start, block.end, x, y, w, h);
+
+            const isThreePrime = read.isForward ? bi === blocks.length - 1 : bi === 0;
+            if (!isThreePrime || w < 6) continue;
+            const arrowSize = Math.max(3, Math.min(7, w * 0.5));
+            const cy = y + h / 2;
+            let ax0, ay0, ax1, ay1, ax2, ay2;
+            if (read.isForward) {
+              ax0 = x + w - arrowSize - 1; ay0 = cy - arrowSize / 2;
+              ax1 = x + w - 1;             ay1 = cy;
+              ax2 = x + w - arrowSize - 1; ay2 = cy + arrowSize / 2;
+            } else {
+              ax0 = x + arrowSize + 1; ay0 = cy - arrowSize / 2;
+              ax1 = x + 1;             ay1 = cy;
+              ax2 = x + arrowSize + 1; ay2 = cy + arrowSize / 2;
+            }
+            if (instancedRenderer && webgpuSupported) {
+              instancedRenderer.addTriangle(
+                ax0 * dpr, (ay0 - _scrollOffset) * dpr, ax1 * dpr, (ay1 - _scrollOffset) * dpr,
+                ax2 * dpr, (ay2 - _scrollOffset) * dpr,
+                [1, 1, 1], 0.95
+              );
+            } else {
+              ctx.fillStyle = `rgba(255,255,255,0.9)`;
+              ctx.beginPath();
+              ctx.moveTo(ax0, ay0);
+              ctx.lineTo(ax1, ay1);
+              ctx.lineTo(ax2, ay2);
+              ctx.fill();
+            }
           }
-          if (instancedRenderer && webgpuSupported) {
-            instancedRenderer.addTriangle(
-              ax0 * dpr, (ay0 - _scrollOffset) * dpr, ax1 * dpr, (ay1 - _scrollOffset) * dpr,
-              ax2 * dpr, (ay2 - _scrollOffset) * dpr,
-              [1, 1, 1], 0.95
-            );
-          } else {
-            ctx.fillStyle = `rgba(255,255,255,0.9)`;
-            ctx.beginPath();
-            ctx.moveTo(ax0, ay0);
-            ctx.lineTo(ax1, ay1);
-            ctx.lineTo(ax2, ay2);
-            ctx.fill();
-          }
+        }
+        // Insert-gap connectors after bodies so they sit in the empty pair space.
+        for (const read of track.readsLayout.reads) {
+          if (read.row < startRow || read.row > endRow) continue;
+          const gap = pairConnectorGap(read);
+          if (!gap) continue;
+          const x1 = xGenomeCanonical(gap.a.end, genomeW);
+          const x2 = xGenomeCanonical(gap.b.start, genomeW);
+          const y = readsTop + read.row * rowH + 2;
+          const h = rowH - 4;
+          drawPairConnectorRect(Math.min(x1, x2), y + h / 2 - 1.5, Math.abs(x2 - x1), 3);
         }
       }
       

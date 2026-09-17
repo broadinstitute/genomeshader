@@ -819,6 +819,166 @@ def test_paired_reads_keep_markers_on_own_read(browser, tmp_path):
     page.close()
 
 
+def test_process_reads_as_pairs_packs_insert(browser, tmp_path):
+    """Show-as-pairs packs two primary paired mates as one interval so a third
+    read cannot sit in the insert, without merging the two alignment objects."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    payload = {
+        "query_name":      ["pe", "pe", "pe", "pe", "inner"],
+        "element_type":    [0,    1,    0,    2,    0],
+        "reference_start": [100,  105,  300,  305,  180],
+        "reference_end":   [120,  106,  320,  306,  200],
+        "is_forward":      [True, True, False, False, True],
+        "haplotype":       [0,    0,    0,    0,    0],
+        "sample_name":     ["S1", "S1", "S1", "S1", "S1"],
+        "sequence":        ["",   "A",  "",   "T",  ""],
+        "is_paired":       [True, True, True, True, False],
+        "is_primary":      [True, True, True, True, True],
+    }
+    out = page.evaluate(
+        """(p) => {
+          const unpaired = window.__GS_processReadsData(p);
+          const paired = window.__GS_processReadsData(p, {asPairs: true});
+          const summarize = (layout) => {
+            const reads = layout.reads.map(rd => ({
+              name: rd.name, start: rd.start, end: rd.end, row: rd.row,
+              mateStart: rd.mate ? rd.mate.start : null,
+              elems: rd.elements.map(e => ({type: e.type, start: e.start})),
+            }));
+            return {rowCount: layout.rowCount, reads};
+          };
+          return {unpaired: summarize(unpaired), paired: summarize(paired)};
+        }""",
+        payload,
+    )
+    assert out is not None
+    # Default packing: the inner read fits the gap, so everything shares a row.
+    assert out["unpaired"]["rowCount"] == 1, out["unpaired"]
+    assert all(r["mateStart"] is None for r in out["unpaired"]["reads"]), out["unpaired"]
+    # Pair packing occupies 100-320, so the inner read is forced onto another row.
+    assert out["paired"]["rowCount"] == 2, out["paired"]
+    pe = [r for r in out["paired"]["reads"] if r["name"] == "pe"]
+    inner = [r for r in out["paired"]["reads"] if r["name"] == "inner"]
+    assert len(pe) == 2 and len(inner) == 1, out["paired"]
+    assert pe[0]["row"] == pe[1]["row"]
+    assert inner[0]["row"] != pe[0]["row"]
+    assert {pe[0]["mateStart"], pe[1]["mateStart"]} == {100, 300}
+    # Markers stay on their own mate (objects are not merged).
+    a, b = sorted(pe, key=lambda r: r["start"])
+    assert a["elems"] == [{"type": 1, "start": 105}], a
+    assert b["elems"] == [{"type": 2, "start": 305}], b
+    page.close()
+
+
+def test_process_reads_as_pairs_skips_chimeric(browser, tmp_path):
+    """Exactly two primary paired alignments of the same name become a pair.
+    Three (chimeric SA-like) stay independent so long-read splits are not PE."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    payload = {
+        "query_name":      ["ch", "ch", "ch"],
+        "element_type":    [0,    0,    0],
+        "reference_start": [100,  200,  300],
+        "reference_end":   [110,  210,  310],
+        "is_forward":      [True, True, True],
+        "haplotype":       [0,    0,    0],
+        "sample_name":     ["S1", "S1", "S1"],
+        "sequence":        ["",   "",   ""],
+        "is_paired":       [True, True, True],
+        "is_primary":      [True, True, True],
+    }
+    out = page.evaluate(
+        """(p) => {
+          const r = window.__GS_processReadsData(p, {asPairs: true});
+          return r.reads.map(rd => ({start: rd.start, mate: !!(rd.mate)}));
+        }""",
+        payload,
+    )
+    assert out is not None
+    assert len(out) == 3, out
+    assert all(not rd["mate"] for rd in out), out
+    page.close()
+
+
+def test_process_reads_as_pairs_requires_bam_flags(browser, tmp_path):
+    """Show-as-pairs uses BAM is_paired / is_primary only — missing columns
+    must not invent pairs from query_name."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    payload = {
+        "query_name":      ["pe", "pe", "inner"],
+        "element_type":    [0,    0,    0],
+        "reference_start": [100,  300,  180],
+        "reference_end":   [120,  320,  200],
+        "is_forward":      [True, False, True],
+        "haplotype":       [0,    0,    0],
+        "sample_name":     ["S1", "S1", "S1"],
+        "sequence":        ["",   "",   ""],
+    }
+    out = page.evaluate(
+        """(p) => {
+          const r = window.__GS_processReadsData(p, {asPairs: true});
+          return {
+            rowCount: r.rowCount,
+            mates: r.reads.map(rd => !!(rd.mate)),
+          };
+        }""",
+        payload,
+    )
+    assert out is not None
+    assert out["rowCount"] == 1, out
+    assert out["mates"] == [False, False, False], out
+    page.close()
+
+
+def test_split_read_aligned_blocks(browser, tmp_path):
+    """CIGAR N (element_type 5) splits the read body into exons; packing still
+    uses the full genomic span so nothing slots into the intron."""
+    page, _ = _open(browser, tmp_path, "horizontal")
+    _wait_ready(page)
+    payload = {
+        "query_name":      ["spl", "spl", "intron", "far"],
+        "element_type":    [0,     5,     0,        0],
+        "reference_start": [101,   111,   112,      200],
+        "reference_end":   [125,   116,   114,      210],
+        "is_forward":      [True,  True,  True,     True],
+        "haplotype":       [0,     0,     0,        0],
+        "sample_name":     ["S1",  "S1",  "S1",     "S1"],
+        "sequence":        ["",    "",    "",       ""],
+    }
+    out = page.evaluate(
+        """(p) => {
+          const r = window.__GS_processReadsData(p);
+          const spl = r.reads.find(rd => rd.name === 'spl');
+          const intron = r.reads.find(rd => rd.name === 'intron');
+          const far = r.reads.find(rd => rd.name === 'far');
+          return {
+            nReads: r.reads.length,
+            skips: spl.elements.map(e => ({type: e.type, start: e.start, end: e.end})),
+            blocks: window.__GS_alignedBlocks(spl),
+            unspliced: window.__GS_alignedBlocks(far),
+            splRow: spl.row,
+            intronRow: intron.row,
+            farRow: far.row,
+          };
+        }""",
+        payload,
+    )
+    assert out is not None, "processReadsData / alignedBlocks not exposed"
+    assert out["nReads"] == 3, out
+    assert out["skips"] == [{"type": 5, "start": 111, "end": 116}], out
+    assert out["blocks"] == [
+        {"start": 101, "end": 111},
+        {"start": 116, "end": 125},
+    ], out
+    assert out["unspliced"] == [{"start": 200, "end": 210}], out
+    # Full-span packing: a read in the intron cannot share the spliced row.
+    assert out["splRow"] == out["farRow"], out
+    assert out["intronRow"] != out["splRow"], out
+    page.close()
+
+
 def test_virtual_row_window(browser, tmp_path):
     """Virtualized read-track row window: only the visible rows (+overscan) are
     selected, so a viewport-sized canvas can replace the full-stack one."""

@@ -315,7 +315,7 @@ impl Session {
         }
         let bam_hash = hasher.finish();
 
-        cache_path.join(format!("{}_{}_{}_{}.parquet", chr, start, stop, bam_hash))
+        cache_path.join(format!("{}_{}_{}_{}_p3.parquet", chr, start, stop, bam_hash))
     }
 
     fn gcs_cache_uri_for_variant_stage(
@@ -354,7 +354,7 @@ impl Session {
         let bam_hash = hasher.finish();
 
         Some(format!(
-            "{}/cache/requests/{}_{}_{}_{}.parquet",
+            "{}/cache/requests/{}_{}_{}_{}_p3.parquet",
             base.trim_end_matches('/'),
             chr,
             start,
