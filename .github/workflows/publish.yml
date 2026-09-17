@@ -185,13 +185,9 @@ jobs:
       - name: Show artifacts
         run: ls -la dist
 
-      - name: Attach artifacts to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.should-publish.outputs.tag }}
-          files: dist/*
-          fail_on_unmatched_files: true
-
+      # Publish to PyPI first so a GitHub Release hiccup cannot skip the
+      # package upload. Use `gh release upload` (not action-gh-release) so we
+      # only add assets and do not PATCH the existing Release Please release.
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -199,6 +195,11 @@ jobs:
         # If Trusted Publishing is configured in PyPI, this works with OIDC automatically.
         # Otherwise, set:
         #   password: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Attach artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.should-publish.outputs.tag }}" dist/* --clobber
 
   slack:
     name: slack
