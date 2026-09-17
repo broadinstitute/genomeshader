@@ -5,6 +5,17 @@
 
 ### Features
 
+* add paired-end and split-read display from per-track options ([#70](https://github.com/broadinstitute/genomeshader/pull/70)) ([2080743](https://github.com/broadinstitute/genomeshader/commit/20807436bb8374f38235caea76d4a4206e323711))
+* polish viewer chrome with grouped UCSC tracks and consistent panes ([#69](https://github.com/broadinstitute/genomeshader/pull/69)) ([6c7ee86](https://github.com/broadinstitute/genomeshader/commit/6c7ee86a159aea325ce500786d5d8a4bd2f77c3e))
+* move the chromosome ideogram into the locus bar ([#68](https://github.com/broadinstitute/genomeshader/pull/68)) ([6a55e0e](https://github.com/broadinstitute/genomeshader/commit/6a55e0e72cfbdac02379dac688aa088b532a6fe2))
+* add `attach_assemblies` and make labeled file attaches append ([#67](https://github.com/broadinstitute/genomeshader/pull/67)) ([6c8af3e](https://github.com/broadinstitute/genomeshader/commit/6c8af3ea58b47535053e5d6eefd65ce9e3ddbb77))
+* redesign the Samples pane into Load-by-ID and From-alleles flows ([#66](https://github.com/broadinstitute/genomeshader/pull/66)) ([86f6dca](https://github.com/broadinstitute/genomeshader/commit/86f6dca918588f360d76da82504bcd3e6e24a4e7))
+* add sample metadata grouping with group-colored flow and a Groups tab ([#65](https://github.com/broadinstitute/genomeshader/pull/65)) ([ad069db](https://github.com/broadinstitute/genomeshader/commit/ad069db1ab0a0408bed1b674037d50144ab3f021))
+* split haplotagged collapsed summaries and open multi-BAM samples separately ([#64](https://github.com/broadinstitute/genomeshader/pull/64)) ([9a2782f](https://github.com/broadinstitute/genomeshader/commit/9a2782f72e45839646dfd68889780d6a88aa8759))
+* add software-defined data tracks, pin remote VCF/BAM indexes, and widen the left sidebar ([#63](https://github.com/broadinstitute/genomeshader/pull/63)) ([26496eb](https://github.com/broadinstitute/genomeshader/commit/26496eb33ee0e0c02911454ea8f6c22ad4ff1b18))
+* add vertical mode, overscan panning, and cohort-scale data loading ([#62](https://github.com/broadinstitute/genomeshader/pull/62)) ([522614b](https://github.com/broadinstitute/genomeshader/commit/522614b7df9a6402ef403a96676245494e45ced1))
+* add cohort-scale variant loading, viewer reliability, and IGV-style navigation ([#60](https://github.com/broadinstitute/genomeshader/pull/60)) ([810b87b](https://github.com/broadinstitute/genomeshader/commit/810b87b22cf783c7f8a7dbcb90cb99f230ff7e04))
+* add a reference-agnostic, cross-environment genome browser with read pileups ([#57](https://github.com/broadinstitute/genomeshader/pull/57)) ([f110205](https://github.com/broadinstitute/genomeshader/commit/f110205d02dc649c3e00975e2e0016899f0d8487))
 * add a right sidebar that allows control over Smart Track properties ([78d1173](https://github.com/broadinstitute/genomeshader/commit/78d11732617ea0f47ca027f9ad0851c9b0f2bbcf))
 * added a right sidebar for smart track control ([3d6287d](https://github.com/broadinstitute/genomeshader/commit/3d6287d2b7748a1d1048ec81ad711bbae2e099a8))
 * adding support for multiple variant tracks ([2e124de](https://github.com/broadinstitute/genomeshader/commit/2e124de7d2d766791131ab7c3c66a8516a7d63b0))
