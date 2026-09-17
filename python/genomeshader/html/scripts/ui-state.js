@@ -92,7 +92,8 @@ const state = {
     combineMode: 'AND', // 'AND' or 'OR'
     evidenceFilter: null, // attach_reads label or null (All) — Sample Search only
     candidateSamples: [], // Will be populated when selection changes
-    allSampleIds: [] // All available sample IDs (populated from data)
+    allSampleIds: [], // All available sample IDs (populated from data)
+    resolvedSamples: [], // Strategy-resolved IDs shown as "on" in Preview / Load
   },
   
   // Smart tracks state

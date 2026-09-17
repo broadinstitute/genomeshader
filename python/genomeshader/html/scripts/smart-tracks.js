@@ -373,10 +373,12 @@ function _cacheSmartReads(sampleId, reads, bamUrls, bamUrl) {
 
 // BAM/CRAM URLs resolved for a sample (from config). Empty when unknown —
 // fetch_reads will resolve on the kernel. Multi-URL samples get one track each.
-// evidenceFilter (Sample Search) narrows by attach_reads label; metadata facets
-// are applied at the candidate-pool layer, not here.
-function bamUrlsForSample(sampleId) {
+// evidenceFilter (Sample Search) narrows by attach_reads label when applyEvidence
+// is true (default). Load-by-ID passes applyEvidence:false so typed IDs bypass
+// the Narrow filter. Metadata facets are applied at the candidate-pool layer.
+function bamUrlsForSample(sampleId, opts) {
   if (!sampleId) return [];
+  const applyEvidence = !(opts && opts.applyEvidence === false);
   const cfg = window.GENOMESHADER_CONFIG || {};
   const idx = cfg.read_bam_index || {};
   let urls = [];
@@ -388,9 +390,11 @@ function bamUrlsForSample(sampleId) {
       urls = sm[sampleId].slice();
     }
   }
-  const filter = (state.sampleSelection && state.sampleSelection.evidenceFilter) || null;
-  if (filter && typeof getReadSetForUrl === "function") {
-    urls = urls.filter((u) => String(getReadSetForUrl(u) || "") === String(filter));
+  if (applyEvidence) {
+    const filter = (state.sampleSelection && state.sampleSelection.evidenceFilter) || null;
+    if (filter && typeof getReadSetForUrl === "function") {
+      urls = urls.filter((u) => String(getReadSetForUrl(u) || "") === String(filter));
+    }
   }
   return urls;
 }
@@ -404,8 +408,8 @@ function isSampleBamTrackLoaded(sampleId, bamUrl) {
   });
 }
 
-function isSampleFullyLoaded(sampleId) {
-  const urls = bamUrlsForSample(sampleId);
+function isSampleFullyLoaded(sampleId, opts) {
+  const urls = bamUrlsForSample(sampleId, opts);
   if (!urls.length) {
     return (state.smartTracks || []).some((t) => t.sampleId === sampleId);
   }
@@ -414,17 +418,21 @@ function isSampleFullyLoaded(sampleId) {
 
 // Create one smart track per unresolved BAM for this sample and kick off fetches.
 // Returns the list of fetch promises (may be empty if already fully loaded).
-function spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleType) {
+// opts.applyEvidence: when false (Load-by-ID), skip evidence filter and do not
+// toast "No {evidence} reads".
+function spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleType, opts) {
   const promises = [];
   if (!sampleId) return promises;
-  if (isSampleFullyLoaded(sampleId)) return promises;
+  const applyEvidence = !(opts && opts.applyEvidence === false);
+  const urlOpts = { applyEvidence };
+  if (isSampleFullyLoaded(sampleId, urlOpts)) return promises;
   const alleles = selectedAlleles instanceof Set
     ? selectedAlleles
     : new Set(selectedAlleles || []);
-  const urls = bamUrlsForSample(sampleId);
+  const urls = bamUrlsForSample(sampleId, urlOpts);
   if (!urls.length) {
     const evidence = state.sampleSelection && state.sampleSelection.evidenceFilter;
-    if (evidence) {
+    if (applyEvidence && evidence) {
       if (window.__GS_STATUS) {
         window.__GS_STATUS(`No ${evidence} reads for ${sampleId}`, { autoHide: 3500 });
       }
