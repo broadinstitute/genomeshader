@@ -988,14 +988,27 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .rd-popover button:hover, .rd-popover button:focus { background: var(--panel2); outline: none; }
 .rd-summary-preview {
   margin-top: 5px;
-  height: 14px;
+  height: 16px;
   border-radius: 3px;
   overflow: hidden;
-  background: var(--border2);
-  display: flex;
+  background: rgba(150, 150, 150, 0.15);
+  display: block;
 }
-.rd-summary-preview i { display: block; height: 100%; }
-.rd-summary-preview.is-coverage { display: block; }
+.rd-summary-preview.is-coverage {
+  background: linear-gradient(90deg, rgba(40,75,120,0.45) 0%, rgba(95,145,195,0.7) 45%, rgb(150,200,245) 100%);
+}
+.rd-summary-capsule {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+.rd-summary-hap {
+  display: block;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+}
 .rd-legend {
   margin-top: 5px;
   display: flex;

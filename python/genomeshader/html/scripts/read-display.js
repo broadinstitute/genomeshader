@@ -323,6 +323,52 @@ function makeColorLegendStrip(track) {
   return legend;
 }
 
+// Sidebar thumbnail for Summary → Track: mirrors the on-canvas aggregate
+// summary (stacked HP1/HP2 capsule, or a low→high coverage ramp).
+function makeSummaryPreview(track, summaryField) {
+  const preview = document.createElement("div");
+  preview.className = "rd-summary-preview";
+  const mode = summaryField === "coverage" ? "coverage" : "haplotypeConsensus";
+  preview.dataset.field = mode;
+
+  if (mode === "coverage") {
+    preview.classList.add("is-coverage");
+    // Low (left) → high (right) scale legend for the on-canvas depth heatmap.
+    preview.style.background =
+      "linear-gradient(90deg, rgba(40,75,120,0.45) 0%, rgba(95,145,195,0.7) 45%, rgb(150,200,245) 100%)";
+    return preview;
+  }
+
+  preview.classList.add("is-haplotype");
+  let has1 = false;
+  let has2 = false;
+  for (const read of visibleReadsForTrack(track)) {
+    if (read.haplotype === 1) has1 = true;
+    else if (read.haplotype === 2) has2 = true;
+    if (has1 && has2) break;
+  }
+
+  const capsule = document.createElement("div");
+  capsule.className = "rd-summary-capsule";
+  const addBand = (cls, rgb, alpha) => {
+    const band = document.createElement("i");
+    band.className = `rd-summary-hap ${cls}`;
+    band.style.background = `rgba(${rgb.join(",")},${alpha})`;
+    capsule.appendChild(band);
+  };
+
+  if (has1 && has2) {
+    // Diploid only when both haplotypes are present. A single HP tag is
+    // treated as haploid / effectively unphased — same neutral capsule.
+    addBand("hp1", colorForCategory("haplotype", "HP1"), 0.55);
+    addBand("hp2", colorForCategory("haplotype", "HP2"), 0.55);
+  } else {
+    addBand("unphased", colorForCategory("haplotype", "unphased"), 0.45);
+  }
+  preview.appendChild(capsule);
+  return preview;
+}
+
 if (typeof window !== "undefined") {
   window.__GS_READ_DISPLAY_FIELDS = READ_DISPLAY_FIELDS;
   window.__GS_colorForCategory = colorForCategory;
@@ -333,6 +379,7 @@ if (typeof window !== "undefined") {
   window.__GS_syncTrackCollapsedFromVisibility = syncTrackCollapsedFromVisibility;
   window.__GS_isReadDisplayCustomized = isReadDisplayCustomized;
   window.__GS_readPaintStyle = readPaintStyle;
+  window.__GS_makeSummaryPreview = makeSummaryPreview;
 }
 
 // Shared by sidebar dropdowns (smart-tracks.js) and any leftover callers.

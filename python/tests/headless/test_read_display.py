@@ -270,3 +270,84 @@ def test_grouped_layout_and_mapq_filter(browser):
     assert result["groups"] == ["HP1", "HP2"]
     assert result["filteredCount"] == 1  # only MAPQ 60 survives min=50
     page.close()
+
+
+def test_summary_preview_matches_mode(browser):
+    page = _page_with_reads(browser, collapsed=False)
+    _open_track_config(page)
+
+    hap = page.evaluate(
+        """() => {
+          const el = document.querySelector('.rd-summary-preview');
+          if (!el) return null;
+          return {
+            field: el.dataset.field,
+            isHap: el.classList.contains('is-haplotype'),
+            bands: Array.from(el.querySelectorAll('.rd-summary-hap')).map(
+              (n) => n.className.replace('rd-summary-hap ', '')
+            ),
+          };
+        }"""
+    )
+    assert hap == {
+        "field": "haplotypeConsensus",
+        "isHap": True,
+        "bands": ["hp1", "hp2"],
+    }
+
+    # Switch to Coverage → low→high ramp, no haplotype bands.
+    page.evaluate(
+        """() => {
+          const t = window.__GS_STATE.smartTracks[0];
+          t.readDisplay.summaryField = 'coverage';
+          window.toggleTrackConfig(t.id);
+          window.toggleTrackConfig(t.id);
+        }"""
+    )
+    page.wait_for_selector(".rd-summary-preview.is-coverage", state="attached")
+    cov = page.evaluate(
+        """() => {
+          const el = document.querySelector('.rd-summary-preview');
+          return {
+            field: el.dataset.field,
+            isCoverage: el.classList.contains('is-coverage'),
+            bg: el.style.background || getComputedStyle(el).backgroundImage,
+            bands: el.querySelectorAll('.rd-summary-hap').length,
+          };
+        }"""
+    )
+    assert cov["field"] == "coverage"
+    assert cov["isCoverage"] is True
+    assert cov["bands"] == 0
+    assert "linear-gradient" in (cov["bg"] or "")
+    assert "0%" in (cov["bg"] or "") and "100%" in (cov["bg"] or "")
+    # Old peak-in-middle ramp used the midpoint stop "55%".
+    assert "55%" not in (cov["bg"] or "")
+    page.close()
+
+
+def test_summary_preview_single_hap_is_unphased(browser):
+    page = _page_with_reads(browser, collapsed=False)
+    result = page.evaluate(
+        """() => {
+          const track = {
+            readDisplay: { colorBy: null },
+            readsLayout: { reads: [
+              { start: 0, end: 10, haplotype: 1 },
+              { start: 0, end: 10, haplotype: 1 },
+            ]},
+          };
+          // Force visible-range overlap with any current view.
+          const S = window.__GS_STATE;
+          track.readsLayout.reads.forEach((r) => {
+            r.start = S.startBp + 1;
+            r.end = S.startBp + 20;
+          });
+          const el = window.__GS_makeSummaryPreview(track, 'haplotypeConsensus');
+          return Array.from(el.querySelectorAll('.rd-summary-hap')).map(
+            (n) => n.className.replace('rd-summary-hap ', '')
+          );
+        }"""
+    )
+    assert result == ["unphased"]
+    page.close()

@@ -1557,31 +1557,12 @@ function fillTrackConfigPanel(host, track) {
     commit(false);
   });
   if (summaryOff) summaryDd.btn.disabled = true;
-  const preview = document.createElement("div");
-  preview.className = "rd-summary-preview";
-  preview.dataset.field = display.summaryField;
-  if (display.summaryField === "coverage") {
-    preview.classList.add("is-coverage");
-    preview.style.background = "linear-gradient(90deg, #3a6ea5 0%, #7eb0e0 55%, #3a6ea5 100%)";
-  } else {
-    const counts = visibleCategoryCounts(target);
-    const total = Array.from(counts.values()).reduce((s, n) => s + n, 0) || 1;
-    preview.innerHTML = "";
-    preview.style.background = "transparent";
-    preview.style.display = "flex";
-    for (const [cat, n] of counts.entries()) {
-      const seg = document.createElement("i");
-      const rgb = colorForCategory("haplotype", cat);
-      seg.style.flex = String(n);
-      seg.style.background = `rgb(${rgb.join(",")})`;
-      preview.appendChild(seg);
-    }
-    if (!counts.size) {
-      preview.style.background = "var(--border2)";
-      preview.style.display = "block";
-    }
-  }
   if (!summaryOff) {
+    const preview = (typeof makeSummaryPreview === "function")
+      ? makeSummaryPreview(target, display.summaryField)
+      : (window.__GS_makeSummaryPreview
+        ? window.__GS_makeSummaryPreview(target, display.summaryField)
+        : null);
     summarySec.appendChild(fieldRow("Track", summaryDd.wrap, preview));
   } else {
     summarySec.appendChild(fieldRow("Track", summaryDd.wrap));

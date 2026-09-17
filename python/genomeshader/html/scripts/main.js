@@ -568,25 +568,55 @@ function renderSmartTrack(trackId) {
   // summaryField "coverage" paints a depth heat bar instead.
   function drawAggregateSummary(reads, y, h, opts) {
     if (opts && opts.summaryField === "coverage") {
-      const { mn, mx } = readSpanExtents(reads);
-      if (mn === Infinity) return null;
-      const x1 = xGenomeCanonical(mn, genomeW);
-      const x2 = xGenomeCanonical(mx, genomeW);
-      const w = Math.max(4, x2 - x1);
-      // Approximate coverage intensity from read count overlapping the span.
-      const depth = Math.min(1, reads.length / 40);
-      const alpha = 0.25 + depth * 0.55;
-      if (instancedRenderer && webgpuSupported) {
-        instancedRenderer.addRect(
-          x1 * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
-          [58 / 255, 110 / 255, 165 / 255, alpha]
-        );
-      } else {
-        ctx.fillStyle = `rgba(58,110,165,${alpha})`;
-        ctx.beginPath();
-        roundRect(ctx, x1, y, w, h, 3);
-        ctx.fill();
+      // Per-pixel depth heatmap on the 2D/text canvas (not WebGPU): the
+      // instanced rect shader rounds corners and treats alpha>0.5 as stroke,
+      // which framed the bar in a hollow/shadowed capsule.
+      const viewLo = renderStartBp();
+      const viewHi = renderEndBp();
+      const bins = Math.max(1, Math.ceil(genomeW));
+      const depths = new Float32Array(bins);
+      let maxD = 0;
+      for (const read of reads) {
+        if (read.end < viewLo || read.start > viewHi) continue;
+        const xa = xGenomeCanonical(Math.max(read.start, viewLo), genomeW);
+        const xb = xGenomeCanonical(Math.min(read.end, viewHi), genomeW);
+        const i0 = Math.max(0, Math.min(bins - 1, Math.floor(Math.min(xa, xb))));
+        const i1 = Math.max(0, Math.min(bins - 1, Math.floor(Math.max(xa, xb))));
+        for (let i = i0; i <= i1; i++) {
+          const d = (depths[i] += 1);
+          if (d > maxD) maxD = d;
+        }
       }
+      if (maxD <= 0) return null;
+
+      const lo = [40, 75, 120];
+      const hi = [150, 200, 245];
+      const quant = 16;
+      // Text overlay sits above WebGPU, so this stays visible over scrolling reads.
+      const covCtx = tctx || ctx;
+      let runStart = 0;
+      let runQ = -1;
+      const flush = (end) => {
+        if (runQ < 0 || end <= runStart) return;
+        const t = runQ / (quant - 1);
+        const r = Math.round(lo[0] + (hi[0] - lo[0]) * t);
+        const g = Math.round(lo[1] + (hi[1] - lo[1]) * t);
+        const b = Math.round(lo[2] + (hi[2] - lo[2]) * t);
+        const a = 0.35 + 0.55 * t;
+        covCtx.fillStyle = `rgba(${r},${g},${b},${a})`;
+        covCtx.fillRect(runStart, y, Math.max(1, end - runStart), h);
+      };
+      for (let i = 0; i < bins; i++) {
+        const q = depths[i] <= 0
+          ? -1
+          : Math.min(quant - 1, Math.floor((depths[i] / maxD) * (quant - 1)));
+        if (q !== runQ) {
+          flush(i);
+          runStart = i;
+          runQ = q;
+        }
+      }
+      flush(bins);
       return null;
     }
     const bands = (opts && opts.bands) || haplotypeBands(reads, y, h);
@@ -1256,29 +1286,37 @@ function renderSmartTrack(trackId) {
         const so = _scrollOffset || 0;
         const oy = summaryY + so;
         const oh = summaryH;
-        // Opaque occluder on the SAME (WebGPU) layer as the reads, so rows
-        // scrolled up behind the pinned overview don't bleed through. Use the
-        // pane bg (--bg is opaque; --smart-track-bg may be a translucent tint).
-        (function () {
-          const c = (typeof cssVar === "function" && (cssVar("--bg") || "")) || "#ffffff";
-          let r = 255, g = 255, b = 255;
-          const s = String(c).trim();
-          if (s[0] === "#") {
-            const h = s.slice(1); const f = h.length === 3;
-            r = parseInt(f ? h[0] + h[0] : h.slice(0, 2), 16);
-            g = parseInt(f ? h[1] + h[1] : h.slice(2, 4), 16);
-            b = parseInt(f ? h[2] + h[2] : h.slice(4, 6), 16);
-          } else {
-            const m = s.match(/rgba?\(([^)]+)\)/);
-            if (m) { const p = m[1].split(",").map(v => parseFloat(v)); r = p[0] || 0; g = p[1] || 0; b = p[2] || 0; }
-          }
-          if ([r, g, b].every(Number.isFinite)) {
-            drawMarkerRect(16, so, Math.max(0, W - 32), overviewH - 1, r, g, b, 1);
-          }
-        })();
+        const summaryField = (track.readDisplay && track.readDisplay.summaryField) || "haplotypeConsensus";
+        // Opaque occluder so rows scrolled up behind the pinned overview don't
+        // bleed through. Coverage paints on the text overlay instead — skip the
+        // WebGPU occluder there (alpha≥0.99 draws a stroked rounded capsule that
+        // shadowed the heatmap). Paint a sharp opaque strip on the text canvas.
+        if (summaryField === "coverage" && tctx) {
+          const bg = (typeof cssVar === "function" && (cssVar("--bg") || "")) || "#111";
+          tctx.fillStyle = bg;
+          tctx.fillRect(0, oy, Math.max(0, W), Math.max(0, overviewH - 1));
+        } else {
+          (function () {
+            const c = (typeof cssVar === "function" && (cssVar("--bg") || "")) || "#ffffff";
+            let r = 255, g = 255, b = 255;
+            const s = String(c).trim();
+            if (s[0] === "#") {
+              const h = s.slice(1); const f = h.length === 3;
+              r = parseInt(f ? h[0] + h[0] : h.slice(0, 2), 16);
+              g = parseInt(f ? h[1] + h[1] : h.slice(2, 4), 16);
+              b = parseInt(f ? h[2] + h[2] : h.slice(4, 6), 16);
+            } else {
+              const m = s.match(/rgba?\(([^)]+)\)/);
+              if (m) { const p = m[1].split(",").map(v => parseFloat(v)); r = p[0] || 0; g = p[1] || 0; b = p[2] || 0; }
+            }
+            if ([r, g, b].every(Number.isFinite)) {
+              drawMarkerRect(16, so, Math.max(0, W - 32), overviewH - 1, r, g, b, 1);
+            }
+          })();
+        }
         drawAggregateSummary(oReads, oy, oh, {
           cutGaps: false,
-          summaryField: (track.readDisplay && track.readDisplay.summaryField) || "haplotypeConsensus",
+          summaryField,
         });
         // Separator line under the overview row (pinned with the strip).
         ctx.strokeStyle = cssVar("--border2") || grid;
