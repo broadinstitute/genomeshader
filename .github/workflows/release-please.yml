@@ -15,6 +15,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Uses GITHUB_TOKEN, so the GitHub Release/tag it creates does not start
+      # other workflows. publish.yml listens for this workflow completing and
+      # publishes only when a v* tag points at the triggering commit.
       - uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json

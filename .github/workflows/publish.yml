@@ -1,19 +1,102 @@
 name: Build & Publish
 
+# Release Please creates the GitHub release with GITHUB_TOKEN, which does not
+# trigger `on: release` / `on: push: tags` in other workflows. Listen for
+# Release Please completing, then publish only if that commit actually received
+# a v* tag. Keep the other triggers for manual tags and workflow_dispatch.
 on:
+  workflow_run:
+    workflows: ["Release Please"]
+    types:
+      - completed
   release:
     types: [published]
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.3.0). Leave empty to use the latest v* tag."
+        required: false
+        type: string
 
 permissions:
-  contents: read
-  id-token: write  # for PyPI Trusted Publishing
+  contents: write  # attach wheels to the GitHub Release
+  id-token: write  # PyPI Trusted Publishing
 
 jobs:
+  should-publish:
+    name: should-publish
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      publish: ${{ steps.decide.outputs.publish }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Decide whether to publish
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch origin --tags --force
+
+          publish=false
+          tag=""
+
+          case "$EVENT_NAME" in
+            workflow_run)
+              # Only publish when Release Please tagged this commit (a real
+              # release). Ignore the usual "update the release PR" runs.
+              for _ in 1 2 3 4 5 6; do
+                tag="$(git tag --points-at "$WORKFLOW_SHA" | grep -E '^v[0-9]' | sort -V | tail -1 || true)"
+                if [ -n "$tag" ]; then
+                  break
+                fi
+                sleep 5
+                git fetch origin --tags --force
+              done
+              if [ -n "$tag" ]; then
+                publish=true
+              fi
+              ;;
+            workflow_dispatch)
+              tag="$DISPATCH_TAG"
+              if [ -z "$tag" ]; then
+                tag="$(git tag -l 'v*' | grep -E '^v[0-9]' | sort -V | tail -1 || true)"
+              fi
+              if [ -n "$tag" ]; then
+                publish=true
+              fi
+              ;;
+            *)
+              tag="${RELEASE_TAG:-$REF_NAME}"
+              if [ -n "$tag" ]; then
+                publish=true
+              fi
+              ;;
+          esac
+
+          echo "event=$EVENT_NAME"
+          echo "publish=$publish"
+          echo "tag=$tag"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   build-wheels:
     name: build-wheels
+    needs: should-publish
+    if: needs.should-publish.outputs.publish == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +112,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ needs.should-publish.outputs.tag }}
 
       - uses: actions/setup-python@v5
         with:
@@ -54,7 +137,7 @@ jobs:
               fi
             else
             # If we're running on debian-based system.
-              apt update -y && apt-get install -y libssl-dev openssl pkg-config
+              apt update -y && apt-get install -y libssl-dev openssl pkg-config perl
             fi
 
       - uses: actions/upload-artifact@v4
@@ -64,12 +147,14 @@ jobs:
 
   build-sdist:
     name: build-sdist
+    needs: should-publish
+    if: needs.should-publish.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ needs.should-publish.outputs.tag }}
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
@@ -85,25 +170,37 @@ jobs:
   publish:
     name: publish
     runs-on: ubuntu-latest
-    needs: [build-wheels, build-sdist]
+    needs: [should-publish, build-wheels, build-sdist]
+    if: needs.should-publish.outputs.publish == 'true'
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
           path: dist
 
+      - name: Show artifacts
+        run: ls -la dist
+
+      - name: Attach artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.should-publish.outputs.tag }}
+          files: dist/*
+          fail_on_unmatched_files: true
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
         # If Trusted Publishing is configured in PyPI, this works with OIDC automatically.
         # Otherwise, set:
-        # with:
         #   password: ${{ secrets.PYPI_API_TOKEN }}
 
   slack:
     name: slack
     runs-on: ubuntu-latest
-    if: always()
-    needs: [publish]
+    if: always() && needs.should-publish.outputs.publish == 'true'
+    needs: [should-publish, publish]
     steps:
       - name: Notify Slack
         uses: rtCamp/action-slack-notify@v2
@@ -113,5 +210,4 @@ jobs:
           SLACK_ICON: https://github.com/broadinstitute/genomeshader/blob/main/.github/workflows/dnagood.png?raw=true
           SLACK_COLOR: ${{ needs.publish.result == 'success' && '#50D9C9' || '#DF5A49' }}
           SLACK_MESSAGE: >
-            Publish ${{ needs.publish.result }} for ${{ github.event.release.tag_name || github.ref_name }}
-
+            Publish ${{ needs.publish.result }} for ${{ needs.should-publish.outputs.tag }}
