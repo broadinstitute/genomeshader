@@ -41,6 +41,10 @@ def browser():
 
 def _open(browser, cfg=CFG):
     page = browser.new_page(viewport={"width": 1200, "height": 900})
+    page.add_init_script(
+        "try{localStorage.removeItem('genomeshader.lockView');"
+        "localStorage.removeItem('genomeshader.panZoom');}catch(e){}"
+    )
     html = harness.build_page(config=cfg)
     f = os.path.join(tempfile.mkdtemp(), "lb.html")
     open(f, "w").write(html)
@@ -348,11 +352,13 @@ def test_locus_bar_fullscreen_toggle(browser):
     page.close()
 
 
-def test_locus_bar_lock_disables_zoom_keeps_drag_pan(browser):
+def test_locus_bar_lock_disables_zoom_and_drag(browser):
     page = _open(browser)
     btn = page.locator("#locusLockBtn")
     assert btn.count() == 1
     assert page.get_attribute("#locusLockBtn", "aria-pressed") == "false"
+    assert page.get_attribute("#locusLockBtn", "aria-label") == "Lock viewport"
+    assert page.evaluate("() => document.getElementById('lockViewportLabel').textContent") == "Lock viewport"
 
     def _view():
         return page.evaluate(
@@ -369,6 +375,9 @@ def test_locus_bar_lock_disables_zoom_keeps_drag_pan(browser):
 
     page.click("#locusLockBtn")
     assert page.get_attribute("#locusLockBtn", "aria-pressed") == "true"
+    assert page.get_attribute("#locusLockBtn", "aria-label") == "Unlock viewport"
+    assert page.evaluate("() => document.getElementById('lockViewportLabel').textContent") == "Unlock viewport"
+    assert page.evaluate("() => document.getElementById('locusLockBtn').classList.contains('is-active')")
     locked = _view()
     page.mouse.move(700, 400)
     page.mouse.wheel(0, -240)
@@ -376,8 +385,7 @@ def test_locus_bar_lock_disables_zoom_keeps_drag_pan(browser):
     after_wheel = _view()
     assert after_wheel == locked, (locked, after_wheel)
 
-    # Drag on empty main space (below tracks) so a variant/gene glyph cannot
-    # swallow pointerdown. Span stays put; startBp should move.
+    # Drag must not pan while locked (same freeze as Settings → Lock viewport).
     pt = page.evaluate(
         """() => { const m = document.getElementById('main').getBoundingClientRect();
            return { x: m.x + m.width * 0.55, y: m.y + m.height * 0.82 }; }""")
@@ -387,11 +395,11 @@ def test_locus_bar_lock_disables_zoom_keeps_drag_pan(browser):
     page.mouse.up()
     page.wait_for_timeout(120)
     after_drag = _view()
-    assert abs(after_drag["span"] - locked["span"]) < 1e-6, (locked, after_drag)
-    assert after_drag["s"] > locked["s"] + 10, (locked, after_drag)
+    assert after_drag == locked, (locked, after_drag)
 
     page.click("#locusLockBtn")
     assert page.get_attribute("#locusLockBtn", "aria-pressed") == "false"
+    assert page.evaluate("() => document.getElementById('lockViewportLabel').textContent") == "Lock viewport"
     page.mouse.move(700, 400)
     page.mouse.wheel(0, -240)
     page.wait_for_timeout(120)
@@ -404,4 +412,55 @@ def test_locus_bar_lock_disables_zoom_keeps_drag_pan(browser):
     page.click("#locusGoBtn")
     jumped = _state(page)
     assert (jumped["c"], jumped["s"], jumped["e"]) == ("chr1", 1000, 2000), jumped
+    page.close()
+
+
+def test_settings_lock_viewport_matches_padlock(browser):
+    page = _open(browser)
+
+    def _view():
+        return page.evaluate(
+            "() => ({s: window.__GS_STATE.startBp, e: window.__GS_STATE.endBp,"
+            " span: window.__GS_STATE.endBp - window.__GS_STATE.startBp,"
+            " locked: window.__GS_STATE.lockView === true})")
+
+    layout = page.evaluate(
+        """() => {
+          const sections = [...document.querySelectorAll('.settings-section')]
+            .map(r => r.textContent.trim());
+          const row = document.getElementById('lockViewportItem');
+          const chrom = document.getElementById('chromClickJumpItem');
+          return {
+            sections: sections,
+            label: document.getElementById('lockViewportLabel').textContent,
+            chromAfterLock: !!(chrom && chrom.previousElementSibling
+              && chrom.previousElementSibling.id === 'lockViewportItem'),
+            padlockPressed: document.getElementById('locusLockBtn')
+              .getAttribute('aria-pressed'),
+          };
+        }""")
+    assert "Interaction" in layout["sections"], layout
+    assert layout["label"] == "Lock viewport", layout
+    assert layout["chromAfterLock"] is True, layout
+    assert layout["padlockPressed"] == "false", layout
+
+    page.click(".command-strip-settings [data-left-tab='settings']")
+    page.click("#lockViewportItem")
+    assert page.evaluate("() => window.__GS_STATE.lockView") is True
+    assert page.get_attribute("#locusLockBtn", "aria-pressed") == "true"
+    assert page.get_attribute("#locusLockBtn", "aria-label") == "Unlock viewport"
+    assert page.evaluate("() => document.getElementById('lockViewportLabel').textContent") == "Unlock viewport"
+
+    disabled = _view()
+    page.mouse.move(700, 400)
+    page.mouse.wheel(0, -240)
+    page.wait_for_timeout(120)
+    after_wheel = _view()
+    assert after_wheel["span"] == disabled["span"], (disabled, after_wheel)
+    assert after_wheel["s"] == disabled["s"], (disabled, after_wheel)
+
+    page.click("#locusLockBtn")
+    assert page.evaluate("() => window.__GS_STATE.lockView") is False
+    assert page.get_attribute("#locusLockBtn", "aria-pressed") == "false"
+    assert page.evaluate("() => document.getElementById('lockViewportLabel').textContent") == "Lock viewport"
     page.close()

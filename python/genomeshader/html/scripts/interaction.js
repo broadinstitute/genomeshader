@@ -65,15 +65,40 @@ function renderFlowCanvas() {
   const layout = getTrackLayout();
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
   const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
-  const visibleFlowLayouts = flowLayouts.filter(l => !l.track.collapsed);
+  const visibleFlowLayouts = flowLayouts.filter(l => !l.track.collapsed && l.track.hidden !== true);
   if (visibleFlowLayouts.length === 0) {
     window._alleleNodePositions = [];
+    const flowEl = document.getElementById("flow");
+    const canvases = [];
+    if (flowEl) {
+      flowEl.querySelectorAll("canvas.canvas").forEach((c) => canvases.push(c));
+    }
     const fc = document.getElementById("flowCanvas") || document.getElementById("flowCanvas-0");
-    if (fc) {
-      const ctx = fc.getContext("2d");
-      if (ctx) ctx.clearRect(0, 0, fc.width, fc.height);
+    if (fc && !canvases.includes(fc)) canvases.push(fc);
+    for (const c of canvases) {
+      const ctx = c.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, c.width, c.height);
     }
     if (flowInstancedRenderer) flowInstancedRenderer.clear();
+    if (flowRibbonRenderer) flowRibbonRenderer.clear();
+    // Submit an empty GPU pass so leftover nodes/ribbons don't stay on the
+    // shared flowWebGPU canvas after every variant track is hidden/collapsed.
+    if (webgpuSupported && flowWebGPUCore && flowWebGPU) {
+      try {
+        const encoder = flowWebGPUCore.createCommandEncoder();
+        const texture = flowWebGPUCore.getCurrentTexture();
+        const renderPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: texture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: "clear",
+            storeOp: "store",
+          }],
+        });
+        renderPass.end();
+        flowWebGPUCore.submit([encoder.finish()]);
+      } catch (e) {}
+    }
     return;
   }
 
@@ -403,23 +428,6 @@ function renderFlowCanvas() {
     return 0x78B4FF;
   }
 
-  // Background wash. When WebGPU ribbons are active (drawn underneath this canvas),
-  // keep this overlay very light so it doesn't wash out ribbon colors.
-  const baseFlowBandBg = cssVar("--flow-band-bg");
-  let flowBandBg = baseFlowBandBg;
-  if (webgpuSupported && flowRibbonRenderer) {
-    const m = baseFlowBandBg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-    if (m) {
-      const r = parseInt(m[1], 10);
-      const g = parseInt(m[2], 10);
-      const b = parseInt(m[3], 10);
-      const a = m[4] !== undefined ? parseFloat(m[4]) : 1.0;
-      flowBandBg = `rgba(${r}, ${g}, ${b}, ${(a * 0.18).toFixed(3)})`;
-    }
-  }
-  ctx.fillStyle = flowBandBg;
-  ctx.fillRect(0,0,W,H);
-
   // Out-of-bounds shading on variant tracks (flow bands), matching tracks pane behavior.
   if (dataBounds && (dataBounds.start > renderStartBp() || dataBounds.end < renderEndBp())) {
     const dataStartPos = isVertical
@@ -429,9 +437,7 @@ function renderFlowCanvas() {
       ? yGenomeCanonical(dataBounds.end, totalFlowH)
       : xGenomeCanonical(dataBounds.end, W);
 
-    // Flow bands have a base background wash (0.035), so use a lighter overlay
-    // to visually match tracksSvg out-of-bounds shading (0.15 over white).
-    ctx.fillStyle = "rgba(127,127,127,0.12)";
+    ctx.fillStyle = "rgba(127,127,127,0.15)";
 
     if (isVertical) {
       // Vertical mode has inverted genomic Y: lower bp is lower on screen.

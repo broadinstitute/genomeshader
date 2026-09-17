@@ -129,7 +129,15 @@ function renderSmartTrack(trackId) {
     container.style.top = `${trackLayout.contentTop - (state._readsHeaderTop || 0)}px`;
     container.style.left = "0";
     container.style.width = "100%";
-    container.style.height = `${trackLayout.contentHeight}px`;
+    // Apply the slot size with !important BEFORE measuring. Collapsed mode
+    // leaves height/maxHeight/minHeight at ~30px !important; a plain
+    // style.height on expand loses to that, getBoundingClientRect stays ~30,
+    // and the canvas is sized to the summary strip — overview paints, rows
+    // are clipped until a later pan remeasures.
+    const slotH = Math.max(1, trackLayout.contentHeight || 0);
+    container.style.setProperty("height", slotH + "px", "important");
+    container.style.maxHeight = slotH + "px";
+    container.style.minHeight = slotH + "px";
   }
   // Ensure container is visible (we know it's not hidden here, but may be collapsed/closed)
   container.style.display = "block";
@@ -154,6 +162,7 @@ function renderSmartTrack(trackId) {
   }
 
   const dpr = window.devicePixelRatio || 1;
+  void container.offsetHeight;
   
   // Get the actual rendered width of the container (not the layout width)
   // This is critical for overlay mode where the container width may differ from layout
@@ -165,6 +174,11 @@ function renderSmartTrack(trackId) {
   // This ensures consistency between inline and overlay modes
   const W = isVertical ? actualContainerHeight : actualContainerWidth;
   let H = isVertical ? actualContainerWidth : actualContainerHeight;
+  // Horizontal sample tracks: trust the layout slot, not the measured box.
+  // Measured height is stale on the first expand (see !important note above).
+  if (!isVertical && trackLayout.contentHeight > 0) {
+    H = trackLayout.contentHeight;
+  }
   // Genome-axis width for mapping read bp -> x. Use the SHARED tracks width (what
   // the ruler/reference/variant header uses), NOT this container's own width — a
   // per-track scrollbar makes the container narrower and would desync the read
@@ -175,13 +189,17 @@ function renderSmartTrack(trackId) {
   const genomeW = isVertical ? (W + 2 * (state.renderPadPx || 0))
     : ((typeof renderWidthPx === "function" && renderWidthPx() > 0) ? renderWidthPx() : W);
   
-  // Fallback to layout dimensions if container has no dimensions yet
-  if (W <= 0 || isNaN(W)) {
-    const layoutW = isVertical ? trackLayout.contentHeight : trackLayout.contentWidth;
-    const layoutH = isVertical ? trackLayout.contentWidth : trackLayout.contentHeight;
-    // Use layout dimensions as fallback
-    return; // Skip rendering if no valid dimensions
+  // Fallback to layout dimensions if container has no dimensions yet.
+  // Retry: first paint often races layout (especially after shrinking to the
+  // packed read stack). Without a retry, a 0-size bail stays blank until pan.
+  if (W <= 0 || isNaN(W) || H <= 0 || isNaN(H)) {
+    renderer._sizeRetries = (renderer._sizeRetries || 0) + 1;
+    if (renderer._sizeRetries < 30) {
+      requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+    }
+    return;
   }
+  renderer._sizeRetries = 0;
   
   // Calculate total content height if reads are loaded (horizontal mode)
   let totalContentHeight = H;
@@ -247,9 +265,6 @@ function renderSmartTrack(trackId) {
     canvas.width = canvasW * dpr;
 
     // Set WebGPU canvas dimensions to match regular canvas (viewport-sized)
-    const prevWebGpuWidth = webgpuCanvas.width;
-    const prevWebGpuHeight = webgpuCanvas.height;
-
     webgpuCanvas.width = canvasW * dpr;
     webgpuCanvas.height = viewportH * dpr;
     webgpuCanvas.style.height = viewportH + 'px';
@@ -272,22 +287,11 @@ function renderSmartTrack(trackId) {
       textCanvas.style.height = viewportH + 'px';
       textCanvas.style.marginTop = (-viewportH) + 'px';
     }
-    
-    // Notify WebGPU core of resize if dimensions changed
-    // Compare against PREVIOUS dimensions, not current (which we just set)
-    // Defer to next frame to ensure layout has settled (prevents flickering in overlay mode)
-    if (webgpuCore && (prevWebGpuWidth !== canvasW * dpr || prevWebGpuHeight !== viewportH * dpr)) {
-      // Use requestAnimationFrame to ensure container dimensions have settled
-      // This is especially important in overlay mode where layout may be changing
-      requestAnimationFrame(() => {
-        // Verify dimensions are still valid before resizing
-        const currentRect = container.getBoundingClientRect();
-        const currentW = isVertical ? currentRect.height : currentRect.width;
-        if (currentW > 0 && !isNaN(currentW)) {
-          webgpuCore.handleResize();
-        }
-      });
-    }
+    // Projection is synced at submit time (InstancedRenderer.setViewport).
+    // Do NOT call handleResize() here: it defers another rAF that reassigns
+    // canvas.width/height, which CLEARS the bitmap, and never redraws.
+    // A one-row assembly track isn't scrollable, so that wipe stayed blank
+    // until the user panned or scrolled.
     
     // Enable overflow for scrolling when content exceeds container height
     if (totalContentHeight > H) {
@@ -381,15 +385,8 @@ function renderSmartTrack(trackId) {
         textCanvas.width = rect.width * dpr;
         textCanvas.height = rect.height * dpr;
       }
-      if (webgpuCore) {
-        // Defer resize to next frame to ensure layout has settled (prevents flickering in overlay mode)
-        requestAnimationFrame(() => {
-          const currentRect = container.getBoundingClientRect();
-          if (currentRect.width > 0 && currentRect.height > 0) {
-            webgpuCore.handleResize();
-          }
-        });
-      }
+      // Same as the horizontal path: skip deferred handleResize (clears the
+      // canvas on a later frame with no redraw).
     }
   }
   
@@ -1281,13 +1278,6 @@ function renderSmartTrack(trackId) {
       if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
         webgpuCanvas.width = width;
         webgpuCanvas.height = height;
-        // Defer resize to next frame to ensure layout has settled (prevents flickering in overlay mode)
-        requestAnimationFrame(() => {
-          const currentRect = container.getBoundingClientRect();
-          if (currentRect.width > 0 && currentRect.height > 0) {
-            webgpuCore.handleResize();
-          }
-        });
       }
       
       const encoder = webgpuCore.createCommandEncoder();
@@ -6287,11 +6277,13 @@ function setupCanvasHover() {
 }
 
 function ensureFlowContainers(flowLayouts) {
-  if (!flow || flowLayouts.length <= 1) return;
+  if (!flow) return;
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
   if (variantTracksConfig.length <= 1) return;
 
-  const expectedTrackIds = flowLayouts.map(l => String(l.track.id));
+  // Keep a wrapper for every configured variant track (including hidden ones)
+  // so hide/show does not rebuild #flow and reparent the shared WebGPU canvas.
+  const expectedTrackIds = variantTracksConfig.map(t => String(t.id));
   const existingTrackEls = Array.from(flow.querySelectorAll(".flow-track"));
   const existingTrackIds = existingTrackEls.map(el => String(el.dataset.trackId || ""));
   const hasAllTracks = expectedTrackIds.length === existingTrackIds.length &&
@@ -6307,8 +6299,8 @@ function ensureFlowContainers(flowLayouts) {
     flowWebGPUEl.style.pointerEvents = "none";
   }
   const flowTrackDivs = [];
-  for (let i = 0; i < flowLayouts.length; i++) {
-    const track = flowLayouts[i].track;
+  for (let i = 0; i < variantTracksConfig.length; i++) {
+    const track = variantTracksConfig[i];
     const div = document.createElement("div");
     div.className = "flow-track";
     div.id = flowTrackDomId(track.id);
@@ -6334,13 +6326,50 @@ function ensureFlowContainers(flowLayouts) {
   if (flowOverlayEl) flow.appendChild(flowOverlayEl);
 }
 
+function syncFlowWebGPUBackingStore() {
+  // Snap the shared WebGPU canvas backing store to the current #flow CSS box
+  // immediately when that box resizes. Otherwise the compositor stretches the
+  // previous frame (wrong y/height) until the next GPU present.
+  if (!flow || !flowWebGPU || flow.style.display === "none") return;
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round((flow.clientWidth || 0) * dpr));
+  const height = Math.max(1, Math.round((flow.clientHeight || 0) * dpr));
+  if (flowWebGPU.width === width && flowWebGPU.height === height) return;
+  flowWebGPU.width = width;
+  flowWebGPU.height = height;
+  try {
+    if (typeof flowWebGPUCore !== "undefined" && flowWebGPUCore && typeof flowWebGPUCore.handleResize === "function") {
+      flowWebGPUCore.handleResize();
+    }
+  } catch (e) {}
+}
+
 function updateFlowAndReadsPosition() {
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
   const flowLayouts = layout.filter(l => l.track.id === "flow" || (l.track.id && l.track.id.startsWith("flow-")));
-  if (flowLayouts.length > 0 && flow) {
+  if (flow && flowLayouts.length === 0) {
+    // Every variant track is hidden: drop the #flow layer so its box cannot
+    // linger in the hole the tracks left.
+    flow.style.display = "none";
+  } else if (flowLayouts.length > 0 && flow) {
     ensureFlowContainers(flowLayouts);
-    const visible = flowLayouts.filter(l => !l.track.collapsed);
+    const visible = flowLayouts.filter(l => !l.track.collapsed && l.track.hidden !== true);
+    const visibleIds = new Set(visible.map(l => String(l.track.id)));
+    // Hidden/collapsed tracks keep their wrappers (stable WebGPU sibling order)
+    // but must not paint: Canvas2D ribbons/stems on those wrappers sit ABOVE
+    // the shared WebGPU canvas and would show stale nodes without alluvial.
+    flow.querySelectorAll(".flow-track").forEach((el) => {
+      const on = visibleIds.has(String(el.dataset.trackId || ""));
+      el.style.display = on ? "" : "none";
+      if (!on) {
+        const canvas = el.querySelector("canvas.canvas");
+        if (canvas) {
+          const ctx = canvas.getContext("2d");
+          if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+      }
+    });
     if (visible.length === 0) {
       flow.style.display = "none";
     } else {
@@ -6379,6 +6408,7 @@ function updateFlowAndReadsPosition() {
           }
         }
       }
+      syncFlowWebGPUBackingStore();
     }
   }
   
@@ -6819,8 +6849,8 @@ function bindInteractions(root, state, main) {
       }
     }
 
-    // Lock freezes zoom (wheel / pinch / dblclick). Drag-to-pan still works so
-    // you can nudge a screenshot into place without changing scale.
+    // Lock viewport freezes pan and zoom (wheel / pinch / dblclick / drag).
+    // Go and chromosome-click jump still work.
     if (state.lockView) {
       e.preventDefault();
       e.stopPropagation();
@@ -6921,6 +6951,9 @@ function bindInteractions(root, state, main) {
         return;
       }
     }
+
+    // Viewport lock: clicks (select, expand indel) still work; don't start a drag.
+    if (state.lockView) return;
 
     // Variants strip: DEFER the pan. Capturing the pointer now would steal the
     // click that selects/deselects a variant. Instead remember the press and
@@ -7176,7 +7209,10 @@ trackControls.addEventListener("pointerdown", (e) => {
       trackId,
       startX: e.clientX,
       startY: e.clientY,
-      startHeight: track.height
+      startHeight: (track.id && String(track.id).startsWith("smart-track-")
+        && typeof smartTrackLayoutHeight === "function")
+        ? smartTrackLayoutHeight(track)
+        : track.height
     };
     trackControls.setPointerCapture(e.pointerId);
   } else if (controls) {

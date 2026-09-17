@@ -336,6 +336,53 @@ def _vcf_sample_names_isolated(path, idx, timeout=180):
                        f"returning sample names")
 
 
+# UCSC grp.txt labels/priority. Used when hgdownload grp.txt is unavailable;
+# ids match https://hgdownload.soe.ucsc.edu/goldenPath/<db>/database/grp.txt.gz
+_UCSC_GROUP_META = {
+    "user": ("Custom Tracks", 1.0),
+    "remc": ("Reference Epigenome Mapping Center", 1.2),
+    "map": ("Mapping and Sequencing", 2.0),
+    "genes": ("Genes and Gene Predictions", 3.0),
+    "phenDis": ("Phenotypes, Variants, and Literature", 3.4),
+    "pub": ("Literature", 3.5),
+    "varRep": ("Variation", 3.55),
+    "hprc": ("Human Pangenome - HPRC", 3.6),
+    "rna": ("RNA and Transcriptome", 4.0),
+    "expression": ("Expression", 4.5),
+    "singleCell": ("Single Cell RNA-seq", 4.7),
+    "regulation": ("Regulation", 5.0),
+    "compGeno": ("Comparative Genomics", 6.0),
+    "rep": ("Repeats", 8.0),
+    "x": ("Experimental", 10.0),
+}
+
+
+def _ucsc_groups_for_tracks(
+    tracks: List[dict], fetched: Optional[List[dict]] = None
+) -> List[dict]:
+    """Collapse UCSC grp rows to groups that actually have interval tracks."""
+    track_gids = {str(t.get("group") or "") for t in tracks}
+    by_id: Dict[str, dict] = {}
+    for g in fetched or []:
+        gid = str(g.get("id") or "")
+        if gid not in track_gids or gid in by_id:
+            continue
+        by_id[gid] = {
+            "id": gid,
+            "label": str(g.get("label") or _UCSC_GROUP_META.get(gid, (gid, 0))[0]),
+            "priority": g.get("priority", 500.0),
+        }
+    for gid in track_gids:
+        if gid in by_id:
+            continue
+        if gid:
+            label, priority = _UCSC_GROUP_META.get(gid, (gid, 500.0))
+        else:
+            label, priority = "Other", 999.0
+        by_id[gid] = {"id": gid, "label": label, "priority": priority}
+    return sorted(by_id.values(), key=lambda g: (float(g["priority"]), g["label"].lower()))
+
+
 class ContigNotFoundError(ValueError):
     """Requested contig isn't in the reference genome. Carries a clean,
     user-facing message so setup fails with an explanation, not a traceback
@@ -4732,10 +4779,14 @@ class GenomeShader:
                 return k
         return None
 
-    def list_ucsc_tracks(self, genome: Optional[str] = None) -> Optional[List[dict]]:
+    def list_ucsc_tracks(self, genome: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """List UCSC interval-type tracks for a UCSC assembly (defaults to the
-        best match for this genome build). Returns {track,label,type} list, or
-        None when no assembly is available/selected. Cached per assembly."""
+        best match for this genome build).
+
+        Returns ``{tracks, groups}`` where each track is
+        ``{track, label, type, group, longLabel}`` and ``groups`` is the UCSC
+        grp table (id/label/priority) intersected with those tracks. ``None``
+        when no assembly is available/selected. Cached per assembly."""
         if not genome:
             genome = self._best_ucsc_genome(self.list_ucsc_genomes()["genomes"])
         if not genome:
@@ -4770,10 +4821,53 @@ class GenomeShader:
                 continue
             ttype = str(meta.get("type", "")).lower()
             if any(ttype.startswith(t) for t in interval_types):
-                out.append({"track": name, "label": str(meta.get("shortLabel") or name), "type": ttype})
+                out.append({
+                    "track": name,
+                    "label": str(meta.get("shortLabel") or name),
+                    "type": ttype,
+                    "group": str(meta.get("group") or ""),
+                    "longLabel": str(meta.get("longLabel") or ""),
+                })
         out.sort(key=lambda t: t["label"].lower())
-        cache[genome] = out
-        return out
+        try:
+            fetched_groups = self._fetch_ucsc_grp(genome)
+        except Exception:
+            fetched_groups = []
+        payload = {
+            "tracks": out,
+            "groups": _ucsc_groups_for_tracks(out, fetched_groups),
+        }
+        cache[genome] = payload
+        return payload
+
+    def _fetch_ucsc_grp(self, genome: str) -> List[dict]:
+        """UCSC grp.txt labels/order for an assembly. Empty on failure."""
+        url = f"https://hgdownload.soe.ucsc.edu/goldenPath/{genome}/database/grp.txt.gz"
+        try:
+            response = requests.get(url, timeout=self._http_timeout)
+        except requests.RequestException:
+            return []
+        if getattr(response, "status_code", 0) != 200:
+            return []
+        try:
+            import gzip
+            text = gzip.decompress(response.content).decode("utf-8", "replace")
+        except Exception:
+            return []
+        groups: List[dict] = []
+        for line in text.splitlines():
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            try:
+                priority = float(parts[2]) if len(parts) > 2 else 500.0
+            except (TypeError, ValueError):
+                priority = 500.0
+            groups.append({"id": parts[0], "label": parts[1], "priority": priority})
+        groups.sort(key=lambda g: (float(g["priority"]), g["label"].lower()))
+        return groups
 
     def ucsc_interval_track(self, track: str, contig: str, start: int, end: int,
                             genome: Optional[str] = None) -> List[dict]:
@@ -5827,7 +5921,7 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         return inline_html
 
 
-    def show_widget(self, locus: str):
+    def show_widget(self, locus: str, height: Optional[int] = None):
         """Display the interactive view as an ipywidget.
 
         This is the cross-environment render path: the config (with variant data
@@ -5835,12 +5929,21 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         classic Notebook, JupyterLab, Notebook 7, VS Code, Colab, and through the
         Terra / AoU proxy — one code path, no localhost assumptions.
 
+        Parameters:
+            locus: Genomic locus, ``'chrom:start-end'`` or ``'chrom:position'``.
+            height: Viewer height in pixels. ``None`` (the default) uses 80% of
+                the browser viewport.
+
         Returns the widget; Jupyter renders it when it's the cell's last
         expression (ipywidgets convention). Assign it to keep a handle without
         re-displaying.
         """
         from IPython.display import clear_output, display
         from .widget import GenomeShaderWidget
+
+        height_px = None if height is None else int(height)
+        if height_px is not None and height_px < 1:
+            raise ValueError("height must be a positive number of pixels")
 
         # Warm the UCSC assembly/track lookup in the background so it's ready by
         # the time the user opens the UCSC tab (no round-trip then).
@@ -5914,6 +6017,7 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             self,
             config=self._last_config,
             view_id=self._last_view_id or "gswidget",
+            height=height_px,
         )
         self._active_widget = widget
         # Return the widget so callers can keep a handle, and let the notebook
@@ -5929,6 +6033,7 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
     def show(
         self,
         locus: str,
+        height: Optional[int] = None,
     ):
         """
         Visualizes variant data for a genomic locus by fetching variant data
@@ -5938,9 +6043,11 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
             locus (str): The genomic locus to visualize, in the format
                 'chromosome:start-stop' or 'chromosome:position'
                 (e.g., 'chr1:1000000-2000000' or 'chr1:1000000').
+            height (int, optional): Viewer height in pixels. Omit or pass
+                ``None`` to use 80% of the browser viewport.
 
         Returns:
-            None: Displays the visualization in the notebook.
+            The GenomeShader widget (Jupyter displays it as the cell result).
         """
         # The ipywidget path is the portable transport (Notebook + Lab + Terra).
         # First render decodes the window's variants over all samples (the cold
@@ -5948,7 +6055,7 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         # so it isn't a silent wait.
         print(f"GenomeShader: rendering {locus}…", flush=True)
         _t = time.perf_counter()
-        out = self.show_widget(locus)
+        out = self.show_widget(locus, height=height)
         print(f"GenomeShader:   rendered {locus} ({time.perf_counter() - _t:.1f}s)", flush=True)
         return out
 

@@ -108,6 +108,7 @@ def test_show_widget_wires_inlined_config(tmp_path, monkeypatch):
     _, kwargs = WCls.call_args
     assert kwargs["config"] == {"genome_build": "X", "region": "Pf3D7_01_v3:1-100"}
     assert kwargs["view_id"] == "vid123"
+    assert kwargs["height"] is None
     clr.assert_called_once()
     assert clr.call_args.kwargs.get("wait") is not True
     assert order == ["clear", "widget"]
@@ -138,7 +139,7 @@ def test_show_delegates_to_widget(tmp_path, monkeypatch):
     s = _shader(tmp_path, monkeypatch)
     s.show_widget = Mock(return_value="W")
     assert s.show("Pf3D7_01_v3:1-100") == "W"
-    s.show_widget.assert_called_once_with("Pf3D7_01_v3:1-100")
+    s.show_widget.assert_called_once_with("Pf3D7_01_v3:1-100", height=None)
 
 
 def test_esm_includes_comments_ui():
@@ -147,10 +148,41 @@ def test_esm_includes_comments_ui():
     assert "comments_create" in esm             # comm bridge from the UI
 
 
-def test_esm_viewer_height_is_tall():
-    # Notebook viewer gets plenty of vertical room (regressed to 600 once).
+def test_show_passes_height_to_widget(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    s.show_widget = Mock(return_value="W")
+    assert s.show("chr1:1-100", height=800) == "W"
+    s.show_widget.assert_called_once_with("chr1:1-100", height=800)
+
+
+def test_show_widget_custom_height(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+
+    def fake_render(locus, inline_payload=False, **k):
+        s._last_config = {"region": locus}
+        s._last_view_id = "v"
+        return ""
+    s.render = fake_render
+    with patch("genomeshader.widget.GenomeShaderWidget") as WCls, \
+         patch("IPython.display.clear_output"):
+        s.show_widget("chr1:1-100", height=720)
+    assert WCls.call_args.kwargs["height"] == 720
+
+
+def test_show_widget_rejects_nonpositive_height(tmp_path, monkeypatch):
+    s = _shader(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="positive"):
+        s.show_widget("chr1:1-100", height=0)
+
+
+def test_esm_viewer_height_is_configurable():
     esm = _build_esm()
-    assert "height:1200px" in esm
+    assert "model.get('height')" in esm
+    assert "--gs-widget-h" in esm
+    assert "gsHeightIsAuto" in esm
+    assert "window.innerHeight" in esm
+    assert "0.8" in esm
+    assert "80vh" in esm
 
 
 def _body_html():
@@ -164,6 +196,23 @@ def test_no_right_panel_settings_button():
     body = _body_html()
     assert 'data-tab="settings"' not in body       # right strip uses data-tab=...
     assert 'data-left-tab="settings"' in body       # left panel settings tab stays
+
+
+def test_settings_interaction_section():
+    body = _body_html()
+    assert body.index(">Display<") < body.index(">Interaction<")
+    assert body.index(">Interaction<") < body.index(">Alleles<")
+    assert body.index(">Interaction<") < body.index('id="lockViewportItem"')
+    assert body.index('id="lockViewportItem"') < body.index('id="chromClickJumpItem"')
+    assert body.index('id="chromClickJumpItem"') < body.index(">Alleles<")
+    assert body.index(">Alleles<") < body.index(">Maintenance<")
+    assert "Lock viewport" in body
+    assert 'aria-pressed="false"' in body
+    assert "Mouse/trackpad pan/zoom" not in body
+    esm = _build_esm()
+    assert "Unlock viewport" in esm
+    assert "gsSetViewLock" in esm
+    assert "lockView: false" in esm
 
 
 def test_strategy_order_best_evidence_first():
@@ -608,3 +657,23 @@ def test_fetch_track_data_comm_handler_error(tmp_path, monkeypatch):
     assert sent[0]["type"] == "fetch_track_data_error"
     assert "boom" in sent[0]["error"]
     assert sent[0]["hint"] == "try again"
+
+
+def test_widget_ucsc_list_includes_groups():
+    shader = Mock()
+    shader.list_ucsc_tracks.return_value = {
+        "tracks": [{"track": "rmsk", "label": "RepeatMasker", "type": "bed",
+                    "group": "rep", "longLabel": "Repeating Elements"}],
+        "groups": [{"id": "rep", "label": "Repeats", "priority": 8}],
+    }
+    w = GenomeShaderWidget(shader, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, *a, **k: sent.append(m)
+    w._on_custom_msg(w, {"type": "ucsc_list", "request_id": "u1", "genome": "hg38"}, [])
+    assert sent[0]["type"] == "ucsc_list_response"
+    assert sent[0]["available"] is True
+    assert sent[0]["tracks"][0]["group"] == "rep"
+    assert sent[0]["groups"][0]["id"] == "rep"
+    esm = _build_esm()
+    assert "ucsc-track-group" in esm
+    assert "__GS_TEST_ucscSetListing" in esm

@@ -12,7 +12,7 @@
          preserveAspectRatio="none"></svg>
     <span id="locusReadout" class="locus-readout" title="Position under cursor"></span>
     <button id="locusLockBtn" class="locus-lock" type="button"
-            title="Lock zoom" aria-label="Lock zoom" aria-pressed="false">
+            title="Lock viewport" aria-label="Lock viewport" aria-pressed="false">
       <svg class="icon-unlocked" width="20" height="20" viewBox="0 0 24 24" fill="none"
            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
@@ -89,7 +89,7 @@
 
     <!-- Path B: allele selection → Evidence → Strategy → Count → Preview → Load -->
     <div class="sidebarHeader samplePaneGroupHeader">
-      <h3>From alleles</h3>
+      <h3>Load by allele support</h3>
     </div>
 
     <!-- Empty state when no alleles are selected -->
@@ -199,14 +199,19 @@
           <td>Full screen<span class="menuHotkey">F</span></td>
           <td class="menuRight" id="fullscreenLabel">Enter full screen</td>
         </tr>
-        <tr class="settings-section"><td colspan="2">Alleles</td></tr>
-        <tr class="settings-row" id="lockAllelesItem" role="menuitem">
-          <td>Lock allele positions</td>
-          <td class="menuRight"><input type="checkbox" id="lockAllelesToggle" data-1p-ignore></td>
+        <tr class="settings-section"><td colspan="2">Interaction</td></tr>
+        <tr class="settings-row" id="lockViewportItem" role="menuitem">
+          <td id="lockViewportLabel">Lock viewport</td>
+          <td class="menuRight"></td>
         </tr>
         <tr class="settings-row" id="chromClickJumpItem" role="menuitem">
           <td>Click chromosome to jump</td>
           <td class="menuRight"><input type="checkbox" id="chromClickJumpToggle" data-1p-ignore></td>
+        </tr>
+        <tr class="settings-section"><td colspan="2">Alleles</td></tr>
+        <tr class="settings-row" id="lockAllelesItem" role="menuitem">
+          <td>Lock allele positions</td>
+          <td class="menuRight"><input type="checkbox" id="lockAllelesToggle" data-1p-ignore></td>
         </tr>
         <tr class="settings-row" id="aggregateRareAllelesItem" role="menuitem">
           <td>Aggregate low-frequency</td>
@@ -266,7 +271,7 @@
         <div class="sidebarContent">
           <!-- Tracks Tab -->
           <div class="tab-pane active" id="tab-smart-tracks" data-tab="smart-tracks">
-            <div class="sidebarHeader" style="margin-top: 20px;">
+            <div class="sidebarHeader">
               <h3>Tracks</h3>
             </div>
             <div id="smartTracksList" style="padding: 0; margin: 0;">
@@ -276,7 +281,7 @@
           
           <!-- UCSC Tracks Tab -->
           <div class="tab-pane" id="tab-ucsc-tracks" data-tab="ucsc-tracks">
-            <div class="sidebarHeader" style="margin-top: 20px;">
+            <div class="sidebarHeader">
               <h3>UCSC Tracks</h3>
             </div>
             <div id="ucscTracksContent" style="padding: 0; margin: 0;">
@@ -286,7 +291,7 @@
           
           <!-- Genes Tab -->
           <div class="tab-pane" id="tab-genes" data-tab="genes">
-            <div class="sidebarHeader" style="margin-top: 20px;">
+            <div class="sidebarHeader">
               <h3>Genes</h3>
             </div>
             <div id="genesContent" style="padding: 0; margin: 0;">
@@ -296,7 +301,7 @@
           
           <!-- Variants Tab -->
           <div class="tab-pane" id="tab-variants" data-tab="variants">
-            <div class="sidebarHeader" style="margin-top: 20px;">
+            <div class="sidebarHeader">
               <h3>Variants</h3>
             </div>
             <div id="variantsContent" style="padding: 0; margin: 0;">
@@ -306,7 +311,7 @@
           
           <!-- Comments Tab -->
           <div class="tab-pane" id="tab-comments" data-tab="comments">
-            <div class="sidebarHeader" style="margin-top: 20px;">
+            <div class="sidebarHeader">
               <h3>Comments</h3>
             </div>
             <div id="commentsContent" style="padding: 0; margin: 0;">
@@ -316,7 +321,7 @@
 
           <!-- Help Tab -->
           <div class="tab-pane" id="tab-help" data-tab="help">
-            <div class="sidebarHeader" style="margin-top: 20px;">
+            <div class="sidebarHeader">
               <h3>Help</h3>
             </div>
             <div id="helpContent" class="help-content" style="font-size: 12px; line-height: 1.5; color: var(--text);">
@@ -397,7 +402,7 @@
               <ul style="margin: 0 0 12px; padding-left: 18px;">
                 <li style="margin-bottom: 4px;"><strong>Pan:</strong> drag the main view left/right.</li>
                 <li style="margin-bottom: 4px;"><strong>Zoom:</strong> scroll or pinch.</li>
-                <li style="margin-bottom: 4px;"><strong>Lock:</strong> the padlock in the locus bar freezes zoom (drag-to-pan still works; jumps via Go still work).</li>
+                <li style="margin-bottom: 4px;"><strong>Lock viewport:</strong> the padlock in the locus bar, or Settings → Lock viewport, freezes pan and zoom. Go and chromosome-click jump still work.</li>
                 <li style="margin-bottom: 4px;"><strong>Jump:</strong> load a specific sample by
                   ID from the <em>Sample Search</em> box in the left panel (press ↓ for the list).</li>
                 <li style="margin-bottom: 4px;"><strong>Select / reorder alleles:</strong> click an allele band to select;
@@ -424,9 +429,9 @@
 
               <div style="font-weight: 700; margin: 14px 0 6px;">Left panel tabs</div>
               <ul style="margin: 0 0 12px; padding-left: 18px;">
-                <li style="margin-bottom: 4px;"><strong>Samples</strong> — two independent paths: <em>Load by ID</em>, or <em>From alleles</em> (Evidence → Strategy → Count → Preview → Load).</li>
+                <li style="margin-bottom: 4px;"><strong>Samples</strong> — two independent paths: <em>Load by ID</em>, or <em>Load by allele support</em> (Evidence → Strategy → Count → Preview → Load).</li>
                 <li style="margin-bottom: 4px;"><strong>Groups</strong> — add one or more metadata Variables (AND filters) and color the flow by one of them.</li>
-                <li style="margin-bottom: 4px;"><strong>Settings</strong> — display and allele options.</li>
+                <li style="margin-bottom: 4px;"><strong>Settings</strong> — display, allele, and interaction options.</li>
               </ul>
 
               <div style="font-weight: 700; margin: 14px 0 6px;">Right panel tabs</div>

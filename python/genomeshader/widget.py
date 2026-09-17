@@ -20,6 +20,9 @@ from pathlib import Path
 import anywidget
 import traitlets
 
+# Default show() height: 80% of the browser viewport (resolved in the widget JS).
+VIEWPORT_HEIGHT_FRAC = 0.8
+
 
 # Shared pool for software-defined track fetches (closures may be slow user
 # code). Sized small so we don't thrash the GIL / UCSC network; the handler
@@ -75,7 +78,7 @@ def _container_override_css(cid: str) -> str:
     """
     c = "#" + cid
     return "\n".join([
-        f"{c} {{ height:1200px; display:block; position:relative; overflow:visible;"
+        f"{c} {{ height:var(--gs-widget-h, 80vh); display:block; position:relative; overflow:visible;"
         f" --sidebar-w:360px; --sidebar-right-w:240px; --tracks-h:220px; --flow-h:500px; --reads-h:220px; }}",
         # Flex row: sidebar-left | main | sidebar-right. As siblings they cannot
         # overlap — main flexes to fill whatever the panels leave, so expanding a
@@ -212,9 +215,32 @@ def _build_esm() -> str:
         "    el.appendChild(ostyle);\n"
         "    const container = document.createElement('div');\n"
         "    container.id = cid;\n"
-        "    container.setAttribute('style', 'width:100%;height:1200px;position:relative;overflow:visible;background:var(--bg,#0b0d10);isolation:isolate;');\n"
+        "    container.setAttribute('style', 'width:100%;position:relative;overflow:visible;background:var(--bg,#0b0d10);isolation:isolate;');\n"
+        "    function gsHeightIsAuto(raw) {\n"
+        "      const n = Number(raw);\n"
+        "      return raw == null || raw === '' || !Number.isFinite(n) || n <= 0;\n"
+        "    }\n"
+        "    function gsResolveHeightPx(raw) {\n"
+        "      if (gsHeightIsAuto(raw)) {\n"
+        "        return Math.max(1, Math.round((window.innerHeight || 600) * " + str(VIEWPORT_HEIGHT_FRAC) + "));\n"
+        "      }\n"
+        "      return Math.max(1, Math.round(Number(raw)));\n"
+        "    }\n"
+        "    function gsApplyHeight() {\n"
+        "      const px = gsResolveHeightPx(model.get('height'));\n"
+        "      container.style.height = px + 'px';\n"
+        "      container.style.setProperty('--gs-widget-h', px + 'px');\n"
+        "    }\n"
+        "    gsApplyHeight();\n"
         "    container.innerHTML = " + json.dumps(body) + ";\n"
         "    el.appendChild(container);\n"
+        "    model.on('change:height', function () {\n"
+        "      gsApplyHeight();\n"
+        "      try { window.dispatchEvent(new Event('resize')); } catch (e) {}\n"
+        "    });\n"
+        "    window.addEventListener('resize', function () {\n"
+        "      if (gsHeightIsAuto(model.get('height'))) gsApplyHeight();\n"
+        "    });\n"
         "    __runViewer__(container).catch(function (e) { console.error('Genomeshader viewer error:', e); });\n"
         "  }\n"
         "};\n"
@@ -238,6 +264,7 @@ class GenomeShaderWidget(anywidget.AnyWidget):
     _esm = _ESM
     config = traitlets.Dict().tag(sync=True)
     view_id = traitlets.Unicode("").tag(sync=True)
+    height = traitlets.Int(default_value=None, allow_none=True).tag(sync=True)
 
     def __init__(self, shader, **kwargs):
         super().__init__(**kwargs)
@@ -400,14 +427,17 @@ class GenomeShaderWidget(anywidget.AnyWidget):
         elif msg_type == "ucsc_list":
             # Tracks for a chosen UCSC assembly; available=False => none.
             try:
-                tracks = self._shader.list_ucsc_tracks(content.get("genome"))
+                payload = self._shader.list_ucsc_tracks(content.get("genome"))
+                tracks = (payload or {}).get("tracks") if isinstance(payload, dict) else payload
+                groups = (payload or {}).get("groups") if isinstance(payload, dict) else []
                 self.send({"type": "ucsc_list_response", "request_id": request_id,
-                           "available": tracks is not None,
+                           "available": payload is not None,
                            "genome": content.get("genome"),
-                           "tracks": tracks or []})
+                           "tracks": tracks or [],
+                           "groups": groups or []})
             except Exception as e:
                 self.send({"type": "ucsc_list_response", "request_id": request_id,
-                           "available": False, "tracks": [], "error": str(e)})
+                           "available": False, "tracks": [], "groups": [], "error": str(e)})
         elif msg_type == "ucsc_track":
             try:
                 features = self._shader.ucsc_interval_track(

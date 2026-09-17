@@ -1626,14 +1626,17 @@ function gsInitLocusBar() {
 }
 
 function gsSyncViewLockButton() {
-  const btn = document.getElementById("locusLockBtn");
-  if (!btn) return;
   const on = state.lockView === true;
-  btn.classList.toggle("is-active", on);
-  btn.setAttribute("aria-pressed", on ? "true" : "false");
-  const label = on ? "Unlock zoom" : "Lock zoom";
-  btn.title = label;
-  btn.setAttribute("aria-label", label);
+  const label = on ? "Unlock viewport" : "Lock viewport";
+  const btn = document.getElementById("locusLockBtn");
+  if (btn) {
+    btn.classList.toggle("is-active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+  }
+  const lab = document.getElementById("lockViewportLabel");
+  if (lab) lab.textContent = label;
 }
 
 function gsSetViewLock(locked) {

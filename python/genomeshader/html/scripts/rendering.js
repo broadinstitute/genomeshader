@@ -198,9 +198,13 @@ function getTrackLayout() {
           safeContentLeft = currentX + effectiveWidth;
         }
       } else {
-        // Open state: full width with header space
-        effectiveWidth = usesHeaderSpace ? headerH + (track.height || 0) : (track.height || 0);
-        safeContentWidth = track.height || 0;
+        // Open state: full width with header space. Smart tracks fit the packed
+        // read stack, capped at track.height (default 220).
+        const _openW = (isSmartTrack && typeof smartTrackLayoutHeight === "function")
+          ? smartTrackLayoutHeight(track)
+          : (track.height || 0);
+        effectiveWidth = usesHeaderSpace ? headerH + _openW : _openW;
+        safeContentWidth = _openW;
         safeContentLeft = usesHeaderSpace ? currentX + headerH : currentX;
       }
       
@@ -276,7 +280,9 @@ function getTrackLayout() {
         // vertical analogue of stacking multiple insertion rows).
         const _refExtra = (track.id === "reference" && typeof getExpandedDeletionsInView === "function")
           ? getExpandedDeletionsInView().length * DELETION_ROW_H : 0;
-        const _openH = (track.height || 0) + _refExtra;
+        const _openH = (isSmartTrack && typeof smartTrackLayoutHeight === "function")
+          ? smartTrackLayoutHeight(track)
+          : (track.height || 0) + _refExtra;
         // Smart tracks: don't reserve a header strip — the name/menu overlay the
         // canvas top so the aggregate OVERVIEW row renders at the very top of the
         // track, BEHIND the sample name (not on a separate line below it).

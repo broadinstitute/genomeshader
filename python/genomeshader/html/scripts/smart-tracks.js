@@ -80,6 +80,45 @@ function processReadsData(rawReads) {
   // console.log('Genomeshader: Processed ' + readArray.length + ' reads into ' + rows.length + ' rows');
   return { reads: readArray, rowCount: rows.length };
 }
+
+// Default / maximum open height for a sample (Smart) track. Expanded tracks
+// shrink to the packed read stack when it is shorter than this.
+const SMART_TRACK_OPEN_HEIGHT = 220;
+const SMART_TRACK_ROW_H = 18;
+
+function smartTrackStackHeight(track) {
+  // Pixel height of the overview strip + every packed row (uncapped). Null when
+  // there is nothing to measure (still loading / no reads).
+  if (!track || track.collapsed) return null;
+  const layout = track.readsLayout;
+  if (!layout || !layout.reads || !layout.reads.length) return null;
+  const labelH = 24;
+  const closedSlot = track.closedHeight || 30;
+  const summaryH = Math.max(12, labelH - 2);
+  const summaryY = Math.max(0, Math.floor((closedSlot - summaryH) / 2));
+  const top = summaryY;
+  const bottom = 12;
+  const overviewH = summaryY + summaryH + 4 - top;
+  const rows = layout.rowCount
+    || (Math.max(0, ...layout.reads.map((r) => r.row || 0)) + 1)
+    || 1;
+  return top + overviewH + Math.max(1, rows) * SMART_TRACK_ROW_H + bottom;
+}
+
+function smartTrackLayoutHeight(track) {
+  // Slot height for layout: collapsed uses closedHeight; expanded fits the
+  // stack up to the open cap (track.height, default 220).
+  if (!track) return SMART_TRACK_OPEN_HEIGHT;
+  if (track.collapsed) return track.closedHeight || 30;
+  const cap = track.height || SMART_TRACK_OPEN_HEIGHT;
+  const stack = smartTrackStackHeight(track);
+  if (stack == null) return cap;
+  return Math.min(cap, stack);
+}
+if (typeof window !== "undefined") {
+  window.__GS_smartTrackLayoutHeight = smartTrackLayoutHeight;
+}
+
 // Exposed for the headless harness to regression-test read grouping (paired-end
 // mates share a query_name; markers must stay confined to their own read).
 if (typeof window !== "undefined") window.__GS_processReadsData = processReadsData;
@@ -102,9 +141,9 @@ function createSmartTrack(strategy, selectedAlleles) {
   const track = {
     id: trackId,
     label: "Loading...",  // Initial label, will be updated when sample is loaded
-    collapsed: true,  // true = closed (summary strip) by default, false = open (220px)
+    collapsed: true,  // true = closed (summary strip) by default, false = open (fitted, max 220px)
     hidden: false,      // true = not displayed at all
-    height: 220,       // Open height
+    height: SMART_TRACK_OPEN_HEIGHT,  // Open-height cap; layout shrinks to the read stack
     // Closed slot: taller than the 24px label pill so adjacent labels don't
     // touch, with a few px of breathing room. Summary paints nearly label-tall
     // and centered inside this slot.
@@ -523,6 +562,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
     track.requestedBamUrl = hit.bamUrl || requestedBam;
     updateSmartTrackLabel(track);
     renderAll();
+    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
     // Instant cache hit: flash a brief confirmation so the user sees something
     // happened. If other loads are in flight, leave their busy bar alone.
     if (window.__GS_STATUS && _readLoadsInFlight === 0) {
@@ -623,6 +663,10 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
         }
         
         renderAll();
+        // Height-fit + WebGPU init can leave the first paint at 0-size or
+        // wiped by a deferred canvas resize. One more frame after layout
+        // settles so reads show without a pan/scroll.
+        requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
         console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
@@ -1204,6 +1248,13 @@ function renderSmartTracksSidebar() {
     
     const header = document.createElement('div');
     header.className = 'smart-track-item-header';
+
+    const grip = document.createElement('span');
+    grip.className = 'smart-track-item-grip';
+    grip.title = 'Drag to reorder';
+    grip.setAttribute('aria-hidden', 'true');
+    grip.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" focusable="false">'
+      + '<path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>';
     
     const label = document.createElement('div');
     label.className = 'smart-track-item-label';
@@ -1331,6 +1382,7 @@ function renderSmartTracksSidebar() {
       controls.appendChild(closeBtn);
     }
     
+    header.appendChild(grip);
     header.appendChild(label);
     header.appendChild(labelInput);
     header.appendChild(controls);
