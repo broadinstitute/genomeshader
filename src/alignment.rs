@@ -262,6 +262,12 @@ pub fn extract_reads(
     let mut has_md = Vec::new();  // per-element: did this read carry an MD tag (=> SNPs computable)?
     let mut is_paireds = Vec::new();
     let mut is_primaries = Vec::new();
+    let mut is_secondaries = Vec::new();
+    let mut is_supplementaries = Vec::new();
+    let mut mapping_qualities = Vec::new();
+    let mut insert_sizes = Vec::new();
+    let mut clip_lengths = Vec::new();
+    let mut mean_base_qualities = Vec::new();
 
     let mut mask = HashMap::new();
 
@@ -270,6 +276,18 @@ pub fn extract_reads(
     let _ = bam.fetch(((*chr).as_bytes(), *start, *stop));
     for (_, r) in bam.records().enumerate() {
         let record = r?;
+        let mapping_quality = record.mapq();
+        let insert_size = record.insert_size();
+        let clip_length: u32 = record.cigar().iter().map(|c| match c {
+            Cigar::SoftClip(len) | Cigar::HardClip(len) => *len,
+            _ => 0,
+        }).sum();
+        let mean_base_quality = if record.qual().is_empty() {
+            0.0
+        } else {
+            record.qual().iter().map(|q| f32::from(*q)).sum::<f32>()
+                / record.qual().len() as f32
+        };
 
         let hap = match record.aux(b"HP") {
             // BAM packs small integers into the narrowest aux type. PacBio
@@ -568,10 +586,18 @@ pub fn extract_reads(
         // Pairing flags are per-alignment; copy onto every CIGAR element row
         // of this record so the column lengths stay aligned.
         let paired = record.is_paired();
-        let primary = !record.is_secondary() && !record.is_supplementary();
+        let secondary = record.is_secondary();
+        let supplementary = record.is_supplementary();
+        let primary = !secondary && !supplementary;
         while is_paireds.len() < query_names.len() {
             is_paireds.push(paired);
             is_primaries.push(primary);
+            is_secondaries.push(secondary);
+            is_supplementaries.push(supplementary);
+            mapping_qualities.push(mapping_quality);
+            insert_sizes.push(insert_size);
+            clip_lengths.push(clip_length);
+            mean_base_qualities.push(mean_base_quality);
         }
     }
 
@@ -606,6 +632,12 @@ pub fn extract_reads(
             Series::new("has_md", has_md),
             Series::new("is_paired", is_paireds),
             Series::new("is_primary", is_primaries),
+            Series::new("is_secondary", is_secondaries),
+            Series::new("is_supplementary", is_supplementaries),
+            Series::new("mapping_quality", mapping_qualities),
+            Series::new("insert_size", insert_sizes),
+            Series::new("clip_length", clip_lengths),
+            Series::new("mean_base_quality", mean_base_qualities),
             Series::new("column_width", column_width)
         ]
     ).unwrap();
@@ -706,9 +738,21 @@ mod integration_tests {
         // READ element is flagged SNP-displayable (reference was supplied).
         let et = df.column("element_type").unwrap().u8().unwrap();
         let hm = df.column("has_md").unwrap().bool().unwrap();
+        let mq = df.column("mapping_quality").unwrap().u8().unwrap();
+        let insert = df.column("insert_size").unwrap().i64().unwrap();
+        let clips = df.column("clip_length").unwrap().u32().unwrap();
+        let mean_bq = df.column("mean_base_quality").unwrap().f32().unwrap();
         for i in 0..df.height() {
             if et.get(i) == Some(0u8) {
                 assert_eq!(hm.get(i), Some(true), "READ row should be SNP-displayable");
+                assert_eq!(mq.get(i), Some(60));
+                assert_eq!(insert.get(i), Some(0));
+                assert_eq!(clips.get(i), Some(2));
+                assert_eq!(mean_bq.get(i), Some(30.0));
+                let secondary = df.column("is_secondary").unwrap().bool().unwrap();
+                let supplementary = df.column("is_supplementary").unwrap().bool().unwrap();
+                assert_eq!(secondary.get(i), Some(false));
+                assert_eq!(supplementary.get(i), Some(false));
             }
         }
     }

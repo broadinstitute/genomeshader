@@ -756,6 +756,7 @@ class GenomeShader:
             "dom-utils.js",
             "ui-state.js",
             "view-state.js",
+            "read-display.js",
             "smart-tracks.js",
             "rendering.js",
             "tracks.js",
@@ -2904,7 +2905,7 @@ class GenomeShader:
     #     column / no reference-diffed SNPs) so the widget can't serve them.
     # v4: is_paired / is_primary columns for paired-end layout.
     # v5: CIGAR N (REFSKIP) elements for split-read display.
-    _READS_CACHE_VERSION = "v5"
+    _READS_CACHE_VERSION = "v7"
 
     # ----------------------------------------------------------------- debug
     def _setup_debug_logging(self):

@@ -460,8 +460,10 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   cursor: move;
   user-select: none;
   transition: border-color 0.15s ease, background-color 0.15s ease;
+  outline: none;
 }
-.smart-track-item:hover {
+.smart-track-item:hover,
+.smart-track-item:focus-within {
   border-color: var(--border2);
   background: var(--panel);
 }
@@ -476,7 +478,43 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .smart-track-item-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
+  position: relative;
+}
+.smart-track-item-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.smart-track-item-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+.smart-track-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  position: absolute;
+  right: 40px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  background: linear-gradient(90deg, transparent, var(--panel) 12%);
+  padding-left: 10px;
+}
+.smart-track-item-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: 2px;
 }
 .smart-track-item-grip {
   flex-shrink: 0;
@@ -487,10 +525,20 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   justify-content: center;
   color: var(--muted);
   cursor: grab;
-  opacity: 0.55;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, color 0.12s ease;
 }
-.smart-track-item:hover .smart-track-item-grip {
+.smart-track-item:hover .smart-track-item-actions,
+.smart-track-item:focus-within .smart-track-item-actions,
+.smart-track-item:hover .smart-track-item-grip,
+.smart-track-item:focus-within .smart-track-item-grip,
+.smart-track-item.is-remove-armed .smart-track-item-actions {
   opacity: 1;
+  pointer-events: auto;
+}
+.smart-track-item:hover .smart-track-item-grip,
+.smart-track-item:focus-within .smart-track-item-grip {
   color: var(--text);
 }
 .smart-track-item-grip svg {
@@ -500,6 +548,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .smart-track-item-label {
   flex: 1;
+  min-width: 0;
   font-size: 12px;
   color: var(--text);
   font-weight: 500;
@@ -507,10 +556,10 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.smart-track-item-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.smart-track-item-label.is-dimmed,
+.smart-track-item.is-hidden .smart-track-item-label {
+  color: var(--muted);
+  opacity: 0.7;
 }
 .smart-track-item-collapse-btn {
   width: 18px;
@@ -522,78 +571,52 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 11px;
   padding: 0;
   border-radius: 4px;
   flex-shrink: 0;
   transition: color 0.15s ease, background 0.15s ease;
 }
-
 .smart-track-item-collapse-btn:hover {
   background: var(--panel2);
   color: var(--text);
 }
-
 .smart-track-item-collapse-btn:active {
   transform: scale(0.95);
 }
 
-.smart-track-item-checkbox {
-  width: 18px;
-  height: 18px;
-  min-width: 18px;
-  min-height: 18px;
-  cursor: pointer;
-  border: 1px solid var(--border2);
-  border-radius: 4px;
-  background: var(--panel);
-  transition: border-color 0.15s ease, background 0.15s ease;
-  margin: 0;
+.smart-track-item-vis-dot {
+  width: 14px;
+  height: 14px;
   padding: 0;
-  flex-shrink: 0;
-  /* Ensure checkbox aligns with other buttons in flex container */
-  align-self: center;
-  /* Override default checkbox appearance */
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  /* Remove any default browser styling that might affect alignment */
-  box-sizing: border-box;
-  /* Match button display for consistent alignment */
-  display: inline-flex;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
   align-items: center;
   justify-content: center;
-  /* Nudge up slightly to match icon baseline */
-  transform: translateY(-2px);
+  flex-shrink: 0;
+  border-radius: 50%;
   position: relative;
 }
-
-/* Custom checkmark for checked state */
-.smart-track-item-checkbox::after {
+.smart-track-item-vis-dot::before {
   content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  background: var(--text);
-  opacity: 0;
-  transition: opacity 0.15s ease;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
-
-.smart-track-item-checkbox:checked::after {
-  opacity: 1;
+.smart-track-item-vis-dot.is-visible::before {
+  background: #22a06b;
+  border: 1px solid #22a06b;
 }
-
-.smart-track-item-checkbox:hover {
-  border-color: var(--border);
+.smart-track-item-vis-dot.is-hidden::before {
+  background: transparent;
+  border: 1.5px solid var(--muted);
+}
+.smart-track-item-vis-dot:hover {
   background: var(--panel2);
-}
-
-.smart-track-item-checkbox:checked {
-  border-color: var(--border);
 }
 
 .smart-track-item-btn {
@@ -618,9 +641,10 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   border-color: var(--border);
   color: var(--text);
 }
-
-.smart-track-item-btn.close:hover {
-  background: white;
+.smart-track-item-btn.remove:hover {
+  background: #fff5f5;
+  border-color: #e5484d;
+  color: #e5484d;
 }
 .smart-track-item-btn:active {
   transform: scale(0.95);
@@ -631,21 +655,51 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .smart-track-item-btn.shuffle::before {
   content: "⇆";  /* match the on-track expanded sample menu's shuffle glyph */
 }
-.smart-track-item-btn.close::before {
-  content: "\00D7";  /* U+00D7 MULTIPLICATION SIGN — in every font (U+2715 ✕ tofu'd on some systems) */
-  font-size: 16px;
-  line-height: 1;
+.smart-track-item-btn.remove svg {
+  display: block;
+  width: 12px;
+  height: 12px;
 }
 
-/* Close button specific styling for better "x" centering in sidebar */
-.smart-track-item-btn.close {
-  font-size: 14px;
+.smart-track-item-remove-armed {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.smart-track-item-remove-confirm {
+  height: 18px;
+  padding: 0 8px;
+  border: 1px solid #e5484d;
+  background: #e5484d;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+}
+.smart-track-item-remove-confirm:hover {
+  background: #d63d42;
+}
+.smart-track-item-remove-cancel {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border2);
+  background: var(--panel);
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
   line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
-  background: white;
+}
+.smart-track-item-remove-cancel:hover {
+  color: var(--text);
+  border-color: var(--border);
 }
 
 .smart-track-item-gear {
@@ -661,6 +715,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  position: relative;
 }
 .smart-track-item-gear svg {
   display: block;
@@ -675,12 +730,304 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   color: var(--blue);
   background: var(--panel);
 }
+
+.smart-track-item-undo {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  overflow: hidden;
+  cursor: default;
+  padding-bottom: 11px;
+}
+.smart-track-item-undo-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.smart-track-item-undo-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.smart-track-item-undo-btn {
+  height: 18px;
+  padding: 0 8px;
+  border: 1px solid var(--border2);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.smart-track-item-undo-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.smart-track-item-undo-dismiss {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.smart-track-item-undo-dismiss:hover {
+  color: var(--text);
+  background: var(--panel2);
+}
+.smart-track-item-undo-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--blue);
+  transform-origin: left center;
+  animation-name: smart-track-undo-shrink;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes smart-track-undo-shrink {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
 .smart-track-item-config {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--border2);
   cursor: default;
 }
+
+/* Per-track read-display config panel (Tracks sidebar gear drawer) */
+.rd-config-section {
+  margin-top: 10px;
+}
+.rd-config-section:first-child { margin-top: 0; }
+.rd-config-section-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.rd-config-section-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border2);
+}
+.rd-config-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 6px 8px;
+  align-items: start;
+  margin-bottom: 6px;
+}
+.rd-config-label {
+  padding-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+.rd-config-control { min-width: 0; }
+.rd-config-row.is-dimmed,
+.rd-config-section.is-dimmed {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.rd-toggle-group {
+  display: inline-flex;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.rd-toggle {
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 0;
+  border-right: 1px solid var(--border2);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.rd-toggle:last-child { border-right: 0; }
+.rd-toggle.is-on {
+  background: var(--blue);
+  color: #fff;
+}
+.rd-toggle:disabled { cursor: default; }
+.rd-mapq-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.rd-mapq-input {
+  width: 44px;
+  min-width: 44px;
+  height: 24px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  text-align: center;
+}
+.rd-dropdown-wrap { position: relative; flex: 1; min-width: 0; }
+.rd-dropdown-with-reverse {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.rd-reverse-btn {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.rd-reverse-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--panel2);
+}
+.rd-reverse-btn.is-on {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 12%, var(--panel));
+}
+.rd-reverse-btn:disabled,
+.rd-reverse-btn.is-disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.rd-dropdown {
+  width: 100%;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.rd-dropdown:disabled { cursor: default; }
+.rd-dropdown-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rd-dropdown-chev { color: var(--muted2); font-size: 10px; }
+.rd-mini-bar {
+  width: 28px;
+  height: 5px;
+  display: inline-flex;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--border2);
+  flex-shrink: 0;
+}
+.rd-mini-bar i { display: block; height: 100%; background: #efa43b; }
+.rd-popover {
+  position: absolute;
+  z-index: 400;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-width: 140px;
+  padding: 4px;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 22px rgba(0,0,0,.28);
+}
+.rd-popover button {
+  width: 100%;
+  min-height: 26px;
+  display: block;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 11px;
+  cursor: pointer;
+}
+.rd-popover button:hover, .rd-popover button:focus { background: var(--panel2); outline: none; }
+.rd-summary-preview {
+  margin-top: 5px;
+  height: 14px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border2);
+  display: flex;
+}
+.rd-summary-preview i { display: block; height: 100%; }
+.rd-summary-preview.is-coverage { display: block; }
+.rd-legend {
+  margin-top: 5px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.rd-legend > span { display: inline-flex; align-items: center; gap: 4px; }
+.rd-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.rd-anchor-line {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #d88a2b;
+  font-size: 11px;
+}
+.rd-anchor-pos {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+.rd-anchor-pin {
+  border: 0;
+  background: transparent;
+  color: #d88a2b;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.rd-anchor-pin.is-pinned { color: var(--text); }
 
 .sidebarHeader {
   display: flex;
@@ -2061,19 +2408,102 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
-/* Smart Track controls: shrink pillbox to show only label, expand on hover */
+/* Smart Track controls: retracted = fixed width with truncated title + pin;
+   hover expands title and reveals action buttons. Pin keeps the title expanded
+   while actions still retract when the pointer leaves. */
 .track-controls[data-track-id^="smart-track-"] {
-  max-width: 120px; /* Collapse button (18px) + label (90px) + padding (12px) */
+  max-width: 168px; /* grip + chevron + truncated title + pin + pad */
+  width: max-content;
   overflow: hidden;
-  transition: max-width 0.2s ease;
+  transition: max-width 0.18s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   white-space: nowrap;
-  /* Above the track canvas so the expanded pill keeps receiving hover/clicks */
   z-index: 100;
+  gap: 4px;
+}
+.track-controls[data-track-id^="smart-track-"]:hover,
+.track-controls[data-track-id^="smart-track-"]:focus-within,
+.track-controls[data-track-id^="smart-track-"].is-pinned {
+  max-width: min(100%, 560px);
+  overflow: visible;
 }
 
-.track-controls[data-track-id^="smart-track-"]:hover,
-.track-controls[data-track-id^="smart-track-"]:focus-within {
-  max-width: 300px; /* Enough for all controls */
+.track-controls[data-track-id^="smart-track-"] .smart-track-qc-grip {
+  /* Override sidebar rest-state (opacity:0) — on-canvas grip stays in the slot. */
+  opacity: 0.55;
+  pointer-events: auto;
+  cursor: grab;
+  flex-shrink: 0;
+}
+.track-controls[data-track-id^="smart-track-"]:hover .smart-track-qc-grip,
+.track-controls[data-track-id^="smart-track-"]:focus-within .smart-track-qc-grip,
+.track-controls[data-track-id^="smart-track-"].is-pinned .smart-track-qc-grip {
+  opacity: 1;
+  color: var(--text);
+}
+
+.smart-track-qc-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition: opacity 0.12s ease, max-width 0.18s ease;
+}
+.track-controls[data-track-id^="smart-track-"]:hover .smart-track-qc-actions,
+.track-controls[data-track-id^="smart-track-"]:focus-within .smart-track-qc-actions {
+  max-width: 120px;
+  opacity: 1;
+  overflow: visible;
+  pointer-events: auto;
+}
+.smart-track-qc-pin {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.smart-track-qc-pin:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+.smart-track-qc-pin.is-on {
+  color: var(--blue);
+  background: var(--panel);
+}
+.smart-track-qc-pin svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+.track-controls[data-track-id^="smart-track-"] .smart-track-qc-remove {
+  background: var(--panel);
+  color: var(--muted);
+}
+.track-controls[data-track-id^="smart-track-"] .smart-track-qc-remove:hover {
+  background: #fff5f5;
+  border-color: #e5484d;
+  color: #e5484d;
+}
+.track-controls[data-track-id^="smart-track-"] .smart-track-qc-remove svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+.track-controls[data-track-id^="smart-track-"] .smart-track-qc-settings {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 
 .track-collapse-btn {
@@ -2134,16 +2564,24 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .track-label .smart-track-label-text:hover {
   color: var(--text);
 }
-/* Smart track labels are clickable */
+/* Smart track labels: always show truncated title when retracted; full when
+   hovered or title-pinned. */
 .track-controls[data-track-id^="smart-track-"] .track-label {
-  flex: 0 0 90px; /* Fixed width: don't grow or shrink */
-  display: flex; /* Make label a flex container */
-  align-items: center; /* Vertically center content */
-  pointer-events: none; /* Label itself doesn't capture clicks */
-  cursor: default; /* Default cursor for non-clickable area */
-  width: 90px; /* Fixed width for alignment */
-  min-width: 90px; /* Ensure minimum width */
-  max-width: 90px; /* Ensure maximum width */
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  cursor: default;
+  width: auto;
+  min-width: 40px;
+  max-width: 88px;
+  overflow: hidden;
+}
+.track-controls[data-track-id^="smart-track-"]:hover .track-label,
+.track-controls[data-track-id^="smart-track-"]:focus-within .track-label,
+.track-controls[data-track-id^="smart-track-"].is-pinned .track-label {
+  max-width: none;
+  overflow: visible;
 }
 /* Only the text content (spans) inside Smart track labels are clickable */
 .track-controls[data-track-id^="smart-track-"] .track-label > * {
@@ -2302,7 +2740,7 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
 .smart-track-reload-btn,
 .smart-track-shuffle-btn,
 .smart-track-close-btn {
-  font-size: 16px;
+  font-size: 14px;
   padding: 0;
   border: 1px solid var(--border2);
   border-radius: 4px;
@@ -2310,13 +2748,14 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   color: var(--muted);
   cursor: pointer;
   outline: none;
-  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   width: 18px;
   height: 18px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
 /* Smart Track checkbox - style to match other buttons */
