@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1](https://github.com/broadinstitute/genomeshader/compare/v0.3.0...v0.3.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* **ci:** build the macOS x86_64 wheel on macos-15-intel ([#72](https://github.com/broadinstitute/genomeshader/issues/72)) ([4c1492b](https://github.com/broadinstitute/genomeshader/commit/4c1492b8004eac9c9dfa75a8709a3829763df0b1))
+* **ci:** pass --repo to gh release upload in the publish job ([#75](https://github.com/broadinstitute/genomeshader/issues/75)) ([110f170](https://github.com/broadinstitute/genomeshader/commit/110f170b2915e77c9be0dbbcd389c911692458b2))
+* **ci:** upload 0.3.0 wheels to PyPI before attaching GitHub assets ([#74](https://github.com/broadinstitute/genomeshader/issues/74)) ([5effe01](https://github.com/broadinstitute/genomeshader/commit/5effe01e2f53815c1ecdc264165c3d5eb7d2b104))
+
 ## [0.3.0](https://github.com/broadinstitute/genomeshader/compare/v0.2.0...v0.3.0) (2026-09-17)
 
 
