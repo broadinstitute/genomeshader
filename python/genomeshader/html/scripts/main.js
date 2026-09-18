@@ -575,7 +575,7 @@ function renderSmartTrack(trackId) {
       const viewHi = renderEndBp();
       const bins = Math.max(1, Math.ceil(genomeW));
       const depths = new Float32Array(bins);
-      let maxD = 0;
+      let trackMax = 0;
       for (const read of reads) {
         if (read.end < viewLo || read.start > viewHi) continue;
         const xa = xGenomeCanonical(Math.max(read.start, viewLo), genomeW);
@@ -584,10 +584,30 @@ function renderSmartTrack(trackId) {
         const i1 = Math.max(0, Math.min(bins - 1, Math.floor(Math.max(xa, xb))));
         for (let i = i0; i <= i1; i++) {
           const d = (depths[i] += 1);
-          if (d > maxD) maxD = d;
+          if (d > trackMax) trackMax = d;
         }
       }
-      if (maxD <= 0) return null;
+      if (trackMax <= 0) return null;
+
+      const scale = (typeof resolveCoverageScale === "function")
+        ? resolveCoverageScale(track)
+        : ((track.readDisplay && track.readDisplay.coverageScale) || { mode: "track", fixedMin: 0, fixedMax: 30 });
+      let maxD = trackMax;
+      let minD = 0;
+      if (scale.mode === "fixed") {
+        minD = Number(scale.fixedMin) || 0;
+        maxD = Number(scale.fixedMax);
+        if (!Number.isFinite(maxD) || maxD <= minD) maxD = minD + 1;
+      } else if (scale.mode === "view") {
+        if (state._viewCoverageMax == null) {
+          state._viewCoverageMax = (typeof computeViewCoverageMax === "function")
+            ? computeViewCoverageMax(genomeW, xGenomeCanonical, viewLo, viewHi)
+            : trackMax;
+        }
+        maxD = Math.max(1, state._viewCoverageMax || trackMax);
+      } else {
+        maxD = Math.max(1, trackMax);
+      }
 
       const lo = [40, 75, 120];
       const hi = [150, 200, 245];
@@ -606,10 +626,12 @@ function renderSmartTrack(trackId) {
         covCtx.fillStyle = `rgba(${r},${g},${b},${a})`;
         covCtx.fillRect(runStart, y, Math.max(1, end - runStart), h);
       };
+      const span = Math.max(1e-6, maxD - minD);
       for (let i = 0; i < bins; i++) {
-        const q = depths[i] <= 0
+        const raw = depths[i];
+        const q = raw <= 0
           ? -1
-          : Math.min(quant - 1, Math.floor((depths[i] / maxD) * (quant - 1)));
+          : Math.min(quant - 1, Math.max(0, Math.floor(((raw - minD) / span) * (quant - 1))));
         if (q !== runQ) {
           flush(i);
           runStart = i;
@@ -1733,12 +1755,20 @@ function renderTrackControls() {
     controls.className = "track-controls";
     controls.dataset.trackId = track.id;
 
-    // Grouping Variable: tint Smart Track control pills with the sample's group color.
+    // Grouping Variable: tint Smart Track control pills with the sample's group color
+    // (left-radius hug). Manual track groups use the mirrored right-edge hug.
     if (isSmartTrack && typeof groupColorForSmartTrack === "function") {
       const gColor = groupColorForSmartTrack(track);
       if (gColor) {
         controls.style.borderLeft = `3px solid ${gColor}`;
         controls.classList.add("group-tinted");
+      }
+    }
+    if (isSmartTrack && track.groupId && typeof getTrackGroup === "function") {
+      const tg = getTrackGroup(track.groupId);
+      if (tg && tg.color) {
+        controls.classList.add("tg-grouped");
+        controls.style.setProperty("--tg-color", tg.color);
       }
     }
     
@@ -2915,6 +2945,7 @@ function renderHoverOnly() {
 
 function renderAll() {
   window.__renderCount = (window.__renderCount || 0) + 1;  // perf instrumentation
+  state._viewCoverageMax = null; // recompute View-scale coverage max this frame
   updateDerived();
   updateTracksHeight();
   renderTracks();

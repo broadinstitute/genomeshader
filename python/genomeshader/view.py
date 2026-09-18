@@ -757,6 +757,7 @@ class GenomeShader:
             "ui-state.js",
             "view-state.js",
             "read-display.js",
+            "track-groups.js",
             "smart-tracks.js",
             "rendering.js",
             "tracks.js",

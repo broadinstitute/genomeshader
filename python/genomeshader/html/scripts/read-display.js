@@ -4,6 +4,9 @@ const DEFAULT_READ_DISPLAY = Object.freeze({
   visibility: Object.freeze({ summary: true, reads: true }),
   alignments: Object.freeze({ paired: true, supplementary: true, secondary: false }),
   mapqRange: Object.freeze({ min: 1, max: 254 }),
+  coverageScale: Object.freeze({ mode: "track", fixedMin: 0, fixedMax: 30 }),
+  // Group-shareable field sources: "track" | "group" (group only valid when track.groupId set).
+  coverageScaleSource: "track",
   groupBy: null,
   sortBy: null,
   colorBy: null,
@@ -11,6 +14,9 @@ const DEFAULT_READ_DISPLAY = Object.freeze({
   reverse: Object.freeze({ groupBy: false, sortBy: false, colorBy: false, shadeBy: false }),
   sortAnchor: Object.freeze({ mode: "auto", position: null }),
 });
+
+// Fields that can inherit from a track group (v1: coverage scale only).
+const GROUP_SHAREABLE_FIELDS = Object.freeze(["coverageScale"]);
 
 const READ_DISPLAY_FIELDS = Object.freeze({
   summaryField: [
@@ -44,7 +50,9 @@ function cloneReadDisplayConfig(source) {
   const vis = cfg.visibility || DEFAULT_READ_DISPLAY.visibility;
   const aln = cfg.alignments || DEFAULT_READ_DISPLAY.alignments;
   const mapq = cfg.mapqRange || DEFAULT_READ_DISPLAY.mapqRange;
+  const scale = cfg.coverageScale || DEFAULT_READ_DISPLAY.coverageScale;
   const rev = cfg.reverse || DEFAULT_READ_DISPLAY.reverse;
+  const scaleMode = (scale.mode === "view" || scale.mode === "fixed") ? scale.mode : "track";
   // Legacy migrate: showPairs → alignments.paired when alignments absent.
   const paired = cfg.alignments
     ? !!aln.paired
@@ -65,6 +73,12 @@ function cloneReadDisplayConfig(source) {
       min: Number.isFinite(Number(mapq.min)) ? Number(mapq.min) : 1,
       max: Number.isFinite(Number(mapq.max)) ? Number(mapq.max) : 254,
     },
+    coverageScale: {
+      mode: scaleMode,
+      fixedMin: Number.isFinite(Number(scale.fixedMin)) ? Number(scale.fixedMin) : 0,
+      fixedMax: Number.isFinite(Number(scale.fixedMax)) ? Number(scale.fixedMax) : 30,
+    },
+    coverageScaleSource: cfg.coverageScaleSource === "group" ? "group" : "track",
     groupBy: cfg.groupBy == null ? null : cfg.groupBy,
     sortBy: cfg.sortBy == null ? null : cfg.sortBy,
     colorBy: cfg.colorBy == null ? null : cfg.colorBy,
@@ -371,6 +385,8 @@ function makeSummaryPreview(track, summaryField) {
 
 if (typeof window !== "undefined") {
   window.__GS_READ_DISPLAY_FIELDS = READ_DISPLAY_FIELDS;
+  window.__GS_GROUP_SHAREABLE_FIELDS = GROUP_SHAREABLE_FIELDS;
+  window.__GS_DEFAULT_READ_DISPLAY = DEFAULT_READ_DISPLAY;
   window.__GS_colorForCategory = colorForCategory;
   window.__GS_readCategory = readCategory;
   window.__GS_cloneReadDisplayConfig = cloneReadDisplayConfig;

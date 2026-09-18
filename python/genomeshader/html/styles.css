@@ -452,11 +452,16 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .smart-track-item {
   display: flex;
   flex-direction: column;
-  padding: 9px 10px;
+  /* Extra right padding clears the 3px hug + 10px group-rail hit target so
+     drawer controls (e.g. Alignments toggles) never sit under the color edge. */
+  padding: 9px 16px 9px 10px;
   margin: 4px 0;
   border-radius: 10px;
   background: var(--panel2);
+  /* 3px right edge reserves the manual-group hug slot so gear icons align
+     whether or not the row is grouped (colored via .tg-grouped). */
   border: 1px solid transparent;
+  border-right-width: 3px;
   cursor: move;
   user-select: none;
   transition: border-color 0.15s ease, background-color 0.15s ease;
@@ -465,15 +470,18 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 .smart-track-item:hover,
 .smart-track-item:focus-within {
   border-color: var(--border2);
+  border-right-color: transparent;
   background: var(--panel);
 }
 .smart-track-item.config-open {
   border-color: var(--border2);
+  border-right-color: transparent;
   background: var(--panel);
 }
 .smart-track-item.dragging {
   opacity: 0.5;
   border-color: var(--blue);
+  border-right-color: transparent;
 }
 .smart-track-item-header {
   display: flex;
@@ -525,20 +533,20 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   justify-content: center;
   color: var(--muted);
   cursor: grab;
-  opacity: 0;
-  pointer-events: none;
+  /* Match on-canvas smart-track pills: grip stays visible at rest. */
+  opacity: 0.55;
+  pointer-events: auto;
   transition: opacity 0.12s ease, color 0.12s ease;
 }
 .smart-track-item:hover .smart-track-item-actions,
 .smart-track-item:focus-within .smart-track-item-actions,
-.smart-track-item:hover .smart-track-item-grip,
-.smart-track-item:focus-within .smart-track-item-grip,
 .smart-track-item.is-remove-armed .smart-track-item-actions {
   opacity: 1;
   pointer-events: auto;
 }
 .smart-track-item:hover .smart-track-item-grip,
 .smart-track-item:focus-within .smart-track-item-grip {
+  opacity: 1;
   color: var(--text);
 }
 .smart-track-item-grip svg {
@@ -833,7 +841,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .rd-config-row {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr);
   gap: 6px 8px;
   align-items: start;
   margin-bottom: 6px;
@@ -859,7 +867,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .rd-toggle {
   min-height: 24px;
-  padding: 2px 8px;
+  padding: 2px 6px;
   border: 0;
   border-right: 1px solid var(--border2);
   background: transparent;
@@ -1009,6 +1017,309 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   min-height: 0;
   width: 100%;
 }
+.rd-scale-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.rd-scale-control.is-dimmed { opacity: 0.55; }
+.rd-scale-range { margin-top: 0; }
+.rd-with-source-chain {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.rd-with-source-chain > :last-child { flex: 1; min-width: 0; }
+
+/* ---- User track groups (shared settings) ---- */
+/* Data-driven Groups facet uses left-radius color (on-canvas pills + legend).
+   Manual track groups use the mirrored cue: a right-edge hug. */
+.smart-track-item.tg-grouped {
+  position: relative;
+  border-right-color: var(--tg-color, var(--accent));
+}
+.smart-track-item.tg-grouped:hover,
+.smart-track-item.tg-grouped:focus-within,
+.smart-track-item.tg-grouped.config-open,
+.smart-track-item.tg-grouped.dragging {
+  border-right-color: var(--tg-color, var(--accent));
+}
+/* On-canvas smart-track control pills mirror the same right-edge hug. */
+.track-controls.tg-grouped {
+  border-right: 3px solid var(--tg-color, var(--accent));
+}
+.tg-rail-btn {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  z-index: 3;
+  border-radius: 0 10px 10px 0;
+}
+.tg-rail-btn:hover {
+  background: color-mix(in srgb, var(--tg-color, var(--accent)) 22%, transparent);
+}
+.tg-link-target {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--blue) 12%, transparent) !important;
+  border-radius: 6px;
+}
+.tg-link-hint {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #0b0d10;
+  font-size: 10px;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 2;
+}
+.tg-already-hint {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  color: var(--muted);
+  font-size: 10px;
+  z-index: 3;
+  pointer-events: none;
+}
+.tg-select-mode-btn {
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+.tg-select-mode-btn.is-on,
+.tg-select-mode-btn:hover {
+  color: var(--text);
+  border-color: var(--blue);
+}
+.tg-select-mode-btn.is-confirm {
+  border-color: transparent;
+  background: var(--blue);
+  color: #0b0d10;
+  font-weight: 600;
+}
+.tg-select-mode-btn.is-confirm:hover {
+  border-color: transparent;
+  color: #0b0d10;
+  filter: brightness(1.08);
+}
+.tg-select-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 0 2px;
+  accent-color: var(--blue);
+}
+.tg-popover {
+  position: fixed;
+  z-index: 1200;
+  min-width: 220px;
+  max-width: 280px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  box-shadow: var(--shadow);
+  color: var(--text);
+}
+.tg-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.tg-popover-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid var(--border2);
+  cursor: pointer;
+  padding: 0;
+}
+.tg-popover-name {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 3px 6px;
+}
+.tg-popover-members {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  max-height: 140px;
+  overflow: auto;
+}
+.tg-popover-member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tg-popover-member i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.tg-popover-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tg-popover-ungroup,
+.tg-popover-shared {
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.tg-popover-ungroup {
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--muted);
+}
+.tg-popover-shared {
+  border: 0;
+  background: var(--blue);
+  color: #0b0d10;
+  font-weight: 600;
+}
+.tg-color-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 8px;
+}
+.tg-color-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.tg-color-swatch.is-active { border-color: var(--text); }
+.tg-drawer-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  font-size: 11px;
+  color: var(--muted);
+}
+.tg-drawer-banner-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.tg-drawer-banner-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.tg-drawer-banner strong { color: var(--text); }
+.tg-drawer-banner-name {
+  color: var(--text);
+  cursor: text;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tg-drawer-banner-name:hover {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text) 35%, transparent);
+}
+.tg-drawer-banner-name-input {
+  flex: 1;
+  min-width: 0;
+  max-width: 140px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 1px 4px;
+  box-sizing: border-box;
+}
+.tg-apply-to-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+.tg-apply-to-group input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--blue);
+  cursor: pointer;
+}
+.tg-chain {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.tg-chain.is-linked {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 50%, var(--border2));
+  background: color-mix(in srgb, var(--blue) 14%, transparent);
+}
+.tg-chain.is-broken { opacity: 0.85; }
+.tg-chain:hover { color: var(--text); }
+
 .rd-legend {
   margin-top: 5px;
   display: flex;
@@ -1044,7 +1355,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 
 .sidebarHeader {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   margin-bottom: 10px;
   gap: 8px;
@@ -2414,11 +2725,18 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   border-color: var(--border);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
+.track-controls.tg-grouped:hover {
+  border-right-color: var(--tg-color, var(--accent));
+}
 /* Smart track controls: keep opaque on hover like standard tracks */
 .track-controls[data-track-id^="smart-track-"]:hover {
   background: var(--panel);
   border-color: var(--border);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+.track-controls[data-track-id^="smart-track-"].tg-grouped:hover,
+.track-controls[data-track-id^="smart-track-"].tg-grouped:focus-within {
+  border-right-color: var(--tg-color, var(--accent));
 }
 
 /* Smart Track controls: retracted = fixed width with truncated title + pin;
