@@ -62,6 +62,13 @@ function persistTrackGroupIds() {
   } catch (_) {}
 }
 
+/** Refresh sidebar list + on-canvas control pills after group membership/color changes. */
+function refreshTrackGroupChrome() {
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  if (typeof renderAll === "function") renderAll();
+  else if (typeof renderTrackControls === "function") renderTrackControls();
+}
+
 function restoreTrackGroupIdsOntoTracks() {
   let map = {};
   try {
@@ -175,6 +182,7 @@ function dissolveTrackGroup(groupId) {
   });
   state.trackGroups = (state.trackGroups || []).filter((g) => g.id !== groupId);
   persistTrackGroupIds();
+  refreshTrackGroupChrome();
 }
 
 function removeTrackFromGroup(trackId) {
@@ -191,6 +199,7 @@ function removeTrackFromGroup(trackId) {
   group.memberTrackIds = (group.memberTrackIds || []).filter((id) => id !== trackId);
   persistTrackGroupIds();
   _ensureGroupMemberConsistency(group);
+  refreshTrackGroupChrome();
 }
 
 function addTracksToGroup(groupId, trackIds) {
@@ -207,6 +216,7 @@ function addTracksToGroup(groupId, trackIds) {
     _setJoinGroupSources(t);
   }
   persistTrackGroupIds();
+  refreshTrackGroupChrome();
   return group;
 }
 
@@ -236,6 +246,7 @@ function createTrackGroup(trackIds, opts) {
     _setJoinGroupSources(t);
   });
   persistTrackGroupIds();
+  refreshTrackGroupChrome();
   return group;
 }
 
@@ -253,6 +264,7 @@ function recolorTrackGroup(groupId, color) {
   if (!group || !color) return;
   group.color = String(color);
   persistTrackGroupIds();
+  refreshTrackGroupChrome();
 }
 
 function setTrackGroupApplyToGroup(groupId, enabled) {

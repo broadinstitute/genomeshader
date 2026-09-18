@@ -462,16 +462,19 @@ def test_on_canvas_pills_get_right_edge_hug(browser):
         """() => {
           const ids = window.__GS_STATE.smartTracks.map(t => t.id);
           const g = window.__GS_createTrackGroup(ids, {name:'canvas', color:'#4e79a7'});
-          if (typeof renderAll === 'function') renderAll();
+          // createTrackGroup refreshes chrome; don't call renderAll from page
+          // scope (viewer scripts live in an IIFE, so bare renderAll is undefined).
           const pills = [...document.querySelectorAll('.track-controls.tg-grouped')];
           return {
             groupColor: g.color,
             pillCount: pills.length,
             colors: pills.map(p => p.style.getPropertyValue('--tg-color').trim()),
             ids: pills.map(p => p.dataset.trackId),
+            anyControls: document.querySelectorAll('.track-controls[data-track-id^="smart-track-"]').length,
           };
         }"""
     )
+    assert out["anyControls"] >= 2, out
     assert out["pillCount"] == 2, out
     assert out["colors"] == [out["groupColor"], out["groupColor"]], out
     assert set(out["ids"]) == set(
