@@ -6,6 +6,9 @@ function processReadsData(rawReads, opts) {
   if (!rawReads || !rawReads.query_name) return null;
   opts = opts || {};
   const display = cloneReadDisplayConfig(opts.display || DEFAULT_READ_DISPLAY);
+  // Legacy test / caller overrides (predating readDisplay.alignments.paired).
+  if (opts.asPairs != null) display.alignments.paired = !!opts.asPairs;
+  if (opts.showPairs != null) display.alignments.paired = !!opts.showPairs;
   const asPairs = display.alignments.paired;
   const mapqMin = display.mapqRange.min;
   const mapqMax = display.mapqRange.max;

@@ -84,7 +84,8 @@ def test_actions_hidden_at_rest_visible_on_focus(browser):
         SMART_ITEM,
     )
     assert at_rest["actionsOpacity"] == 0.0, at_rest
-    assert at_rest["gripOpacity"] == 0.0, at_rest
+    # Grips stay visible at rest (match on-canvas smart-track pills).
+    assert at_rest["gripOpacity"] == pytest.approx(0.55, abs=0.05), at_rest
     assert at_rest["actionsPE"] == "none", at_rest
 
     page.focus(SMART_ITEM)

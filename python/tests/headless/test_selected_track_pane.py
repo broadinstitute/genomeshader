@@ -142,17 +142,26 @@ def test_read_track_config_is_type_aware(browser):
       window.toggleTrackConfig(seeded.trackId);
       const item = document.querySelector('.smart-track-item[data-track-id="' + seeded.trackId + '"]');
       const panel = item && item.querySelector('.smart-track-item-config');
-      const label = panel && panel.querySelector('.track-config-collapsed');
+      const sections = panel
+        ? [...panel.querySelectorAll('.rd-config-section-label')].map(e => e.textContent)
+        : [];
+      const toggles = panel
+        ? [...panel.querySelectorAll('.rd-toggle')].map(e => e.textContent)
+        : [];
       return {
         trackId: seeded.trackId,
-        type: (panel && panel.querySelector('.track-config-type') || {}).textContent,
-        collapseLabel: (label && label.parentElement || {}).textContent,
+        sections,
+        toggles,
         gear: !!(item && item.querySelector('.smart-track-item-gear')),
+        hasLegacyType: !!(panel && panel.querySelector('.track-config-type')),
       };
     }""")
     assert smart["gear"] is True, smart
-    assert smart["type"] == "Reads", smart
-    assert "summary" in (smart["collapseLabel"] or "").lower(), smart
+    assert smart["hasLegacyType"] is False, smart
+    assert "Summary" in smart["sections"], smart
+    assert "Layout" in smart["sections"], smart
+    assert "Paired" in smart["toggles"], smart
+    assert "Summary" in smart["toggles"] and "Reads" in smart["toggles"], smart
     page.close()
 
 
@@ -173,29 +182,36 @@ def test_read_track_show_as_pairs_control(browser):
         is_paired: [true, true, false],
         is_primary: [true, true, true],
       };
-      const seeded = await window.__GS_TEST_seedSmartTrack('NA12878', reads, {collapsed:false});
+      // Start unpaired so we can measure the packing change when Paired turns on.
+      const seeded = await window.__GS_TEST_seedSmartTrack('NA12878', reads, {
+        collapsed: false,
+        showPairs: false,
+      });
       window.toggleTrackConfig(seeded.trackId);
       const item = document.querySelector('.smart-track-item[data-track-id="' + seeded.trackId + '"]');
       const panel = item && item.querySelector('.smart-track-item-config');
-      const cb = panel && panel.querySelector('.track-config-show-pairs');
+      const pairedBtn = panel && [...panel.querySelectorAll('.rd-toggle')]
+        .find(b => b.textContent === 'Paired');
       const genesGear = document.querySelector('.smart-track-item[data-track-id="genes"] .smart-track-item-gear');
       genesGear.click();
       const genesPanel = document.querySelector(
         '.smart-track-item[data-track-id="genes"] .smart-track-item-config');
-      const genesHasPairs = !!(genesPanel && genesPanel.querySelector('.track-config-show-pairs'));
+      const genesHasPairs = !!(genesPanel && [...(genesPanel.querySelectorAll('.rd-toggle') || [])]
+        .some(b => b.textContent === 'Paired'));
       window.toggleTrackConfig(seeded.trackId);
       const item2 = document.querySelector('.smart-track-item[data-track-id="' + seeded.trackId + '"]');
-      const cb2 = item2 && item2.querySelector('.track-config-show-pairs');
+      const pairedBtn2 = item2 && [...item2.querySelectorAll('.rd-toggle')]
+        .find(b => b.textContent === 'Paired');
       const beforeRows = seeded.rowCount;
-      cb2.checked = true;
-      cb2.dispatchEvent(new Event('change', { bubbles: true }));
+      const defaultOn = !!(pairedBtn && pairedBtn.classList.contains('is-on'));
+      pairedBtn2.click();
       const t = window.__GS_STATE.smartTracks.find(x => x.id === seeded.trackId);
       const pe = (t.readsLayout.reads || []).filter(r => r.name === 'pe');
       const inner = (t.readsLayout.reads || []).find(r => r.name === 'inner');
       return {
-        hasCb: !!cb,
+        hasPaired: !!pairedBtn,
         genesHasPairs,
-        checkedDefault: !!(cb && cb.checked),
+        defaultOn,
         showPairs: !!(t && t.showPairs),
         beforeRows,
         afterRows: t.readsLayout.rowCount,
@@ -205,9 +221,9 @@ def test_read_track_show_as_pairs_control(browser):
         stillTwoObjects: pe.length === 2 && !!pe[0].mate && !!pe[1].mate,
       };
     }""")
-    assert out["hasCb"] is True, out
+    assert out["hasPaired"] is True, out
     assert out["genesHasPairs"] is False, out
-    assert out["checkedDefault"] is False, out
+    assert out["defaultOn"] is False, out  # seeded with showPairs:false
     assert out["showPairs"] is True, out
     assert out["beforeRows"] == 1, out
     assert out["afterRows"] == 2, out
