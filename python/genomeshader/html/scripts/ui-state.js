@@ -104,7 +104,12 @@ const state = {
   // Smart tracks state
   smartTracks: [], // Array of Smart track instances
   smartTrackRenderers: new Map(), // Map<trackId, { webgpuCore, instancedRenderer, canvas, webgpuCanvas, container }>
-  
+  // User-defined track groups (shared settings). Distinct from sample-facet blocks.
+  trackGroups: [], // [{ id, name, color, memberTrackIds }]
+  trackGroupSelectMode: false,
+  trackGroupSelectedIds: [], // track ids selected in multi-select mode
+  _viewCoverageMax: null, // cached per-frame max depth across smart tracks (View scale)
+
   // Groups tab: metadata facets only. Each entry: { key, level }.
   // level null = All (unrestricted on that facet). AND across non-null levels.
   activeFacets: [],

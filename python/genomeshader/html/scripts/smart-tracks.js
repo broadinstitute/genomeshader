@@ -5,12 +5,20 @@
 function processReadsData(rawReads, opts) {
   if (!rawReads || !rawReads.query_name) return null;
   opts = opts || {};
-  const asPairs = !!opts.asPairs;
+  const display = cloneReadDisplayConfig(opts.display || DEFAULT_READ_DISPLAY);
+  // Legacy test / caller overrides (predating readDisplay.alignments.paired).
+  if (opts.asPairs != null) display.alignments.paired = !!opts.asPairs;
+  if (opts.showPairs != null) display.alignments.paired = !!opts.showPairs;
+  const asPairs = display.alignments.paired;
+  const mapqMin = display.mapqRange.min;
+  const mapqMax = display.mapqRange.max;
   
   // Convert column-oriented data to row-oriented.
   const numRows = rawReads.query_name.length;
   const pairedCol = rawReads.is_paired;
   const primaryCol = rawReads.is_primary;
+  const secondaryCol = rawReads.is_secondary;
+  const supplementaryCol = rawReads.is_supplementary;
 
   // One entry per alignment, grouped by CONTIGUITY not query_name: the Rust
   // extractor emits each read as a READ row (element_type 0) immediately
@@ -24,6 +32,11 @@ function processReadsData(rawReads, opts) {
   let current = null;
   for (let i = 0; i < numRows; i++) {
     if (rawReads.element_type[i] === 0) { // READ element starts a new alignment
+      const isSecondary = secondaryCol ? !!secondaryCol[i]
+        : (primaryCol ? !primaryCol[i] : false);
+      const isSupplementary = supplementaryCol ? !!supplementaryCol[i] : false;
+      const hasMapq = !!rawReads.mapping_quality;
+      const mapq = hasMapq ? Number(rawReads.mapping_quality[i] || 0) : 60;
       current = {
         name: rawReads.query_name[i],
         start: rawReads.reference_start[i],
@@ -31,12 +44,24 @@ function processReadsData(rawReads, opts) {
         isForward: rawReads.is_forward[i],
         haplotype: rawReads.haplotype[i],
         sample: rawReads.sample_name[i],
+        readGroup: rawReads.read_group ? rawReads.read_group[i] : "unknown",
+        mappingQuality: mapq,
+        insertSize: rawReads.insert_size ? rawReads.insert_size[i] : 0,
+        clipLength: rawReads.clip_length ? rawReads.clip_length[i] : 0,
+        meanBaseQuality: rawReads.mean_base_quality ? rawReads.mean_base_quality[i] : 0,
         isPaired: !!(pairedCol && pairedCol[i]),
-        isPrimary: primaryCol ? !!primaryCol[i] : true,
+        isPrimary: primaryCol ? !!primaryCol[i] : !(isSecondary || isSupplementary),
+        isSecondary,
+        isSupplementary,
         mate: null,
         elements: []
       };
-      readArray.push(current);
+      // Absent MAPQ column (legacy/test seeds) skips the range filter.
+      const mapqOk = !hasMapq || (mapq >= mapqMin && mapq <= mapqMax);
+      const secondaryOk = display.alignments.secondary || !isSecondary;
+      const supplOk = display.alignments.supplementary || !isSupplementary;
+      if (mapqOk && secondaryOk && supplOk) readArray.push(current);
+      else current = null;
     } else if (current) {
       current.elements.push({
         type: rawReads.element_type[i],
@@ -47,8 +72,16 @@ function processReadsData(rawReads, opts) {
     }
   }
 
-  // Sort by start position
-  readArray.sort((a, b) => a.start - b.start);
+  const insertMagnitudes = readArray
+    .filter((r) => r.isPaired && Number(r.insertSize))
+    .map((r) => Math.abs(Number(r.insertSize)));
+  const medianInsertSize = medianOf(insertMagnitudes);
+  for (const read of readArray) {
+    const mag = Math.abs(Number(read.insertSize || 0));
+    read.insertSizeClass = !read.isPaired || !mag || !medianInsertSize ? "unpaired"
+      : (mag < medianInsertSize * 0.5 ? "short"
+        : (mag > medianInsertSize * 1.5 ? "long" : "normal"));
+  }
 
   const units = [];
   if (asPairs) {
@@ -83,36 +116,88 @@ function processReadsData(rawReads, opts) {
       units.push({ start: read.start, end: read.end, reads: [read] });
     }
   }
-  units.sort((a, b) => a.start - b.start);
-
-  // Greedy packing of units (a pair occupies its full insert, so nothing else
-  // slots into the inner gap). Same 10bp neighbor padding as unpaired packing.
-  const rows = [];
+  const representative = (unit) => unit.reads[0];
+  const groupKey = (unit) => display.groupBy
+    ? readCategory(representative(unit), display.groupBy)
+    : "__all__";
+  const groups = new Map();
   for (const unit of units) {
-    let placed = false;
-    for (let r = 0; r < rows.length; r++) {
-      let canFit = true;
-      for (const existing of rows[r]) {
-        if (!(unit.end < existing.start - 10 || unit.start > existing.end + 10)) {
-          canFit = false;
-          break;
-        }
-      }
-      if (canFit) {
-        for (const read of unit.reads) read.row = r;
-        rows[r].push(unit);
-        rows[r].sort((a, b) => a.start - b.start);
-        placed = true;
-        break;
-      }
+    const key = groupKey(unit);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(unit);
+  }
+  const groupRank = {
+    HP1: 0, HP2: 1, unphased: 2, short: 0, normal: 1, long: 2, unpaired: 3,
+    split: 0, linear: 1,
+  };
+  let groupNames = Array.from(groups.keys()).sort((a, b) => {
+    const ar = groupRank[a], br = groupRank[b];
+    if (ar != null || br != null) return (ar == null ? 99 : ar) - (br == null ? 99 : br);
+    return String(a).localeCompare(String(b));
+  });
+  if (display.reverse && display.reverse.groupBy) groupNames = groupNames.reverse();
+  const anchor = display.sortAnchor && display.sortAnchor.position;
+  const sortValue = (unit) => {
+    const read = representative(unit);
+    if (!display.sortBy) return unit.start;
+    if (display.sortBy === "position") return unit.start;
+    if (display.sortBy === "clipLength") return Number(read.clipLength || 0);
+    if (display.sortBy === "insertSize") return Math.abs(Number(read.insertSize || 0));
+    if (display.sortBy === "distanceToAnchor") {
+      const pos = anchor && (!anchor.contig || anchor.contig === state.contig)
+        ? Number(anchor.pos) : (state.startBp + state.endBp) / 2;
+      return Math.abs(unit.start - pos);
     }
-    if (!placed) {
-      for (const read of unit.reads) read.row = rows.length;
-      rows.push([unit]);
+    return readCategory(read, display.sortBy);
+  };
+  const compareUnits = (a, b) => {
+    if (!display.sortBy) return a.start - b.start;
+    const av = sortValue(a), bv = sortValue(b);
+    let cmp;
+    if (typeof av === "string" || typeof bv === "string") {
+      cmp = String(av).localeCompare(String(bv)) || a.start - b.start;
+    } else {
+      const direction = (display.sortBy === "clipLength" || display.sortBy === "insertSize") ? -1 : 1;
+      cmp = direction * (av - bv) || a.start - b.start;
     }
+    return (display.reverse && display.reverse.sortBy) ? -cmp : cmp;
+  };
+
+  // Greedy-pack each group independently. A pair occupies its full insert.
+  let rowBase = 0;
+  let groupOffsetPx = 0;
+  const groupLayouts = [];
+  for (const name of groupNames) {
+    const groupUnits = groups.get(name);
+    groupUnits.sort(compareUnits);
+    const rows = [];
+    for (const unit of groupUnits) {
+      let target = -1;
+      for (let r = 0; r < rows.length && target < 0; r++) {
+        if (rows[r].every((existing) =>
+          unit.end < existing.start - 10 || unit.start > existing.end + 10)) target = r;
+      }
+      if (target < 0) {
+        target = rows.length;
+        rows.push([]);
+      }
+      for (const read of unit.reads) {
+        read.row = rowBase + target;
+        read.groupOffsetPx = groupOffsetPx;
+        read.groupKey = name;
+      }
+      rows[target].push(unit);
+      rows[target].sort((a, b) => a.start - b.start);
+    }
+    groupLayouts.push({ key: name, rowStart: rowBase, rowCount: rows.length, offsetPx: groupOffsetPx });
+    rowBase += rows.length;
+    if (name !== groupNames[groupNames.length - 1]) groupOffsetPx += 8;
   }
 
-  return { reads: readArray, rowCount: rows.length };
+  return {
+    reads: readArray, rowCount: rowBase, groupGapPx: groupOffsetPx,
+    groups: groupLayouts, medianInsertSize,
+  };
 }
 
 // CIGAR N (element_type 5) intron skips. Aligned blocks are the exons; the
@@ -145,7 +230,14 @@ function layoutSmartTrackReads(track) {
     track.readsLayout = null;
     return;
   }
-  track.readsLayout = processReadsData(track.readsData, { asPairs: !!track.showPairs });
+  track.readsLayout = processReadsData(track.readsData, {
+    display: track.readDisplay,
+  });
+  track._medianInsertSize = track.readsLayout ? track.readsLayout.medianInsertSize : 0;
+  if (track.readDisplay) {
+    track.showPairs = !!track.readDisplay.alignments.paired;
+    syncTrackCollapsedFromVisibility(track);
+  }
 }
 
 // Default / maximum open height for a sample (Smart) track. Expanded tracks
@@ -156,7 +248,11 @@ const SMART_TRACK_ROW_H = 18;
 function smartTrackStackHeight(track) {
   // Pixel height of the overview strip + every packed row (uncapped). Null when
   // there is nothing to measure (still loading / no reads).
-  if (!track || track.collapsed) return null;
+  if (!track) return null;
+  const display = track.readDisplay || DEFAULT_READ_DISPLAY;
+  const showReads = display.visibility.reads !== false;
+  const showSummary = display.visibility.summary !== false;
+  if (!showReads) return null;
   const layout = track.readsLayout;
   if (!layout || !layout.reads || !layout.reads.length) return null;
   const labelH = 24;
@@ -165,18 +261,23 @@ function smartTrackStackHeight(track) {
   const summaryY = Math.max(0, Math.floor((closedSlot - summaryH) / 2));
   const top = summaryY;
   const bottom = 12;
-  const overviewH = summaryY + summaryH + 4 - top;
+  const overviewH = showSummary ? (summaryY + summaryH + 4 - top) : 0;
   const rows = layout.rowCount
     || (Math.max(0, ...layout.reads.map((r) => r.row || 0)) + 1)
     || 1;
-  return top + overviewH + Math.max(1, rows) * SMART_TRACK_ROW_H + bottom;
+  const groupGapPx = Number(layout.groupGapPx || 0);
+  return top + overviewH + Math.max(1, rows) * SMART_TRACK_ROW_H + groupGapPx + bottom;
 }
 
 function smartTrackLayoutHeight(track) {
-  // Slot height for layout: collapsed uses closedHeight; expanded fits the
+  // Slot height for layout: summary-only uses closedHeight; with reads fits the
   // stack up to the open cap (track.height, default 220).
   if (!track) return SMART_TRACK_OPEN_HEIGHT;
-  if (track.collapsed) return track.closedHeight || 30;
+  const display = track.readDisplay || DEFAULT_READ_DISPLAY;
+  const showReads = display.visibility.reads !== false;
+  const showSummary = display.visibility.summary !== false;
+  if (!showReads && !showSummary) return track.closedHeight || 30;
+  if (!showReads) return track.closedHeight || 30;
   const cap = track.height || SMART_TRACK_OPEN_HEIGHT;
   const stack = smartTrackStackHeight(track);
   if (stack == null) return cap;
@@ -190,6 +291,7 @@ if (typeof window !== "undefined") {
 // mates share a query_name; markers must stay confined to their own read).
 if (typeof window !== "undefined") window.__GS_processReadsData = processReadsData;
 if (typeof window !== "undefined") window.__GS_alignedBlocks = alignedBlocks;
+if (typeof window !== "undefined") window.__GS_layoutSmartTrackReads = layoutSmartTrackReads;
 
 // Create a new Smart track
 function createSmartTrack(strategy, selectedAlleles) {
@@ -209,7 +311,7 @@ function createSmartTrack(strategy, selectedAlleles) {
   const track = {
     id: trackId,
     label: "Loading...",  // Initial label, will be updated when sample is loaded
-    collapsed: true,  // true = closed (summary strip) by default, false = open (fitted, max 220px)
+    collapsed: true,  // derived from visibility.reads; default summary-only
     hidden: false,      // true = not displayed at all
     height: SMART_TRACK_OPEN_HEIGHT,  // Open-height cap; layout shrinks to the read stack
     // Closed slot: taller than the 24px label pill so adjacent labels don't
@@ -217,7 +319,14 @@ function createSmartTrack(strategy, selectedAlleles) {
     // and centered inside this slot.
     closedHeight: 30,
     minHeight: 50,
-    showPairs: false,
+    showPairs: true, // mirrored from readDisplay.alignments.paired
+    groupId: null, // user track-group tag (shared settings); null = ungrouped
+    readDisplay: (() => {
+      // New track IDs are unique; start summary-only to match prior collapsed default.
+      const cfg = loadReadDisplayForTrack(trackId);
+      cfg.visibility = { summary: true, reads: false };
+      return cfg;
+    })(),
     strategy: strategy,
     selectedAlleles: new Set(selectedAlleles),
     sampleId: null,
@@ -768,28 +877,167 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
 }
 
 // Remove a Smart track
+const SMART_TRACK_REMOVE_TIMEOUT_MS = 5500;
+let _smartTrackRemoveTimeoutMs = SMART_TRACK_REMOVE_TIMEOUT_MS;
+let armedRemoveTrackId = null;
+let armedRemoveTimer = null;
+let pendingUndo = null; // { snapshot, insertIndex, expiresAt, timerId }
+
+function getSmartTrackRemoveTimeoutMs() {
+  return _smartTrackRemoveTimeoutMs;
+}
+
+function clearArmedRemove() {
+  armedRemoveTrackId = null;
+  if (armedRemoveTimer) {
+    clearTimeout(armedRemoveTimer);
+    armedRemoveTimer = null;
+  }
+}
+
+function armRemoveSmartTrack(trackId) {
+  clearArmedRemove();
+  armedRemoveTrackId = trackId;
+  armedRemoveTimer = setTimeout(() => {
+    clearArmedRemove();
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  }, getSmartTrackRemoveTimeoutMs());
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+}
+
+function snapshotSmartTrackForUndo(trackId) {
+  const layoutTrack = (state.tracks || []).find((t) => t.id === trackId);
+  const smartMeta = (state.smartTracks || []).find((t) => t.id === trackId);
+  if (!layoutTrack && !smartMeta) return null;
+  const src = smartMeta || layoutTrack;
+  const insertIndex = (state.tracks || []).findIndex((t) => t.id === trackId);
+  const cloneTrack = (t) => {
+    if (!t) return null;
+    const out = Object.assign({}, t);
+    if (t.readDisplay) out.readDisplay = cloneReadDisplayConfig(t.readDisplay);
+    if (t.selectedAlleles instanceof Set) out.selectedAlleles = new Set(t.selectedAlleles);
+    else if (t.selectedAlleles) out.selectedAlleles = new Set(t.selectedAlleles);
+    // Preserve reads payloads by reference so undo restore is instant/config-complete.
+    if (t.readsData) out.readsData = t.readsData;
+    if (t.readsLayout) out.readsLayout = t.readsLayout;
+    return out;
+  };
+  return {
+    insertIndex: insertIndex >= 0 ? insertIndex : (state.tracks || []).length,
+    layoutTrack: cloneTrack(layoutTrack),
+    smartMeta: cloneTrack(smartMeta),
+    label: (src && src.label) || trackId,
+  };
+}
+
+function clearPendingUndo(finalize) {
+  if (!pendingUndo) return;
+  if (pendingUndo.timerId) clearTimeout(pendingUndo.timerId);
+  pendingUndo = null;
+  if (finalize && typeof renderSmartTracksSidebar === "function") {
+    renderSmartTracksSidebar();
+  }
+}
+
+function confirmRemoveSmartTrack(trackId) {
+  const snap = snapshotSmartTrackForUndo(trackId);
+  clearArmedRemove();
+  clearPendingUndo(false);
+  // Soft-remove without re-rendering yet — insert undo toast in place.
+  const trackIndex = state.tracks.findIndex((t) => t.id === trackId);
+  if (trackIndex >= 0) state.tracks.splice(trackIndex, 1);
+  const smartIndex = state.smartTracks.findIndex((t) => t.id === trackId);
+  if (smartIndex >= 0) state.smartTracks.splice(smartIndex, 1);
+  removeSmartTrackWebGPU(trackId);
+  if (state.expandedTrackConfigId === trackId) state.expandedTrackConfigId = null;
+  pendingUndo = {
+    snapshot: snap,
+    insertIndex: snap ? snap.insertIndex : trackIndex,
+    expiresAt: Date.now() + SMART_TRACK_REMOVE_TIMEOUT_MS,
+    timerId: setTimeout(() => {
+      pendingUndo = null;
+      if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+    }, SMART_TRACK_REMOVE_TIMEOUT_MS),
+  };
+  updateTracksHeight();
+  renderAll();
+  renderSmartTracksSidebar();
+}
+
+function undoRemoveSmartTrack() {
+  if (!pendingUndo || !pendingUndo.snapshot) return;
+  const snap = pendingUndo.snapshot;
+  if (pendingUndo.timerId) clearTimeout(pendingUndo.timerId);
+  pendingUndo = null;
+  const layoutTrack = snap.layoutTrack;
+  const smartMeta = snap.smartMeta;
+  if (layoutTrack) {
+    const idx = Math.max(0, Math.min(snap.insertIndex, state.tracks.length));
+    state.tracks.splice(idx, 0, layoutTrack);
+  }
+  if (smartMeta) {
+    // Prefer inserting among smart tracks in layout order.
+    const smartIds = state.tracks.filter((t) => String(t.id).indexOf("smart-track-") === 0).map((t) => t.id);
+    state.smartTracks = smartIds.map((id) => {
+      if (id === smartMeta.id) return smartMeta;
+      return state.smartTracks.find((t) => t.id === id);
+    }).filter(Boolean);
+    if (!state.smartTracks.find((t) => t.id === smartMeta.id)) {
+      state.smartTracks.push(smartMeta);
+    }
+    initSmartTrackWebGPU(smartMeta.id);
+  }
+  updateTracksHeight();
+  renderAll();
+  renderSmartTracksSidebar();
+}
+
 function removeSmartTrack(trackId) {
-  // Remove from tracks array
+  // Hard remove (no undo) — used by load failures and callers that skip arm/confirm.
+  clearArmedRemove();
+  if (pendingUndo && pendingUndo.snapshot
+      && ((pendingUndo.snapshot.layoutTrack && pendingUndo.snapshot.layoutTrack.id === trackId)
+        || (pendingUndo.snapshot.smartMeta && pendingUndo.snapshot.smartMeta.id === trackId))) {
+    clearPendingUndo(false);
+  }
   const trackIndex = state.tracks.findIndex(t => t.id === trackId);
   if (trackIndex >= 0) {
     state.tracks.splice(trackIndex, 1);
   }
   
-  // Remove from smartTracks array
   const smartIndex = state.smartTracks.findIndex(t => t.id === trackId);
   if (smartIndex >= 0) {
     state.smartTracks.splice(smartIndex, 1);
   }
   
-  // Clean up WebGPU renderer
   removeSmartTrackWebGPU(trackId);
   
   if (state.expandedTrackConfigId === trackId) state.expandedTrackConfigId = null;
 
-  // Update layout and re-render
   updateTracksHeight();
   renderAll();
   renderSmartTracksSidebar();
+}
+
+function moveSmartTrackInList(trackId, direction) {
+  const idx = state.tracks.findIndex((t) => t.id === trackId);
+  if (idx < 0) return;
+  const dest = idx + direction;
+  if (dest < 0 || dest >= state.tracks.length) return;
+  const copy = state.tracks.slice();
+  const [item] = copy.splice(idx, 1);
+  copy.splice(dest, 0, item);
+  state.tracks = copy;
+  if (Array.isArray(state.smartTracks) && state.smartTracks.length) {
+    const smartOrder = copy.filter((t) => String(t.id).indexOf("smart-track-") === 0).map((t) => t.id);
+    const smartMap = new Map(state.smartTracks.map((t) => [t.id, t]));
+    state.smartTracks = smartOrder.map((id) => smartMap.get(id)).filter(Boolean);
+  }
+  updateTracksHeight();
+  renderAll();
+  renderSmartTracksSidebar();
+  const el = document.querySelector(`.smart-track-item[data-track-id="${trackId}"]`);
+  if (el) el.focus();
 }
 
 // Update Smart track strategy and reload
@@ -1074,76 +1322,572 @@ function fillTrackConfigPanel(host, track) {
   const smartMeta = isSmart
     ? (state.smartTracks || []).find(st => st.id === track.id)
     : null;
+  const target = (smartMeta && smartMeta.readsData) ? smartMeta
+    : (track && track.readsData ? track : (smartMeta || track));
 
-  const kind = document.createElement("div");
-  kind.className = "track-inspector-type track-config-type";
-  kind.textContent = trackKindLabel(track);
-  host.appendChild(kind);
+  if (!isSmart) {
+    const kind = document.createElement("div");
+    kind.className = "track-inspector-type track-config-type";
+    kind.textContent = trackKindLabel(track);
+    host.appendChild(kind);
 
-  const visRow = document.createElement("div");
-  visRow.className = "track-inspector-row";
-  const visLabel = document.createElement("label");
-  const visCb = document.createElement("input");
-  visCb.type = "checkbox";
-  visCb.className = "track-config-visible";
-  visCb.checked = !(track.hidden === true);
-  visCb.addEventListener("change", () => {
-    track.hidden = !visCb.checked;
-    if (smartMeta) smartMeta.hidden = track.hidden;
-    if (typeof updateTracksHeight === "function") updateTracksHeight();
-    if (typeof renderAll === "function") renderAll();
-    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
-  });
-  visLabel.appendChild(visCb);
-  visLabel.appendChild(document.createTextNode("Show in view"));
-  visRow.appendChild(visLabel);
-  host.appendChild(visRow);
-
-  const colRow = document.createElement("div");
-  colRow.className = "track-inspector-row";
-  const colLabel = document.createElement("label");
-  const colCb = document.createElement("input");
-  colCb.type = "checkbox";
-  colCb.className = "track-config-collapsed";
-  colCb.checked = !!track.collapsed;
-  colCb.addEventListener("change", () => {
-    track.collapsed = colCb.checked;
-    if (smartMeta) smartMeta.collapsed = track.collapsed;
-    if (typeof updateTracksHeight === "function") updateTracksHeight();
-    if (typeof renderAll === "function") renderAll();
-    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
-  });
-  colLabel.appendChild(colCb);
-  colLabel.appendChild(document.createTextNode(
-    isSmart ? "Collapse to summary" : "Collapse track"
-  ));
-  colRow.appendChild(colLabel);
-  host.appendChild(colRow);
-
-  if (isSmart) {
-    const pairRow = document.createElement("div");
-    pairRow.className = "track-inspector-row";
-    const pairLabel = document.createElement("label");
-    const pairCb = document.createElement("input");
-    pairCb.type = "checkbox";
-    pairCb.className = "track-config-show-pairs";
-    pairCb.checked = !!track.showPairs;
-    pairCb.addEventListener("change", () => {
-      const target = (smartMeta && smartMeta.readsData) ? smartMeta
-        : (track && track.readsData ? track : (smartMeta || track));
-      target.showPairs = pairCb.checked;
-      if (track && track !== target) track.showPairs = target.showPairs;
-      if (smartMeta && smartMeta !== target) smartMeta.showPairs = target.showPairs;
-      layoutSmartTrackReads(target);
+    const visRow = document.createElement("div");
+    visRow.className = "track-inspector-row";
+    const visLabel = document.createElement("label");
+    const visCb = document.createElement("input");
+    visCb.type = "checkbox";
+    visCb.className = "track-config-visible";
+    visCb.checked = !(track.hidden === true);
+    visCb.addEventListener("change", () => {
+      track.hidden = !visCb.checked;
       if (typeof updateTracksHeight === "function") updateTracksHeight();
       if (typeof renderAll === "function") renderAll();
       if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
     });
-    pairLabel.appendChild(pairCb);
-    pairLabel.appendChild(document.createTextNode("Show as pairs"));
-    pairRow.appendChild(pairLabel);
-    host.appendChild(pairRow);
+    visLabel.appendChild(visCb);
+    visLabel.appendChild(document.createTextNode("Show in view"));
+    visRow.appendChild(visLabel);
+    host.appendChild(visRow);
+
+    const colRow = document.createElement("div");
+    colRow.className = "track-inspector-row";
+    const colLabel = document.createElement("label");
+    const colCb = document.createElement("input");
+    colCb.type = "checkbox";
+    colCb.className = "track-config-collapsed";
+    colCb.checked = !!track.collapsed;
+    colCb.addEventListener("change", () => {
+      track.collapsed = colCb.checked;
+      if (typeof updateTracksHeight === "function") updateTracksHeight();
+      if (typeof renderAll === "function") renderAll();
+      if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+    });
+    colLabel.appendChild(colCb);
+    colLabel.appendChild(document.createTextNode("Collapse track"));
+    colRow.appendChild(colLabel);
+    host.appendChild(colRow);
+    return;
   }
+
+  if (!target.readDisplay) target.readDisplay = cloneReadDisplayConfig(state.readDisplayDefaults);
+  const display = target.readDisplay;
+  const readsOff = !display.visibility.reads;
+  const summaryOff = !display.visibility.summary;
+
+  const commit = (needsLayout) => {
+    if (track !== target) track.readDisplay = display;
+    if (smartMeta && smartMeta !== target) smartMeta.readDisplay = display;
+    syncTrackCollapsedFromVisibility(target);
+    if (track !== target) {
+      track.collapsed = target.collapsed;
+      track.hidden = target.hidden;
+      track._hiddenByEmptyVisibility = target._hiddenByEmptyVisibility;
+    }
+    if (smartMeta && smartMeta !== target) {
+      smartMeta.collapsed = target.collapsed;
+      smartMeta.hidden = target.hidden;
+      smartMeta._hiddenByEmptyVisibility = target._hiddenByEmptyVisibility;
+    }
+    // Keep the layout entry in state.tracks in sync (may be the same object).
+    const layoutTrack = (state.tracks || []).find((t) => t.id === target.id);
+    if (layoutTrack && layoutTrack !== target) {
+      layoutTrack.collapsed = target.collapsed;
+      layoutTrack.hidden = target.hidden;
+      layoutTrack._hiddenByEmptyVisibility = target._hiddenByEmptyVisibility;
+      layoutTrack.readDisplay = display;
+    }
+    saveReadDisplayForTrack(target);
+    if (needsLayout) layoutSmartTrackReads(target);
+    if (typeof applyReadDisplayToGroupMembers === "function") {
+      applyReadDisplayToGroupMembers(target, needsLayout);
+    }
+    if (typeof updateTracksHeight === "function") updateTracksHeight();
+    if (typeof renderAll === "function") renderAll();
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  };
+
+  const escapeHtml = (s) => String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  const section = (title) => {
+    const el = document.createElement("div");
+    el.className = "rd-config-section";
+    const label = document.createElement("div");
+    label.className = "rd-config-section-label";
+    label.textContent = title;
+    el.appendChild(label);
+    host.appendChild(el);
+    return el;
+  };
+
+  const fieldRow = (labelText, control, sub) => {
+    const row = document.createElement("div");
+    row.className = "rd-config-row";
+    const lab = document.createElement("div");
+    lab.className = "rd-config-label";
+    lab.textContent = labelText;
+    const right = document.createElement("div");
+    right.className = "rd-config-control";
+    right.appendChild(control);
+    if (sub) right.appendChild(sub);
+    row.append(lab, right);
+    return row;
+  };
+
+  const toggleGroup = (items, getActive, onToggle) => {
+    const group = document.createElement("div");
+    group.className = "rd-toggle-group";
+    group.setAttribute("role", "group");
+    for (const [key, label] of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "rd-toggle" + (getActive(key) ? " is-on" : "");
+      btn.textContent = label;
+      btn.dataset.key = key;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onToggle(key, !getActive(key));
+      });
+      group.appendChild(btn);
+    }
+    return group;
+  };
+
+  const openDropdown = (trigger, options, current, onPick) => {
+    if (openReadDisplayPopover) openReadDisplayPopover.remove();
+    const menu = document.createElement("div");
+    menu.className = "rd-popover";
+    menu.setAttribute("role", "radiogroup");
+    const buttons = options.map(([value, label], index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("role", "radio");
+      const selected = current === value || (current == null && value == null);
+      button.setAttribute("aria-checked", String(selected));
+      button.tabIndex = index === 0 ? 0 : -1;
+      button.textContent = `${selected ? "✓ " : ""}${label}`;
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        menu.remove();
+        openReadDisplayPopover = null;
+        onPick(value);
+      });
+      menu.appendChild(button);
+      return button;
+    });
+    menu.addEventListener("keydown", (event) => {
+      const currentIdx = Math.max(0, buttons.indexOf(document.activeElement));
+      let next = currentIdx;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (currentIdx + 1) % buttons.length;
+      else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (currentIdx - 1 + buttons.length) % buttons.length;
+      else if (event.key === "Escape") {
+        menu.remove(); trigger.focus(); openReadDisplayPopover = null; return;
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        buttons[currentIdx].click();
+        return;
+      } else return;
+      event.preventDefault();
+      buttons.forEach((button, i) => { button.tabIndex = i === next ? 0 : -1; });
+      buttons[next].focus();
+    });
+    trigger.appendChild(menu);
+    openReadDisplayPopover = menu;
+    requestAnimationFrame(() => {
+      const selected = buttons.find((b) => b.getAttribute("aria-checked") === "true");
+      (selected || buttons[0]).focus();
+    });
+    setTimeout(() => {
+      const closeOnOutside = (event) => {
+        if (menu.isConnected && (menu.contains(event.target) || trigger.contains(event.target))) return;
+        menu.remove();
+        if (openReadDisplayPopover === menu) openReadDisplayPopover = null;
+        document.removeEventListener("mousedown", closeOnOutside, true);
+      };
+      document.addEventListener("mousedown", closeOnOutside, true);
+    }, 0);
+  };
+
+  const dropdown = (options, current, onPick, extras) => {
+    const wrap = document.createElement("div");
+    wrap.className = "rd-dropdown-wrap";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rd-dropdown";
+    const hit = (options || []).find(([v]) => v === current || (v == null && current == null));
+    const valueSpan = document.createElement("span");
+    valueSpan.className = "rd-dropdown-value";
+    valueSpan.textContent = hit ? hit[1] : String(current == null ? "None" : current);
+    btn.appendChild(valueSpan);
+    if (extras) btn.appendChild(extras);
+    const chev = document.createElement("span");
+    chev.className = "rd-dropdown-chev";
+    chev.textContent = "▾";
+    btn.appendChild(chev);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (btn.disabled) return;
+      openDropdown(wrap, options, current, onPick);
+    });
+    wrap.appendChild(btn);
+    return { wrap, btn };
+  };
+
+  const withReverse = (fieldKey, dd, canReverse) => {
+    if (!display.reverse) display.reverse = { groupBy: false, sortBy: false, colorBy: false, shadeBy: false };
+    const row = document.createElement("div");
+    row.className = "rd-dropdown-with-reverse";
+    row.appendChild(dd.wrap);
+    const rev = document.createElement("button");
+    rev.type = "button";
+    rev.className = "rd-reverse-btn" + (display.reverse[fieldKey] ? " is-on" : "");
+    rev.title = "Reverse order";
+    rev.setAttribute("aria-label", "Reverse order");
+    rev.setAttribute("aria-pressed", display.reverse[fieldKey] ? "true" : "false");
+    rev.textContent = "⇅";
+    const active = !!canReverse && !readsOff;
+    rev.disabled = !active;
+    if (!active) rev.classList.add("is-disabled");
+    rev.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (rev.disabled) return;
+      display.reverse[fieldKey] = !display.reverse[fieldKey];
+      const needsLayout = fieldKey === "groupBy" || fieldKey === "sortBy";
+      commit(needsLayout);
+    });
+    row.appendChild(rev);
+    return row;
+  };
+
+  const withSourceChain = (_fieldKey, control, linked, onToggle) => {
+    const row = document.createElement("div");
+    row.className = "rd-with-source-chain";
+    const chain = document.createElement("button");
+    chain.type = "button";
+    chain.className = "tg-chain" + (linked ? " is-linked" : " is-broken");
+    chain.title = linked ? "Inherited from group — click to override" : "Overridden — click to inherit group value";
+    chain.setAttribute("aria-label", chain.title);
+    chain.setAttribute("aria-pressed", linked ? "true" : "false");
+    chain.textContent = "⛓";
+    chain.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onToggle();
+    });
+    row.append(chain, control);
+    return row;
+  };
+
+  // Group membership sits above Summary — identity only (no duplicated track name).
+  const trackGroup = (isSmart && target.groupId && typeof getTrackGroup === "function")
+    ? getTrackGroup(target.groupId) : null;
+  if (trackGroup) {
+    const banner = document.createElement("div");
+    banner.className = "tg-drawer-banner";
+    const left = document.createElement("div");
+    left.className = "tg-drawer-banner-id";
+    const sw = document.createElement("i");
+    sw.className = "tg-drawer-banner-swatch";
+    sw.style.background = trackGroup.color;
+
+    const nameEl = document.createElement("strong");
+    nameEl.className = "tg-drawer-banner-name";
+    nameEl.textContent = trackGroup.name;
+    nameEl.title = "Click to rename";
+
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "tg-drawer-banner-name-input";
+    nameInput.value = trackGroup.name;
+    nameInput.style.display = "none";
+
+    const finishRename = () => {
+      const next = nameInput.value.trim() || trackGroup.name;
+      const changed = next !== trackGroup.name;
+      if (changed && typeof renameTrackGroup === "function") {
+        renameTrackGroup(trackGroup.id, next);
+      }
+      nameEl.textContent = trackGroup.name;
+      nameEl.style.display = "";
+      nameInput.style.display = "none";
+      nameInput.value = trackGroup.name;
+      if (changed) {
+        if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+        if (typeof renderAll === "function") renderAll();
+      }
+    };
+
+    nameEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      nameEl.style.display = "none";
+      nameInput.style.display = "block";
+      nameInput.value = trackGroup.name;
+      nameInput.focus();
+      nameInput.select();
+    });
+    nameInput.addEventListener("click", (e) => e.stopPropagation());
+    nameInput.addEventListener("blur", finishRename);
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        nameInput.blur();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        nameInput.value = trackGroup.name;
+        nameInput.blur();
+      }
+    });
+
+    left.append(sw, nameEl, nameInput);
+
+    const applyLabel = document.createElement("label");
+    applyLabel.className = "tg-apply-to-group";
+    applyLabel.title = "When on, drawer changes update every track in this group";
+    const applyCb = document.createElement("input");
+    applyCb.type = "checkbox";
+    applyCb.checked = trackGroup.applyToGroup !== false;
+    applyCb.addEventListener("click", (e) => e.stopPropagation());
+    applyCb.addEventListener("change", (e) => {
+      e.stopPropagation();
+      if (typeof setTrackGroupApplyToGroup === "function") {
+        setTrackGroupApplyToGroup(trackGroup.id, applyCb.checked);
+      } else {
+        trackGroup.applyToGroup = applyCb.checked;
+      }
+      // Turning on: push this track's current settings to the rest of the group.
+      if (applyCb.checked && typeof applyReadDisplayToGroupMembers === "function") {
+        applyReadDisplayToGroupMembers(target, true);
+        if (typeof updateTracksHeight === "function") updateTracksHeight();
+        if (typeof renderAll === "function") renderAll();
+        if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+      }
+    });
+    applyLabel.append(applyCb, document.createTextNode("Apply to group"));
+    banner.append(left, applyLabel);
+    host.appendChild(banner);
+  }
+
+  // --- SUMMARY ---
+  const summarySec = section("Summary");
+  if (summaryOff) summarySec.classList.add("is-dimmed");
+
+  const summaryDd = dropdown(READ_DISPLAY_FIELDS.summaryField, display.summaryField, (v) => {
+    display.summaryField = v;
+    commit(false);
+  });
+  if (summaryOff) summaryDd.btn.disabled = true;
+  if (!summaryOff) {
+    const preview = (typeof makeSummaryPreview === "function")
+      ? makeSummaryPreview(target, display.summaryField)
+      : (window.__GS_makeSummaryPreview
+        ? window.__GS_makeSummaryPreview(target, display.summaryField)
+        : null);
+    summarySec.appendChild(fieldRow("Track", summaryDd.wrap, preview));
+  } else {
+    summarySec.appendChild(fieldRow("Track", summaryDd.wrap));
+  }
+
+  // Coverage Scale — only when summary track type is Coverage.
+  if (!summaryOff && display.summaryField === "coverage") {
+    const resolvedScale = (typeof resolveCoverageScale === "function")
+      ? resolveCoverageScale(target)
+      : (display.coverageScale || { mode: "track", fixedMin: 0, fixedMax: 30 });
+    const linked = !!(trackGroup && display.coverageScaleSource === "group");
+    const isLead = !!(trackGroup && trackGroup.memberTrackIds[0] === target.id);
+    const locked = linked && !isLead;
+    const scaleForUi = linked
+      ? { mode: "fixed", fixedMin: resolvedScale.fixedMin, fixedMax: resolvedScale.fixedMax }
+      : (display.coverageScale || resolvedScale);
+
+    const scaleControl = document.createElement("div");
+    scaleControl.className = "rd-scale-control";
+
+    // Group-linked: Fixed-only. Ungrouped / broken: Track|View|Fixed.
+    if (!linked) {
+      const modeGroup = toggleGroup(
+        [["track", "Track"], ["view", "View"], ["fixed", "Fixed"]],
+        (k) => scaleForUi.mode === k,
+        (k) => {
+          if (!display.coverageScale) display.coverageScale = { mode: "track", fixedMin: 0, fixedMax: 30 };
+          display.coverageScale.mode = k;
+          commit(false);
+        }
+      );
+      scaleControl.appendChild(modeGroup);
+    }
+
+    if (linked || scaleForUi.mode === "fixed") {
+      const rangeWrap = document.createElement("div");
+      rangeWrap.className = "rd-mapq-range rd-scale-range";
+      const mkScaleNum = (val, which) => {
+        const input = document.createElement("input");
+        input.type = "number";
+        input.className = "rd-mapq-input";
+        input.min = "0";
+        input.value = String(val);
+        if (locked) input.disabled = true;
+        input.addEventListener("change", () => {
+          if (locked) return;
+          if (!display.coverageScale) display.coverageScale = { mode: "fixed", fixedMin: 0, fixedMax: 30 };
+          let n = Math.max(0, Number(input.value) || 0);
+          display.coverageScale[which] = n;
+          // Group shared value is Fixed (§6).
+          if (linked) display.coverageScale.mode = "fixed";
+          else display.coverageScale.mode = "fixed";
+          if (display.coverageScale.fixedMin > display.coverageScale.fixedMax) {
+            if (which === "fixedMin") display.coverageScale.fixedMax = n;
+            else display.coverageScale.fixedMin = n;
+          }
+          commit(false);
+        });
+        return input;
+      };
+      rangeWrap.append(
+        mkScaleNum(scaleForUi.fixedMin, "fixedMin"),
+        document.createTextNode("–"),
+        mkScaleNum(scaleForUi.fixedMax, "fixedMax")
+      );
+      scaleControl.appendChild(rangeWrap);
+      const grad = document.createElement("div");
+      grad.className = "rd-summary-preview is-coverage";
+      grad.style.background =
+        "linear-gradient(90deg, rgba(40,75,120,0.45) 0%, rgba(95,145,195,0.7) 45%, rgb(150,200,245) 100%)";
+      scaleControl.appendChild(grad);
+    }
+
+    let scaleRowInner = scaleControl;
+    if (trackGroup) {
+      scaleRowInner = withSourceChain("coverageScale", scaleControl, linked, () => {
+        if (typeof setCoverageScaleSource === "function") {
+          setCoverageScaleSource(target, linked ? "track" : "group");
+        } else {
+          display.coverageScaleSource = linked ? "track" : "group";
+        }
+        commit(false);
+      });
+      if (locked) scaleControl.classList.add("is-dimmed");
+    }
+    summarySec.appendChild(fieldRow("Scale", scaleRowInner));
+  }
+
+  // --- LAYOUT ---
+  const layoutSec = section("Layout");
+  const visGroup = toggleGroup(
+    [["summary", "Summary"], ["reads", "Reads"]],
+    (k) => !!display.visibility[k],
+    (k, on) => {
+      display.visibility[k] = on;
+      commit(true);
+    }
+  );
+  layoutSec.appendChild(fieldRow("Visibility", visGroup));
+
+  const alnGroup = toggleGroup(
+    [["paired", "Paired"], ["supplementary", "Suppl."], ["secondary", "Secondary"]],
+    (k) => !!display.alignments[k],
+    (k, on) => {
+      display.alignments[k] = on;
+      commit(true);
+    }
+  );
+  const alnRow = fieldRow("Alignments", alnGroup);
+  if (readsOff) { alnRow.classList.add("is-dimmed"); alnGroup.querySelectorAll("button").forEach((b) => { b.disabled = true; }); }
+  layoutSec.appendChild(alnRow);
+
+  const mapqWrap = document.createElement("div");
+  mapqWrap.className = "rd-mapq-range";
+  const mkNum = (val, which) => {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "rd-mapq-input";
+    input.min = "0";
+    input.max = "255";
+    input.value = String(val);
+    input.addEventListener("change", () => {
+      let n = Math.max(0, Math.min(255, Number(input.value) || 0));
+      display.mapqRange[which] = n;
+      if (display.mapqRange.min > display.mapqRange.max) {
+        if (which === "min") display.mapqRange.max = n;
+        else display.mapqRange.min = n;
+      }
+      commit(true);
+    });
+    return input;
+  };
+  mapqWrap.append(mkNum(display.mapqRange.min, "min"), document.createTextNode("–"), mkNum(display.mapqRange.max, "max"));
+  const mapqRow = fieldRow("MAPQ", mapqWrap);
+  if (readsOff) {
+    mapqRow.classList.add("is-dimmed");
+    mapqWrap.querySelectorAll("input").forEach((i) => { i.disabled = true; });
+  }
+  layoutSec.appendChild(mapqRow);
+
+  const groupDd = dropdown(READ_DISPLAY_FIELDS.groupBy, display.groupBy, (v) => {
+    display.groupBy = v;
+    if (v == null && display.reverse) display.reverse.groupBy = false;
+    commit(true);
+  });
+  const groupRow = fieldRow("Group by", withReverse("groupBy", groupDd, display.groupBy != null));
+  if (readsOff) { groupRow.classList.add("is-dimmed"); groupDd.btn.disabled = true; }
+  layoutSec.appendChild(groupRow);
+
+  const sortDd = dropdown(READ_DISPLAY_FIELDS.sortBy, display.sortBy, (v) => {
+    display.sortBy = v;
+    if (v == null && display.reverse) display.reverse.sortBy = false;
+    commit(true);
+  });
+  let sortSub = null;
+  if (display.sortBy === "distanceToAnchor") {
+    sortSub = document.createElement("div");
+    sortSub.className = "rd-anchor-line";
+    const pos = display.sortAnchor.position;
+    const text = document.createElement("span");
+    text.className = "rd-anchor-pos";
+    text.textContent = pos
+      ? `${pos.contig}:${Number(pos.pos).toLocaleString()}`
+      : "view center";
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "rd-anchor-pin" + (display.sortAnchor.mode === "pinned" ? " is-pinned" : "");
+    pin.textContent = "⌖";
+    pin.title = display.sortAnchor.mode === "pinned" ? "Resume automatic anchor" : "Pin sort anchor";
+    pin.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleReadDisplayAnchorPin(target.id);
+    });
+    sortSub.append(document.createTextNode("◆ "), text, pin);
+  }
+  const sortControl = withReverse("sortBy", sortDd, display.sortBy != null);
+  const sortRow = fieldRow("Sort by", sortControl, sortSub);
+  if (readsOff) { sortRow.classList.add("is-dimmed"); sortDd.btn.disabled = true; }
+  layoutSec.appendChild(sortRow);
+
+  // --- ENCODING ---
+  const encSec = section("Encoding");
+  if (readsOff) encSec.classList.add("is-dimmed");
+
+  const colorExtras = display.colorBy ? makeReadDisplayMiniBar(target, "colorBy") : null;
+  const colorDd = dropdown(READ_DISPLAY_FIELDS.colorBy, display.colorBy, (v) => {
+    display.colorBy = v;
+    if (v == null && display.reverse) display.reverse.colorBy = false;
+    commit(false);
+  }, colorExtras);
+  const legend = display.colorBy ? makeColorLegendStrip(target) : null;
+  const colorRow = fieldRow("Color by", withReverse("colorBy", colorDd, display.colorBy != null), legend);
+  if (readsOff) { colorRow.classList.add("is-dimmed"); colorDd.btn.disabled = true; }
+  encSec.appendChild(colorRow);
+
+  const shadeExtras = display.shadeBy ? makeReadDisplayMiniBar(target, "shadeBy") : null;
+  const shadeDd = dropdown(READ_DISPLAY_FIELDS.shadeBy, display.shadeBy, (v) => {
+    display.shadeBy = v;
+    if (v == null && display.reverse) display.reverse.shadeBy = false;
+    commit(false);
+  }, shadeExtras);
+  const shadeRow = fieldRow("Shade by", withReverse("shadeBy", shadeDd, display.shadeBy != null));
+  if (readsOff) { shadeRow.classList.add("is-dimmed"); shadeDd.btn.disabled = true; }
+  encSec.appendChild(shadeRow);
 }
 
 // Right sidebar for Tracks (layout order, visibility, labels)
@@ -1241,6 +1985,150 @@ if (typeof window !== "undefined") {
   window.clusterSmartTracksByGrouping = clusterSmartTracksByGrouping;
 }
 
+let openTgPopoverEl = null;
+
+function closeTrackGroupPopover() {
+  if (openTgPopoverEl) {
+    openTgPopoverEl.remove();
+    openTgPopoverEl = null;
+  }
+}
+
+function openTrackGroupPopover(anchor, groupId) {
+  closeTrackGroupPopover();
+  const group = typeof getTrackGroup === "function" ? getTrackGroup(groupId) : null;
+  if (!group || !anchor) return;
+
+  const pop = document.createElement("div");
+  pop.className = "tg-popover";
+  pop.setAttribute("role", "dialog");
+
+  const head = document.createElement("div");
+  head.className = "tg-popover-head";
+  const swatchBtn = document.createElement("button");
+  swatchBtn.type = "button";
+  swatchBtn.className = "tg-popover-swatch";
+  swatchBtn.style.background = group.color;
+  swatchBtn.title = "Change color";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "tg-popover-name";
+  nameInput.value = group.name;
+  nameInput.addEventListener("change", () => {
+    if (typeof renameTrackGroup === "function") renameTrackGroup(group.id, nameInput.value);
+    renderSmartTracksSidebar();
+  });
+  swatchBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    let picker = pop.querySelector(".tg-color-picker");
+    if (picker) { picker.remove(); return; }
+    picker = document.createElement("div");
+    picker.className = "tg-color-picker";
+    const palette = (window.__GS_TRACK_GROUP_PALETTE) || [
+      "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9d97",
+    ];
+    palette.forEach((c) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "tg-color-swatch";
+      b.style.background = c;
+      if (c.toLowerCase() === String(group.color).toLowerCase()) b.classList.add("is-active");
+      b.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (typeof recolorTrackGroup === "function") recolorTrackGroup(group.id, c);
+        closeTrackGroupPopover();
+        renderSmartTracksSidebar();
+        if (typeof renderAll === "function") renderAll();
+      });
+      picker.appendChild(b);
+    });
+    pop.appendChild(picker);
+  });
+  head.append(swatchBtn, nameInput);
+
+  const members = document.createElement("div");
+  members.className = "tg-popover-members";
+  (group.memberTrackIds || []).forEach((id) => {
+    const t = (state.smartTracks || []).find((x) => x && x.id === id);
+    const row = document.createElement("div");
+    row.className = "tg-popover-member";
+    const dot = document.createElement("i");
+    dot.style.background = group.color;
+    row.append(dot, document.createTextNode(t ? (t.label || id) : id));
+    members.appendChild(row);
+  });
+
+  const foot = document.createElement("div");
+  foot.className = "tg-popover-foot";
+  const ungroupBtn = document.createElement("button");
+  ungroupBtn.type = "button";
+  ungroupBtn.className = "tg-popover-ungroup";
+  ungroupBtn.textContent = "Ungroup";
+  ungroupBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (typeof dissolveTrackGroup === "function") dissolveTrackGroup(group.id);
+    closeTrackGroupPopover();
+    renderSmartTracksSidebar();
+    if (typeof renderAll === "function") renderAll();
+  });
+  const sharedBtn = document.createElement("button");
+  sharedBtn.type = "button";
+  sharedBtn.className = "tg-popover-shared";
+  sharedBtn.textContent = "Shared settings";
+  sharedBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const leadId = group.memberTrackIds[0];
+    closeTrackGroupPopover();
+    if (leadId && typeof toggleTrackConfig === "function") toggleTrackConfig(leadId);
+  });
+  foot.append(ungroupBtn, sharedBtn);
+
+  pop.append(head, members, foot);
+  document.body.appendChild(pop);
+  openTgPopoverEl = pop;
+
+  const rect = anchor.getBoundingClientRect();
+  pop.style.left = `${Math.min(rect.left, window.innerWidth - pop.offsetWidth - 8)}px`;
+  pop.style.top = `${rect.bottom + 6}px`;
+
+  setTimeout(() => {
+    const onDoc = (ev) => {
+      if (pop.contains(ev.target) || anchor.contains(ev.target)) return;
+      closeTrackGroupPopover();
+      document.removeEventListener("mousedown", onDoc, true);
+    };
+    document.addEventListener("mousedown", onDoc, true);
+  }, 0);
+}
+
+function clearTrackGroupSelection() {
+  state.trackGroupSelectMode = false;
+  state.trackGroupSelectedIds = [];
+}
+
+function enterTrackGroupSelectMode(seedId) {
+  state.trackGroupSelectMode = true;
+  state.trackGroupSelectedIds = seedId ? [seedId] : (state.trackGroupSelectedIds || []);
+}
+
+function toggleTrackGroupSelected(trackId) {
+  const set = new Set(state.trackGroupSelectedIds || []);
+  if (set.has(trackId)) set.delete(trackId);
+  else set.add(trackId);
+  state.trackGroupSelectedIds = Array.from(set);
+  if (!state.trackGroupSelectedIds.length) state.trackGroupSelectMode = false;
+}
+
+if (typeof document !== "undefined" && !window.__GS_tgSelectEscBound) {
+  window.__GS_tgSelectEscBound = true;
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!state || !state.trackGroupSelectMode) return;
+    clearTrackGroupSelection();
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  });
+}
+
 // Render Tracks list in right sidebar (all layout tracks, not just smart samples)
 function renderSmartTracksSidebar() {
   // Fullscreen moves #genomeshader-root into the overlay modal. Prefer the
@@ -1252,9 +2140,57 @@ function renderSmartTracksSidebar() {
   
   smartTracksList.innerHTML = '';
 
+  // Select / Cancel / Confirm sits in the Tracks header so it doesn't add a
+  // second row above the list (and so the list never jumps at the 2-track threshold).
+  const hasSmart = (state.smartTracks || []).some((t) => t && String(t.id).startsWith("smart-track-"));
+  const selectedIds = (state.trackGroupSelectedIds || []).filter((id) =>
+    (state.smartTracks || []).some((t) => t && t.id === id));
+  state.trackGroupSelectedIds = selectedIds;
+  const selectMode = !!state.trackGroupSelectMode;
+  const canConfirm = selectMode && selectedIds.length >= 2;
+
+  const pane = smartTracksList.closest("#tab-smart-tracks") || smartTracksList.parentElement;
+  const header = pane && pane.querySelector(".sidebarHeader");
+  if (header) {
+    header.querySelectorAll(".tg-select-mode-btn").forEach((el) => el.remove());
+  }
+  if (hasSmart && header) {
+    const selectToggle = document.createElement("button");
+    selectToggle.type = "button";
+    let modeClass = "tg-select-mode-btn";
+    if (canConfirm) modeClass += " is-confirm";
+    else if (selectMode) modeClass += " is-on";
+    selectToggle.className = modeClass;
+    if (canConfirm) {
+      selectToggle.textContent = `Confirm · ${selectedIds.length}`;
+      selectToggle.title = `Group ${selectedIds.length} selected tracks`;
+    } else if (selectMode) {
+      selectToggle.textContent = "Cancel";
+      selectToggle.title = "Cancel track selection (Esc)";
+    } else {
+      selectToggle.textContent = "Select";
+      selectToggle.title = "Select tracks to group (or ⌘/Ctrl-click a row)";
+    }
+    selectToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (canConfirm) {
+        if (typeof createTrackGroupFromSelection === "function") {
+          createTrackGroupFromSelection(selectedIds);
+        }
+        clearTrackGroupSelection();
+        renderSmartTracksSidebar();
+        if (typeof renderAll === "function") renderAll();
+        return;
+      }
+      if (selectMode) clearTrackGroupSelection();
+      else enterTrackGroupSelectMode(null);
+      renderSmartTracksSidebar();
+    });
+    header.appendChild(selectToggle);
+  }
   const applyTrackOrderFromDom = () => {
-    const items = Array.from(smartTracksList.querySelectorAll('.smart-track-item'));
-    const newOrder = items.map(item => item.dataset.trackId);
+    const items = Array.from(smartTracksList.querySelectorAll('.smart-track-item:not(.smart-track-item-undo)'));
+    const newOrder = items.map(item => item.dataset.trackId).filter(Boolean);
     if (newOrder.length === 0) return;
 
     const currentOrder = state.tracks.map(t => t.id);
@@ -1292,6 +2228,10 @@ function renderSmartTracksSidebar() {
   const tracksInOrder = state.tracks.slice();
   
   if (tracksInOrder.length === 0) {
+    if (pendingUndo && pendingUndo.snapshot) {
+      smartTracksList.appendChild(buildSmartTrackUndoRow(pendingUndo));
+      return;
+    }
     const emptyMsg = document.createElement('div');
     emptyMsg.style.padding = '9px 10px';
     emptyMsg.style.fontSize = '11px';
@@ -1392,11 +2332,36 @@ function renderSmartTracksSidebar() {
     return items;
   };
   
-  tracksInOrder.forEach((track) => {
+  // Click-away disarms an armed remove control.
+  if (!smartTracksList._armedRemoveAwayBound) {
+    smartTracksList._armedRemoveAwayBound = true;
+    smartTracksList.addEventListener('mousedown', (e) => {
+      if (!armedRemoveTrackId) return;
+      if (e.target.closest('.smart-track-item-remove-armed, .smart-track-item-btn.remove')) return;
+      clearArmedRemove();
+      renderSmartTracksSidebar();
+    });
+  }
+
+  const appendUndoToastIfNeeded = (appendParent, beforeIndex) => {
+    if (!pendingUndo || !pendingUndo.snapshot) return;
+    if (pendingUndo.insertIndex !== beforeIndex) return;
+    appendParent.appendChild(buildSmartTrackUndoRow(pendingUndo));
+  };
+
+  tracksInOrder.forEach((track, trackIndex) => {
     const isSmart = track.id.startsWith('smart-track-');
     const smartMeta = isSmart
       ? (state.smartTracks || []).find(st => st.id === track.id)
       : null;
+    const cfgSource = smartMeta || track;
+    if (isSmart && smartMeta && !smartMeta.readDisplay) {
+      smartMeta.readDisplay = cloneReadDisplayConfig(state.readDisplayDefaults || DEFAULT_READ_DISPLAY);
+    }
+    if (!track.readDisplay && cfgSource.readDisplay) track.readDisplay = cfgSource.readDisplay;
+    const readsVisible = !!(cfgSource.readDisplay && cfgSource.readDisplay.visibility
+      && cfgSource.readDisplay.visibility.reads);
+    const isArmed = isSmart && armedRemoveTrackId === track.id;
 
     let appendParent = smartTracksList;
     if (isSmart && groupingCol && typeof getSampleGroupValue === "function") {
@@ -1410,12 +2375,20 @@ function renderSmartTracksSidebar() {
       closeGroupBlock();
     }
 
+    appendUndoToastIfNeeded(appendParent, trackIndex);
+
     const item = document.createElement('div');
     item.className = 'smart-track-item';
     item.dataset.trackId = track.id;
+    item.tabIndex = 0;
     item.draggable = true;
     const configOpen = state.expandedTrackConfigId === track.id;
     if (configOpen) item.classList.add('config-open');
+    if (track.hidden === true) item.classList.add('is-hidden');
+    if (isArmed) {
+      item.classList.add('is-remove-armed');
+      item.dataset.remove = 'armed';
+    }
 
     if (isSmart) {
       if (typeof isSmartTrackExcludedByFacets === "function" && isSmartTrackExcludedByFacets(track)) {
@@ -1423,24 +2396,75 @@ function renderSmartTracksSidebar() {
         item.title = "Hidden by active Groups filters";
       }
     }
-    
+
     const header = document.createElement('div');
     header.className = 'smart-track-item-header';
 
-    const grip = document.createElement('span');
-    grip.className = 'smart-track-item-grip';
-    grip.title = 'Drag to reorder';
-    grip.setAttribute('aria-hidden', 'true');
-    grip.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" focusable="false">'
-      + '<path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>';
-    
+    // --- nav: grip (or checkbox in select mode) + chevron ---
+    const nav = document.createElement('div');
+    nav.className = 'smart-track-item-nav';
+
+    const selectMode = !!state.trackGroupSelectMode && isSmart;
+    if (selectMode) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "tg-select-checkbox";
+      cb.checked = (state.trackGroupSelectedIds || []).includes(track.id);
+      cb.title = "Select for grouping";
+      cb.addEventListener("click", (e) => e.stopPropagation());
+      cb.addEventListener("change", (e) => {
+        e.stopPropagation();
+        toggleTrackGroupSelected(track.id);
+        renderSmartTracksSidebar();
+      });
+      nav.appendChild(cb);
+    } else {
+      const grip = document.createElement('span');
+      grip.className = 'smart-track-item-grip';
+      grip.title = 'Drag to reorder or onto a row to link (Alt+↑/↓)';
+      grip.setAttribute('aria-hidden', 'true');
+      grip.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" focusable="false">'
+        + '<path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>';
+      nav.appendChild(grip);
+    }
+
+    const collapseBtn = document.createElement('button');
+    collapseBtn.className = 'smart-track-item-collapse-btn';
+    collapseBtn.type = 'button';
+    // ▾ expanded (reads visible), ▸ collapsed — synced via applyVisibilityShortcut
+    collapseBtn.textContent = readsVisible ? "▾" : "▸";
+    collapseBtn.title = readsVisible ? "Collapse reads" : "Expand reads";
+    collapseBtn.setAttribute('aria-label', collapseBtn.title);
+    collapseBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isSmart) {
+        applyVisibilityShortcut(smartMeta || track, readsVisible);
+        if (smartMeta && track !== smartMeta) {
+          track.collapsed = smartMeta.collapsed;
+          track.readDisplay = smartMeta.readDisplay;
+          track.hidden = smartMeta.hidden;
+        }
+      } else {
+        track.collapsed = !track.collapsed;
+      }
+      updateTracksHeight();
+      renderAll();
+      renderSmartTracksSidebar();
+    });
+
+    nav.appendChild(collapseBtn);
+
+    // --- name ---
+    const nameWrap = document.createElement('div');
+    nameWrap.className = 'smart-track-item-name';
+
     const label = document.createElement('div');
     label.className = 'smart-track-item-label';
+    if (track.hidden === true) label.classList.add('is-dimmed');
     label.textContent = track.label;
     label.style.cursor = 'text';
     label.title = 'Click to rename';
-    
-    // Create input field for editing (hidden initially)
+
     const labelInput = document.createElement('input');
     labelInput.type = 'text';
     labelInput.className = 'smart-track-item-label-input';
@@ -1455,8 +2479,7 @@ function renderSmartTracksSidebar() {
     labelInput.style.padding = '2px 4px';
     labelInput.style.width = '100%';
     labelInput.style.boxSizing = 'border-box';
-    
-    // Click handler to start editing
+
     label.addEventListener('click', (e) => {
       e.stopPropagation();
       label.style.display = 'none';
@@ -1464,8 +2487,7 @@ function renderSmartTracksSidebar() {
       labelInput.focus();
       labelInput.select();
     });
-    
-    // Save on blur or Enter
+
     const saveLabel = () => {
       const newLabel = labelInput.value.trim() || track.label;
       label.textContent = newLabel;
@@ -1473,7 +2495,7 @@ function renderSmartTracksSidebar() {
       labelInput.style.display = 'none';
       editTrackLabel(track.id, newLabel);
     };
-    
+
     labelInput.addEventListener('blur', saveLabel);
     labelInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
@@ -1486,114 +2508,159 @@ function renderSmartTracksSidebar() {
         labelInput.style.display = 'none';
       }
     });
-    
-    const controls = document.createElement('div');
-    controls.className = 'smart-track-item-controls';
-    
-    // Collapse button (controls collapsed/expanded state)
-    const collapseBtn = document.createElement('button');
-    collapseBtn.className = 'smart-track-item-collapse-btn';
-    collapseBtn.type = 'button';
-    // For Smart Tracks: collapsed = closed (single read), !collapsed = open (full height)
-    collapseBtn.textContent = track.collapsed ? "▶" : "▼";
-    collapseBtn.title = isSmart
-      ? (track.collapsed ? "Expand to full height" : "Collapse to single read")
-      : (track.collapsed ? "Expand track" : "Collapse track");
-    collapseBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      track.collapsed = !track.collapsed;
-      if (smartMeta) smartMeta.collapsed = track.collapsed;
-      updateTracksHeight();
-      renderAll();
-      // Re-render sidebar to update button state
-      renderSmartTracksSidebar();
-    });
-    
-    // Checkbox for show/hide (controls hidden state)
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.className = 'smart-track-item-checkbox';
-    // Default to false (not hidden) if undefined for backwards compatibility
-    checkbox.checked = !(track.hidden === true);
-    checkbox.addEventListener('change', (e) => {
-      e.stopPropagation();
-      track.hidden = !checkbox.checked;
-      if (smartMeta) smartMeta.hidden = track.hidden;
-      updateTracksHeight();
-      renderAll();
-    });
-    
-    controls.appendChild(collapseBtn);
-    controls.appendChild(checkbox);
 
-    if (isSmart) {
-      // Refresh button
-      const refreshBtn = document.createElement('button');
-      refreshBtn.className = 'smart-track-item-btn refresh';
-      refreshBtn.title = 'Refresh';
-      refreshBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        reloadSmartTrack(track.id);
-      });
-      
-      // Shuffle button
-      const shuffleBtn = document.createElement('button');
-      shuffleBtn.className = 'smart-track-item-btn shuffle';
-      shuffleBtn.title = 'Shuffle';
-      shuffleBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        shuffleSmartTrack(track.id);
-      });
-      
-      // Close button
-      const closeBtn = document.createElement('button');
-      closeBtn.className = 'smart-track-item-btn close';
-      closeBtn.title = 'Close';
-      closeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        removeSmartTrack(track.id);
-        renderSmartTracksSidebar();
-      });
+    nameWrap.appendChild(label);
+    nameWrap.appendChild(labelInput);
 
-      controls.appendChild(refreshBtn);
-      controls.appendChild(shuffleBtn);
-      controls.appendChild(closeBtn);
+    // User track-group accent: right-edge hug (left hug is reserved for
+    // data-driven Groups facet coloring on the main track pills).
+    const tgMeta = isSmart ? (smartMeta || track) : null;
+    const tg = (tgMeta && tgMeta.groupId && typeof getTrackGroup === "function")
+      ? getTrackGroup(tgMeta.groupId) : null;
+    if (tg) {
+      item.classList.add("tg-grouped");
+      item.style.setProperty("--tg-color", tg.color);
+      const railBtn = document.createElement("button");
+      railBtn.type = "button";
+      railBtn.className = "tg-rail-btn";
+      railBtn.title = `Group settings (${tg.name})`;
+      railBtn.setAttribute("aria-label", `Group settings: ${tg.name}`);
+      railBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openTrackGroupPopover(railBtn, tg.id);
+      });
+      item.appendChild(railBtn);
     }
 
-    const gearBtn = document.createElement('button');
-    gearBtn.className = 'smart-track-item-gear' + (configOpen ? ' active' : '');
-    gearBtn.type = 'button';
-    gearBtn.title = configOpen ? 'Hide track options' : 'Track options';
-    gearBtn.setAttribute('aria-label', 'Track options');
-    gearBtn.setAttribute('aria-expanded', configOpen ? 'true' : 'false');
-    gearBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-      + '<circle cx="12" cy="12" r="3"></circle>'
-      + '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 1 1-2.83-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>'
-      + '</svg>';
-    // Don't preventDefault on pointerdown: the fullscreen overlay sets
-    // touch-action:none on its body, and cancelling pointerdown there
-    // suppresses the subsequent click — so the drawer would not open or close.
-    // stopPropagation + clearing draggable is enough to keep the row from
-    // starting an HTML5 drag.
-    gearBtn.addEventListener('pointerdown', (e) => {
+    // --- actions: reload / resample / remove (smart only; hover/focus reveal) ---
+    const actions = document.createElement('div');
+    actions.className = 'smart-track-item-actions';
+
+    if (isSmart) {
+      if (isArmed) {
+        const armed = document.createElement('div');
+        armed.className = 'smart-track-item-remove-armed';
+        const confirmBtn = document.createElement('button');
+        confirmBtn.type = 'button';
+        confirmBtn.className = 'smart-track-item-remove-confirm';
+        confirmBtn.textContent = 'Remove?';
+        confirmBtn.title = 'Confirm remove';
+        confirmBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          confirmRemoveSmartTrack(track.id);
+        });
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'smart-track-item-remove-cancel';
+        cancelBtn.setAttribute('aria-label', 'Cancel remove');
+        cancelBtn.textContent = '×';
+        cancelBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          clearArmedRemove();
+          renderSmartTracksSidebar();
+        });
+        armed.appendChild(confirmBtn);
+        armed.appendChild(cancelBtn);
+        actions.appendChild(armed);
+      } else {
+        const refreshBtn = document.createElement('button');
+        refreshBtn.className = 'smart-track-item-btn refresh';
+        refreshBtn.type = 'button';
+        refreshBtn.title = 'Reload';
+        refreshBtn.setAttribute('aria-label', 'Reload');
+        refreshBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          reloadSmartTrack(track.id);
+        });
+
+        const shuffleBtn = document.createElement('button');
+        shuffleBtn.className = 'smart-track-item-btn shuffle';
+        shuffleBtn.type = 'button';
+        shuffleBtn.title = 'Resample';
+        shuffleBtn.setAttribute('aria-label', 'Resample');
+        shuffleBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          shuffleSmartTrack(track.id);
+        });
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'smart-track-item-btn remove';
+        removeBtn.type = 'button';
+        removeBtn.title = 'Remove';
+        removeBtn.setAttribute('aria-label', 'Remove');
+        removeBtn.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+          + '<polyline points="3 6 5 6 21 6"></polyline>'
+          + '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>'
+          + '<path d="M10 11v6"></path><path d="M14 11v6"></path>'
+          + '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>'
+          + '</svg>';
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          armRemoveSmartTrack(track.id);
+        });
+
+        actions.appendChild(refreshBtn);
+        actions.appendChild(shuffleBtn);
+        actions.appendChild(removeBtn);
+      }
+    }
+
+    // --- status: visibility dot + gear ---
+    const status = document.createElement('div');
+    status.className = 'smart-track-item-status';
+
+    const visDot = document.createElement('button');
+    visDot.type = 'button';
+    visDot.className = 'smart-track-item-vis-dot' + (track.hidden === true ? ' is-hidden' : ' is-visible');
+    visDot.title = track.hidden === true ? 'Show track' : 'Hide track';
+    visDot.setAttribute('aria-label', visDot.title);
+    visDot.setAttribute('aria-pressed', track.hidden === true ? 'false' : 'true');
+    visDot.addEventListener('click', (e) => {
       e.stopPropagation();
-      item.draggable = false;
+      track.hidden = !(track.hidden === true);
+      if (track.hidden) track._hiddenByEmptyVisibility = false;
+      if (smartMeta) {
+        smartMeta.hidden = track.hidden;
+        if (smartMeta.hidden) smartMeta._hiddenByEmptyVisibility = false;
+      }
+      updateTracksHeight();
+      renderAll();
+      renderSmartTracksSidebar();
     });
-    gearBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      toggleTrackConfig(track.id);
-    });
-    controls.appendChild(gearBtn);
-    
-    header.appendChild(grip);
-    header.appendChild(label);
-    header.appendChild(labelInput);
-    header.appendChild(controls);
-    
+
+    status.appendChild(visDot);
+
+    if (!isArmed) {
+      const gearBtn = document.createElement('button');
+      gearBtn.className = 'smart-track-item-gear' + (configOpen ? ' active' : '');
+      gearBtn.type = 'button';
+      gearBtn.title = configOpen ? 'Hide track options' : 'Track options';
+      gearBtn.setAttribute('aria-label', 'Track options');
+      gearBtn.setAttribute('aria-expanded', configOpen ? 'true' : 'false');
+      gearBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        + '<circle cx="12" cy="12" r="3"></circle>'
+        + '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 1 1-2.83-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>'
+        + '</svg>';
+      gearBtn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        item.draggable = false;
+      });
+      gearBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        toggleTrackConfig(track.id);
+      });
+      status.appendChild(gearBtn);
+    }
+
+    header.appendChild(nav);
+    header.appendChild(nameWrap);
+    if (isSmart) header.appendChild(actions);
+    header.appendChild(status);
+
     item.appendChild(header);
 
-    if (configOpen) {
+    if (configOpen && !isArmed) {
       const config = document.createElement('div');
       config.className = 'smart-track-item-config';
       config.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -1602,12 +2669,38 @@ function renderSmartTracksSidebar() {
     }
 
     item.addEventListener('mousedown', (e) => {
-      item.draggable = !e.target.closest('.smart-track-item-config, .smart-track-item-gear, button, input');
+      item.draggable = !e.target.closest(
+        '.smart-track-item-config, .smart-track-item-gear, .smart-track-item-actions, .smart-track-item-status, button, input'
+      );
     });
 
-    // Drag and drop handlers
+    item.addEventListener('keydown', (e) => {
+      if (!e.altKey) return;
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        moveSmartTrackInList(track.id, -1);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        moveSmartTrackInList(track.id, 1);
+      }
+    });
+
+    // Cmd/Ctrl-click enters multi-select for track groups.
+    item.addEventListener("click", (e) => {
+      if (!isSmart) return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!state.trackGroupSelectMode) enterTrackGroupSelectMode(track.id);
+      else toggleTrackGroupSelected(track.id);
+      renderSmartTracksSidebar();
+    });
+
     item.addEventListener('dragstart', (e) => {
-      // Don't start an item drag while a group rail drag is active.
+      if (state.trackGroupSelectMode) {
+        e.preventDefault();
+        return;
+      }
       if (smartTracksList.querySelector('.smart-track-group-block.dragging-group')) {
         e.preventDefault();
         return;
@@ -1616,44 +2709,146 @@ function renderSmartTracksSidebar() {
       e.dataTransfer.setData('text/plain', track.id);
       item.classList.add('dragging');
       item.dataset.gsDragged = '1';
+      smartTracksList.dataset.tgDragMode = '';
     });
-    
+
     item.addEventListener('dragend', (e) => {
       item.classList.remove('dragging');
+      smartTracksList.querySelectorAll('.tg-link-target').forEach((el) => {
+        el.classList.remove('tg-link-target');
+        const tip = el.querySelector('.tg-link-hint');
+        if (tip) tip.remove();
+      });
+      const mode = smartTracksList.dataset.tgDragMode;
+      const linkTargetId = smartTracksList.dataset.tgLinkTarget;
+      delete smartTracksList.dataset.tgDragMode;
+      delete smartTracksList.dataset.tgLinkTarget;
+      if (mode === 'link' && linkTargetId && track.id) {
+        const result = (typeof linkTracksByDrag === "function")
+          ? linkTracksByDrag(track.id, linkTargetId)
+          : { ok: false };
+        if (result && result.ok === false && result.reason === "already_in_group") {
+          const targetEl = smartTracksList.querySelector(`[data-track-id="${linkTargetId}"]`);
+          if (targetEl) {
+            const tip = document.createElement("span");
+            tip.className = "tg-already-hint";
+            tip.textContent = "already in a group";
+            targetEl.appendChild(tip);
+            setTimeout(() => tip.remove(), 1600);
+          }
+        }
+        renderSmartTracksSidebar();
+        if (typeof renderAll === "function") renderAll();
+        return;
+      }
       applyTrackOrderFromDom();
     });
-    
+
     item.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-      // Group reordering is handled on the list container.
       if (smartTracksList.querySelector('.smart-track-group-block.dragging-group')) return;
-      
-      const afterElement = getDragAfterElement(smartTracksList, e.clientY);
       const dragging = document.querySelector('.smart-track-item.dragging');
-      if (!dragging) return;
+      if (!dragging || dragging === item) return;
+
+      const rect = item.getBoundingClientRect();
+      const yRel = (e.clientY - rect.top) / Math.max(1, rect.height);
+      const ontoBody = yRel > 0.2 && yRel < 0.8
+        && String(item.dataset.trackId || "").startsWith("smart-track-")
+        && String(dragging.dataset.trackId || "").startsWith("smart-track-");
+
+      smartTracksList.querySelectorAll('.tg-link-target').forEach((el) => {
+        if (el !== item) {
+          el.classList.remove('tg-link-target');
+          const tip = el.querySelector('.tg-link-hint');
+          if (tip) tip.remove();
+        }
+      });
+
+      if (ontoBody) {
+        smartTracksList.dataset.tgDragMode = 'link';
+        smartTracksList.dataset.tgLinkTarget = item.dataset.trackId;
+        item.classList.add('tg-link-target');
+        if (!item.querySelector('.tg-link-hint')) {
+          const hint = document.createElement('span');
+          hint.className = 'tg-link-hint';
+          hint.textContent = '⛓ link';
+          item.appendChild(hint);
+        }
+        return; // do not reorder DOM while linking
+      }
+
+      smartTracksList.dataset.tgDragMode = 'reorder';
+      delete smartTracksList.dataset.tgLinkTarget;
+      item.classList.remove('tg-link-target');
+      const tip = item.querySelector('.tg-link-hint');
+      if (tip) tip.remove();
+
+      const afterElement = getDragAfterElement(smartTracksList, e.clientY);
       if (afterElement == null) {
-        // Prefer appending inside the last open group items tray when present.
         const lastGroupItems = smartTracksList.querySelector('.smart-track-group-block:last-child .smart-track-group-items');
         (lastGroupItems || smartTracksList).appendChild(dragging);
       } else {
         afterElement.parentNode.insertBefore(dragging, afterElement);
       }
     });
-    
-    // Drop handler on individual items - just prevent default, container handles the reordering
+
     item.addEventListener('drop', (e) => {
       e.preventDefault();
       e.stopPropagation();
     });
-    
+
+    item.draggable = !selectMode;
     appendParent.appendChild(item);
   });
+
+  // Undo toast at end of list when insertIndex == tracks.length
+  if (pendingUndo && pendingUndo.snapshot && pendingUndo.insertIndex >= tracksInOrder.length) {
+    smartTracksList.appendChild(buildSmartTrackUndoRow(pendingUndo));
+  }
+}
+
+function buildSmartTrackUndoRow(undo) {
+  const row = document.createElement('div');
+  row.className = 'smart-track-item smart-track-item-undo';
+  row.setAttribute('role', 'status');
+  const label = document.createElement('div');
+  label.className = 'smart-track-item-undo-label';
+  label.textContent = (undo.snapshot.label || 'Track') + ' removed';
+  const btns = document.createElement('div');
+  btns.className = 'smart-track-item-undo-actions';
+  const undoBtn = document.createElement('button');
+  undoBtn.type = 'button';
+  undoBtn.className = 'smart-track-item-undo-btn';
+  undoBtn.textContent = 'Undo';
+  undoBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    undoRemoveSmartTrack();
+  });
+  const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'smart-track-item-undo-dismiss';
+  dismissBtn.setAttribute('aria-label', 'Dismiss');
+  dismissBtn.textContent = '×';
+  dismissBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    clearPendingUndo(true);
+  });
+  btns.appendChild(undoBtn);
+  btns.appendChild(dismissBtn);
+  const bar = document.createElement('div');
+  bar.className = 'smart-track-item-undo-progress';
+  const remaining = Math.max(0, (undo.expiresAt || 0) - Date.now());
+  bar.style.animationDuration = (remaining / 1000) + 's';
+  row.appendChild(label);
+  row.appendChild(btns);
+  row.appendChild(bar);
+  return row;
 }
 
 // Helper function for drag and drop
 function getDragAfterElement(container, y) {
-  const draggableElements = [...container.querySelectorAll('.smart-track-item:not(.dragging)')];
+  const draggableElements = [...container.querySelectorAll('.smart-track-item:not(.dragging):not(.smart-track-item-undo)')];
   
   return draggableElements.reduce((closest, child) => {
     const box = child.getBoundingClientRect();
@@ -1889,6 +3084,10 @@ function initializeRightSidebar() {
     setTimeout(initializeRightSidebar, 100);
     return;
   }
+
+  if (typeof initTrackGroups === "function") {
+    try { initTrackGroups(); } catch (_) {}
+  }
   
   // Initialize state (defaults to collapsed if not set)
   updateRightSidebarState();
@@ -1976,14 +3175,31 @@ function initializeRightSidebar() {
 // as window.__GS_processReadsData above; no production code calls it.
 if (typeof window !== "undefined") {
   window.toggleTrackConfig = toggleTrackConfig;
+  window.renderSmartTracksSidebar = renderSmartTracksSidebar;
+  window.__GS_armRemoveSmartTrack = armRemoveSmartTrack;
+  window.__GS_confirmRemoveSmartTrack = confirmRemoveSmartTrack;
+  window.__GS_undoRemoveSmartTrack = undoRemoveSmartTrack;
+  window.__GS_clearPendingUndo = clearPendingUndo;
+  window.__GS_moveSmartTrackInList = moveSmartTrackInList;
   window.__GS_TEST_seedSmartTrack = async function (sampleId, rawReads, opts) {
     opts = opts || {};
     const track = createSmartTrack(opts.strategy || "best", opts.selectedAlleles || []);
     track.sampleId = sampleId;
     track.label = sampleId;
-    track.collapsed = opts.collapsed === true; // default expanded (rows visible)
+    // Default expanded (rows visible) unless opts.collapsed === true.
+    applyVisibilityShortcut(track, opts.collapsed === true);
     track.readsData = rawReads;
-    if (opts.showPairs != null) track.showPairs = !!opts.showPairs;
+    if (opts.showPairs != null) {
+      track.readDisplay.alignments.paired = !!opts.showPairs;
+      track.showPairs = !!opts.showPairs;
+    }
+    if (opts.readDisplay) {
+      Object.assign(track.readDisplay, cloneReadDisplayConfig({
+        ...track.readDisplay,
+        ...opts.readDisplay,
+      }));
+      syncTrackCollapsedFromVisibility(track);
+    }
     layoutSmartTrackReads(track);
     // initSmartTrackWebGPU (started by createSmartTrack) is async; wait for the
     // per-track renderer to come up before we paint.
@@ -1992,6 +3208,7 @@ if (typeof window !== "undefined") {
     }
     updateTracksHeight();
     renderAll();
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
     await new Promise((r) => requestAnimationFrame(() => r()));
     try { renderSmartTrack(track.id); } catch (e) {}
     await new Promise((r) => requestAnimationFrame(() => r()));

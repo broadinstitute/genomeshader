@@ -214,12 +214,14 @@ function renderSmartTrack(trackId) {
     const bottom = track.collapsed ? summaryY : 12;
     const rowH = 18;
     // Expanded: reserve the centered summary strip + a small gap before reads.
-    const overviewH = track.collapsed ? 0 : (summaryY + summaryH + 4 - top);
+    const showSummary = !track.readDisplay || track.readDisplay.visibility.summary !== false;
+    const overviewH = track.collapsed ? 0
+      : (showSummary ? (summaryY + summaryH + 4 - top) : 0);
     // If collapsed (closed state), limit to single row; otherwise use all rows
     const maxRows = track.collapsed ? 1 : (track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1);
     totalContentHeight = track.collapsed
       ? closedSlot
-      : (top + overviewH + maxRows * rowH + bottom);
+      : (top + overviewH + maxRows * rowH + Number(track.readsLayout.groupGapPx || 0) + bottom);
     
     // Set up grid layout for scrolling
     // CRITICAL: Set explicit height FIRST (this overrides the CSS height: 100%)
@@ -447,7 +449,10 @@ function renderSmartTrack(trackId) {
   // present, paint CIGAR into stacked halves inside one rounded capsule
   // (HP1 top / HP2 bottom in horizontal; HP1 left / HP2 right in vertical).
   // Untagged (HP=0) elements stay full height/width; overlap alpha is per-haplotype.
-  const HAP_BODY_COLORS = { 1: [255, 100, 100], 2: [100, 100, 255] };
+  const HAP_BODY_COLORS = {
+    1: colorForCategory("haplotype", "HP1"),
+    2: colorForCategory("haplotype", "HP2"),
+  };
 
   function haplotypeKey(hap) {
     if (hap === 1) return 1;
@@ -560,7 +565,82 @@ function renderSmartTrack(trackId) {
   // Draw the sample-wide aggregate CIGAR summary (collapsed track body, or the
   // pinned overview row of an expanded track). One rounded gray capsule; when
   // both haplotypes are present, HP1/HP2 CIGAR paint into stacked halves.
+  // summaryField "coverage" paints a depth heat bar instead.
   function drawAggregateSummary(reads, y, h, opts) {
+    if (opts && opts.summaryField === "coverage") {
+      // Per-pixel depth heatmap on the 2D/text canvas (not WebGPU): the
+      // instanced rect shader rounds corners and treats alpha>0.5 as stroke,
+      // which framed the bar in a hollow/shadowed capsule.
+      const viewLo = renderStartBp();
+      const viewHi = renderEndBp();
+      const bins = Math.max(1, Math.ceil(genomeW));
+      const depths = new Float32Array(bins);
+      let trackMax = 0;
+      for (const read of reads) {
+        if (read.end < viewLo || read.start > viewHi) continue;
+        const xa = xGenomeCanonical(Math.max(read.start, viewLo), genomeW);
+        const xb = xGenomeCanonical(Math.min(read.end, viewHi), genomeW);
+        const i0 = Math.max(0, Math.min(bins - 1, Math.floor(Math.min(xa, xb))));
+        const i1 = Math.max(0, Math.min(bins - 1, Math.floor(Math.max(xa, xb))));
+        for (let i = i0; i <= i1; i++) {
+          const d = (depths[i] += 1);
+          if (d > trackMax) trackMax = d;
+        }
+      }
+      if (trackMax <= 0) return null;
+
+      const scale = (typeof resolveCoverageScale === "function")
+        ? resolveCoverageScale(track)
+        : ((track.readDisplay && track.readDisplay.coverageScale) || { mode: "track", fixedMin: 0, fixedMax: 30 });
+      let maxD = trackMax;
+      let minD = 0;
+      if (scale.mode === "fixed") {
+        minD = Number(scale.fixedMin) || 0;
+        maxD = Number(scale.fixedMax);
+        if (!Number.isFinite(maxD) || maxD <= minD) maxD = minD + 1;
+      } else if (scale.mode === "view") {
+        if (state._viewCoverageMax == null) {
+          state._viewCoverageMax = (typeof computeViewCoverageMax === "function")
+            ? computeViewCoverageMax(genomeW, xGenomeCanonical, viewLo, viewHi)
+            : trackMax;
+        }
+        maxD = Math.max(1, state._viewCoverageMax || trackMax);
+      } else {
+        maxD = Math.max(1, trackMax);
+      }
+
+      const lo = [40, 75, 120];
+      const hi = [150, 200, 245];
+      const quant = 16;
+      // Text overlay sits above WebGPU, so this stays visible over scrolling reads.
+      const covCtx = tctx || ctx;
+      let runStart = 0;
+      let runQ = -1;
+      const flush = (end) => {
+        if (runQ < 0 || end <= runStart) return;
+        const t = runQ / (quant - 1);
+        const r = Math.round(lo[0] + (hi[0] - lo[0]) * t);
+        const g = Math.round(lo[1] + (hi[1] - lo[1]) * t);
+        const b = Math.round(lo[2] + (hi[2] - lo[2]) * t);
+        const a = 0.35 + 0.55 * t;
+        covCtx.fillStyle = `rgba(${r},${g},${b},${a})`;
+        covCtx.fillRect(runStart, y, Math.max(1, end - runStart), h);
+      };
+      const span = Math.max(1e-6, maxD - minD);
+      for (let i = 0; i < bins; i++) {
+        const raw = depths[i];
+        const q = raw <= 0
+          ? -1
+          : Math.min(quant - 1, Math.max(0, Math.floor(((raw - minD) / span) * (quant - 1))));
+        if (q !== runQ) {
+          flush(i);
+          runStart = i;
+          runQ = q;
+        }
+      }
+      flush(bins);
+      return null;
+    }
     const bands = (opts && opts.bands) || haplotypeBands(reads, y, h);
     const cutGaps = !!(opts && opts.cutGaps);
     const { mn, mx, perHap } = readSpanExtents(reads);
@@ -848,7 +928,7 @@ function renderSmartTrack(trackId) {
         if (!gap) continue;
         const y1 = yGenomeCanonical(gap.a.end, coordHeight);
         const y2 = yGenomeCanonical(gap.b.start, coordHeight);
-        const x = left + read.row * colW + 2;
+        const x = left + read.row * colW + Number(read.groupOffsetPx || 0) + 2;
         const w = colW - 4;
         drawPairConnectorRect(x + w / 2 - 1.5, Math.min(y1, y2), 3, Math.abs(y2 - y1));
       }
@@ -856,21 +936,12 @@ function renderSmartTrack(trackId) {
         if (read.row >= maxCols) continue;
         if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
         
-        let color, alpha;
-        if (read.haplotype === 1) {
-          color = [255, 100, 100];
-          alpha = 0.5;
-        } else if (read.haplotype === 2) {
-          color = [100, 100, 255];
-          alpha = 0.5;
-        } else {
-          color = [150, 150, 150];
-          alpha = 0.35;
-        }
-        if (!read.isForward) alpha *= 0.7;
+        const paint = readPaintStyle(read, track);
+        const color = paint.color;
+        const alpha = paint.alpha;
         
         const col = read.row;
-        const x = left + col * colW + 2;
+        const x = left + col * colW + Number(read.groupOffsetPx || 0) + 2;
         const w = colW - 4;
         const blocks = alignedBlocks(read);
         for (const elem of (read.elements || [])) {
@@ -991,8 +1062,10 @@ function renderSmartTrack(trackId) {
     const rowH = 18;
     // Pinned aggregate-overview strip at the top of an expanded track (0 when
     // collapsed, since the whole track already IS the overview). Reads render
-    // below it and scroll under it.
-    const overviewH = track.collapsed ? 0 : (summaryY + summaryH + 4 - top);
+    // below it and scroll under it. Honor visibility.summary when expanded.
+    const showSummary = !track.readDisplay || track.readDisplay.visibility.summary !== false;
+    const overviewH = track.collapsed ? 0
+      : (showSummary ? (summaryY + summaryH + 4 - top) : 0);
     const readsTop = top + overviewH;
 
     let totalRows = Math.floor((H - top - bottom) / rowH);
@@ -1045,7 +1118,10 @@ function renderSmartTrack(trackId) {
         // One capsule (HP1/HP2 stacked when both present), sized/centered to
         // match the track label midline.
         if (summaryY + summaryH >= 0 && summaryY <= totalContentHeight) {
-          drawAggregateSummary(track.readsLayout.reads, summaryY, summaryH, { cutGaps: true });
+          drawAggregateSummary(track.readsLayout.reads, summaryY, summaryH, {
+            cutGaps: true,
+            summaryField: (track.readDisplay && track.readDisplay.summaryField) || "haplotypeConsensus",
+          });
         }
       } else {
         // Expanded state: Render individual reads
@@ -1054,20 +1130,11 @@ function renderSmartTrack(trackId) {
           if (read.row < startRow || read.row > endRow) continue;
           if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
           
-          let color, baseAlpha;
-          if (read.haplotype === 1) {
-            color = [255, 100, 100];
-            baseAlpha = 0.5;
-          } else if (read.haplotype === 2) {
-            color = [100, 100, 255];
-            baseAlpha = 0.5;
-          } else {
-            color = [150, 150, 150];
-            baseAlpha = 0.35;
-          }
-          if (!read.isForward) baseAlpha *= 0.7;
+          const paint = readPaintStyle(read, track);
+          const color = paint.color;
+          const baseAlpha = paint.alpha;
           
-          const y = readsTop + read.row * rowH + 2;
+          const y = readsTop + read.row * rowH + Number(read.groupOffsetPx || 0) + 2;
           const h = rowH - 4;
 
           if (y + h < 0 || y > totalContentHeight) continue;
@@ -1138,7 +1205,7 @@ function renderSmartTrack(trackId) {
           if (!gap) continue;
           const x1 = xGenomeCanonical(gap.a.end, genomeW);
           const x2 = xGenomeCanonical(gap.b.start, genomeW);
-          const y = readsTop + read.row * rowH + 2;
+          const y = readsTop + read.row * rowH + Number(read.groupOffsetPx || 0) + 2;
           const h = rowH - 4;
           drawPairConnectorRect(Math.min(x1, x2), y + h / 2 - 1.5, Math.abs(x2 - x1), 3);
         }
@@ -1151,7 +1218,7 @@ function renderSmartTrack(trackId) {
         if (read.row < startRow || read.row > endRow) continue;
         if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
         
-        const y = readsTop + read.row * rowH + 2;
+        const y = readsTop + read.row * rowH + Number(read.groupOffsetPx || 0) + 2;
         const h = rowH - 4;
         
         // Draw insertion/deletion/diff markers (horizontal mode)
@@ -1241,27 +1308,38 @@ function renderSmartTrack(trackId) {
         const so = _scrollOffset || 0;
         const oy = summaryY + so;
         const oh = summaryH;
-        // Opaque occluder on the SAME (WebGPU) layer as the reads, so rows
-        // scrolled up behind the pinned overview don't bleed through. Use the
-        // pane bg (--bg is opaque; --smart-track-bg may be a translucent tint).
-        (function () {
-          const c = (typeof cssVar === "function" && (cssVar("--bg") || "")) || "#ffffff";
-          let r = 255, g = 255, b = 255;
-          const s = String(c).trim();
-          if (s[0] === "#") {
-            const h = s.slice(1); const f = h.length === 3;
-            r = parseInt(f ? h[0] + h[0] : h.slice(0, 2), 16);
-            g = parseInt(f ? h[1] + h[1] : h.slice(2, 4), 16);
-            b = parseInt(f ? h[2] + h[2] : h.slice(4, 6), 16);
-          } else {
-            const m = s.match(/rgba?\(([^)]+)\)/);
-            if (m) { const p = m[1].split(",").map(v => parseFloat(v)); r = p[0] || 0; g = p[1] || 0; b = p[2] || 0; }
-          }
-          if ([r, g, b].every(Number.isFinite)) {
-            drawMarkerRect(16, so, Math.max(0, W - 32), overviewH - 1, r, g, b, 1);
-          }
-        })();
-        drawAggregateSummary(oReads, oy, oh, { cutGaps: false });
+        const summaryField = (track.readDisplay && track.readDisplay.summaryField) || "haplotypeConsensus";
+        // Opaque occluder so rows scrolled up behind the pinned overview don't
+        // bleed through. Coverage paints on the text overlay instead — skip the
+        // WebGPU occluder there (alpha≥0.99 draws a stroked rounded capsule that
+        // shadowed the heatmap). Paint a sharp opaque strip on the text canvas.
+        if (summaryField === "coverage" && tctx) {
+          const bg = (typeof cssVar === "function" && (cssVar("--bg") || "")) || "#111";
+          tctx.fillStyle = bg;
+          tctx.fillRect(0, oy, Math.max(0, W), Math.max(0, overviewH - 1));
+        } else {
+          (function () {
+            const c = (typeof cssVar === "function" && (cssVar("--bg") || "")) || "#ffffff";
+            let r = 255, g = 255, b = 255;
+            const s = String(c).trim();
+            if (s[0] === "#") {
+              const h = s.slice(1); const f = h.length === 3;
+              r = parseInt(f ? h[0] + h[0] : h.slice(0, 2), 16);
+              g = parseInt(f ? h[1] + h[1] : h.slice(2, 4), 16);
+              b = parseInt(f ? h[2] + h[2] : h.slice(4, 6), 16);
+            } else {
+              const m = s.match(/rgba?\(([^)]+)\)/);
+              if (m) { const p = m[1].split(",").map(v => parseFloat(v)); r = p[0] || 0; g = p[1] || 0; b = p[2] || 0; }
+            }
+            if ([r, g, b].every(Number.isFinite)) {
+              drawMarkerRect(16, so, Math.max(0, W - 32), overviewH - 1, r, g, b, 1);
+            }
+          })();
+        }
+        drawAggregateSummary(oReads, oy, oh, {
+          cutGaps: false,
+          summaryField,
+        });
         // Separator line under the overview row (pinned with the strip).
         ctx.strokeStyle = cssVar("--border2") || grid;
         ctx.lineWidth = 1;
@@ -1547,7 +1625,80 @@ function gsToggleDataTrackSettings(trackId, anchorBtn) {
   }, 0);
 }
 
+function updateReadDisplayAxis(track, axis, value) {
+  if (!track || !track.readDisplay) return;
+  if (axis === "visibility" || axis === "alignments" || axis === "mapqRange" || axis === "sortAnchor") {
+    track.readDisplay[axis] = value;
+  } else {
+    track.readDisplay[axis] = value;
+  }
+  if (axis === "visibility") syncTrackCollapsedFromVisibility(track);
+  saveReadDisplayForTrack(track);
+  const needsLayout = axis === "groupBy" || axis === "sortBy" || axis === "alignments"
+    || axis === "mapqRange" || axis === "sortAnchor" || axis === "visibility"
+    || axis === "summaryField";
+  if (needsLayout) {
+    layoutSmartTrackReads(track);
+    updateTracksHeight();
+  }
+  renderAll();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+}
+
+function toggleReadDisplayAnchorPin(trackId) {
+  const track = (state.smartTracks || []).find((item) => item.id === trackId);
+  if (!track || !track.readDisplay) return;
+  const anchor = track.readDisplay.sortAnchor;
+  if (anchor.mode === "pinned") {
+    anchor.mode = "auto";
+    syncReadDisplayAnchors();
+  } else {
+    anchor.mode = "pinned";
+    if (!anchor.position && typeof window.__GS_currentSelectedVariantPosition === "function") {
+      const current = window.__GS_currentSelectedVariantPosition();
+      anchor.position = current
+        ? { contig: current.contig, pos: Number(current.pos) }
+        : null;
+    }
+  }
+  saveReadDisplayForTrack(track);
+  layoutSmartTrackReads(track);
+  updateTracksHeight();
+  renderAll();
+  if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+}
+if (typeof window !== "undefined") window.__GS_toggleReadDisplayAnchorPin = toggleReadDisplayAnchorPin;
+
+function syncReadDisplayAnchors(position) {
+  let next = position;
+  if (next === undefined && typeof window.__GS_currentSelectedVariantPosition === "function") {
+    next = window.__GS_currentSelectedVariantPosition();
+  }
+  let changed = false;
+  for (const track of state.smartTracks || []) {
+    const display = track.readDisplay;
+    if (!display || display.sortAnchor.mode !== "auto") continue;
+    const old = display.sortAnchor.position;
+    const same = (!old && !next) || (old && next
+      && old.contig === next.contig && Number(old.pos) === Number(next.pos));
+    if (same) continue;
+    display.sortAnchor.position = next ? { contig: next.contig, pos: Number(next.pos) } : null;
+    saveReadDisplayForTrack(track);
+    if (display.sortBy === "distanceToAnchor") {
+      layoutSmartTrackReads(track);
+      changed = true;
+    }
+  }
+  if (changed) {
+    updateTracksHeight();
+    if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
+  }
+  return changed;
+}
+if (typeof window !== "undefined") window.__GS_syncReadDisplayAnchors = syncReadDisplayAnchors;
+
 function renderTrackControls() {
+  syncReadDisplayAnchors();
   const controlsHost = getTrackControlsEl();
   if (!controlsHost) return;
   controlsHost.innerHTML = "";
@@ -1604,12 +1755,20 @@ function renderTrackControls() {
     controls.className = "track-controls";
     controls.dataset.trackId = track.id;
 
-    // Grouping Variable: tint Smart Track control pills with the sample's group color.
+    // Grouping Variable: tint Smart Track control pills with the sample's group color
+    // (left-radius hug). Manual track groups use the mirrored right-edge hug.
     if (isSmartTrack && typeof groupColorForSmartTrack === "function") {
       const gColor = groupColorForSmartTrack(track);
       if (gColor) {
         controls.style.borderLeft = `3px solid ${gColor}`;
         controls.classList.add("group-tinted");
+      }
+    }
+    if (isSmartTrack && track.groupId && typeof getTrackGroup === "function") {
+      const tg = getTrackGroup(track.groupId);
+      if (tg && tg.color) {
+        controls.classList.add("tg-grouped");
+        controls.style.setProperty("--tg-color", tg.color);
       }
     }
     
@@ -1646,9 +1805,14 @@ function renderTrackControls() {
     collapseBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       e.preventDefault();
-      track.collapsed = !track.collapsed;
+      if (isSmartTrack) {
+        applyVisibilityShortcut(track, !track.collapsed);
+      } else {
+        track.collapsed = !track.collapsed;
+      }
       updateTracksHeight();
       renderAll();
+      if (typeof renderSmartTracksSidebar === "function") renderSmartTracksSidebar();
     });
 
     const label = document.createElement("div");
@@ -1880,145 +2044,148 @@ function renderTrackControls() {
 
     // Add Smart track controls if needed
     if (isSmartTrack) {
-      // Hidden checkbox (show/hide track)
-      const hiddenCheckbox = document.createElement("input");
-      hiddenCheckbox.type = "checkbox";
-      hiddenCheckbox.className = "smart-track-hidden-checkbox";
-      hiddenCheckbox.checked = !track.hidden;
-      hiddenCheckbox.title = track.hidden ? "Show track" : "Hide track";
-      hiddenCheckbox.style.width = "18px";
-      hiddenCheckbox.style.height = "18px";
-      hiddenCheckbox.style.marginLeft = "6px";
-      hiddenCheckbox.style.cursor = "pointer";
-      hiddenCheckbox.style.pointerEvents = "auto";
-      hiddenCheckbox.style.zIndex = "20";
-      hiddenCheckbox.style.verticalAlign = "middle";
-      hiddenCheckbox.style.marginTop = "0";
-      hiddenCheckbox.style.marginBottom = "0";
-      hiddenCheckbox.addEventListener("change", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        track.hidden = !hiddenCheckbox.checked;
-        const trackInArray = state.tracks.find(t => t.id === track.id);
-        if (trackInArray) {
-          trackInArray.hidden = track.hidden;
-        }
-        updateTracksHeight();
-        renderAll();
-        // Update sidebar checkbox to stay in sync
-        renderSmartTracksSidebar();
-      });
-      
-      // Reload button (reload current sample)
+      if (!state.pinnedSmartTrackControls) {
+        state.pinnedSmartTrackControls = new Set();
+        try {
+          const raw = gsLocalStorage.getItem("genomeshader.pinnedSmartTrackControls");
+          const ids = raw ? JSON.parse(raw) : [];
+          if (Array.isArray(ids)) ids.forEach((id) => state.pinnedSmartTrackControls.add(id));
+        } catch (_) {}
+      }
+      const isPinned = state.pinnedSmartTrackControls.has(track.id);
+      if (isPinned) controls.classList.add("is-pinned");
+
+      const readsVisible = !!(track.readDisplay && track.readDisplay.visibility
+        && track.readDisplay.visibility.reads);
+      // Match sidebar chevron: ▾ expanded (reads on), ▸ collapsed.
+      collapseBtn.textContent = readsVisible ? "▾" : "▸";
+      collapseBtn.title = readsVisible ? "Collapse reads" : "Expand reads";
+      collapseBtn.classList.add("smart-track-qc-collapse");
+
+      // Same grip glyph as the sidebar title bar (DnD still uses the pill chrome).
+      const grip = document.createElement("span");
+      grip.className = "smart-track-item-grip smart-track-qc-grip";
+      grip.title = "Drag to reorder";
+      grip.setAttribute("aria-hidden", "true");
+      grip.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" focusable="false">'
+        + '<path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>';
+
+      const actions = document.createElement("div");
+      actions.className = "smart-track-qc-actions";
+
+      // Reuse sidebar button classes so ::before glyphs / trash SVG stay shared.
       const reloadBtn = document.createElement("button");
-      reloadBtn.className = "smart-track-reload-btn";
-      reloadBtn.textContent = "↻";
-      reloadBtn.title = "Reload sample";
+      reloadBtn.className = "smart-track-item-btn refresh smart-track-reload-btn";
       reloadBtn.type = "button";
-      reloadBtn.style.fontSize = "16px";
-      reloadBtn.style.padding = "0";
-      reloadBtn.style.border = "1px solid var(--border2)";
-      reloadBtn.style.borderRadius = "4px";
-      reloadBtn.style.background = "var(--panel)";
-      reloadBtn.style.color = "var(--muted)";
-      reloadBtn.style.cursor = "pointer";
-      reloadBtn.style.marginLeft = "6px";
-      reloadBtn.style.width = "18px";
-      reloadBtn.style.height = "18px";
-      reloadBtn.style.display = "flex";
-      reloadBtn.style.alignItems = "center";
-      reloadBtn.style.justifyContent = "center";
-      reloadBtn.style.lineHeight = "1";
+      reloadBtn.title = "Reload";
+      reloadBtn.setAttribute("aria-label", "Reload");
       reloadBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         e.preventDefault();
         reloadSmartTrack(track.id);
       });
-      reloadBtn.style.pointerEvents = "auto";
-      reloadBtn.style.zIndex = "20";
-      
-      // Shuffle button (choose new sample)
+
       const shuffleBtn = document.createElement("button");
-      shuffleBtn.className = "smart-track-shuffle-btn";
-      shuffleBtn.textContent = "⇆";
-      shuffleBtn.title = "Shuffle to new sample";
+      shuffleBtn.className = "smart-track-item-btn shuffle smart-track-shuffle-btn";
       shuffleBtn.type = "button";
-      shuffleBtn.style.fontSize = "16px";
-      shuffleBtn.style.padding = "0";
-      shuffleBtn.style.border = "1px solid var(--border2)";
-      shuffleBtn.style.borderRadius = "4px";
-      shuffleBtn.style.background = "var(--panel)";
-      shuffleBtn.style.color = "var(--muted)";
-      shuffleBtn.style.cursor = "pointer";
-      shuffleBtn.style.marginLeft = "6px";
-      shuffleBtn.style.width = "18px";
-      shuffleBtn.style.height = "18px";
-      shuffleBtn.style.display = "flex";
-      shuffleBtn.style.alignItems = "center";
-      shuffleBtn.style.justifyContent = "center";
-      shuffleBtn.style.lineHeight = "1";
+      shuffleBtn.title = "Resample";
+      shuffleBtn.setAttribute("aria-label", "Resample");
       shuffleBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         e.preventDefault();
         shuffleSmartTrack(track.id);
       });
-      shuffleBtn.style.pointerEvents = "auto";
-      shuffleBtn.style.zIndex = "20";
-      
-      // Close button
-      const closeBtn = document.createElement("button");
-      closeBtn.className = "smart-track-close-btn";
-      closeBtn.textContent = "×";  // U+00D7 × — universally present (U+2715 ✕ tofu'd on some fonts)
-      closeBtn.title = "Close track";
-      closeBtn.type = "button";
-      closeBtn.style.fontSize = "16px";
-      closeBtn.style.padding = "0";
-      closeBtn.style.border = "1px solid var(--border2)";
-      closeBtn.style.borderRadius = "4px";
-      closeBtn.style.background = "var(--panel)";
-      closeBtn.style.color = "var(--muted)";
-      closeBtn.style.cursor = "pointer";
-      closeBtn.style.marginLeft = "6px";
-      closeBtn.style.width = "18px";
-      closeBtn.style.height = "18px";
-      closeBtn.style.display = "flex";
-      closeBtn.style.alignItems = "center";
-      closeBtn.style.justifyContent = "center";
-      closeBtn.style.lineHeight = "1";
-      closeBtn.style.pointerEvents = "auto";
-      closeBtn.style.zIndex = "20";
-      closeBtn.addEventListener("click", (e) => {
+
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "smart-track-item-btn remove smart-track-qc-remove";
+      removeBtn.type = "button";
+      removeBtn.title = "Remove";
+      removeBtn.setAttribute("aria-label", "Remove");
+      removeBtn.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        + '<polyline points="3 6 5 6 21 6"></polyline>'
+        + '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>'
+        + '<path d="M10 11v6"></path><path d="M14 11v6"></path>'
+        + '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>'
+        + '</svg>';
+      removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        // Verify track still exists before removing
-        const trackExists = state.smartTracks.find(t => t.id === track.id);
-        if (trackExists) {
-          removeSmartTrack(track.id);
+        if (typeof confirmRemoveSmartTrack === "function") confirmRemoveSmartTrack(track.id);
+        else if (state.smartTracks.find((t) => t.id === track.id)) removeSmartTrack(track.id);
+      });
+
+      const settingsBtn = document.createElement("button");
+      settingsBtn.className = "smart-track-item-gear smart-track-qc-settings";
+      settingsBtn.type = "button";
+      settingsBtn.title = "Track options";
+      settingsBtn.setAttribute("aria-label", "Track options");
+      settingsBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        + '<circle cx="12" cy="12" r="3"></circle>'
+        + '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 1 1-2.83-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>'
+        + '</svg>';
+      settingsBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (typeof setRightSidebarCollapsed === "function") setRightSidebarCollapsed(false);
+        if (typeof setActiveTab === "function") setActiveTab("smart-tracks");
+        if (typeof toggleTrackConfig === "function") {
+          // Open (don't toggle closed if already open on another track).
+          if (state.expandedTrackConfigId !== track.id) {
+            state.expandedTrackConfigId = null;
+            toggleTrackConfig(track.id);
+          } else if (typeof renderSmartTracksSidebar === "function") {
+            renderSmartTracksSidebar();
+          }
         }
       });
-      
-      // In vertical mode, reverse order: label on top, button on bottom
+
+      actions.append(reloadBtn, shuffleBtn, removeBtn, settingsBtn);
+
+      const pinBtn = document.createElement("button");
+      pinBtn.type = "button";
+      pinBtn.className = "smart-track-qc-pin" + (isPinned ? " is-on" : "");
+      pinBtn.title = isPinned ? "Unpin title (retract name width)" : "Pin title expanded";
+      pinBtn.setAttribute("aria-label", pinBtn.title);
+      pinBtn.setAttribute("aria-pressed", isPinned ? "true" : "false");
+      pinBtn.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true">'
+        + '<path d="M16 4v4.3l2.5 2.5V13h-5.2V21h-1.6v-8H6.5v-2.2L9 8.3V4h7zm-1.5 1.5h-4v3.2l-2.4 2.4h8.8l-2.4-2.4V5.5z"/>'
+        + '</svg>';
+      pinBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (state.pinnedSmartTrackControls.has(track.id)) {
+          state.pinnedSmartTrackControls.delete(track.id);
+        } else {
+          state.pinnedSmartTrackControls.add(track.id);
+        }
+        try {
+          gsLocalStorage.setItem(
+            "genomeshader.pinnedSmartTrackControls",
+            JSON.stringify(Array.from(state.pinnedSmartTrackControls))
+          );
+        } catch (_) {}
+        renderAll();
+      });
+
+      // Anatomy: grip + chevron | title | pin | actions (reload/resample/remove/settings)
       if (isVertical) {
         controls.appendChild(label);
-        controls.appendChild(labelSpacer); // Spacer maintains flex space when label is hidden
+        controls.appendChild(labelSpacer);
         controls.appendChild(labelInput);
-        controls.appendChild(hiddenCheckbox);
-        controls.appendChild(reloadBtn);
-        controls.appendChild(shuffleBtn);
-        controls.appendChild(closeBtn);
+        controls.appendChild(pinBtn);
+        controls.appendChild(actions);
+        controls.appendChild(grip);
         controls.appendChild(collapseBtn);
-        container.appendChild(controls);
       } else {
+        controls.appendChild(grip);
         controls.appendChild(collapseBtn);
         controls.appendChild(label);
-        controls.appendChild(labelSpacer); // Spacer maintains flex space when label is hidden
+        controls.appendChild(labelSpacer);
         controls.appendChild(labelInput);
-        controls.appendChild(hiddenCheckbox);
-        controls.appendChild(reloadBtn);
-        controls.appendChild(shuffleBtn);
-        controls.appendChild(closeBtn);
-        container.appendChild(controls);
+        controls.appendChild(pinBtn);
+        controls.appendChild(actions);
       }
+      container.appendChild(controls);
     } else {
       // In vertical mode, reverse order: label on top, button on bottom.
       // #49: the label stays UPRIGHT (the CSS `.main.vertical .track-label`
@@ -2778,6 +2945,7 @@ function renderHoverOnly() {
 
 function renderAll() {
   window.__renderCount = (window.__renderCount || 0) + 1;  // perf instrumentation
+  state._viewCoverageMax = null; // recompute View-scale coverage max this frame
   updateDerived();
   updateTracksHeight();
   renderTracks();
@@ -3624,6 +3792,11 @@ function setupCanvasHover() {
     }
     return selectedInfo;
   }
+  window.__GS_currentSelectedVariantPosition = function () {
+    const selected = getSelectedAlleleInfo();
+    if (!selected.length || !selected[0].variant || selected[0].variant.pos == null) return null;
+    return { contig: state.contig, pos: Number(selected[0].variant.pos) };
+  };
 
   // --- Comments bridge: build an anchor from the current selection (allele /
   // variant) or, absent a selection, the current view region. Consumed by
@@ -4107,7 +4280,9 @@ function setupCanvasHover() {
       const hasNextA = alleleCount > 0 && curAllele < alleleCount - 1;
 
       const refresh = () => {
+        syncReadDisplayAnchors();
         renderFlowCanvas();
+        renderTrackControls();
         if (window.updateSelectionDisplay) window.updateSelectionDisplay();
       };
       // Moving between variants selects that variant's ref allele. Node indices
@@ -6123,6 +6298,7 @@ function setupCanvasHover() {
   }
 
   function updateSelectionDisplay() {
+    if (syncReadDisplayAnchors()) renderTrackControls();
     updateSampleContext();
     updateSampleStrategySection();
     renderVariantsTabSelection();
@@ -7246,8 +7422,10 @@ trackControls.addEventListener("pointerdown", (e) => {
   const isSmartTrackLabel = trackLabel && trackLabel.closest(".track-controls[data-track-id^='smart-track-']");
   
   if (e.target.closest(".track-collapse-btn") ||
-      e.target.closest(".smart-track-close-btn") ||
+      e.target.closest(".smart-track-qc-remove") ||
       e.target.closest(".smart-track-reload-btn") ||
+      e.target.closest(".smart-track-qc-settings") ||
+      e.target.closest(".smart-track-qc-pin") ||
       e.target.closest(".smart-track-shuffle-btn") ||
       e.target.closest(".smart-track-label-input") ||
       isSmartTrackLabel ||

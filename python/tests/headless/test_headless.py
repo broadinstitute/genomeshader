@@ -838,7 +838,7 @@ def test_process_reads_as_pairs_packs_insert(browser, tmp_path):
     }
     out = page.evaluate(
         """(p) => {
-          const unpaired = window.__GS_processReadsData(p);
+          const unpaired = window.__GS_processReadsData(p, {asPairs: false});
           const paired = window.__GS_processReadsData(p, {asPairs: true});
           const summarize = (layout) => {
             const reads = layout.reads.map(rd => ({
