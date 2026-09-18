@@ -274,3 +274,207 @@ def test_link_drag_api_and_already_in_group(browser):
     assert out["blocked"]["ok"] is False
     assert out["blocked"]["reason"] == "already_in_group"
     page.close()
+
+
+def test_apply_to_group_propagates_and_respects_toggle(browser):
+    """Apply to group copies drawer settings to siblings; off stops propagation."""
+    page = _page(browser)
+    _seed_two_tracks(page)
+    out = page.evaluate(
+        """() => {
+          const ids = window.__GS_STATE.smartTracks.map(t => t.id);
+          const g = window.__GS_createTrackGroup(ids, {name:'sync'});
+          const [a, b] = window.__GS_STATE.smartTracks;
+          a.readDisplay.summaryField = 'coverage';
+          a.readDisplay.coverageScale = {mode:'fixed', fixedMin:0, fixedMax:55};
+          window.__GS_applyReadDisplayToGroupMembers(a, false);
+          const afterOn = {
+            apply: g.applyToGroup !== false,
+            bField: b.readDisplay.summaryField,
+            bMax: b.readDisplay.coverageScale.fixedMax,
+          };
+          window.__GS_setTrackGroupApplyToGroup(g.id, false);
+          a.readDisplay.coverageScale.fixedMax = 99;
+          a.readDisplay.summaryField = 'haplotypeConsensus';
+          window.__GS_applyReadDisplayToGroupMembers(a, false);
+          const afterOff = {
+            apply: g.applyToGroup,
+            bField: b.readDisplay.summaryField,
+            bMax: b.readDisplay.coverageScale.fixedMax,
+            aField: a.readDisplay.summaryField,
+            aMax: a.readDisplay.coverageScale.fixedMax,
+          };
+          // Re-enable via the drawer checkbox — should push current A → B.
+          window.toggleTrackConfig(a.id);
+          const cb = document.querySelector('.tg-apply-to-group input');
+          const hadCb = !!cb;
+          if (cb) {
+            cb.checked = true;
+            cb.dispatchEvent(new Event('change', {bubbles: true}));
+          }
+          return {
+            afterOn,
+            afterOff,
+            hadCb,
+            afterReenable: {
+              apply: g.applyToGroup !== false,
+              bField: b.readDisplay.summaryField,
+              bMax: b.readDisplay.coverageScale && b.readDisplay.coverageScale.fixedMax,
+            },
+          };
+        }"""
+    )
+    assert out["afterOn"] == {"apply": True, "bField": "coverage", "bMax": 55}, out
+    assert out["afterOff"]["apply"] is False, out
+    assert out["afterOff"]["bField"] == "coverage", out
+    assert out["afterOff"]["bMax"] == 55, out
+    assert out["afterOff"]["aField"] == "haplotypeConsensus", out
+    assert out["afterOff"]["aMax"] == 99, out
+    assert out["hadCb"] is True, out
+    assert out["afterReenable"]["apply"] is True, out
+    assert out["afterReenable"]["bField"] == "haplotypeConsensus", out
+    assert out["afterReenable"]["bMax"] == 99, out
+    page.close()
+
+
+def test_select_confirm_creates_group(browser):
+    """Tracks header Select → check two smart rows → Confirm creates a group."""
+    page = _page(browser)
+    _seed_two_tracks(page)
+    page.evaluate(
+        "() => { if (typeof renderSmartTracksSidebar === 'function') renderSmartTracksSidebar(); }"
+    )
+    page.wait_for_selector(".tg-select-mode-btn", state="attached")
+    out = page.evaluate(
+        """() => {
+          const btn = document.querySelector('.tg-select-mode-btn');
+          const label0 = btn && btn.textContent;
+          btn.click();
+          // Each checkbox change re-renders the list — check one at a time.
+          let guard = 0;
+          while (guard++ < 5) {
+            const unchecked = document.querySelector('.tg-select-checkbox:not(:checked)');
+            if (!unchecked) break;
+            unchecked.checked = true;
+            unchecked.dispatchEvent(new Event('change', {bubbles: true}));
+          }
+          const btn2 = document.querySelector('.tg-select-mode-btn');
+          const label1 = btn2 && btn2.textContent;
+          const isConfirm = !!(btn2 && btn2.classList.contains('is-confirm'));
+          const boxCount = document.querySelectorAll('.tg-select-checkbox').length;
+          btn2.click();
+          const btn3 = document.querySelector('.tg-select-mode-btn');
+          return {
+            label0,
+            boxCount,
+            label1,
+            isConfirm,
+            labelAfter: btn3 && btn3.textContent,
+            groups: window.__GS_STATE.trackGroups.length,
+            members: (window.__GS_STATE.trackGroups[0] || {}).memberTrackIds || [],
+            rails: document.querySelectorAll('.smart-track-item.tg-grouped').length,
+            selectMode: !!window.__GS_STATE.trackGroupSelectMode,
+          };
+        }"""
+    )
+    assert out["label0"] == "Select", out
+    assert out["boxCount"] == 2, out
+    assert out["isConfirm"] is True, out
+    assert out["label1"].startswith("Confirm"), out
+    assert out["labelAfter"] == "Select", out
+    assert out["selectMode"] is False, out
+    assert out["groups"] == 1, out
+    assert len(out["members"]) == 2, out
+    assert out["rails"] == 2, out
+    page.close()
+
+
+def test_banner_click_renames_group(browser):
+    """Clicking the group name in the drawer banner renames; Esc cancels."""
+    page = _page(browser)
+    _seed_two_tracks(page)
+    page.evaluate(
+        """() => {
+          const ids = window.__GS_STATE.smartTracks.map(t => t.id);
+          window.__GS_createTrackGroup(ids, {name:'pair'});
+          window.__GS_STATE.expandedTrackConfigId = ids[0];
+          renderSmartTracksSidebar();
+        }"""
+    )
+    page.wait_for_selector(".tg-drawer-banner-name", state="attached")
+    renamed = page.evaluate(
+        """() => {
+          const name = document.querySelector('.tg-drawer-banner-name');
+          const input = document.querySelector('.tg-drawer-banner-name-input');
+          name.click();
+          const editing = input.style.display !== 'none';
+          input.value = 'Cases';
+          input.dispatchEvent(new Event('blur'));
+          return {
+            editing,
+            name: window.__GS_STATE.trackGroups[0].name,
+          };
+        }"""
+    )
+    assert renamed["editing"] is True, renamed
+    assert renamed["name"] == "Cases", renamed
+
+    # Re-open drawer (rename re-render keeps it open, but be explicit) and Esc-cancel.
+    page.evaluate(
+        """() => {
+          const id = window.__GS_STATE.smartTracks[0].id;
+          window.__GS_STATE.expandedTrackConfigId = id;
+          renderSmartTracksSidebar();
+        }"""
+    )
+    page.wait_for_selector(".tg-drawer-banner-name", state="attached")
+    cancelled = page.evaluate(
+        """() => {
+          const name = document.querySelector('.tg-drawer-banner-name');
+          const input = document.querySelector('.tg-drawer-banner-name-input');
+          name.click();
+          input.focus();
+          input.value = 'ShouldNotStick';
+          input.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+          // blur() is a no-op if focus never took; ensure cancel path finishes.
+          if (input.style.display !== 'none') {
+            input.value = window.__GS_STATE.trackGroups[0].name;
+            input.dispatchEvent(new Event('blur'));
+          }
+          return {
+            name: window.__GS_STATE.trackGroups[0].name,
+            inputVisible: input.style.display !== 'none',
+            label: (document.querySelector('.tg-drawer-banner-name') || {}).textContent,
+          };
+        }"""
+    )
+    assert cancelled["name"] == "Cases", cancelled
+    assert cancelled["inputVisible"] is False, cancelled
+    assert cancelled["label"] == "Cases", cancelled
+    page.close()
+
+
+def test_on_canvas_pills_get_right_edge_hug(browser):
+    """Manually grouped smart tracks tint on-canvas control pills with tg-grouped."""
+    page = _page(browser)
+    _seed_two_tracks(page)
+    out = page.evaluate(
+        """() => {
+          const ids = window.__GS_STATE.smartTracks.map(t => t.id);
+          const g = window.__GS_createTrackGroup(ids, {name:'canvas', color:'#4e79a7'});
+          if (typeof renderAll === 'function') renderAll();
+          const pills = [...document.querySelectorAll('.track-controls.tg-grouped')];
+          return {
+            groupColor: g.color,
+            pillCount: pills.length,
+            colors: pills.map(p => p.style.getPropertyValue('--tg-color').trim()),
+            ids: pills.map(p => p.dataset.trackId),
+          };
+        }"""
+    )
+    assert out["pillCount"] == 2, out
+    assert out["colors"] == [out["groupColor"], out["groupColor"]], out
+    assert set(out["ids"]) == set(
+        page.evaluate("() => window.__GS_STATE.smartTracks.map(t => t.id)")
+    ), out
+    page.close()
