@@ -52,7 +52,7 @@ function renderFlowCanvas() {
       : `${variantId}:${alleleIndex}`
   );
   const findBandFlowTrackEl = (trackId) => {
-    const flowEl = document.getElementById("flow");
+    const flowEl = (typeof flow !== "undefined" && flow) ? flow : document.getElementById("flow");
     if (!flowEl) return null;
     const target = String(trackId || "");
     const tracks = flowEl.querySelectorAll(".flow-track");
@@ -68,12 +68,14 @@ function renderFlowCanvas() {
   const visibleFlowLayouts = flowLayouts.filter(l => !l.track.collapsed && l.track.hidden !== true);
   if (visibleFlowLayouts.length === 0) {
     window._alleleNodePositions = [];
-    const flowEl = document.getElementById("flow");
+    const flowEl = (typeof flow !== "undefined" && flow) ? flow : document.getElementById("flow");
     const canvases = [];
     if (flowEl) {
       flowEl.querySelectorAll("canvas.canvas").forEach((c) => canvases.push(c));
     }
-    const fc = document.getElementById("flowCanvas") || document.getElementById("flowCanvas-0");
+    const fc = (typeof flowCanvas !== "undefined" && flowCanvas)
+      ? flowCanvas
+      : (document.getElementById("flowCanvas") || document.getElementById("flowCanvas-0"));
     if (fc && !canvases.includes(fc)) canvases.push(fc);
     for (const c of canvases) {
       const ctx = c.getContext("2d");
@@ -83,7 +85,8 @@ function renderFlowCanvas() {
     if (flowRibbonRenderer) flowRibbonRenderer.clear();
     // Submit an empty GPU pass so leftover nodes/ribbons don't stay on the
     // shared flowWebGPU canvas after every variant track is hidden/collapsed.
-    if (webgpuSupported && flowWebGPUCore && flowWebGPU) {
+    const liveFlowGpu = !!(flowWebGPU && flowWebGPU.id === "flowWebGPU" && flowWebGPUCore);
+    if (webgpuSupported && liveFlowGpu) {
       try {
         const encoder = flowWebGPUCore.createCommandEncoder();
         const texture = flowWebGPUCore.getCurrentTexture();
@@ -109,6 +112,13 @@ function renderFlowCanvas() {
   const junctionX = 40;
   const W = isVertical ? flowWidthPx() : renderFlowWidthPx();
   const totalFlowH = isVertical ? renderFlowHeightPx() : flowHeightPx();
+  // Secondary tiles own a flowWebGPU canvas that was never init'd — Canvas2D only.
+  const liveFlowGpu = !!(flowWebGPU && flowWebGPU.id === "flowWebGPU" && flowWebGPUCore
+    && !window.__GS_FORCE_SVG_TRACKS);
+  // Keep the unused WebGPU layer from covering Canvas2D ribbons/nodes.
+  if (typeof flowWebGPU !== "undefined" && flowWebGPU) {
+    flowWebGPU.style.display = liveFlowGpu ? "" : "none";
+  }
   const expandedInsertionsForFlow = state.expandedInsertions || new Set();
   const insertionLookupForFlow = (typeof insertionVariantsLookup !== "undefined" && Array.isArray(insertionVariantsLookup))
     ? insertionVariantsLookup
@@ -133,7 +143,10 @@ function renderFlowCanvas() {
     ? (basePxPerBpForFlow * (flowSpanBp / flowEffectiveSpanBp))
     : basePxPerBpForFlow;
   // Use an unclamped all-expanded mapping in flow so offscreen expanded insertion
-  // strips continue translating off-canvas smoothly.
+  // strips continue translating off-canvas smoothly. Mirror global xGenomeCanonical
+  // reverse so per-tile 3′→5′ flips variant columns with the annotation tracks.
+  const _flowTile = (typeof gsActiveTile === "function") ? gsActiveTile() : state;
+  const _flowReversed = !!(!_flowTile ? false : _flowTile.reversed);
   const xGenomeCanonical = (bp, widthPx) => {
     const WW = (Number.isFinite(widthPx) && widthPx > 0) ? widthPx : W;
     const leftPad = 16, rightPad = 16;
@@ -143,7 +156,8 @@ function renderFlowCanvas() {
     const effectiveSpan = span + totalExpandedGapBpForFlow;
     if (!(effectiveSpan > 0)) return leftPad;
     const accumulatedGapBp = getAccumulatedGapBpForFlowAll(bp);
-    const normalizedPos = ((bp - renderStartBp()) + accumulatedGapBp) / effectiveSpan;
+    let normalizedPos = ((bp - renderStartBp()) + accumulatedGapBp) / effectiveSpan;
+    if (_flowReversed) normalizedPos = 1 - normalizedPos;
     return leftPad + normalizedPos * innerW;
   };
   const yGenomeCanonical = (bp, heightPx) => {
@@ -155,7 +169,9 @@ function renderFlowCanvas() {
     const effectiveSpan = span + totalExpandedGapBpForFlow;
     if (!(effectiveSpan > 0)) return topPad;
     const accumulatedGapBp = getAccumulatedGapBpForFlowAll(bp);
-    const normalizedPos = ((bp - renderStartBp()) + accumulatedGapBp) / effectiveSpan;
+    let normalizedPos = ((bp - renderStartBp()) + accumulatedGapBp) / effectiveSpan;
+    if (_flowReversed) normalizedPos = 1 - normalizedPos;
+    // Vertical: bottom = start, top = end (same convention as global yGenomeCanonical).
     return HH - bottomPad - normalizedPos * innerH;
   };
 
@@ -217,7 +233,7 @@ function renderFlowCanvas() {
 
     let ctx;
     if (multiTrack) {
-      const flowEl = document.getElementById("flow");
+      const flowEl = (typeof flow !== "undefined" && flow) ? flow : document.getElementById("flow");
       let bandFlowEl = findBandFlowTrackEl(track.id);
       if (!bandFlowEl) {
         const candidate = document.getElementById(track.id);
@@ -240,7 +256,9 @@ function renderFlowCanvas() {
         bandFlowEl = flowEl;
       }
       if (!bandCanvas) {
-        bandCanvas = document.getElementById("flowCanvas");
+        bandCanvas = (typeof flowCanvas !== "undefined" && flowCanvas)
+          ? flowCanvas
+          : document.getElementById("flowCanvas");
       }
       if (!bandFlowEl || !bandCanvas) continue;
       const dpr = resizeCanvasTo(bandFlowEl, bandCanvas);
@@ -333,12 +351,21 @@ function renderFlowCanvas() {
       rgba = [parseInt(m[1])/255, parseInt(m[2])/255, parseInt(m[3])/255, m[4] !== undefined ? parseFloat(m[4]) : 1.0];
     }
 
-    if (webgpuSupported && flowRibbonRenderer) {
+    if (webgpuSupported && flowRibbonRenderer && liveFlowGpu) {
       flowRibbonRenderer.addRibbon(topP0, topP1, topP2, topP3, botP0, botP1, botP2, botP3, rgba);
       return;
     }
 
-    // Fallback (optional): if you want, keep your old Canvas2D path here.
+    // Canvas2D fallback for secondary / SVG-forced tiles (no live flowWebGPU).
+    if (!ctx) return;
+    ctx.beginPath();
+    ctx.moveTo(srcX, sTop);
+    ctx.bezierCurveTo(srcX + handle, sTop, dstX - handle, dTop, dstX, dTop);
+    ctx.lineTo(dstX, dBot);
+    ctx.bezierCurveTo(dstX - handle, dBot, srcX + handle, sBot, srcX, sBot);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
   };
 
   // drawRibbonVertical: WebGPU Bezier ribbon renderer for vertical mode
@@ -406,13 +433,22 @@ function renderFlowCanvas() {
       rgba = [parseInt(m[1])/255, parseInt(m[2])/255, parseInt(m[3])/255, m[4] !== undefined ? parseFloat(m[4]) : 1.0];
     }
 
-    if (webgpuSupported && flowRibbonRenderer) {
+    if (webgpuSupported && flowRibbonRenderer && liveFlowGpu) {
       // For vertical ribbons, we pass left/right edges as top/bottom edges to the renderer
       flowRibbonRenderer.addRibbon(leftP0, leftP1, leftP2, leftP3, rightP0, rightP1, rightP2, rightP3, rgba);
       return;
     }
 
-    // Fallback (optional): if you want, keep your old Canvas2D path here.
+    // Canvas2D fallback for secondary / SVG-forced tiles.
+    if (!ctx) return;
+    ctx.beginPath();
+    ctx.moveTo(sLeft, srcY);
+    ctx.bezierCurveTo(sLeft, srcY - handle, dLeft, dstY + handle, dLeft, dstY);
+    ctx.lineTo(dRight, dstY);
+    ctx.bezierCurveTo(dRight, dstY + handle, sRight, srcY - handle, sRight, srcY);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
   };
 
   // Helper function to parse rgba string and convert to hex for WebGPU
@@ -474,7 +510,7 @@ function renderFlowCanvas() {
   
   // Use WebGPU for variant columns if available, otherwise fall back to Canvas 2D
   // Use flowWebGPU instead of tracksWebGPU for variant columns
-  const useWebGPU = webgpuSupported && flowInstancedRenderer;
+  const useWebGPU = webgpuSupported && flowInstancedRenderer && liveFlowGpu;
   const devicePixelRatio = window.devicePixelRatio || 1;
   const blueHex = rgbaToHex(colBlue);
   const grayHex = rgbaToHex(colGray);
@@ -1600,7 +1636,7 @@ function renderFlowCanvas() {
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
-        const useWebGPU = webgpuSupported && flowInstancedRenderer;
+        const useWebGPU = webgpuSupported && flowInstancedRenderer && liveFlowGpu;
         const drewGrouped = fillAlleleNodeGrouped({
           ctx, variant: v, alleleKey, nodeX, nodeY, nodeW, nodeH,
           isVertical: true, useWebGPU, flowInstancedRenderer, yBandToFlow, devicePixelRatio,
@@ -1712,7 +1748,10 @@ function renderFlowCanvas() {
           w: nodeW,
           h: nodeH,
           bandOffset: bandOffset,
-          isSelected: isSelected
+          isSelected: isSelected,
+          mateContig: v.mateContig || "",
+          matePos: v.matePos,
+          mateStrand: v.mateStrand || "",
         });
         insertionRows.push({
           nodeX: nodeX,
@@ -1892,7 +1931,7 @@ function renderFlowCanvas() {
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
-        const useWebGPU = webgpuSupported && flowInstancedRenderer;
+        const useWebGPU = webgpuSupported && flowInstancedRenderer && liveFlowGpu;
         const drewGrouped = fillAlleleNodeGrouped({
           ctx, variant: v, alleleKey, nodeX, nodeY, nodeW, nodeH,
           isVertical: false, useWebGPU, flowInstancedRenderer, yBandToFlow, devicePixelRatio,
@@ -2004,7 +2043,10 @@ function renderFlowCanvas() {
           w: nodeW,
           h: nodeH,
           bandOffset: bandOffset,
-          isSelected: isSelected
+          isSelected: isSelected,
+          mateContig: v.mateContig || "",
+          matePos: v.matePos,
+          mateStrand: v.mateStrand || "",
         });
         insertionRows.push({
           nodeX: nodeX,
@@ -2701,12 +2743,12 @@ function renderFlowCanvas() {
   // Store node positions globally for hit testing (across all tracks/bands).
   window._alleleNodePositions = allBandNodePositions;
 
-  // Execute WebGPU render pass after variant columns are added
-  // Render to flowWebGPU canvas (separate from tracksWebGPU)
+  // Execute WebGPU render pass after variant columns are added.
+  // Only flush the live classic-id flowWebGPU — secondary tiles paint Canvas2D only.
   const hasFlowInstances = flowInstancedRenderer && 
       (flowInstancedRenderer.rectInstances.length > 0 || flowInstancedRenderer.lineInstances.length > 0);
   const hasRibbonInstances = flowRibbonRenderer && flowRibbonRenderer.instances.length > 0;
-  if (webgpuSupported && flowInstancedRenderer && (hasFlowInstances || hasRibbonInstances)) {
+  if (webgpuSupported && flowInstancedRenderer && liveFlowGpu && (hasFlowInstances || hasRibbonInstances)) {
     try {
       // Update projection matrix for current canvas size
       const devicePixelRatio = window.devicePixelRatio || 1;
@@ -2749,7 +2791,7 @@ function renderFlowCanvas() {
       // Fallback: clear instances and continue with Canvas 2D only
       flowInstancedRenderer.clear();
     }
-  } else if (webgpuSupported && flowInstancedRenderer) {
+  } else if (webgpuSupported && flowInstancedRenderer && liveFlowGpu) {
     // Clear WebGPU canvas if no instances to render
     try {
       const encoder = flowWebGPUCore.createCommandEncoder();

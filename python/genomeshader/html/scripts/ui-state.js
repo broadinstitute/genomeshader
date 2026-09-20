@@ -43,6 +43,8 @@ const state = {
   // Locus-bar padlock + Settings "Lock viewport": freeze pan and zoom.
   // Go / contig jumps still work. Default off (unlocked).
   lockView: false,
+  // Multi-tile: pointer-enter focuses the column under the mouse. Default on.
+  focusFollowsMouse: true,
 
   // touch pinch
   pointers: new Map(),     // pointerId -> {x,y}
@@ -126,7 +128,12 @@ const state = {
 
   // Built-in annotation tracks (genes / repeats) — Phase 2 shared envelope.
   // Layout ids stay "genes" / "repeats"; features live here.
-  annotationTracks: []
+  annotationTracks: [],
+
+  // Multi-locus tiles. Seeded by tiles.js from the singleton contig/window.
+  // Contig/startBp/endBp/pxPerBp above mirror the focused tile (compat aliases).
+  tiles: null,
+  focusedTileId: null,
 };
 
 // Initialize variant layout mode
@@ -142,6 +149,12 @@ if (typeof getStoredChromClickJump === "function") {
   state.chromClickJump = getStoredChromClickJump();
   if (typeof chromClickJumpToggle !== "undefined" && chromClickJumpToggle) {
     chromClickJumpToggle.checked = state.chromClickJump === true;
+  }
+}
+if (typeof getStoredFocusFollowsMouse === "function") {
+  state.focusFollowsMouse = getStoredFocusFollowsMouse();
+  if (typeof focusFollowsMouseToggle !== "undefined" && focusFollowsMouseToggle) {
+    focusFollowsMouseToggle.checked = state.focusFollowsMouse === true;
   }
 }
 if (typeof getStoredAggregateRareAlleles === "function") {
@@ -312,16 +325,18 @@ if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks && w
 })();
 
 const main = byId(root, "main");
-const tracksSvg = byId(root, "tracksSvg");
-const tracksContainer = byId(root, "tracksContainer");
+// Mutable so multi-locus tiles can rebind to each tile's canvas stack.
+let tracksSvg = byId(root, "tracksSvg");
+let tracksContainer = byId(root, "tracksContainer");
 const locusIdeogramSvg = byId(root, "locusIdeogram");
-const flow = byId(root, "flow");
-const flowCanvas = byId(root, "flowCanvas");
-const flowOverlay = byId(root, "flowOverlay");
+let flow = byId(root, "flow");
+let flowCanvas = byId(root, "flowCanvas");
+let flowOverlay = byId(root, "flowOverlay");
 const hud = byId(root, "hud");
 const tooltip = byId(root, "tooltip");
-const tracksWebGPU = byId(root, "tracksWebGPU");
-const flowWebGPU = byId(root, "flowWebGPU");
+let tracksWebGPU = byId(root, "tracksWebGPU");
+let flowWebGPU = byId(root, "flowWebGPU");
+let flowIndelOverlay = byId(root, "flowIndelOverlay");
 
 // Initialize WebGPU infrastructure
 let webgpuCore = null;
@@ -529,8 +544,14 @@ function flowHeightPx()  { return rectH(flow); }
 // --- Render window (overscan-aware). At rest renderPadBp/Px are 0, so these are
 // identical to the view window / element widths — a strict no-op. During a live
 // pan they widen so tracks draw beyond the viewport (see state.renderPadBp).
-function renderStartBp() { return state.startBp - (state.renderPadBp || 0); }
-function renderEndBp()   { return state.endBp   + (state.renderPadBp || 0); }
+function renderStartBp(tile) {
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  return t.startBp - (t.renderPadBp || state.renderPadBp || 0);
+}
+function renderEndBp(tile) {
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  return t.endBp + (t.renderPadBp || state.renderPadBp || 0);
+}
 function renderWidthPx()      { return tracksWidthPx()  + 2 * (state.renderPadPx || 0); }
 function renderHeightPx()     { return tracksHeightPx() + 2 * (state.renderPadPx || 0); }
 function renderFlowWidthPx()  { return flowWidthPx()    + 2 * (state.renderPadPx || 0); }
@@ -541,11 +562,18 @@ function cssVar(name) {
 }
 
 function updateDerived() {
+  // Keep focused-tile aliases current before deriving pxPerBp.
+  if (typeof gsPullAliasesIntoFocused === "function") {
+    try { gsPullAliasesIntoFocused(); } catch (_) {}
+  }
   const span = state.endBp - state.startBp;
   if (span <= 0 || isNaN(span)) {
     // Invalid span, keep previous pxPerBp or use default
     if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
       state.pxPerBp = 1;
+    }
+    if (typeof gsPullAliasesIntoFocused === "function") {
+      try { gsPullAliasesIntoFocused(); } catch (_) {}
     }
     return;
   }
@@ -557,7 +585,12 @@ function updateDerived() {
       state.pxPerBp = 1;
     }
   } else {
-    const w = tracksWidthPx();
+    // Multi-tile: prefer the focused tile's width when set.
+    let w = tracksWidthPx();
+    if (typeof gsFocusedTile === "function") {
+      const ft = gsFocusedTile();
+      if (ft && Number.isFinite(ft.widthPx) && ft.widthPx > 0) w = ft.widthPx;
+    }
     if (w > 0 && !isNaN(w)) {
       state.pxPerBp = w / span;
     } else if (!state.pxPerBp || state.pxPerBp <= 0 || isNaN(state.pxPerBp)) {
@@ -568,6 +601,32 @@ function updateDerived() {
   if (isNaN(state.pxPerBp) || state.pxPerBp <= 0) {
     state.pxPerBp = 1;
   }
+  if (typeof gsPullAliasesIntoFocused === "function") {
+    try { gsPullAliasesIntoFocused(); } catch (_) {}
+  }
+}
+
+/**
+ * Derive pxPerBp for the tile currently selected via gsWithTile / aliases,
+ * using the bound tracksContainer width. Does not touch focusedTileId.
+ */
+function updateDerivedForBoundTile(tile) {
+  const t = tile || ((typeof gsActiveTile === "function") ? gsActiveTile() : null);
+  if (!t || t.blank) return;
+  const span = (t.endBp || 0) - (t.startBp || 0);
+  if (span <= 0 || isNaN(span)) {
+    if (!t.pxPerBp || t.pxPerBp <= 0) t.pxPerBp = 1;
+    state.pxPerBp = t.pxPerBp;
+    return;
+  }
+  let w = tracksWidthPx();
+  if (Number.isFinite(t.widthPx) && t.widthPx > 0) w = t.widthPx;
+  if (w > 0 && !isNaN(w)) {
+    t.pxPerBp = w / span;
+  } else if (!t.pxPerBp || t.pxPerBp <= 0 || isNaN(t.pxPerBp)) {
+    t.pxPerBp = 1;
+  }
+  state.pxPerBp = t.pxPerBp;
 }
 
 // Calculate total insertion gap width for expanded insertions (in pixels)
@@ -583,24 +642,27 @@ function getTotalInsertionGapWidth() {
 }
 
 // IMPORTANT: canonical genome-x mapping for the right pane (tracks/canvases)
-// Accounts for expanded insertion gaps
-function xGenomeCanonical(bp, W) {
+// Accounts for expanded insertion gaps. Optional `tile` selects an independent
+// genomic window (multi-locus tiles); omit to use the active/focused tile.
+function xGenomeCanonical(bp, W, tile) {
   // Guard against invalid inputs
   if (!W || W <= 0 || isNaN(W) || isNaN(bp)) {
     return 16; // Return leftPad as safe default
   }
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
   const leftPad = 16, rightPad = 16;
   const innerW = Math.max(0, W - leftPad - rightPad);
   if (innerW <= 0) {
     return leftPad;
   }
-  const rStart = renderStartBp(), rEnd = renderEndBp();
+  const rStart = renderStartBp(t), rEnd = renderEndBp(t);
   const span = rEnd - rStart;
   if (span <= 0 || isNaN(span)) {
     return leftPad;
   }
+  const expanded = (t.expandedInsertions instanceof Set) ? t.expandedInsertions : state.expandedInsertions;
   const totalGapBp = (typeof getTotalExpandedInsertionGapBp === "function")
-    ? getTotalExpandedInsertionGapBp(state.expandedInsertions)
+    ? getTotalExpandedInsertionGapBp(expanded, t)
     : 0;
   if (isNaN(totalGapBp)) {
     return leftPad;
@@ -612,15 +674,19 @@ function xGenomeCanonical(bp, W) {
   
   // Calculate x position, accounting for insertion gaps before this position
   // Uses optimized binary search lookup if available for O(log n) performance
+  const pxPerBp = (Number.isFinite(t.pxPerBp) && t.pxPerBp > 0) ? t.pxPerBp : (state.pxPerBp || 1);
   const accumulatedGapBp = (typeof getAccumulatedGapBp === "function")
-    ? getAccumulatedGapBp(bp, state.expandedInsertions)
-    : (getAccumulatedGapPx(bp, state.expandedInsertions) / (state.pxPerBp || 1));
+    ? getAccumulatedGapBp(bp, expanded, t)
+    : (getAccumulatedGapPx(bp, expanded) / pxPerBp);
   
   const bpOffset = bp - rStart;
   if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
     return leftPad;
   }
-  const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+  let normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+  if (t.reversed) {
+    normalizedPos = 1 - normalizedPos;
+  }
   if (isNaN(normalizedPos)) {
     return leftPad;
   }
@@ -629,51 +695,57 @@ function xGenomeCanonical(bp, W) {
   return isNaN(result) ? leftPad : Math.max(leftPad, Math.min(leftPad + innerW, result));
 }
 
-function xGenome(bp) {
-  return xGenomeCanonical(bp, renderWidthPx());
+function xGenome(bp, tile) {
+  return xGenomeCanonical(bp, renderWidthPx(), tile);
 }
 
-function bpFromXGenome(xPx, W) {
+function bpFromXGenome(xPx, W, tile) {
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
   const leftPad = 16, rightPad = 16;
   const innerW = W - leftPad - rightPad;
-  const span = state.endBp - state.startBp;
+  const span = t.endBp - t.startBp;
+  const expanded = (t.expandedInsertions instanceof Set) ? t.expandedInsertions : state.expandedInsertions;
   const totalGapBp = (typeof getTotalExpandedInsertionGapBp === "function")
-    ? getTotalExpandedInsertionGapBp(state.expandedInsertions)
+    ? getTotalExpandedInsertionGapBp(expanded, t)
     : 0;
   const effectiveSpan = span + totalGapBp;
-  const t = (xPx - leftPad) / innerW;
+  let tNorm = (xPx - leftPad) / innerW;
+  if (t.reversed) tNorm = 1 - tNorm;
   
   // Reverse calculation accounting for gaps - iterative refinement
   // Uses optimized binary search lookup for O(log n) performance per iteration
-  let bpEstimate = state.startBp + t * effectiveSpan;
+  const pxPerBp = (Number.isFinite(t.pxPerBp) && t.pxPerBp > 0) ? t.pxPerBp : (state.pxPerBp || 1);
+  let bpEstimate = t.startBp + tNorm * effectiveSpan;
   for (let iter = 0; iter < 5; iter++) {
     const accumulatedGapBp = (typeof getAccumulatedGapBp === "function")
-      ? getAccumulatedGapBp(bpEstimate, state.expandedInsertions)
-      : (getAccumulatedGapPx(bpEstimate, state.expandedInsertions) / (state.pxPerBp || 1));
-    bpEstimate = state.startBp + (t * effectiveSpan) - accumulatedGapBp;
+      ? getAccumulatedGapBp(bpEstimate, expanded, t)
+      : (getAccumulatedGapPx(bpEstimate, expanded) / pxPerBp);
+    bpEstimate = t.startBp + (tNorm * effectiveSpan) - accumulatedGapBp;
   }
   
   return bpEstimate;
 }
 
 // Vertical mode coordinate mapping (genomic axis vertical: bottom=start, top=end)
-function yGenomeCanonical(bp, H) {
+function yGenomeCanonical(bp, H, tile) {
   // Guard against invalid inputs
   if (!H || H <= 0 || isNaN(H) || isNaN(bp)) {
     return 16; // Return topPad as safe default
   }
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
   const topPad = 16, bottomPad = 16;
   const innerH = Math.max(0, H - topPad - bottomPad);
   if (innerH <= 0) {
     return topPad;
   }
-  const rStart = renderStartBp(), rEnd = renderEndBp();
+  const rStart = renderStartBp(t), rEnd = renderEndBp(t);
   const span = rEnd - rStart;
   if (span <= 0 || isNaN(span)) {
     return topPad;
   }
+  const expanded = (t.expandedInsertions instanceof Set) ? t.expandedInsertions : state.expandedInsertions;
   const totalGapBp = (typeof getTotalExpandedInsertionGapBp === "function")
-    ? getTotalExpandedInsertionGapBp(state.expandedInsertions)
+    ? getTotalExpandedInsertionGapBp(expanded, t)
     : 0;
   if (isNaN(totalGapBp)) {
     return topPad;
@@ -685,15 +757,19 @@ function yGenomeCanonical(bp, H) {
   
   // Calculate y position, accounting for insertion gaps before this position
   // Uses optimized binary search lookup if available for O(log n) performance
+  const pxPerBp = (Number.isFinite(t.pxPerBp) && t.pxPerBp > 0) ? t.pxPerBp : (state.pxPerBp || 1);
   const accumulatedGapBp = (typeof getAccumulatedGapBp === "function")
-    ? getAccumulatedGapBp(bp, state.expandedInsertions)
-    : (getAccumulatedGapPx(bp, state.expandedInsertions) / (state.pxPerBp || 1));
+    ? getAccumulatedGapBp(bp, expanded, t)
+    : (getAccumulatedGapPx(bp, expanded) / pxPerBp);
   
   const bpOffset = bp - rStart;
   if (isNaN(accumulatedGapBp) || isNaN(bpOffset)) {
     return topPad;
   }
-  const normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+  let normalizedPos = (bpOffset + accumulatedGapBp) / effectiveSpan;
+  if (t.reversed) {
+    normalizedPos = 1 - normalizedPos;
+  }
   if (isNaN(normalizedPos)) {
     return topPad;
   }
@@ -703,8 +779,8 @@ function yGenomeCanonical(bp, H) {
   return isNaN(result) ? topPad : Math.max(topPad, Math.min(H - bottomPad, result));
 }
 
-function yGenome(bp) {
-  return yGenomeCanonical(bp, renderHeightPx());
+function yGenome(bp, tile) {
+  return yGenomeCanonical(bp, renderHeightPx(), tile);
 }
 
 function tracksHeightPx() {
@@ -719,27 +795,31 @@ function tracksHeightPx() {
   return isNaN(h) || h <= 0 ? 0 : h;
 }
 
-function bpFromYGenome(yPx, H) {
+function bpFromYGenome(yPx, H, tile) {
+  const v = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
   const topPad = 16, bottomPad = 16;
   const innerH = H - topPad - bottomPad;
-  const span = state.endBp - state.startBp;
+  const span = v.endBp - v.startBp;
+  const expanded = (v.expandedInsertions instanceof Set) ? v.expandedInsertions : state.expandedInsertions;
   const totalGapBp = (typeof getTotalExpandedInsertionGapBp === "function")
-    ? getTotalExpandedInsertionGapBp(state.expandedInsertions)
+    ? getTotalExpandedInsertionGapBp(expanded, v)
     : 0;
   const effectiveSpan = span + totalGapBp;
   
   // Invert: yPx is from top, but we want position from bottom
-  const normalizedPos = (H - bottomPad - yPx) / innerH;
-  const t = Math.max(0, Math.min(1, normalizedPos));
+  let normalizedPos = (H - bottomPad - yPx) / innerH;
+  if (v.reversed) normalizedPos = 1 - normalizedPos;
+  const tNorm = Math.max(0, Math.min(1, normalizedPos));
   
   // Reverse calculation accounting for gaps - iterative refinement
   // Uses optimized binary search lookup for O(log n) performance per iteration
-  let bpEstimate = state.startBp + t * effectiveSpan;
+  const pxPerBp = (Number.isFinite(v.pxPerBp) && v.pxPerBp > 0) ? v.pxPerBp : (state.pxPerBp || 1);
+  let bpEstimate = v.startBp + tNorm * effectiveSpan;
   for (let iter = 0; iter < 5; iter++) {
     const accumulatedGapBp = (typeof getAccumulatedGapBp === "function")
-      ? getAccumulatedGapBp(bpEstimate, state.expandedInsertions)
-      : (getAccumulatedGapPx(bpEstimate, state.expandedInsertions) / (state.pxPerBp || 1));
-    bpEstimate = state.startBp + (t * effectiveSpan) - accumulatedGapBp;
+      ? getAccumulatedGapBp(bpEstimate, expanded, v)
+      : (getAccumulatedGapPx(bpEstimate, expanded) / pxPerBp);
+    bpEstimate = v.startBp + (tNorm * effectiveSpan) - accumulatedGapBp;
   }
   
   return bpEstimate;

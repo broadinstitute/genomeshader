@@ -39,8 +39,12 @@ function processReadsData(rawReads, opts) {
       const mapq = hasMapq ? Number(rawReads.mapping_quality[i] || 0) : 60;
       current = {
         name: rawReads.query_name[i],
+        queryName: rawReads.query_name[i],
         start: rawReads.reference_start[i],
         end: rawReads.reference_end[i],
+        referenceStart: rawReads.reference_start[i],
+        referenceEnd: rawReads.reference_end[i],
+        contig: rawReads.reference_contig ? rawReads.reference_contig[i] : null,
         isForward: rawReads.is_forward[i],
         haplotype: rawReads.haplotype[i],
         sample: rawReads.sample_name[i],
@@ -49,6 +53,7 @@ function processReadsData(rawReads, opts) {
         insertSize: rawReads.insert_size ? rawReads.insert_size[i] : 0,
         clipLength: rawReads.clip_length ? rawReads.clip_length[i] : 0,
         meanBaseQuality: rawReads.mean_base_quality ? rawReads.mean_base_quality[i] : 0,
+        saTag: rawReads.sa_tag ? (rawReads.sa_tag[i] || "") : "",
         isPaired: !!(pairedCol && pairedCol[i]),
         isPrimary: primaryCol ? !!primaryCol[i] : !(isSecondary || isSupplementary),
         isSecondary,
@@ -364,17 +369,14 @@ async function initSmartTrackWebGPU(trackId) {
     return;
   }
   
-  if (!webgpuSupported || !navigator.gpu) {
-    console.warn('WebGPU not supported, Smart track will use Canvas2D fallback');
-    return;
-  }
-  
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
   
-  // Find tracks container
-  const tracksContainer = document.getElementById('tracksContainer');
-  if (!tracksContainer) return;
+  // Prefer the currently bound multi-tile tracks container (may use a suffixed id).
+  const hostTracks = (typeof tracksContainer !== "undefined" && tracksContainer)
+    ? tracksContainer
+    : document.getElementById('tracksContainer');
+  if (!hostTracks) return;
   
   // Create container div for this Smart track
   const container = document.createElement('div');
@@ -439,7 +441,7 @@ async function initSmartTrackWebGPU(trackId) {
   // Live in the scrolling reads region (#smartScroll) so the whole sample-track
   // stack scrolls together below the pinned header.
   ((typeof ensureSmartScrollWrapper === "function" && ensureSmartScrollWrapper())
-    || tracksContainer).appendChild(container);
+    || hostTracks).appendChild(container);
 
   // Re-render whenever the container gets a REAL size change. renderSmartTrack
   // bails when the measured width is 0 (layout not settled — common right after
@@ -468,6 +470,28 @@ async function initSmartTrackWebGPU(trackId) {
     container._gsResizeObserver = ro;
   } catch (e) {}
 
+  function installCanvas2dFallback(reason) {
+    if (reason) console.warn(`Smart track ${trackId}: ${reason}`);
+    state.smartTrackRenderers.set(trackId, {
+      webgpuCore: null,
+      instancedRenderer: null,
+      canvas,
+      webgpuCanvas,
+      textCanvas,
+      spacer,
+      container
+    });
+    container.addEventListener("scroll", () => {
+      scheduleSmartTrackRender(trackId);
+    });
+    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+  }
+
+  if (!webgpuSupported || !navigator.gpu) {
+    installCanvas2dFallback('WebGPU not supported, using Canvas2D fallback');
+    return;
+  }
+
   try {
     // Wait for canvas to have dimensions
     const checkDimensions = () => {
@@ -482,7 +506,7 @@ async function initSmartTrackWebGPU(trackId) {
     }
     
     if (!checkDimensions()) {
-      console.warn(`Smart track ${trackId}: Canvas dimensions not ready`);
+      installCanvas2dFallback('Canvas dimensions not ready, using Canvas2D fallback');
       return;
     }
     
@@ -516,27 +540,7 @@ async function initSmartTrackWebGPU(trackId) {
 
     console.log(`Smart track ${trackId}: WebGPU initialized`);
   } catch (error) {
-    console.warn(`Smart track ${trackId}: Failed to initialize WebGPU:`, error);
-    // Continue without WebGPU - will use Canvas2D fallback
-    
-    // Still store the renderer objects (without WebGPU)
-    state.smartTrackRenderers.set(trackId, {
-      webgpuCore: null,
-      instancedRenderer: null,
-      canvas,
-      webgpuCanvas,
-      textCanvas,
-      spacer: null,
-      container
-    });
-    
-    // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
-    // But we need a basic scroll handler for re-rendering
-    container.addEventListener("scroll", () => {
-      scheduleSmartTrackRender(trackId);
-    });
-    // Paint once the (Canvas2D-fallback) renderer exists — see note above.
-    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+    installCanvas2dFallback('Failed to initialize WebGPU: ' + (error && error.message ? error.message : error));
   }
 }
 

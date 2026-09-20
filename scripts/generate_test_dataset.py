@@ -166,6 +166,9 @@ class Site:
     phase_set: int = PHASE_SET
     extra_info: dict = field(default_factory=dict)
     extra_gts: dict = field(default_factory=dict)  # sample -> Gt (VCF-only samples)
+    # Optional BND mate locus (defaults to same-contig pos+5000 when unset).
+    mate_chrom: str = ""
+    mate_pos: int = 0
 
     @property
     def end(self) -> int:
@@ -345,6 +348,10 @@ def catalog(rng: random.Random) -> List[Site]:
         Site("bnd_breakend", ORIGIN + 10_400, "bnd",
              _g(h01, r, r, r),
              note="BND breakend N[chr20:32015400[ — symbolic ALT display"),
+        Site("bnd_cross_chr21", ORIGIN + 10_500, "bnd",
+             _g(h01, r, r, r),
+             mate_chrom=CONTIG2, mate_pos=SHOWCASE2[0],
+             note="cross-contig BND chr20 → chr21 for multi-locus tile open"),
         Site("cnv_cn", ORIGIN + 10_650, "sv_sym",
              _g(h01, h10, r, r), svtype="CNV", svlen=800,
              note="symbolic <CNV> 800bp"),
@@ -448,8 +455,9 @@ def fill_alleles(sites: List[Site], sequences: dict, rng: random.Random) -> None
             s.alts = [s.ref + motif * 2, s.ref + motif * 5]
         elif s.kind == "bnd":
             s.ref = at(s, 1)
-            mate = s.pos + 5_000
-            s.alts = [f"N[{s.chrom}:{mate}["]
+            mate_chrom = s.mate_chrom or s.chrom
+            mate = s.mate_pos if s.mate_pos else s.pos + 5_000
+            s.alts = [f"N[{mate_chrom}:{mate}["]
         elif s.kind == "star":
             s.ref = at(s, 1)
             s.alts = ["*"]
@@ -2040,6 +2048,7 @@ def validate(out: Path) -> None:
     required = {
         "mnp_3bp", "delins", "ins_multi", "unphased_het", "snv_halfcall",
         "ins_200bp", "snv_vqsr", "snv_clinvar", "star_overlap", "bnd_breakend",
+        "bnd_cross_chr21",
         "cnv_cn",         "chr21_snv_a", "chr21_ins", "dense_1", "dense_6",
         "snv_homref", "snv_noqual",
         "chr14_loc_snv", "chr14_arhgap5_snv", "chr14_block_1", "chr14_block_12",

@@ -342,14 +342,16 @@ function getInsertionGapBpForLookupEntry(entry) {
   return getInsertionPaintBpForLookupEntry(entry) * INSERTION_GAP_EXPANSION_FACTOR;
 }
 
-function isInsertionPosWithinCurrentView(pos) {
+function isInsertionPosWithinCurrentView(pos, tile) {
   const posNum = Number(pos);
   if (!Number.isFinite(posNum) || !state) return false;
-  return posNum >= state.startBp && posNum <= state.endBp;
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  return posNum >= t.startBp && posNum <= t.endBp;
 }
 
-function getTotalExpandedInsertionGapBp(expandedInsertions) {
-  const expanded = expandedInsertions || (state && state.expandedInsertions);
+function getTotalExpandedInsertionGapBp(expandedInsertions, tile) {
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  const expanded = expandedInsertions || (t && t.expandedInsertions) || (state && state.expandedInsertions);
   if (!expanded) return 0;
 
   if (insertionVariantsLookup && insertionVariantsLookup.length > 0) {
@@ -359,7 +361,7 @@ function getTotalExpandedInsertionGapBp(expandedInsertions) {
       const id = String(entry.id);
       if (countedIds.has(id)) continue;
       if (!expanded.has(id)) continue;
-      if (!isInsertionPosWithinCurrentView(entry.pos)) continue;
+      if (!isInsertionPosWithinCurrentView(entry.pos, t)) continue;
       countedIds.add(id);
       totalBp += getInsertionGapBpForLookupEntry(entry);
     }
@@ -371,7 +373,7 @@ function getTotalExpandedInsertionGapBp(expandedInsertions) {
   for (const variant of variants) {
     const id = String(variant.id);
     if (countedIds.has(id)) continue;
-    if (expanded.has(id) && isInsertion(variant) && isInsertionPosWithinCurrentView(variant.pos)) {
+    if (expanded.has(id) && isInsertion(variant) && isInsertionPosWithinCurrentView(variant.pos, t)) {
       countedIds.add(id);
       totalBp += getInsertionGapBpForVariant(variant);
     }
@@ -379,11 +381,13 @@ function getTotalExpandedInsertionGapBp(expandedInsertions) {
   return totalBp;
 }
 
-function getDisplayPxPerBp() {
-  const pxPerBp = (state && Number.isFinite(state.pxPerBp) && state.pxPerBp > 0) ? state.pxPerBp : 1;
-  const span = (state && Number.isFinite(state.endBp - state.startBp)) ? (state.endBp - state.startBp) : 0;
+function getDisplayPxPerBp(tile) {
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  const pxPerBp = (t && Number.isFinite(t.pxPerBp) && t.pxPerBp > 0) ? t.pxPerBp : 1;
+  const span = (t && Number.isFinite(t.endBp - t.startBp)) ? (t.endBp - t.startBp) : 0;
   if (!(span > 0)) return pxPerBp;
-  const totalGapBp = getTotalExpandedInsertionGapBp(state && state.expandedInsertions);
+  const expanded = (t && t.expandedInsertions instanceof Set) ? t.expandedInsertions : (state && state.expandedInsertions);
+  const totalGapBp = getTotalExpandedInsertionGapBp(expanded, t);
   const effectiveSpan = span + totalGapBp;
   if (!(effectiveSpan > 0)) return pxPerBp;
   return pxPerBp * (span / effectiveSpan);
@@ -458,9 +462,10 @@ function getAccumulatedGapPx(bp, expandedInsertions) {
   return getAccumulatedGapBp(bp, expandedInsertions) * getDisplayPxPerBp();
 }
 
-function getAccumulatedGapBp(bp, expandedInsertions) {
+function getAccumulatedGapBp(bp, expandedInsertions, tile) {
   if (!expandedInsertions) return 0;
-  const viewStart = (state && Number.isFinite(state.startBp)) ? state.startBp : -Infinity;
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  const viewStart = (t && Number.isFinite(t.startBp)) ? t.startBp : -Infinity;
   const bpNum = Number(bp);
   if (!Number.isFinite(bpNum)) return 0;
 
@@ -1198,8 +1203,10 @@ function gsSwitchContig(contig) {
   state.startBp = 1;
   state.endBp = 1 + span;
   if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+  if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   gsResetRegionData();
   if (typeof updateDocumentTitle === "function") updateDocumentTitle();
+  if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof renderAll === "function") renderAll();
   gsRequestNavigate(state.contig, Math.floor(state.startBp), Math.ceil(state.endBp));
 }
@@ -1291,6 +1298,7 @@ function gsGoToLocus(text) {
   state.startBp = start;
   state.endBp = end;
   if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+  if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   // Committed: drop the staged box + dirty flag so the bar re-syncs to the view
   // and Go greys out again.
   state.__pendingLocus = null;
@@ -1298,6 +1306,8 @@ function gsGoToLocus(text) {
   if (contigChanged) gsResetRegionData();
   if (typeof updateDocumentTitle === "function") updateDocumentTitle();
   if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
+  if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
+  if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof renderAll === "function") renderAll();
   gsRequestNavigate(state.contig, Math.floor(state.startBp), Math.ceil(state.endBp));
   return true;

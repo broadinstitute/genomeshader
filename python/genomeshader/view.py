@@ -145,12 +145,22 @@ def _build_variants_data_from_aggregates(rows):
                 "variant_id": r.get("variant_id"),
                 "filter_status": r.get("filter_status", "PASS"),
                 "info_fields": r.get("info_fields", "."),
+                "mate_contig": r.get("mate_contig") or "",
+                "mate_pos": r.get("mate_pos"),
+                "mate_strand": r.get("mate_strand") or "",
+                "svtype": r.get("svtype") or "",
                 "rows": [],
             }
             order.append(key)
         g = groups[key]
         g["alts"].append((r.get("alt_allele"), int(r.get("n_alt", 0) or 0), len(g["alts"])))
         g["rows"].append(r)
+        # Prefer first non-empty mate locus seen for this variant group.
+        if not g.get("mate_contig") and r.get("mate_contig"):
+            g["mate_contig"] = r.get("mate_contig") or ""
+            g["mate_pos"] = r.get("mate_pos")
+            g["mate_strand"] = r.get("mate_strand") or ""
+            g["svtype"] = r.get("svtype") or g.get("svtype") or ""
 
     variants_data = []
     for key in order:
@@ -201,6 +211,10 @@ def _build_variants_data_from_aggregates(rows):
             "formattedRefAllele": _format_allele_label(ref_allele) if ref_allele else None,
             "formattedAltAlleles": [_format_allele_label(a) for a in alt_alleles],
             "displayIds": [variant_display_id],
+            "mateContig": g.get("mate_contig") or "",
+            "matePos": g.get("mate_pos"),
+            "mateStrand": g.get("mate_strand") or "",
+            "svtype": g.get("svtype") or "",
         })
     return variants_data
 
@@ -755,6 +769,8 @@ class GenomeShader:
             "jupyter-comms.js",
             "dom-utils.js",
             "ui-state.js",
+            "tiles.js",
+            "tile-ui.js",
             "view-state.js",
             "read-display.js",
             "track-groups.js",
@@ -2906,7 +2922,7 @@ class GenomeShader:
     #     column / no reference-diffed SNPs) so the widget can't serve them.
     # v4: is_paired / is_primary columns for paired-end layout.
     # v5: CIGAR N (REFSKIP) elements for split-read display.
-    _READS_CACHE_VERSION = "v7"
+    _READS_CACHE_VERSION = "v8"  # v8: sa_tag column from SA:Z aux
 
     # ----------------------------------------------------------------- debug
     def _setup_debug_logging(self):
@@ -3615,6 +3631,9 @@ class GenomeShader:
             select_cols.append("filter_status")
         if "info_fields" in variants_df.columns:
             select_cols.append("info_fields")
+        for optional in ("mate_contig", "mate_pos", "mate_strand", "svtype", "mate_id"):
+            if optional in variants_df.columns:
+                select_cols.append(optional)
         unique_variants = (
             variants_df.select(select_cols)
             .unique(subset=["position", "ref_allele", "alt_allele"])
@@ -3641,6 +3660,10 @@ class GenomeShader:
                     "variant_display_ids": [],
                     "filter_status": row.get("filter_status", "PASS"),
                     "info_fields": row.get("info_fields", "."),
+                    "mate_contig": row.get("mate_contig") or "",
+                    "mate_pos": row.get("mate_pos"),
+                    "mate_strand": row.get("mate_strand") or "",
+                    "svtype": row.get("svtype") or "",
                 }
             row_display_id = str(vcf_id) if vcf_id else str(pos)
             if row_display_id not in variant_groups[pos]["variant_display_ids"]:
@@ -3666,6 +3689,12 @@ class GenomeShader:
                 group["filter_status"] = row["filter_status"]
             if "info_fields" in row and row.get("info_fields") not in (None, "", "."):
                 group["info_fields"] = row["info_fields"]
+            if row.get("mate_contig") and not group.get("mate_contig"):
+                group["mate_contig"] = row.get("mate_contig") or ""
+                group["mate_pos"] = row.get("mate_pos")
+                group["mate_strand"] = row.get("mate_strand") or ""
+            if row.get("svtype") and not group.get("svtype"):
+                group["svtype"] = row.get("svtype") or ""
 
         if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
             for pos, variant_info in variant_groups.items():
@@ -3936,6 +3965,10 @@ class GenomeShader:
                 "insertionGapPx": insertion_gap_px,
                 "formattedRefAllele": formatted_ref_allele,
                 "formattedAltAlleles": formatted_alt_alleles,
+                "mateContig": variant_info.get("mate_contig") or "",
+                "matePos": variant_info.get("mate_pos"),
+                "mateStrand": variant_info.get("mate_strand") or "",
+                "svtype": variant_info.get("svtype") or "",
             })
             if is_insertion and insertion_gap_px > 0:
                 insertion_variants_lookup.append({

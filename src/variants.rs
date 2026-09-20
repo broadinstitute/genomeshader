@@ -266,6 +266,48 @@ fn extract_info_value(
     }
 }
 
+/// Parse a VCF breakend ALT allele into (mate_contig, mate_pos, mate_strand).
+/// Supports the four bracket forms: `N[chr:pos[`, `N]chr:pos]`, `[chr:pos[N`, `]chr:pos]N`.
+/// Returns None for non-BND ALTs (SNV/indel/symbolic `<DEL>` etc.).
+fn parse_breakend_alt(alt: &str) -> Option<(String, u64, String)> {
+    let alt = alt.trim();
+    if alt.is_empty() || alt.starts_with('<') {
+        return None;
+    }
+    // Locate the bracket-enclosed mate locus.
+    let (open_idx, open_ch) = alt.char_indices().find(|(_, c)| *c == '[' || *c == ']')?;
+    let close_ch = open_ch;
+    let rest = &alt[open_idx + open_ch.len_utf8()..];
+    let close_rel = rest.find(close_ch)?;
+    let locus = &rest[..close_rel];
+    let (contig, pos_str) = locus.rsplit_once(':')?;
+    let pos: u64 = pos_str.parse().ok()?;
+    if contig.is_empty() || pos == 0 {
+        return None;
+    }
+    // Bracket kind encodes mate orientation: '[' = forward, ']' = reverse.
+    let strand = if open_ch == '[' { "+" } else { "-" };
+    Some((contig.to_string(), pos, strand.to_string()))
+}
+
+/// Pull a single INFO tag value from the opaque `tag=val;...` string produced
+/// by `extract_info_value`. Returns empty string when absent.
+fn info_field_value(info_fields: &str, tag: &str) -> String {
+    if info_fields.is_empty() || info_fields == "." {
+        return String::new();
+    }
+    let prefix = format!("{}=", tag);
+    for part in info_fields.split(';') {
+        if let Some(val) = part.strip_prefix(&prefix) {
+            return val.to_string();
+        }
+        if part == tag {
+            return "true".to_string();
+        }
+    }
+    String::new()
+}
+
 /// Read the sample names from a VCF/BCF header (indexed open, region-agnostic).
 pub fn vcf_sample_names(bcf_path: &str, _index_path: Option<&str>) -> Result<Vec<String>> {
     let dbg = vdbg();
@@ -373,6 +415,11 @@ pub fn extract_variants(
     let mut vcf_ids = Vec::new();
     let mut filter_statuses = Vec::new();
     let mut info_values = Vec::new();
+    let mut mate_contigs = Vec::new();
+    let mut mate_positions = Vec::new();
+    let mut mate_strands = Vec::new();
+    let mut svtypes = Vec::new();
+    let mut mate_ids = Vec::new();
     
     // Track unique variants (position + allele combination)
     let mut variant_map: HashMap<(u64, String, String), u32> = HashMap::new();
@@ -484,6 +531,15 @@ pub fn extract_variants(
                 vcf_ids.push(vcf_id_str.clone());
                 filter_statuses.push(filter_value.clone());
                 info_values.push(info_value.clone());
+                let (mc, mp, ms) = match parse_breakend_alt(&alt_allele_str) {
+                    Some((c, p, s)) => (c, Some(p), s),
+                    None => (String::new(), None, String::new()),
+                };
+                mate_contigs.push(mc);
+                mate_positions.push(mp);
+                mate_strands.push(ms);
+                svtypes.push(info_field_value(&info_value, "SVTYPE"));
+                mate_ids.push(info_field_value(&info_value, "MATEID"));
             }
         }
         }
@@ -503,6 +559,11 @@ pub fn extract_variants(
             Series::new("vcf_id", vcf_ids),
             Series::new("filter_status", filter_statuses),
             Series::new("info_fields", info_values),
+            Series::new("mate_contig", mate_contigs),
+            Series::new("mate_pos", mate_positions),
+            Series::new("mate_strand", mate_strands),
+            Series::new("svtype", svtypes),
+            Series::new("mate_id", mate_ids),
         ]
     )?;
 
@@ -574,6 +635,11 @@ pub fn extract_variant_aggregates(
     let mut vcf_ids = Vec::new();
     let mut filter_statuses = Vec::new();
     let mut info_values = Vec::new();
+    let mut mate_contigs = Vec::new();
+    let mut mate_positions = Vec::new();
+    let mut mate_strands = Vec::new();
+    let mut svtypes = Vec::new();
+    let mut mate_ids = Vec::new();
     let mut n_refs = Vec::new();
     let mut n_alts = Vec::new();
     let mut n_missings = Vec::new();
@@ -719,12 +785,21 @@ pub fn extract_variant_aggregates(
                 chromosomes.push(chr.clone());
                 positions.push(pos);
                 ref_alleles.push(ref_allele.clone());
-                alt_alleles.push(alt_allele_str);
+                alt_alleles.push(alt_allele_str.clone());
                 alt_indices.push((alt_idx + 1) as i32);
                 variant_ids.push(variant_id);
                 vcf_ids.push(vcf_id_str.clone());
                 filter_statuses.push(filter_value.clone());
                 info_values.push(info_value.clone());
+                let (mc, mp, ms) = match parse_breakend_alt(&alt_allele_str) {
+                    Some((c, p, s)) => (c, Some(p), s),
+                    None => (String::new(), None, String::new()),
+                };
+                mate_contigs.push(mc);
+                mate_positions.push(mp);
+                mate_strands.push(ms);
+                svtypes.push(info_field_value(&info_value, "SVTYPE"));
+                mate_ids.push(info_field_value(&info_value, "MATEID"));
                 n_refs.push(present[0]);
                 n_alts.push(present[alt_idx + 1]);
                 n_missings.push(missing);
@@ -789,6 +864,11 @@ pub fn extract_variant_aggregates(
         Series::new("vcf_id", vcf_ids),
         Series::new("filter_status", filter_statuses),
         Series::new("info_fields", info_values),
+        Series::new("mate_contig", mate_contigs),
+        Series::new("mate_pos", mate_positions),
+        Series::new("mate_strand", mate_strands),
+        Series::new("svtype", svtypes),
+        Series::new("mate_id", mate_ids),
         Series::new("n_ref", n_refs),
         Series::new("n_alt", n_alts),
         Series::new("n_missing", n_missings),
@@ -823,6 +903,37 @@ fn escape_json_str(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_breakend_alt_forms() {
+        assert_eq!(
+            parse_breakend_alt("N[chr21:500["),
+            Some(("chr21".into(), 500, "+".into()))
+        );
+        assert_eq!(
+            parse_breakend_alt("A]chr7:100]"),
+            Some(("chr7".into(), 100, "-".into()))
+        );
+        assert_eq!(
+            parse_breakend_alt("[chr9:200[T"),
+            Some(("chr9".into(), 200, "+".into()))
+        );
+        assert_eq!(
+            parse_breakend_alt("]chr14:300]G"),
+            Some(("chr14".into(), 300, "-".into()))
+        );
+        assert_eq!(parse_breakend_alt("A"), None);
+        assert_eq!(parse_breakend_alt("<DEL>"), None);
+        assert_eq!(parse_breakend_alt("N[bad["), None);
+    }
+
+    #[test]
+    fn info_field_value_extracts_tags() {
+        assert_eq!(info_field_value("SVTYPE=BND;END=100", "SVTYPE"), "BND");
+        assert_eq!(info_field_value("SVTYPE=BND;MATEID=bnd2", "MATEID"), "bnd2");
+        assert_eq!(info_field_value(".", "SVTYPE"), "");
+        assert_eq!(info_field_value("FOO", "FOO"), "true");
+    }
 
     // Committed fixture: chr1 variants at 100/200/300/400, samples S1+S2,
     // bgzipped + tabix-indexed (tests/fixtures/tiny.vcf.gz{,.tbi}).

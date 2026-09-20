@@ -75,6 +75,8 @@ const lockAllelesToggle = getElementById("lockAllelesToggle");
 const lockViewportItem = getElementById("lockViewportItem");
 const chromClickJumpItem = getElementById("chromClickJumpItem");
 const chromClickJumpToggle = getElementById("chromClickJumpToggle");
+const focusFollowsMouseItem = getElementById("focusFollowsMouseItem");
+const focusFollowsMouseToggle = getElementById("focusFollowsMouseToggle");
 const aggregateRareAllelesItem = getElementById("aggregateRareAllelesItem");
 const aggregateRareAllelesToggle = getElementById("aggregateRareAllelesToggle");
 const aggregateRareAllelesCutoffItem = getElementById("aggregateRareAllelesCutoffItem");
@@ -230,6 +232,18 @@ function setChromClickJump(enabled) {
   gsLocalStorage.setItem("genomeshader.chromClickJump", v ? "true" : "false");
   state.chromClickJump = v;
   if (chromClickJumpToggle) chromClickJumpToggle.checked = v;
+}
+// Multi-tile: focus the column under the pointer. Default ON; only "false" disables.
+function getStoredFocusFollowsMouse() {
+  const v = gsLocalStorage.getItem("genomeshader.focusFollowsMouse");
+  if (v === null || v === undefined || v === "") return true;
+  return v === "true";
+}
+function setFocusFollowsMouse(enabled) {
+  const v = enabled === true;
+  gsLocalStorage.setItem("genomeshader.focusFollowsMouse", v ? "true" : "false");
+  state.focusFollowsMouse = v;
+  if (focusFollowsMouseToggle) focusFollowsMouseToggle.checked = v;
 }
 function getStoredAggregateRareAlleles() {
   return gsLocalStorage.getItem("genomeshader.aggregateRareAlleles") === "true";
@@ -1096,6 +1110,15 @@ if (chromClickJumpItem && chromClickJumpToggle) {
   });
   chromClickJumpToggle.addEventListener("change", () => {
     setChromClickJump(chromClickJumpToggle.checked);
+  });
+}
+if (focusFollowsMouseItem && focusFollowsMouseToggle) {
+  focusFollowsMouseItem.addEventListener("click", (e) => {
+    if (e.target === focusFollowsMouseToggle) return;
+    setFocusFollowsMouse(!(state.focusFollowsMouse === true));
+  });
+  focusFollowsMouseToggle.addEventListener("change", () => {
+    setFocusFollowsMouse(focusFollowsMouseToggle.checked);
   });
 }
 if (aggregateRareAllelesItem && aggregateRareAllelesToggle) {

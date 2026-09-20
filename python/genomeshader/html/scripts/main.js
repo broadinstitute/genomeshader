@@ -9,6 +9,16 @@
 function ensureSmartScrollWrapper() {
   if (typeof tracksContainer === "undefined" || !tracksContainer) return null;
   let w = tracksContainer.querySelector("#smartScroll");
+  // Prefer the unique live stack wherever it currently lives (another tile may
+  // hold it). Never create a second #smartScroll — duplicate ids break relocate.
+  if (!w) {
+    const rootEl = (typeof getCurrentRoot === "function") ? getCurrentRoot() : document;
+    w = (rootEl && rootEl.querySelector) ? rootEl.querySelector("#smartScroll") : null;
+    if (!w) w = document.getElementById("smartScroll");
+    if (w && w.parentElement !== tracksContainer) {
+      tracksContainer.appendChild(w);
+    }
+  }
   if (!w) {
     w = document.createElement("div");
     w.id = "smartScroll";
@@ -72,7 +82,9 @@ function positionSmartScrollWrapper() {
   }
   w.style.overflowY = "auto";
   w.style.overflowX = "hidden";
-  w.style.background = (typeof cssVar === "function" && cssVar("--bg")) || "#0b0d10";
+  // Transparent so the tile's shared --bg shows through (avoids a second wash
+  // that only the focused live stack carried).
+  w.style.background = "transparent";
   if (spacer) spacer.style.height = Math.max(0, bottom - headerTop) + "px";
 }
 
@@ -114,7 +126,15 @@ function renderSmartTrack(trackId) {
   const renderer = state.smartTrackRenderers.get(trackId);
   if (!renderer) return;
   
-  const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore, spacer, textCanvas } = renderer;
+  let { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore, spacer, textCanvas } = renderer;
+  // Multi-tile unfocused snapshots: force the Canvas2D path so freeze can copy
+  // pixels (WebGPU canvases don't reliably blit via drawImage in all browsers).
+  if (window.__GS_FORCE_SMART_TRACK_CANVAS2D) {
+    instancedRenderer = null;
+    if (webgpuCanvas) webgpuCanvas.style.display = "none";
+  } else if (webgpuCanvas) {
+    webgpuCanvas.style.display = "";
+  }
   
   // Position container based on layout
   const isVertical = isVerticalMode();
@@ -142,8 +162,9 @@ function renderSmartTrack(trackId) {
   // Ensure container is visible (we know it's not hidden here, but may be collapsed/closed)
   container.style.display = "block";
   // Track background via CSS (re-set each render so theme changes apply) instead
-  // of a per-frame full-canvas fillRect.
-  container.style.background = cssVar("--smart-track-bg");
+  // of a per-frame full-canvas fillRect. Transparent — tile --bg is the field;
+  // a tinted --smart-track-bg made freeze vs live columns look mismatched.
+  container.style.background = "transparent";
 
   if (!canvas || !webgpuCanvas) return;
 
@@ -741,12 +762,11 @@ function renderSmartTrack(trackId) {
   const colText = cssVar("--muted");
   const grid = cssVar("--grid2");
   
-  // Track background lives on the container (CSS), NOT a per-render full-canvas
+  // Track background lives on the tile (--bg), NOT a per-render full-canvas
   // fillRect: filling a canvas sized to the whole read stack is a large opaque
   // overdraw every frame, and an opaque 2D layer is what forced the extra text
-  // canvas. The container CSS bg shows through the (transparent) 2D + WebGPU
-  // canvases. smartTrackBg is still used to cut reads at expanded-insertion gaps.
-  const smartTrackBg = cssVar("--smart-track-bg");
+  // canvas. Gap cuts use --bg so they erase cleanly onto the shared field.
+  const smartTrackBg = cssVar("--bg") || "#0b0d10";
   const GAP_VISUAL_PAD_PX = 1.5;
   const expandedInsertionGapSegments = [];
   if (!isVertical && state.expandedInsertions && state.expandedInsertions.size > 0) {
@@ -1189,12 +1209,41 @@ function renderSmartTrack(trackId) {
                 [1, 1, 1], 0.95
               );
             } else {
-              ctx.fillStyle = `rgba(255,255,255,0.9)`;
+              ctx.fillStyle = "rgba(255,255,255,0.95)";
               ctx.beginPath();
-              ctx.moveTo(ax0, ay0);
-              ctx.lineTo(ax1, ay1);
-              ctx.lineTo(ax2, ay2);
+              ctx.moveTo(ax0, ay0); ctx.lineTo(ax1, ay1); ctx.lineTo(ax2, ay2); ctx.closePath();
               ctx.fill();
+            }
+
+            // Cross-tile split flag: SA mate lands in another open tile.
+            if (read.saTag && typeof gsParseSaTag === "function" && typeof gsFindOpenTileForMate === "function"
+                && typeof gsIsMultiTile === "function" && gsIsMultiTile()) {
+              const mates = gsParseSaTag(read.saTag);
+              for (const m of mates) {
+                const other = gsFindOpenTileForMate(m.contig, m.pos, state.focusedTileId);
+                if (!other) continue;
+                const flagColor = other.linkColor || "#f59e0b";
+                const fx = read.isForward ? (x + w + 1) : (x - 5);
+                let rgb = [245, 158, 11];
+                if (flagColor.charAt(0) === "#" && flagColor.length >= 7) {
+                  rgb = [
+                    parseInt(flagColor.slice(1, 3), 16),
+                    parseInt(flagColor.slice(3, 5), 16),
+                    parseInt(flagColor.slice(5, 7), 16),
+                  ];
+                }
+                if (instancedRenderer && webgpuSupported) {
+                  instancedRenderer.addRect(
+                    fx * dpr, (y - _scrollOffset) * dpr,
+                    4 * dpr, h * dpr,
+                    [rgb[0]/255, rgb[1]/255, rgb[2]/255, 0.95]
+                  );
+                } else {
+                  ctx.fillStyle = flagColor;
+                  ctx.fillRect(fx, y, 4, h);
+                }
+                break;
+              }
             }
           }
         }
@@ -1497,6 +1546,31 @@ function getBasename(path) {
 
 let trackControls = null;
 function getTrackControlsEl() {
+  // Prefer controls for the currently bound tile. Host lives as a sibling of
+  // .tracks/.flow inside .gs-tile-body (above the flow layer). Legacy layouts
+  // nested it inside #tracksContainer — hoist those on sight.
+  if (typeof tracksContainer !== "undefined" && tracksContainer && tracksContainer.isConnected) {
+    const body = tracksContainer.closest(".gs-tile-body") || tracksContainer.parentElement;
+    let local = null;
+    if (body) {
+      local = body.querySelector(":scope > #trackControls")
+        || body.querySelector(":scope > [id^='trackControls-']");
+    }
+    if (!local) {
+      local = tracksContainer.querySelector(":scope > #trackControls")
+        || tracksContainer.querySelector(":scope > [id^='trackControls-']")
+        || tracksContainer.querySelector("#trackControls")
+        || tracksContainer.querySelector("[id^='trackControls-']");
+      // Migrate nested host so variant-track pills aren't trapped under .flow.
+      if (local && body && local.parentElement !== body) {
+        body.appendChild(local);
+      }
+    }
+    if (local) {
+      trackControls = local;
+      return trackControls;
+    }
+  }
   if (trackControls && trackControls.isConnected) return trackControls;
   trackControls = byId(root, "trackControls") || document.getElementById("trackControls");
   return trackControls;
@@ -1704,6 +1778,24 @@ function renderTrackControls() {
   controlsHost.innerHTML = "";
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
+  // Secondary tiles (not the first in the strip): rest-state = grip only so
+  // track names aren't repeated in every column; hover expands the full pill.
+  const boundTile = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
+  const boundTileIdx = (boundTile && state.tiles)
+    ? state.tiles.findIndex((t) => t.id === boundTile.id)
+    : 0;
+  const secondaryCompact = !!(typeof gsIsMultiTile === "function" && gsIsMultiTile()
+    && boundTileIdx > 0);
+
+  const makeTrackGrip = () => {
+    const grip = document.createElement("span");
+    grip.className = "smart-track-item-grip smart-track-qc-grip";
+    grip.title = "Drag to reorder";
+    grip.setAttribute("aria-hidden", "true");
+    grip.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" focusable="false">'
+      + '<path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>';
+    return grip;
+  };
 
   for (const item of layout) {
     const track = item.track;
@@ -1754,6 +1846,7 @@ function renderTrackControls() {
     const controls = document.createElement("div");
     controls.className = "track-controls";
     controls.dataset.trackId = track.id;
+    if (secondaryCompact) controls.classList.add("gs-secondary-compact");
 
     // Grouping Variable: tint Smart Track control pills with the sample's group color
     // (left-radius hug). Manual track groups use the mirrored right-edge hug.
@@ -1783,22 +1876,18 @@ function renderTrackControls() {
 
     const collapseBtn = document.createElement("button");
     collapseBtn.className = "track-collapse-btn";
-    
+    // Match sidebar / smart-track chevron glyphs for every track type.
     if (isSmartTrack) {
-      // For Smart Tracks: collapsed = closed (single read), !collapsed = open (full height)
-      if (isVertical) {
-        collapseBtn.textContent = track.collapsed ? "▲" : "▶";
-      } else {
-        collapseBtn.textContent = track.collapsed ? "▶" : "▼";
-      }
-      collapseBtn.title = track.collapsed ? "Expand to full height" : "Collapse to single read";
+      const readsVisible = !!(track.readDisplay && track.readDisplay.visibility
+        && track.readDisplay.visibility.reads);
+      collapseBtn.textContent = readsVisible ? "▾" : "▸";
+      collapseBtn.title = readsVisible ? "Collapse reads" : "Expand reads";
+    } else if (isVertical) {
+      collapseBtn.textContent = track.collapsed ? "▴" : "▸";
+      collapseBtn.title = track.collapsed ? "Expand track" : "Collapse track";
     } else {
-      // For standard tracks: use existing behavior
-      if (isVertical) {
-        collapseBtn.textContent = track.collapsed ? "▲" : "▶";
-      } else {
-        collapseBtn.textContent = track.collapsed ? "▶" : "▼";
-      }
+      collapseBtn.textContent = track.collapsed ? "▸" : "▾";
+      collapseBtn.title = track.collapsed ? "Expand track" : "Collapse track";
     }
     
     collapseBtn.type = "button";
@@ -2055,20 +2144,15 @@ function renderTrackControls() {
       const isPinned = state.pinnedSmartTrackControls.has(track.id);
       if (isPinned) controls.classList.add("is-pinned");
 
+      // Match sidebar chevron: ▾ expanded (reads on), ▸ collapsed.
       const readsVisible = !!(track.readDisplay && track.readDisplay.visibility
         && track.readDisplay.visibility.reads);
-      // Match sidebar chevron: ▾ expanded (reads on), ▸ collapsed.
       collapseBtn.textContent = readsVisible ? "▾" : "▸";
       collapseBtn.title = readsVisible ? "Collapse reads" : "Expand reads";
       collapseBtn.classList.add("smart-track-qc-collapse");
 
       // Same grip glyph as the sidebar title bar (DnD still uses the pill chrome).
-      const grip = document.createElement("span");
-      grip.className = "smart-track-item-grip smart-track-qc-grip";
-      grip.title = "Drag to reorder";
-      grip.setAttribute("aria-hidden", "true");
-      grip.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" focusable="false">'
-        + '<path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>';
+      const grip = makeTrackGrip();
 
       const actions = document.createElement("div");
       actions.className = "smart-track-qc-actions";
@@ -2187,6 +2271,10 @@ function renderTrackControls() {
       }
       container.appendChild(controls);
     } else {
+      // Standard / annotation / variant tracks: same grip + chevron anatomy as
+      // smart tracks so the control chrome is consistent across the stack.
+      collapseBtn.classList.add("smart-track-qc-collapse");
+      const grip = makeTrackGrip();
       // In vertical mode, reverse order: label on top, button on bottom.
       // #49: the label stays UPRIGHT (the CSS `.main.vertical .track-label`
       // already sets `transform:none; writing-mode:horizontal-tb`). Earlier code
@@ -2211,9 +2299,11 @@ function renderTrackControls() {
         if (settingsBtn) controls.appendChild(settingsBtn);
         if (labelSpacer) controls.appendChild(labelSpacer);
         if (labelInput) controls.appendChild(labelInput);
+        controls.appendChild(grip);
         controls.appendChild(collapseBtn);
         container.appendChild(controls);
       } else {
+        controls.appendChild(grip);
         controls.appendChild(collapseBtn);
         controls.appendChild(label);
         if (labelSpacer) controls.appendChild(labelSpacer);
@@ -2946,30 +3036,145 @@ function renderHoverOnly() {
 function renderAll() {
   window.__renderCount = (window.__renderCount || 0) + 1;  // perf instrumentation
   state._viewCoverageMax = null; // recompute View-scale coverage max this frame
-  updateDerived();
-  updateTracksHeight();
-  renderTracks();
-  if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
-  renderTrackControls();
-  renderGenesPanel();
-  updateFlowAndReadsPosition();
-  renderFlowCanvas();
-  // Pin the header + position the scrolling reads region before drawing tracks.
-  positionSmartScrollWrapper();
-  // Render all Smart tracks in the order they appear in state.tracks
-  const smartTracksInOrder = state.tracks
-    .filter(t => t.id.startsWith('smart-track-'))
-    .map(t => state.smartTracks.find(st => st.id === t.id))
-    .filter(st => st !== undefined);
-  smartTracksInOrder.forEach(track => {
-    renderSmartTrack(track.id);
-  });
+
+  const multi = (typeof gsIsMultiTile === "function" && gsIsMultiTile());
+  const focused = (typeof gsFocusedTile === "function") ? gsFocusedTile() : null;
+
+  if (multi && focused && typeof gsWithTile === "function" && typeof gsBindTileDom === "function") {
+    // Paint every non-blank tile into its own DOM. Unfocused tiles are SVG-only
+    // snapshots; the focused tile gets the full interactive stack.
+    const tiles = state.tiles || [];
+    const focusedId = focused.id;
+    // Unfocused first so the focused pass leaves globals / WebGPU in the live state.
+    const ordered = tiles.slice().sort((a, b) => {
+      if (a.id === focusedId) return 1;
+      if (b.id === focusedId) return -1;
+      return 0;
+    });
+
+    for (const tile of ordered) {
+      if (!tile || tile.blank) continue;
+      gsWithTile(tile, () => {
+        state.contig = tile.contig;
+        state.startBp = tile.startBp;
+        state.endBp = tile.endBp;
+        state.pxPerBp = tile.pxPerBp;
+        state.renderPadBp = tile.renderPadBp || 0;
+        state.renderPadPx = tile.renderPadPx || 0;
+        if (tile.expandedInsertions instanceof Set) {
+          state.expandedInsertions = tile.expandedInsertions;
+        }
+
+        gsBindTileDom(tile);
+        if (typeof updateDerivedForBoundTile === "function") updateDerivedForBoundTile(tile);
+        else updateDerived();
+        updateTracksHeight();
+
+        const isFocused = tile.id === focusedId;
+        const liveGpu = !!(typeof tracksWebGPU !== "undefined" && tracksWebGPU
+          && tracksWebGPU.id === "tracksWebGPU");
+        const prevForce = window.__GS_FORCE_SVG_TRACKS;
+        if (!isFocused || !liveGpu) window.__GS_FORCE_SVG_TRACKS = true;
+
+        renderTracks();
+
+        // Annotation controls + variant flow must paint per tile (not only the
+        // focused one), otherwise siblings keep empty controls / stale bars and
+        // reverse never reaches their flow canvases.
+        updateFlowAndReadsPosition();
+        renderFlowCanvas();
+        renderTrackControls();
+
+        // Reads: relocate the live #smartScroll into this tile, paint for this
+        // tile's genomic window, then freeze a Canvas2D snapshot when unfocused
+        // so siblings keep showing reads after the live stack moves on.
+        if (typeof gsRelocateSmartScrollToBoundContainer === "function") {
+          gsRelocateSmartScrollToBoundContainer();
+        }
+        positionSmartScrollWrapper();
+        const prevForceReads2d = window.__GS_FORCE_SMART_TRACK_CANVAS2D;
+        let restoreSmartScroll = null;
+        if (!isFocused) {
+          window.__GS_FORCE_SMART_TRACK_CANVAS2D = true;
+          if (typeof gsBeginSmartScrollSnapshotPaint === "function") {
+            restoreSmartScroll = gsBeginSmartScrollSnapshotPaint();
+          }
+        }
+        const smartTracksInOrder = state.tracks
+          .filter(t => t.id.startsWith("smart-track-"))
+          .map(t => state.smartTracks.find(st => st.id === t.id))
+          .filter(st => st !== undefined);
+        const paintSmartTracks = () => {
+          smartTracksInOrder.forEach(track => {
+            renderSmartTrack(track.id);
+          });
+        };
+        paintSmartTracks();
+        // Unfocused freeze needs real canvas pixels. If layout wasn't ready on
+        // the first pass (0-size bail), remeasure once before snapshotting.
+        if (!isFocused && smartTracksInOrder.length) {
+          const scroll = document.getElementById("smartScroll");
+          const ready = scroll && Array.from(scroll.querySelectorAll("canvas.canvas"))
+            .some((c) => c.width > 0 && c.height > 0);
+          if (!ready) {
+            updateTracksHeight();
+            positionSmartScrollWrapper();
+            paintSmartTracks();
+          }
+        }
+        window.__GS_FORCE_SMART_TRACK_CANVAS2D = prevForceReads2d;
+        if (!isFocused) {
+          if (typeof gsFreezeSmartScrollSnapshot === "function") {
+            gsFreezeSmartScrollSnapshot(tile);
+          }
+          if (typeof restoreSmartScroll === "function") restoreSmartScroll();
+        } else {
+          if (typeof gsClearSmartScrollFreeze === "function") {
+            gsClearSmartScrollFreeze(tile);
+          }
+          if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
+          renderGenesPanel();
+        }
+
+        window.__GS_FORCE_SVG_TRACKS = prevForce;
+      });
+    }
+
+    if (typeof gsSyncFocusedAliases === "function") gsSyncFocusedAliases();
+    gsBindTileDom(focused);
+    if (typeof gsRelocateSmartScrollToBoundContainer === "function") {
+      gsRelocateSmartScrollToBoundContainer();
+    }
+    updateDerived();
+  } else {
+    updateDerived();
+    updateTracksHeight();
+    renderTracks();
+    if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
+    renderTrackControls();
+    renderGenesPanel();
+    updateFlowAndReadsPosition();
+    renderFlowCanvas();
+    // Pin the header + position the scrolling reads region before drawing tracks.
+    positionSmartScrollWrapper();
+    // Render all Smart tracks in the order they appear in state.tracks
+    const smartTracksInOrder = state.tracks
+      .filter(t => t.id.startsWith('smart-track-'))
+      .map(t => state.smartTracks.find(st => st.id === t.id))
+      .filter(st => st !== undefined);
+    smartTracksInOrder.forEach(track => {
+      renderSmartTrack(track.id);
+    });
+  }
+
   renderHUD();
   updateTooltip();
   setupCanvasHover();
   setupVariantHoverAreas(); // Set up ID-based hover areas
   updateDocumentTitle();
   if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
+  if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
+  if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
 }
 
 // Coalesce renders during rapid interaction (pan/zoom/pinch): many events in a
@@ -6536,8 +6741,10 @@ function ensureFlowContainers(flowLayouts) {
     expectedTrackIds.every(id => existingTrackIds.includes(id));
   if (hasAllTracks) return;
 
-  const flowWebGPUEl = document.getElementById("flowWebGPU");
-  const flowOverlayEl = document.getElementById("flowOverlay");
+  // Only reparent THIS flow's own WebGPU/overlay. document.getElementById would
+  // steal the primary tile's canvases into a secondary tile (multi-tile leak).
+  const flowWebGPUEl = flow.querySelector(":scope > [id='flowWebGPU'], :scope > [id^='flowWebGPU-']");
+  const flowOverlayEl = flow.querySelector(":scope > [id='flowOverlay'], :scope > [id^='flowOverlay-']");
   while (flow.firstChild) flow.removeChild(flow.firstChild);
   // Append flowWebGPU first so it is behind flow-tracks; then clicks in each track hit the correct track
   if (flowWebGPUEl) {
@@ -6549,14 +6756,18 @@ function ensureFlowContainers(flowLayouts) {
     const track = variantTracksConfig[i];
     const div = document.createElement("div");
     div.className = "flow-track";
-    div.id = flowTrackDomId(track.id);
+    // Per-tile unique ids when the host flow itself is suffixed (flow-t1, …).
+    const hostSuffix = (flow.id && flow.id !== "flow" && flow.id.indexOf("flow-") === 0)
+      ? flow.id.slice("flow".length)  // e.g. "-t1"
+      : "";
+    div.id = flowTrackDomId(track.id) + hostSuffix;
     div.dataset.trackId = String(track.id || "");
     div.style.position = "absolute";
     div.style.left = "0";
     div.style.width = "100%";
     const canvas = document.createElement("canvas");
     canvas.className = "canvas";
-    canvas.id = flowCanvasDomId(track.id);
+    canvas.id = flowCanvasDomId(track.id) + hostSuffix;
     div.appendChild(canvas);
     const overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     overlay.setAttribute("class", "overlay flow-track-overlay");
@@ -6694,6 +6905,7 @@ function zoomByFactor(factor, anchorBp) {
   // Clamp to chromosome boundaries
   clampToChromosomeBounds();
 
+  if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   scheduleRender();
   if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
 }
@@ -6705,6 +6917,7 @@ function centerOnBp(pos) {
   state.startBp = pos - span / 2;
   state.endBp = state.startBp + span;
   clampToChromosomeBounds();
+  if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   scheduleRender();
   if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
 }
@@ -6722,12 +6935,25 @@ function slideToShowBp(pos, marginFrac) {
   state.startBp = newStart;
   state.endBp = newStart + span;
   clampToChromosomeBounds();
+  if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   scheduleRender();
 }
 
 function panByPixels(dxPx, dyPx) {
   const isVertical = isVerticalMode();
-  const deltaPx = isVertical ? (dyPx !== undefined ? dyPx : 0) : (dxPx !== undefined ? dxPx : 0);
+  let dx = (dxPx !== undefined ? dxPx : 0);
+  let dy = (dyPx !== undefined ? dyPx : 0);
+  // Reversed (3′→5′) tiles flip the genomic axis on screen, so negate the pan
+  // delta for the genome axis to keep "slide left/right to reveal more bases on
+  // that edge" feeling consistent with the unflipped orientation.
+  if (typeof gsFocusedTile === "function") {
+    const ft = gsFocusedTile();
+    if (ft && ft.reversed) {
+      if (isVertical) dy = -dy;
+      else dx = -dx;
+    }
+  }
+  const deltaPx = isVertical ? dy : dx;
   const deltaBp = deltaPx / state.pxPerBp;
   // In vertical mode: down = lower locus (increase), up = higher locus (decrease)
   // In horizontal mode: right = higher locus (increase), left = lower locus (decrease)
@@ -6755,6 +6981,7 @@ function panByPixels(dxPx, dyPx) {
     state.firstVariantIndex = Math.max(0, Math.min(state.firstVariantIndex, Math.max(0, variants.length - state.K)));
   }
 
+  if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   scheduleRender();
 }
 
@@ -6781,18 +7008,42 @@ function scrollVertTracksBy(dxPx) {
 // --- Live pan: translate the rendered layers during a drag instead of
 // rebuilding every frame (rebuild is the dominant pan cost). state.startBp/endBp
 // stay the source of truth; the full re-render happens once on drag end. ---
+function _gsFocusedTileRoot() {
+  if (typeof gsFocusedTile !== "function" || typeof gsTileRootEl !== "function") return null;
+  const t = gsFocusedTile();
+  return t ? gsTileRootEl(t.id) : null;
+}
+
+function _gsQueryTileLayer(tileRoot, id, tileId) {
+  if (!tileRoot) return null;
+  return tileRoot.querySelector(`#${CSS.escape(id)}`)
+    || (tileId ? tileRoot.querySelector(`#${CSS.escape(id + "-" + tileId)}`) : null);
+}
+
 function _panLayers() {
   const out = [];
+  const focused = (typeof gsFocusedTile === "function") ? gsFocusedTile() : null;
+  const tileRoot = _gsFocusedTileRoot();
+  // Scope to the focused tile only — otherwise multi-tile pans translate every
+  // sibling's .flow-track and variants appear to "leak" across columns.
+  const scope = tileRoot
+    || ((typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document);
+  const tileId = focused && focused.id;
+
   // #smartScroll wraps the sample-track stack — translate it as ONE block so the
   // reads pan in lockstep with the header. (Translating each container inside the
   // scroll wrapper individually did not move them in step during a live drag,
   // which made reads drift proportionally to the pan distance.)
   ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay", "flowIndelOverlay", "commentPinOverlay", "smartScroll"].forEach(id => {
-    const e = (typeof byId === "function" && typeof root !== "undefined" ? byId(root, id) : null)
-      || document.getElementById(id);
+    let e = _gsQueryTileLayer(tileRoot, id, tileId);
+    if (!e) {
+      e = (typeof byId === "function" && typeof root !== "undefined" ? byId(root, id) : null)
+        || document.getElementById(id);
+      // If we resolved a classic id outside the focused tile, skip it in multi-tile.
+      if (e && tileRoot && !tileRoot.contains(e)) e = null;
+    }
     if (e) out.push(e);
   });
-  const scope = (typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document;
   // Translate each multi-track flow container as ONE block (moves its canvas +
   // overlay + labels together) rather than the canvas/svg children individually —
   // same fix as the reads stack; translating children alone can drift.
@@ -6804,12 +7055,20 @@ function _panLayers() {
 // pans by full re-render (panByPixels), so pad stays 0 there.
 function _overscanPaintLayers() {
   const out = [];
+  const focused = (typeof gsFocusedTile === "function") ? gsFocusedTile() : null;
+  const tileRoot = _gsFocusedTileRoot();
+  const scope = tileRoot
+    || ((typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document);
+  const tileId = focused && focused.id;
   ["tracksSvg", "tracksWebGPU", "flowCanvas", "flowWebGPU", "flowOverlay", "flowIndelOverlay", "commentPinOverlay"].forEach(id => {
-    const e = (typeof byId === "function" && typeof root !== "undefined" ? byId(root, id) : null)
-      || document.getElementById(id);
+    let e = _gsQueryTileLayer(tileRoot, id, tileId);
+    if (!e) {
+      e = (typeof byId === "function" && typeof root !== "undefined" ? byId(root, id) : null)
+        || document.getElementById(id);
+      if (e && tileRoot && !tileRoot.contains(e)) e = null;
+    }
     if (e) out.push(e);
   });
-  const scope = (typeof getCurrentRoot === "function" ? getCurrentRoot() : null) || document;
   scope.querySelectorAll(".flow-track").forEach(e => out.push(e));
   return out;
 }
@@ -6828,7 +7087,32 @@ function _setPanLayerOverscan(on) {
 // Translate every pan layer by the overscan baseline (-pad, to center the wider
 // paint on the viewport) plus the live drag offset. transform works uniformly on
 // absolute AND sticky layers, unlike `left`.
+function _clearSiblingPanTransforms() {
+  const tileRoot = _gsFocusedTileRoot();
+  const strip = document.getElementById("tileStrip");
+  if (!strip) return;
+  const sel = [
+    ".flow-track",
+    "#tracksSvg", "[id^='tracksSvg-']",
+    "#tracksWebGPU", "[id^='tracksWebGPU-']",
+    "#flowCanvas", "[id^='flowCanvas-']",
+    "#flowWebGPU", "[id^='flowWebGPU-']",
+    "#flowOverlay", "[id^='flowOverlay-']",
+    "#flowIndelOverlay", "[id^='flowIndelOverlay-']",
+    "#commentPinOverlay", "[id^='commentPinOverlay-']",
+    "#smartScroll",
+  ].join(",");
+  strip.querySelectorAll(sel).forEach((e) => {
+    if (tileRoot && tileRoot.contains(e)) return;
+    if (e.style && e.style.transform) e.style.transform = "";
+    if (e.style && e.style.width && e.style.width.indexOf("calc") >= 0) {
+      e.style.removeProperty("width");
+    }
+  });
+}
+
 function _applyPanTransform() {
+  _clearSiblingPanTransforms();
   const tx = (state.livePanOffset || 0) - (state.renderPadPx || 0);
   _panLayers().forEach(e => { e.style.transform = "translateX(" + tx + "px)"; });
 }
@@ -6854,7 +7138,14 @@ function _beginPanOverscan() {
 function livePanBy(dxPx) {
   if (!state.pxPerBp) { panByPixels(dxPx, 0); return; }  // no scale yet: fall back
   if (!state.renderPadPx && !_beginPanOverscan()) { panByPixels(dxPx, 0); return; }
-  const deltaBp = dxPx / state.pxPerBp;
+  // Visual transform always follows the pointer; reverse only the genomic window
+  // so 3′→5′ tiles still reveal more sequence on the edge you pan toward.
+  let genomeDx = dxPx;
+  if (typeof gsFocusedTile === "function") {
+    const ft = gsFocusedTile();
+    if (ft && ft.reversed) genomeDx = -dxPx;
+  }
+  const deltaBp = genomeDx / state.pxPerBp;
   state.startBp -= deltaBp;
   state.endBp -= deltaBp;
   state.livePanOffset = (state.livePanOffset || 0) + dxPx;
@@ -6877,6 +7168,7 @@ function _commitLivePan() {
   if (!state.livePanOffset && !state.renderPadPx) { return; }
   clampToChromosomeBounds();
   _panLayers().forEach(e => { e.style.transform = ""; });
+  _clearSiblingPanTransforms();
   state.livePanOffset = 0;
   state.renderPadBp = 0;
   state.renderPadPx = 0;
@@ -6889,6 +7181,11 @@ function _commitLivePan() {
 function endLivePan() {
   _commitLivePan();  // final refill at the settled position
 }
+
+try {
+  window.__GS_applyPanTransform = _applyPanTransform;
+  window.__GS_panLayers = _panLayers;
+} catch (_) { /* non-browser */ }
 
 function anchorBpFromClientX(clientX) {
   const rectSource = (typeof tracksContainer !== 'undefined' && tracksContainer)
@@ -7001,6 +7298,13 @@ function bindInteractions(root, state, main) {
     // Extra safety: ignore wheel not originating inside this viewer
     const path = e.composedPath ? e.composedPath() : [];
     if (!path.includes(main)) return;
+
+    // Multi-tile strip scroll — only over non-track chrome (headers / pills /
+    // dividers / chevrons). Track canvases keep genomic pan/zoom.
+    if (typeof gsMaybeScrollTileStripFromWheel === "function"
+        && gsMaybeScrollTileStripFromWheel(e)) {
+      return;
+    }
 
     // Allow scrolling in reads container - don't intercept wheel events there
     const readsEl = byId(root, "reads");
@@ -7175,6 +7479,23 @@ function bindInteractions(root, state, main) {
     // right- or middle-click must not start a drag — otherwise its pointerup can
     // be swallowed by the context menu and the pan sticks "on".
     if (e.button !== 0) return;
+
+    // Multi-locus tile chrome lives inside #main; never start a pan when the
+    // user is clicking +, flip, edit, pills, or a resize divider.
+    const t0 = e.target;
+    if (t0 && t0.closest && t0.closest(
+      "#addTileBtn, .gs-add-tile-btn, .gs-tile-header, .gs-tile-pills, "
+      + ".gs-tile-divider, .gs-tile-locus-input, .gs-context-menu, "
+      + ".gs-tile-orient, .gs-tile-close, .gs-tile-pill-close, .gs-tile-locus, "
+      + ".gs-tile-strip-chevron, "
+      // Track chrome (quick controls, reorder drag, resize) — must not start a
+      // view pan / pointer capture or button clicks never fire.
+      + "#trackControls, [id^='trackControls-'], .track-controls, "
+      + ".track-resize-handle, .track-control-container"
+    )) {
+      return;
+    }
+
     if (tryToggleInsertionFromRulerHit(e)) {
       e.preventDefault();
       e.stopPropagation();
@@ -7411,13 +7732,30 @@ removeGlobalWheelListeners();
 // Bind interactions and store destroy function
 interactionBinding = bindInteractions(root, state, main);
 
+// Multi-locus tile strip chrome (headers, +, pills, arcs). Init once after
+// interactions are bound so pointer handlers can exclude the chrome.
+if (typeof gsInitTileUi === "function") {
+  try { gsInitTileUi(); } catch (err) { console.error("gsInitTileUi failed:", err); }
+}
+
 // -----------------------------
-// Track interactions (drag, resize)
+// Track interactions (drag, resize) — delegated so every tile's trackControls
+// host works (primary #trackControls and secondary #trackControls-<id>).
 // -----------------------------
-trackControls = getTrackControlsEl();
-if (trackControls) {
-trackControls.addEventListener("pointerdown", (e) => {
-  // Don't start drag if clicking on buttons or interactive elements
+function gsTrackControlsHostFromEvent(e) {
+  return e.target && e.target.closest
+    ? e.target.closest("#trackControls, [id^='trackControls-']")
+    : null;
+}
+
+function gsOnTrackControlsPointerDown(e) {
+  const host = gsTrackControlsHostFromEvent(e);
+  if (!host) return;
+  trackControls = host;
+
+  // Don't start drag if clicking on buttons or interactive elements.
+  // Return without stopPropagation so the button still receives the event
+  // (this listener may run in capture phase on #main).
   const trackLabel = e.target.closest(".track-label");
   const isSmartTrackLabel = trackLabel && trackLabel.closest(".track-controls[data-track-id^='smart-track-']");
   
@@ -7437,7 +7775,6 @@ trackControls.addEventListener("pointerdown", (e) => {
       e.target.closest("button") ||
       e.target.closest("select") ||
       e.target.closest("input")) {
-    e.stopPropagation();
     return;
   }
   
@@ -7452,7 +7789,6 @@ trackControls.addEventListener("pointerdown", (e) => {
     if (!track) return;
     
     e.preventDefault();
-    const isVertical = isVerticalMode();
     state.trackResizeState = {
       trackId,
       startX: e.clientX,
@@ -7462,13 +7798,12 @@ trackControls.addEventListener("pointerdown", (e) => {
         ? smartTrackLayoutHeight(track)
         : track.height
     };
-    trackControls.setPointerCapture(e.pointerId);
+    host.setPointerCapture(e.pointerId);
   } else if (controls) {
     // Start dragging for reorder
     e.stopPropagation();
     const trackId = controls.dataset.trackId;
     e.preventDefault();
-    const isVertical = isVerticalMode();
     state.trackDragState = {
       trackId,
       startX: e.clientX,
@@ -7476,11 +7811,15 @@ trackControls.addEventListener("pointerdown", (e) => {
       offsetX: 0,
       offsetY: 0
     };
-    trackControls.setPointerCapture(e.pointerId);
+    host.setPointerCapture(e.pointerId);
   }
-});
+}
 
-trackControls.addEventListener("pointermove", (e) => {
+function gsOnTrackControlsPointerMove(e) {
+  if (!state.trackResizeState && !state.trackDragState) return;
+  const host = gsTrackControlsHostFromEvent(e) || trackControls;
+  if (host) trackControls = host;
+
   if (state.trackResizeState) {
     // Resizing
     const track = state.tracks.find(t => t.id === state.trackResizeState.trackId);
@@ -7516,7 +7855,7 @@ trackControls.addEventListener("pointermove", (e) => {
     // Visual feedback: move the dragged track and show drop indicator
     const layout = getTrackLayout();
     const draggedItem = layout.find(l => l.track.id === state.trackDragState.trackId);
-    if (draggedItem) {
+    if (draggedItem && trackControls) {
       const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
       if (container) {
         // Move the dragged track
@@ -7581,22 +7920,24 @@ trackControls.addEventListener("pointermove", (e) => {
             indicator.style.height = "2px";
           }
           
-          const tracksContainer = document.getElementById("tracksContainer");
-          if (tracksContainer) {
-            tracksContainer.appendChild(indicator);
+          const hostTracks = (typeof tracksContainer !== "undefined" && tracksContainer)
+            ? tracksContainer
+            : document.getElementById("tracksContainer");
+          if (hostTracks) {
+            hostTracks.appendChild(indicator);
           }
         }
       }
     }
   }
-});
+}
 
 function endTrackInteraction(e) {
   // Only process if we have an active interaction
   if (!state.trackResizeState && !state.trackDragState) return;
   
   // Release pointer capture
-  if (e.target.releasePointerCapture) {
+  if (e.target && e.target.releasePointerCapture) {
     try {
       e.target.releasePointerCapture(e.pointerId);
     } catch (err) {
@@ -7611,13 +7952,15 @@ function endTrackInteraction(e) {
     const layout = getTrackLayout();
     const draggedItem = layout.find(l => l.track.id === state.trackDragState.trackId);
     if (draggedItem) {
-      const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
-      if (container) {
-        container.style.transform = "";
-        container.style.zIndex = "";
-        container.style.opacity = "";
-        container.style.filter = "";
-        container.classList.remove("track-dragging");
+      if (trackControls) {
+        const container = trackControls.querySelector(`[data-track-id="${state.trackDragState.trackId}"]`);
+        if (container) {
+          container.style.transform = "";
+          container.style.zIndex = "";
+          container.style.opacity = "";
+          container.style.filter = "";
+          container.classList.remove("track-dragging");
+        }
       }
       
       // Remove drop indicator
@@ -7661,8 +8004,17 @@ function endTrackInteraction(e) {
   }
 }
 
-trackControls.addEventListener("pointerup", endTrackInteraction);
-trackControls.addEventListener("pointercancel", endTrackInteraction);
+{
+  const controlsRoot = (typeof main !== "undefined" && main) ? main
+    : (typeof root !== "undefined" && root) ? root
+    : document;
+  // Capture phase so reorder/resize handling runs before the view pan handler
+  // on the same node (registration order alone is fragile across reloads).
+  controlsRoot.addEventListener("pointerdown", gsOnTrackControlsPointerDown, true);
+  controlsRoot.addEventListener("pointermove", gsOnTrackControlsPointerMove);
+  controlsRoot.addEventListener("pointerup", endTrackInteraction);
+  controlsRoot.addEventListener("pointercancel", endTrackInteraction);
+}
 
 // Also listen on document to catch pointerup events that might occur outside
 document.addEventListener("pointerup", (e) => {
@@ -7675,7 +8027,6 @@ document.addEventListener("pointercancel", (e) => {
     endTrackInteraction(e);
   }
 });
-}
 
 // Resize - debounced to batch resize events (100ms delay)
 new ResizeObserver(debounce(() => {

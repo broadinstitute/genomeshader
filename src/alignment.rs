@@ -268,6 +268,9 @@ pub fn extract_reads(
     let mut insert_sizes = Vec::new();
     let mut clip_lengths = Vec::new();
     let mut mean_base_qualities = Vec::new();
+    // Raw SA:Z string (semicolon-separated mates). Empty when absent.
+    // Parsed in JS for cross-tile linking; keep opaque here so schema stays simple.
+    let mut sa_tags = Vec::new();
 
     let mut mask = HashMap::new();
 
@@ -314,6 +317,13 @@ pub fn extract_reads(
         // "SNPs displayable" for this read: true if it carries MD, or if a
         // staged reference was supplied to diff M-run bases against.
         let snps_displayable = read_has_md || ref_seq.is_some();
+
+        // Supplementary Alignment (SA:Z) — other split segments for this read.
+        // Format: "rname,pos,strand,CIGAR,mapQ,NM;" (semicolon-separated).
+        let sa_tag: String = match record.aux(b"SA") {
+            Ok(Aux::String(s)) => s.to_owned(),
+            _ => String::new(),
+        };
 
         reference_contigs.push(chr.to_owned());
         reference_starts.push((record.reference_start() as u32) + 1);
@@ -583,8 +593,8 @@ pub fn extract_reads(
             }
         }
 
-        // Pairing flags are per-alignment; copy onto every CIGAR element row
-        // of this record so the column lengths stay aligned.
+        // Pairing flags / SA are per-alignment; copy onto every CIGAR element
+        // row of this record so the column lengths stay aligned.
         let paired = record.is_paired();
         let secondary = record.is_secondary();
         let supplementary = record.is_supplementary();
@@ -598,6 +608,7 @@ pub fn extract_reads(
             insert_sizes.push(insert_size);
             clip_lengths.push(clip_length);
             mean_base_qualities.push(mean_base_quality);
+            sa_tags.push(sa_tag.clone());
         }
     }
 
@@ -638,6 +649,7 @@ pub fn extract_reads(
             Series::new("insert_size", insert_sizes),
             Series::new("clip_length", clip_lengths),
             Series::new("mean_base_quality", mean_base_qualities),
+            Series::new("sa_tag", sa_tags),
             Series::new("column_width", column_width)
         ]
     ).unwrap();
@@ -920,6 +932,77 @@ mod integration_tests {
         );
         assert_eq!(df.height(), paired.len());
         assert_eq!(df.height(), primary.len());
+    }
+
+    #[test]
+    fn extract_reads_emits_sa_tag() {
+        // Chimeric primary + supplementary: each carries SA pointing at the other.
+        let mut header = bam::Header::new();
+        header.push_record(
+            bam::header::HeaderRecord::new(b"HD")
+                .push_tag(b"VN", &"1.6")
+                .push_tag(b"SO", &"coordinate"),
+        );
+        let mut sq = bam::header::HeaderRecord::new(b"SQ");
+        sq.push_tag(b"SN", &"chr20");
+        sq.push_tag(b"LN", &1000);
+        header.push_record(&sq);
+        let mut sq2 = bam::header::HeaderRecord::new(b"SQ");
+        sq2.push_tag(b"SN", &"chr21");
+        sq2.push_tag(b"LN", &1000);
+        header.push_record(&sq2);
+        let bam_path = unique_temp_bam("gs_sa_tag_test");
+        let sa_pri = "chr21,500,+,10M,60,0;";
+        let sa_sup = "chr20,101,+,10M,60,0;";
+        {
+            let mut w = bam::Writer::from_path(&bam_path, &header, bam::Format::Bam).unwrap();
+            let cigar10 = CigarString(vec![Cigar::Match(10)]);
+
+            let mut pri = bam::Record::new();
+            pri.set(b"chimeric", Some(&cigar10), b"ACGTACGTAC", &[30u8; 10]);
+            pri.set_tid(0);
+            pri.set_pos(100);
+            pri.set_mapq(60);
+            pri.set_mtid(-1);
+            pri.set_mpos(-1);
+            pri.push_aux(b"SA", Aux::String(sa_pri)).unwrap();
+            w.write(&pri).unwrap();
+
+            let mut supp = bam::Record::new();
+            supp.set(b"chimeric", Some(&cigar10), b"TGCATGCATG", &[30u8; 10]);
+            supp.set_tid(1);
+            supp.set_pos(499);
+            supp.set_mapq(60);
+            supp.set_mtid(-1);
+            supp.set_mpos(-1);
+            supp.set_supplementary();
+            supp.push_aux(b"SA", Aux::String(sa_sup)).unwrap();
+            w.write(&supp).unwrap();
+        }
+        bam::index::build(&bam_path, None, bam::index::Type::Bai, 1).unwrap();
+        let url = Url::from_file_path(&bam_path).unwrap();
+        let mut bam = IndexedReader::from_path(url.to_file_path().unwrap()).unwrap();
+        let df = extract_reads(
+            &mut bam, &url, &"all".to_string(), &"chr20".to_string(),
+            &100u64, &120u64, None, 0,
+        ).unwrap();
+
+        let et = df.column("element_type").unwrap().u8().unwrap();
+        let sa = df.column("sa_tag").unwrap();
+        let mut found = false;
+        for i in 0..df.height() {
+            if et.get(i) != Some(0u8) {
+                continue;
+            }
+            let tag = match sa.get(i).unwrap() {
+                AnyValue::String(s) => s.to_string(),
+                AnyValue::StringOwned(s) => s.to_string(),
+                _ => String::new(),
+            };
+            assert_eq!(tag, sa_pri);
+            found = true;
+        }
+        assert!(found, "expected at least one READ row with SA tag");
     }
 
     #[test]

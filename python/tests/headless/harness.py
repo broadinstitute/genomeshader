@@ -75,7 +75,9 @@ def build_page(config=None, instrument=False):
         "(async function __runViewer__(){\n" + scripts
         + "\ntry{window.__GS_STATE=(typeof state!=='undefined')?state:null;}catch(e){}\n"
         "try{window.__GS_xGenome=(typeof xGenome!=='undefined')?xGenome:null;"
-        "window.__GS_yGenome=(typeof yGenome!=='undefined')?yGenome:null;}catch(e){}\n"
+        "window.__GS_yGenome=(typeof yGenome!=='undefined')?yGenome:null;"
+        "window.__GS_xGenomeCanonical=(typeof xGenomeCanonical!=='undefined')?xGenomeCanonical:null;"
+        "window.__GS_yGenomeCanonical=(typeof yGenomeCanonical!=='undefined')?yGenomeCanonical:null;}catch(e){}\n"
         "try{window.__GS_variants=(typeof variants!=='undefined')?variants:null;}catch(e){}\n"
         "})()"
         ".then(()=>{window.__GS_READY=true;})"

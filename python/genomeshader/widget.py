@@ -62,7 +62,7 @@ def _html_dir() -> Path:
 # (widget-comms.js) stands in for the classic-Notebook comm (jupyter-comms.js).
 _SCRIPT_ORDER = [
     "cleanup.js", "webgpu-core.js", "webgpu-renderer.js", "webgpu-bezier.js",
-    "widget-comms.js", "dom-utils.js", "ui-state.js", "view-state.js",
+    "widget-comms.js", "dom-utils.js", "ui-state.js", "tiles.js", "tile-ui.js", "view-state.js",
     "allele-reorder.js",
     "read-display.js", "track-groups.js", "smart-tracks.js", "rendering.js", "tracks.js", "interaction.js", "main.js",
     "ucsc-tracks.js", "comments.js",
@@ -144,6 +144,18 @@ def _container_override_css(cid: str) -> str:
         f"{c} .tracks {{ position:absolute !important; left:0 !important; right:0 !important;"
         f" top:0 !important; height:var(--tracks-h,280px) !important; width:100% !important; }}",
         f"{c} #tracksContainer {{ position:relative !important; width:100% !important; height:100% !important; }}",
+        f"{c} .gs-tile-strip {{ position:absolute !important; inset:0 !important; right:48px !important; display:flex !important;"
+        f" flex-direction:row !important; overflow-x:auto !important; }}",
+        f"{c} .gs-tile {{ position:relative !important; height:100% !important; min-width:280px !important; }}",
+        f"{c} .gs-tile-body {{ position:relative !important; flex:1 !important; min-height:0 !important; }}",
+        f"{c} .gs-add-tile-btn {{ position:absolute !important;"
+        f" right:calc(48px + 6px) !important; top:calc(36px + (100% - 36px) / 2) !important;"
+        f" transform:translateY(-50%) !important; z-index:150 !important; pointer-events:auto !important;"
+        f" display:inline-flex !important; align-items:center !important; justify-content:center !important;"
+        f" width:36px !important; height:36px !important; padding:0 0 3px 0 !important; margin:0 !important;"
+        f" box-sizing:border-box !important; line-height:1 !important; font-size:20px !important; }}",
+        f"{c} .app:not(.sidebar-right-collapsed) .gs-add-tile-btn {{"
+        f" right:calc(var(--sidebar-right-w,240px) + 6px) !important; }}",
         # SVG text/vector layer (reference letters, gene shapes) must sit ABOVE
         # the WebGPU raster layer (solid base-color blocks); otherwise the solid
         # blocks hide the letters. pointer-events:none so it never blocks canvas

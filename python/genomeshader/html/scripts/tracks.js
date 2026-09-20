@@ -127,7 +127,10 @@ function _drawGeneStyleFeatures(features, item, genomePos, opts) {
   // Place arrows on a genomic lattice (~24px spacing) so they glide with the
   // gene under zoom instead of appearing/disappearing at fixed pixel offsets.
   function drawStrandArrows(geneStartBp, geneEndBp, perpPos, strand, isVert) {
-    const dir = strand === "-" ? -1 : 1;
+    // When the tile is 3′→5′, genomic + still increases leftward on screen, so
+    // flip the arrow tip to keep 5′→3′ visually correct.
+    const rev = (typeof gsActiveTile === "function" && gsActiveTile() && gsActiveTile().reversed) ? -1 : 1;
+    const dir = (strand === "-" ? -1 : 1) * rev;
     const pos1 = genomePos(geneStartBp);
     const pos2 = genomePos(geneEndBp);
     const start = Math.min(pos1, pos2), end = Math.max(pos1, pos2);
@@ -271,10 +274,12 @@ function _drawGeneStyleFeatures(features, item, genomePos, opts) {
           tracksSvg.appendChild(el("rect", rectAttrs));
         }
       } else {
-        if (firstExonX === null) firstExonX = exPos1;
-        const exonX = exPos1;
+        const xMin = Math.min(exPos1, exPos2);
+        const xMax = Math.max(exPos1, exPos2);
+        if (firstExonX === null || xMin < firstExonX) firstExonX = xMin;
+        const exonX = xMin;
         const exonY = perpPos - 6;
-        const exonW = Math.max(2, exPos2 - exPos1);
+        const exonW = Math.max(2, xMax - xMin);
         const exonH = 12;
         if (useWebGPU) {
           if (isUniversal || fillColor[3] > 0) {
@@ -304,13 +309,17 @@ function _drawGeneStyleFeatures(features, item, genomePos, opts) {
         "text-anchor": "start", "dominant-baseline": "middle"
       }, gene.strand === "+" ? "↑" : "↓"));
     } else {
-      const geneNameX = firstExonX !== null ? firstExonX : pos1;
+      const geneNameX = firstExonX !== null ? firstExonX : Math.min(pos1, pos2);
       tracksSvg.appendChild(el("text", {
         x: geneNameX, y: perpPos - 12, class:"svg-geneName"
       }, `${gene.name}`));
       tracksSvg.appendChild(el("text", {
-        x: pos1 + 2, y: perpPos + 16, class:"svg-small"
-      }, gene.strand === "+" ? "→" : "←"));
+        x: Math.min(pos1, pos2) + 2, y: perpPos + 16, class:"svg-small"
+      }, (() => {
+        const rev = !!(typeof gsActiveTile === "function" && gsActiveTile() && gsActiveTile().reversed);
+        const plus = gene.strand === "+";
+        return (plus !== rev) ? "→" : "←";
+      })()));
     }
   }
 }
@@ -402,14 +411,14 @@ function _drawRepeatStyleFeatures(features, item, genomePos, opts) {
     const dpr = window.devicePixelRatio || 1;
     for (const r of repeatsToRender) {
       const pos1 = r.pos1, pos2 = r.pos2;
-      const width = Math.max(1, pos2 - pos1);
+      const width = Math.max(1, Math.abs(pos2 - pos1));
       const height = repeatsH - 8;
       let x, y, w, h;
       if (isVertical) {
         const yMin = Math.min(pos1, pos2), yMax = Math.max(pos1, pos2);
         x = repeatsX + 4; y = yMin; w = repeatsW - 8; h = Math.max(1, yMax - yMin);
       } else {
-        x = pos1; y = repeatsY + 4; w = width; h = height;
+        x = Math.min(pos1, pos2); y = repeatsY + 4; w = width; h = height;
       }
       instancedRenderer.addRect(x * dpr, y * dpr, w * dpr, h * dpr, repeatColorToRgba(r.cls));
       if (opts.hitTest === "repeats") {
@@ -431,7 +440,7 @@ function _drawRepeatStyleFeatures(features, item, genomePos, opts) {
         });
       } else {
         rect = el("rect", {
-          x: pos1, y: repeatsY + 4, width: Math.max(1, pos2 - pos1), height: repeatsH - 8,
+          x: Math.min(pos1, pos2), y: repeatsY + 4, width: Math.max(1, Math.abs(pos2 - pos1)), height: repeatsH - 8,
           rx: isSmall ? 0 : 6, fill: repeatColor(r.cls), style: "cursor: pointer;"
         });
       }
@@ -834,6 +843,13 @@ function renderTracks() {
     instancedRenderer.clear();
   }
   repeatHitTestData = [];
+
+  // Secondary / SVG-forced tiles: hide the unused WebGPU canvas so it cannot
+  // cover SVG ruler ticks/labels (absolute canvas otherwise stacks above).
+  if (typeof tracksWebGPU !== "undefined" && tracksWebGPU) {
+    const forceSvg = !!window.__GS_FORCE_SVG_TRACKS || tracksWebGPU.id !== "tracksWebGPU";
+    tracksWebGPU.style.display = forceSvg ? "none" : "";
+  }
   
   const isVertical = isVerticalMode();
   const W = isVertical ? renderHeightPx() : renderWidthPx();
@@ -890,10 +906,20 @@ function renderTracks() {
   // Their draw + clear only run when the owning track is expanded, so a
   // COLLAPSED (or absent) track would otherwise leave stale marks on screen.
   // Clear up front; the blocks below repopulate only when their track is open.
+  // Prefer the bound globals so multi-tile renders clear the active tile's overlays.
   {
-    const _io = document.getElementById("flowIndelOverlay");
+    const _io = (typeof flowIndelOverlay !== "undefined" && flowIndelOverlay)
+      ? flowIndelOverlay
+      : document.getElementById("flowIndelOverlay");
     if (_io) { while (_io.firstChild) _io.removeChild(_io.firstChild); }
-    const _co = document.getElementById("commentPinOverlay");
+    const _coHost = (typeof tracksContainer !== "undefined" && tracksContainer)
+      ? tracksContainer
+      : document.getElementById("tracksContainer");
+    const _co = _coHost
+      ? (_coHost.querySelector(".gs-comment-pin-overlay")
+        || _coHost.querySelector("#commentPinOverlay")
+        || _coHost.querySelector("[id^='commentPinOverlay']"))
+      : document.getElementById("commentPinOverlay");
     if (_co) { while (_co.firstChild) _co.removeChild(_co.firstChild); }
   }
 
@@ -906,7 +932,9 @@ function renderTracks() {
     const dataStartPos = genomePos(dataBounds.start);
     const dataEndPos = genomePos(dataBounds.end);
 
-    const tracksContainerEl = document.getElementById("tracksContainer");
+    const tracksContainerEl = (typeof tracksContainer !== "undefined" && tracksContainer)
+      ? tracksContainer
+      : document.getElementById("tracksContainer");
     if (tracksContainerEl) {
       const drawOutOfBoundsRect = (x, y, width, height) => {
         tracksSvg.appendChild(el("rect", {
@@ -998,7 +1026,9 @@ function renderTracks() {
       const minorBp = majorBp / 5;
 
       const pxPerMajor = (dim - 32) / (span / majorBp);
-      const showLabels = pxPerMajor >= 80;
+      // Multi-tile columns are narrower; keep labels readable down to ~48px/major.
+      const labelMinPx = (typeof gsIsMultiTile === "function" && gsIsMultiTile()) ? 48 : 80;
+      const showLabels = pxPerMajor >= labelMinPx;
 
     const firstMinor = Math.ceil(renderStartBp() / minorBp) * minorBp;
 
@@ -1109,21 +1139,56 @@ function renderTracks() {
     // Indel lollipops render into a dedicated overlay ABOVE the variant
     // (flow) canvas so they sit on the variants — the standalone Indel track
     // is gone. Full-viewer overlay -> same genome x-mapping as the tracks SVG.
-    const flowIndelOverlay = document.getElementById('flowIndelOverlay');
-    if (!flowIndelOverlay) {
+    // Prefer the bound tile overlay (gsBindTileDom); getElementById always hits
+    // the primary tile and made lollipops jump when focus changed.
+    const indelOverlay = (typeof flowIndelOverlay !== "undefined" && flowIndelOverlay
+      && flowIndelOverlay.isConnected)
+      ? flowIndelOverlay
+      : document.getElementById('flowIndelOverlay');
+    if (!indelOverlay) {
       // Overlay missing — still draw reference / other tracks below.
     } else {
-    while (flowIndelOverlay.firstChild) flowIndelOverlay.removeChild(flowIndelOverlay.firstChild);
-    // The overlay is a SCREEN-space SVG over #main, and the lollipop coords
-    // (baseX = contentLeft, cy = genomePos) are screen pixels — so its
-    // width/height/viewBox must be the true screen dims, NOT the genomic-axis
-    // W/H (which are SWAPPED in vertical mode: W=height, H=width). Using the
-    // swapped values rescaled the lollipops rightward into the read tracks.
-    const _ovW = isVertical ? H : W;
-    const _ovH = isVertical ? W : H;
-    flowIndelOverlay.setAttribute('width', _ovW);
-    flowIndelOverlay.setAttribute('height', _ovH);
-    flowIndelOverlay.setAttribute('viewBox', `0 0 ${_ovW} ${_ovH}`);
+    while (indelOverlay.firstChild) indelOverlay.removeChild(indelOverlay.firstChild);
+    // Lollipop x/y are in the same px space as tracksSvg / flowLayout (origin =
+    // top-left of the tile body). Size the SVG's viewBox to the BODY's CSS box
+    // so user units == CSS pixels (1:1). A tracks-only viewBox inside a
+    // body-tall SVG stretched Y (ghosts under the reads); a tracks-tall SVG
+    // with overflow:hidden clipped y=flowTop on some tiles (invisible).
+    const _body = indelOverlay.parentElement;
+    const _bodyRect = _body ? _body.getBoundingClientRect() : null;
+    const _tracksHost = (typeof tracksContainer !== "undefined" && tracksContainer)
+      ? tracksContainer
+      : (_body && _body.querySelector(".tracks"));
+    const _tracksRect = _tracksHost ? _tracksHost.getBoundingClientRect() : null;
+    // Prefer body size; fall back to tracks / layout dims if body hasn't laid out.
+    let _ovW = Math.round((_bodyRect && _bodyRect.width) || 0);
+    let _ovH = Math.round((_bodyRect && _bodyRect.height) || 0);
+    if (!(_ovW > 0)) _ovW = Math.round((_tracksRect && _tracksRect.width) || (isVertical ? H : W) || 1);
+    if (!(_ovH > 0)) {
+      // At least cover through the variant band (flow top + height).
+      const _flowBottom = flowLayout
+        ? (flowLayout.contentTop + (flowLayout.contentHeight || 0) + 32)
+        : 0;
+      _ovH = Math.max(
+        Math.round((_tracksRect && _tracksRect.height) || 0),
+        Math.round(_flowBottom),
+        Math.round(isVertical ? W : H) || 1,
+        1
+      );
+    }
+    indelOverlay.style.width = "100%";
+    indelOverlay.style.height = "100%";
+    indelOverlay.style.left = "0px";
+    indelOverlay.style.top = "0px";
+    indelOverlay.setAttribute("width", String(_ovW));
+    indelOverlay.setAttribute("height", String(_ovH));
+    indelOverlay.setAttribute("viewBox", `0 0 ${_ovW} ${_ovH}`);
+    indelOverlay.setAttribute("preserveAspectRatio", "none");
+    // Map indel x with the same width as the overlay viewBox (not a stale
+    // renderWidthPx that can disagree with the tile body by a few px).
+    const indelGenomeX = (bp) => (isVertical
+      ? genomePos(bp)
+      : xGenomeCanonical(bp, _ovW));
 
   // Variant marks: use all variant tracks so every track adds a marker to the ruler
   const variantTracksConfig = (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.variant_tracks) || [];
@@ -1144,7 +1209,7 @@ function renderTracks() {
     if (v.pos < renderStartBp() || v.pos > renderEndBp()) continue;
     // Indel track: only positions with an insertion or deletion.
     if (typeof isIndel === "function" && !isIndel(v)) continue;
-    const pos = genomePos(v.pos + VARIANT_BASE_CENTER_OFFSET_BP);
+    const pos = indelGenomeX(v.pos + VARIANT_BASE_CENTER_OFFSET_BP);
     const isHovered = (state.hoveredVariantId != null && variantId === String(state.hoveredVariantId)) || state.hoveredVariantIndex === idx;
     const strokeWidth = isHovered ? 2.5 : 1.2;
     const circleStrokeWidth = isHovered ? 2.2 : 1.4;
@@ -1190,7 +1255,7 @@ function renderTracks() {
       if (nxt.del) delSet.add(variantId); else delSet.delete(variantId);
       renderAll();
     };
-    flowIndelOverlay.appendChild(lineEl);
+    indelOverlay.appendChild(lineEl);
     
     // Store reference to variant elements for hover updates
     if (!state.locusVariantElements.has(idx)) {
@@ -1248,9 +1313,9 @@ function renderTracks() {
       head.addEventListener("mousedown", _swallow);
       head.addEventListener("pointerup", _swallow);
       head.addEventListener("click", _swallow);
-      flowIndelOverlay.appendChild(head);
+      indelOverlay.appendChild(head);
     }
-    flowIndelOverlay.appendChild(circleEl);
+    indelOverlay.appendChild(circleEl);
     
     // Store reference to circle element for hover updates
     if (!state.locusVariantElements.has(idx)) {
@@ -1267,7 +1332,7 @@ function renderTracks() {
 
       if (isVertical) {
         const gapEndY = nextPosAtVariant;
-        flowIndelOverlay.appendChild(el("rect", {
+        indelOverlay.appendChild(el("rect", {
           x: baseX - 18,
           y: gapEndY,
           width: 36,
@@ -1293,7 +1358,7 @@ function renderTracks() {
         const insertionBandHeight = 24;
         const insertionBandY = baseY - insertionBandHeight / 2;
 
-        flowIndelOverlay.appendChild(el("rect", {
+        indelOverlay.appendChild(el("rect", {
           x: gapStartX,
           y: insertionBandY,
           width: displayedGapSizeX,
@@ -1307,7 +1372,7 @@ function renderTracks() {
     }
   }
 
-    } // flowIndelOverlay present
+    } // indelOverlay present
   }
 
   // --- Reference track
@@ -1474,8 +1539,11 @@ function renderTracks() {
         console.warn(`Too many bases (${visibleBases.length}), rendering only first ${maxBasesToRender}`);
       }
 
-      // Use WebGPU if available, otherwise fall back to SVG
-      if (webgpuSupported && instancedRenderer) {
+      // Use WebGPU if available AND this paint is allowed to flush to the live
+      // tracks canvas. Unfocused / secondary tiles set __GS_FORCE_SVG_TRACKS and
+      // hide tracksWebGPU — drawing blocks only to WebGPU left them invisible
+      // (letters-only reference). Fall through to SVG colored rects instead.
+      if (webgpuSupported && instancedRenderer && !window.__GS_FORCE_SVG_TRACKS) {
         // Add rectangles to WebGPU renderer
         // Scale by devicePixelRatio since WebGPU canvas uses physical pixels
         const dpr = window.devicePixelRatio || 1;
@@ -1848,12 +1916,16 @@ function renderTracks() {
     }
   }
 
-  // Execute WebGPU render pass for tracks canvas (genes and repeats)
+  // Execute WebGPU render pass for tracks canvas (genes and repeats).
+  // Only flush when the live (classic-id) WebGPU canvas is bound — secondary
+  // tiles use SVG exclusively and must not resize/submit against the primary device.
+  const liveWebGpu = !!(tracksWebGPU && tracksWebGPU.id === "tracksWebGPU"
+    && webgpuCore && !window.__GS_FORCE_SVG_TRACKS);
   const hasTracksInstances = instancedRenderer &&
       (instancedRenderer.rectInstances.length > 0 || 
        instancedRenderer.triangleInstances.length > 0 || 
        instancedRenderer.lineInstances.length > 0);
-  if (webgpuSupported && instancedRenderer && hasTracksInstances) {
+  if (webgpuSupported && instancedRenderer && hasTracksInstances && liveWebGpu) {
     try {
       // Update projection matrix for current canvas size
       const dpr = window.devicePixelRatio || 1;
@@ -1886,8 +1958,8 @@ function renderTracks() {
       // Fallback: clear instances and continue with SVG only
       instancedRenderer.clear();
     }
-  } else if (webgpuSupported && instancedRenderer) {
-    // Clear WebGPU canvas if no instances to render
+  } else if (webgpuSupported && instancedRenderer && tracksWebGPU && tracksWebGPU.id === "tracksWebGPU" && webgpuCore) {
+    // Clear WebGPU canvas if no instances to render (or SVG-forced unfocused primary)
     try {
       const dpr = window.devicePixelRatio || 1;
       const width = tracksWebGPU.clientWidth * dpr;

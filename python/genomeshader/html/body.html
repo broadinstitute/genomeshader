@@ -208,6 +208,10 @@
           <td>Click chromosome to jump</td>
           <td class="menuRight"><input type="checkbox" id="chromClickJumpToggle" data-1p-ignore></td>
         </tr>
+        <tr class="settings-row" id="focusFollowsMouseItem" role="menuitem">
+          <td>Focus tile under mouse</td>
+          <td class="menuRight"><input type="checkbox" id="focusFollowsMouseToggle" data-1p-ignore></td>
+        </tr>
         <tr class="settings-section"><td colspan="2">Alleles</td></tr>
         <tr class="settings-row" id="lockAllelesItem" role="menuitem">
           <td>Lock allele positions</td>
@@ -235,25 +239,48 @@
   </div>
 
   <div class="main" id="main" style="position: absolute; left: 0; top: 36px; right: 0; bottom: 0; z-index: 1;">
-    <div class="tracks" id="tracksContainer">
-      <svg id="tracksSvg" width="100%" height="100%"></svg>
-      <canvas id="tracksWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
-      <div id="trackControls"></div>
-    </div>
+    <div class="gs-tile-strip" id="tileStrip">
+      <div class="gs-tile is-focused" id="tile-t0" data-tile-id="t0">
+        <div class="gs-tile-header" data-tile-header>
+          <span class="gs-tile-letter" data-tile-letter title="Click to rename tile">A</span>
+          <input class="gs-tile-letter-input" data-tile-letter-input type="text" hidden
+                 placeholder="Name" spellcheck="false" autocomplete="off" maxlength="32">
+          <span class="gs-tile-locus" data-tile-locus title="Click to edit locus"></span>
+          <input class="gs-tile-locus-input" data-tile-locus-input type="text" hidden
+                 placeholder="chr:start-end" spellcheck="false" autocomplete="off">
+          <span class="gs-tile-header-spacer" aria-hidden="true"></span>
+          <button type="button" class="gs-tile-orient" data-tile-flip
+                  title="Orientation: 5′ → 3′ (click to flip)" aria-pressed="false"
+                  aria-label="Orientation 5′ to 3′">→</button>
+          <button type="button" class="gs-tile-close" data-tile-close title="Close tile" aria-label="Close tile" hidden>×</button>
+        </div>
+        <div class="gs-tile-body">
+          <div class="tracks" id="tracksContainer">
+            <svg id="tracksSvg" width="100%" height="100%"></svg>
+            <canvas id="tracksWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
+          </div>
 
-    <!-- When multiple variant tracks: one .flow-track per track (flow-0, flow-1, ...) + shared flowWebGPU/flowOverlay.
-         When single: one canvas + flowWebGPU + flowOverlay (legacy). ensureFlowContainers() in main.js sets this up. -->
-    <div class="flow" id="flow">
-      <canvas class="canvas" id="flowCanvas"></canvas>
-      <canvas id="flowWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
-      <svg class="overlay" id="flowOverlay"></svg>
-    </div>
+          <!-- When multiple variant tracks: one .flow-track per track (flow-0, flow-1, ...) + shared flowWebGPU/flowOverlay.
+               When single: one canvas + flowWebGPU + flowOverlay (legacy). ensureFlowContainers() in main.js sets this up. -->
+          <div class="flow" id="flow">
+            <canvas class="canvas" id="flowCanvas"></canvas>
+            <canvas id="flowWebGPU" class="webgpu-canvas" width="100%" height="100%"></canvas>
+            <svg class="overlay" id="flowOverlay"></svg>
+          </div>
 
-    <!-- Indel lollipops, drawn ABOVE the variant (flow) canvas so they sit on the
-         variants (merged from the old standalone Indel track). Full-viewer SVG so
-         it shares the genome x-axis with the tracks SVG; pointer-events pass
-         through except on the lollipop hit targets. -->
-    <svg class="flow-indel-overlay" id="flowIndelOverlay"></svg>
+          <!-- Indel lollipops, drawn ABOVE the variant (flow) canvas so they sit on the
+               variants (merged from the old standalone Indel track). Full-viewer SVG so
+               it shares the genome x-axis with the tracks SVG; pointer-events pass
+               through except on the lollipop hit targets. -->
+          <svg class="flow-indel-overlay" id="flowIndelOverlay"></svg>
+
+          <!-- Track control pills sit above .flow (z-index) so variant/annotation
+               chrome stays hoverable and clickable over the alluvial band. -->
+          <div id="trackControls"></div>
+        </div>
+      </div>
+      <svg class="gs-tile-arc-overlay" id="tileArcOverlay"></svg>
+    </div>
 
     <div class="hud" id="hud"></div>
     <div class="tooltip" id="tooltip"></div>
@@ -263,6 +290,9 @@
       <span class="status-progress"><span class="status-progress-fill"></span></span>
     </div>
   </div>
+
+  <!-- Outside #main so it is not trapped under the right sidebar stacking context. -->
+  <button type="button" class="gs-add-tile-btn" id="addTileBtn" title="Add tile" aria-label="Add tile">+</button>
 
   <div class="sidebar-right" id="sidebarRight" style="position: absolute; right: 0; top: 36px; bottom: 0; width: 8px; z-index: 100; pointer-events: auto;">
     <div class="sidebar-right-content">

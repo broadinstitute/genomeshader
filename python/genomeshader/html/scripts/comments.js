@@ -919,13 +919,23 @@
   // carry a full-track .track-hover-area at z-index 100 that would otherwise eat
   // pin clicks). The overlay is click-through except the pins themselves.
   function ensureCommentPinOverlay(refSvg) {
-    const container = document.getElementById("tracksContainer")
-      || (refSvg && refSvg.parentNode);
+    // Prefer the bound multi-tile tracks container so pins land in the tile
+    // being painted — document.getElementById("tracksContainer") always hits t0.
+    const container = (typeof tracksContainer !== "undefined" && tracksContainer)
+      ? tracksContainer
+      : (document.getElementById("tracksContainer") || (refSvg && refSvg.parentNode));
     if (!container) return refSvg || null;
-    let ov = container.querySelector("#commentPinOverlay");
+    let ov = container.querySelector(".gs-comment-pin-overlay")
+      || container.querySelector("#commentPinOverlay")
+      || container.querySelector("[id^='commentPinOverlay']");
     if (!ov) {
       ov = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      ov.setAttribute("id", "commentPinOverlay");
+      // Class-scoped per tile; unique id so multi-tile never shares one overlay.
+      ov.setAttribute("class", "gs-comment-pin-overlay");
+      const hostId = container.id || "";
+      ov.setAttribute("id", (!hostId || hostId === "tracksContainer")
+        ? "commentPinOverlay"
+        : ("commentPinOverlay-" + hostId.replace(/^tracksContainer-/, "")));
       // Size via ATTRIBUTES, not inline style: the overscan live-pan sets an
       // inline style.width while dragging and clears it (removeProperty) on
       // settle — an inline width:100% here would get wiped too, collapsing the
