@@ -191,7 +191,10 @@ function gsEnsureTileStripDom() {
   // somehow still holds global ids — those move with their tile id).
   existing.forEach((el) => {
     // Don't destroy the original tracksContainer ids if this was t0 renamed —
-    // only remove orphaned nodes.
+    // only remove orphaned nodes. Release the column's GPU resources first.
+    if (typeof gsDisposeCanvasGpu === "function") {
+      el.querySelectorAll("canvas").forEach((cv) => gsDisposeCanvasGpu(cv));
+    }
     el.remove();
   });
 
@@ -241,6 +244,9 @@ function gsBindTileDom(tile) {
   if (typeof flowWebGPU !== "undefined") flowWebGPU = q("flowWebGPU") || flowWebGPU;
   if (typeof flowOverlay !== "undefined") flowOverlay = q("flowOverlay") || flowOverlay;
   if (typeof flowIndelOverlay !== "undefined") flowIndelOverlay = q("flowIndelOverlay") || flowIndelOverlay;
+  // The GPU objects follow the canvases (no-ops until the shared device exists).
+  if (typeof gsBindTileGpu === "function") gsBindTileGpu();
+  if (typeof gsInstallRepeatHover === "function" && tracksContainer) gsInstallRepeatHover(tracksContainer);
 }
 
 function gsBindTileHeaderEvents(el, tileId) {

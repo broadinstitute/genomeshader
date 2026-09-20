@@ -83,25 +83,9 @@ function renderFlowCanvas() {
     }
     if (flowInstancedRenderer) flowInstancedRenderer.clear();
     if (flowRibbonRenderer) flowRibbonRenderer.clear();
-    // Submit an empty GPU pass so leftover nodes/ribbons don't stay on the
-    // shared flowWebGPU canvas after every variant track is hidden/collapsed.
-    const liveFlowGpu = !!(flowWebGPU && flowWebGPU.id === "flowWebGPU" && flowWebGPUCore);
-    if (webgpuSupported && liveFlowGpu) {
-      try {
-        const encoder = flowWebGPUCore.createCommandEncoder();
-        const texture = flowWebGPUCore.getCurrentTexture();
-        const renderPass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: texture.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: "clear",
-            storeOp: "store",
-          }],
-        });
-        renderPass.end();
-        flowWebGPUCore.submit([encoder.finish()]);
-      } catch (e) {}
-    }
+    // Present the now-empty GPU layer so leftover nodes/ribbons don't stay on
+    // this tile's flowWebGPU canvas after every variant track is hidden/collapsed.
+    gsFlushGpuCanvas(flowWebGPUCore, flowInstancedRenderer, flowWebGPU, flowRibbonRenderer);
     return;
   }
 
@@ -112,13 +96,6 @@ function renderFlowCanvas() {
   const junctionX = 40;
   const W = isVertical ? flowWidthPx() : renderFlowWidthPx();
   const totalFlowH = isVertical ? renderFlowHeightPx() : flowHeightPx();
-  // Secondary tiles own a flowWebGPU canvas that was never init'd — Canvas2D only.
-  const liveFlowGpu = !!(flowWebGPU && flowWebGPU.id === "flowWebGPU" && flowWebGPUCore
-    && !window.__GS_FORCE_SVG_TRACKS);
-  // Keep the unused WebGPU layer from covering Canvas2D ribbons/nodes.
-  if (typeof flowWebGPU !== "undefined" && flowWebGPU) {
-    flowWebGPU.style.display = liveFlowGpu ? "" : "none";
-  }
   const expandedInsertionsForFlow = state.expandedInsertions || new Set();
   const insertionLookupForFlow = (typeof insertionVariantsLookup !== "undefined" && Array.isArray(insertionVariantsLookup))
     ? insertionVariantsLookup
@@ -351,21 +328,7 @@ function renderFlowCanvas() {
       rgba = [parseInt(m[1])/255, parseInt(m[2])/255, parseInt(m[3])/255, m[4] !== undefined ? parseFloat(m[4]) : 1.0];
     }
 
-    if (webgpuSupported && flowRibbonRenderer && liveFlowGpu) {
-      flowRibbonRenderer.addRibbon(topP0, topP1, topP2, topP3, botP0, botP1, botP2, botP3, rgba);
-      return;
-    }
-
-    // Canvas2D fallback for secondary / SVG-forced tiles (no live flowWebGPU).
-    if (!ctx) return;
-    ctx.beginPath();
-    ctx.moveTo(srcX, sTop);
-    ctx.bezierCurveTo(srcX + handle, sTop, dstX - handle, dTop, dstX, dTop);
-    ctx.lineTo(dstX, dBot);
-    ctx.bezierCurveTo(dstX - handle, dBot, srcX + handle, sBot, srcX, sBot);
-    ctx.closePath();
-    ctx.fillStyle = color;
-    ctx.fill();
+    if (flowRibbonRenderer) flowRibbonRenderer.addRibbon(topP0, topP1, topP2, topP3, botP0, botP1, botP2, botP3, rgba);
   };
 
   // drawRibbonVertical: WebGPU Bezier ribbon renderer for vertical mode
@@ -433,22 +396,8 @@ function renderFlowCanvas() {
       rgba = [parseInt(m[1])/255, parseInt(m[2])/255, parseInt(m[3])/255, m[4] !== undefined ? parseFloat(m[4]) : 1.0];
     }
 
-    if (webgpuSupported && flowRibbonRenderer && liveFlowGpu) {
-      // For vertical ribbons, we pass left/right edges as top/bottom edges to the renderer
-      flowRibbonRenderer.addRibbon(leftP0, leftP1, leftP2, leftP3, rightP0, rightP1, rightP2, rightP3, rgba);
-      return;
-    }
-
-    // Canvas2D fallback for secondary / SVG-forced tiles.
-    if (!ctx) return;
-    ctx.beginPath();
-    ctx.moveTo(sLeft, srcY);
-    ctx.bezierCurveTo(sLeft, srcY - handle, dLeft, dstY + handle, dLeft, dstY);
-    ctx.lineTo(dRight, dstY);
-    ctx.bezierCurveTo(dRight, dstY + handle, sRight, srcY - handle, sRight, srcY);
-    ctx.closePath();
-    ctx.fillStyle = color;
-    ctx.fill();
+    // For vertical ribbons, we pass left/right edges as top/bottom edges to the renderer
+    if (flowRibbonRenderer) flowRibbonRenderer.addRibbon(leftP0, leftP1, leftP2, leftP3, rightP0, rightP1, rightP2, rightP3, rgba);
   };
 
   // Helper function to parse rgba string and convert to hex for WebGPU
@@ -510,7 +459,7 @@ function renderFlowCanvas() {
   
   // Use WebGPU for variant columns if available, otherwise fall back to Canvas 2D
   // Use flowWebGPU instead of tracksWebGPU for variant columns
-  const useWebGPU = webgpuSupported && flowInstancedRenderer && liveFlowGpu;
+  const useWebGPU = !!flowInstancedRenderer;
   const devicePixelRatio = window.devicePixelRatio || 1;
   const blueHex = rgbaToHex(colBlue);
   const grayHex = rgbaToHex(colGray);
@@ -930,9 +879,6 @@ function renderFlowCanvas() {
           sh * devicePixelRatio,
           rgba
         );
-      } else if (ctx) {
-        ctx.fillStyle = seg.color;
-        ctx.fillRect(sx, sy, sw, sh);
       }
       cursor += span;
     }
@@ -1636,36 +1582,28 @@ function renderFlowCanvas() {
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
-        const useWebGPU = webgpuSupported && flowInstancedRenderer && liveFlowGpu;
+        const useWebGPU = !!flowInstancedRenderer;
         const drewGrouped = fillAlleleNodeGrouped({
           ctx, variant: v, alleleKey, nodeX, nodeY, nodeW, nodeH,
           isVertical: true, useWebGPU, flowInstancedRenderer, yBandToFlow, devicePixelRatio,
           fallbackFill: colors.fillColor,
         });
         if (!drewGrouped) {
-          if (useWebGPU) {
-            // Parse rgba color string to array for WebGPU
-            const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-            if (fillMatch) {
-              const r = parseInt(fillMatch[1]) / 255;
-              const g = parseInt(fillMatch[2]) / 255;
-              const b = parseInt(fillMatch[3]) / 255;
-              const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
-              // Scale coordinates to physical pixels for WebGPU (yBandToFlow for multi-track)
-              flowInstancedRenderer.addRect(
-                nodeX * devicePixelRatio,
-                yBandToFlow(nodeY) * devicePixelRatio,
-                nodeW * devicePixelRatio,
-                nodeH * devicePixelRatio,
-                [r, g, b, a]
-              );
-            }
-          } else {
-            // Fallback to Canvas2D
-            ctx.fillStyle = colors.fillColor;
-            ctx.beginPath();
-            roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
-            ctx.fill();
+          // Parse rgba color string to array for WebGPU
+          const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+          if (fillMatch) {
+            const r = parseInt(fillMatch[1]) / 255;
+            const g = parseInt(fillMatch[2]) / 255;
+            const b = parseInt(fillMatch[3]) / 255;
+            const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
+            // Scale coordinates to physical pixels for WebGPU (yBandToFlow for multi-track)
+            flowInstancedRenderer.addRect(
+              nodeX * devicePixelRatio,
+              yBandToFlow(nodeY) * devicePixelRatio,
+              nodeW * devicePixelRatio,
+              nodeH * devicePixelRatio,
+              [r, g, b, a]
+            );
           }
         }
         
@@ -1933,36 +1871,28 @@ function renderFlowCanvas() {
         
         // Use WebGPU for fill if available, otherwise fall back to Canvas2D
         const devicePixelRatio = window.devicePixelRatio || 1;
-        const useWebGPU = webgpuSupported && flowInstancedRenderer && liveFlowGpu;
+        const useWebGPU = !!flowInstancedRenderer;
         const drewGrouped = fillAlleleNodeGrouped({
           ctx, variant: v, alleleKey, nodeX, nodeY, nodeW, nodeH,
           isVertical: false, useWebGPU, flowInstancedRenderer, yBandToFlow, devicePixelRatio,
           fallbackFill: colors.fillColor,
         });
         if (!drewGrouped) {
-          if (useWebGPU) {
-            // Parse rgba color string to array for WebGPU
-            const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-            if (fillMatch) {
-              const r = parseInt(fillMatch[1]) / 255;
-              const g = parseInt(fillMatch[2]) / 255;
-              const b = parseInt(fillMatch[3]) / 255;
-              const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
-              // Scale coordinates to physical pixels for WebGPU
-              flowInstancedRenderer.addRect(
-                nodeX * devicePixelRatio,
-                yBandToFlow(nodeY) * devicePixelRatio,
-                nodeW * devicePixelRatio,
-                nodeH * devicePixelRatio,
-                [r, g, b, a]
-              );
-            }
-          } else {
-            // Fallback to Canvas2D
-            ctx.fillStyle = colors.fillColor;
-            ctx.beginPath();
-            roundRect(ctx, nodeX, nodeY, nodeW, nodeH, 5);
-            ctx.fill();
+          // Parse rgba color string to array for WebGPU
+          const fillMatch = colors.fillColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+          if (fillMatch) {
+            const r = parseInt(fillMatch[1]) / 255;
+            const g = parseInt(fillMatch[2]) / 255;
+            const b = parseInt(fillMatch[3]) / 255;
+            const a = fillMatch[4] !== undefined ? parseFloat(fillMatch[4]) : 1.0;
+            // Scale coordinates to physical pixels for WebGPU
+            flowInstancedRenderer.addRect(
+              nodeX * devicePixelRatio,
+              yBandToFlow(nodeY) * devicePixelRatio,
+              nodeW * devicePixelRatio,
+              nodeH * devicePixelRatio,
+              [r, g, b, a]
+            );
           }
         }
         
@@ -2747,71 +2677,17 @@ function renderFlowCanvas() {
   // Store node positions globally for hit testing (across all tracks/bands).
   window._alleleNodePositions = allBandNodePositions;
 
-  // Execute WebGPU render pass after variant columns are added.
-  // Only flush the live classic-id flowWebGPU — secondary tiles paint Canvas2D only.
-  const hasFlowInstances = flowInstancedRenderer && 
-      (flowInstancedRenderer.rectInstances.length > 0 || flowInstancedRenderer.lineInstances.length > 0);
+  // Present this tile's flow layer (ribbons underneath, nodes on top).
   const hasRibbonInstances = flowRibbonRenderer && flowRibbonRenderer.instances.length > 0;
-  if (webgpuSupported && flowInstancedRenderer && liveFlowGpu && (hasFlowInstances || hasRibbonInstances)) {
-    try {
-      // Update projection matrix for current canvas size
-      const devicePixelRatio = window.devicePixelRatio || 1;
-      const width = flowWebGPU.clientWidth * devicePixelRatio;
-      const height = flowWebGPU.clientHeight * devicePixelRatio;
-      
-      if (flowWebGPU.width !== width || flowWebGPU.height !== height) {
-        flowWebGPU.width = width;
-        flowWebGPU.height = height;
-        flowWebGPUCore.handleResize();
-      }
-      
-      const encoder = flowWebGPUCore.createCommandEncoder();
-      const texture = flowWebGPUCore.getCurrentTexture();
-      const renderPass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: texture.createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: 'clear', // Clear canvas on each render
-          storeOp: 'store',
-        }],
-      });
-      
-      if (flowRibbonRenderer) flowRibbonRenderer.render(encoder, renderPass);
-      flowInstancedRenderer.render(encoder, renderPass);
-      renderPass.end();
-      flowWebGPUCore.submit([encoder.finish()]);
+  gsFlushGpuCanvas(flowWebGPUCore, flowInstancedRenderer, flowWebGPU, flowRibbonRenderer);
 
-      // Ensure alleuvial diagram appears on first paint: schedule one deferred redraw
-      // when we have ribbons so the next frame runs again (handles zero-sized canvas on
-      // first run or WebGPU presenting after first frame). Only once per page load.
-      if (hasRibbonInstances && flowWebGPU && !window._flowRibbonDeferDone) {
-        window._flowRibbonDeferDone = true;
-        requestAnimationFrame(() => {
-          if (typeof renderFlowCanvas === 'function') renderFlowCanvas();
-        });
-      }
-    } catch (error) {
-      console.error("Flow WebGPU render error:", error);
-      // Fallback: clear instances and continue with Canvas 2D only
-      flowInstancedRenderer.clear();
-    }
-  } else if (webgpuSupported && flowInstancedRenderer && liveFlowGpu) {
-    // Clear WebGPU canvas if no instances to render
-    try {
-      const encoder = flowWebGPUCore.createCommandEncoder();
-      const texture = flowWebGPUCore.getCurrentTexture();
-      const renderPass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: texture.createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        }],
-      });
-      renderPass.end();
-      flowWebGPUCore.submit([encoder.finish()]);
-    } catch (error) {
-      // Ignore errors when clearing
-    }
+  // Ensure the alluvial diagram appears on first paint: schedule one deferred
+  // redraw when we have ribbons so the next frame runs again (handles a
+  // zero-sized canvas on first run). Only once per page load.
+  if (hasRibbonInstances && flowWebGPU && !window._flowRibbonDeferDone) {
+    window._flowRibbonDeferDone = true;
+    requestAnimationFrame(() => {
+      if (typeof renderFlowCanvas === 'function') renderFlowCanvas();
+    });
   }
 }

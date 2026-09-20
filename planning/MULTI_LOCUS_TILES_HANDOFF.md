@@ -32,9 +32,11 @@ owns a persistent reads stack, so focus changes cannot blank a column.
   blanks a tile). `gsWithTrackView` swaps a tile's view into the track for the paint and
   restores the focused tile's live payload afterwards. Single-tile mode resolves through the
   same views.
-- **Multi-tile reads paint through Canvas2D for every tile** (deterministic, identical
-  columns). Single-tile mode is unchanged (WebGPU). Closing back to one tile re-creates
-  WebGPU renderers if the survivor only has 2D ones.
+- **Every tile paints with WebGPU** — reads, tracks (ruler/genes/repeats/reference) and flow —
+  on the page's ONE shared `GPUDevice` and ONE set of compiled pipelines. There is no
+  Canvas2D/SVG fallback for data; without WebGPU the viewer shows a message. (This replaced
+  an interim design where multi-tile reads painted through Canvas2D and unfocused tiles fell
+  back to SVG.) See `planning/RENDERING_ARCHITECTURE.md`.
 - **Fetch identity is (sample, BAM pin, chunk)** — see "Data loading" below. A job is never
   keyed by "the current locus" at run time (a job queued while A was focused used to fetch and
   cache B's window when it finally ran), and one tile's request can never cancel another's.

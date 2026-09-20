@@ -465,6 +465,7 @@ function gsEnsureSmartRenderers() {
 function gsDisposeTileRenderers(tile) {
   if (!tile || !(tile._smartRenderers instanceof Map)) return;
   tile._smartRenderers.forEach((renderer) => {
+    gsDisposeRenderer(renderer);
     try { if (renderer.container && renderer.container._gsResizeObserver) renderer.container._gsResizeObserver.disconnect(); } catch (_) {}
     try { if (renderer.container && renderer.container.parentNode) renderer.container.parentNode.removeChild(renderer.container); } catch (_) {}
   });
@@ -472,8 +473,9 @@ function gsDisposeTileRenderers(tile) {
   if (tile._readsViews) tile._readsViews.clear();
 }
 
-// Initialize the reads renderer (Canvas2D always; WebGPU when this is the
-// single/primary tile) for one Smart track inside one tile.
+// Initialize the reads renderer for one Smart track inside one tile. Every tile
+// paints with WebGPU on the page's single shared device and pipelines, so a
+// single-tile and a multi-tile column are drawn by exactly the same code.
 async function initSmartTrackWebGPU(trackId, tile) {
   tile = tile || ((typeof gsActiveTile === "function") ? gsActiveTile() : null);
   const renderers = gsTileRenderers(tile);
@@ -490,9 +492,7 @@ async function initSmartTrackWebGPU(trackId, tile) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) { if (tile && tile._rendererPending) tile._rendererPending.delete(trackId); return; }
 
-  // Each tile hosts its own stack. Multi-tile reads paint through Canvas2D, so
-  // only the single/primary tile spends a GPU device on a WebGPU renderer.
-  const allowGpu = !tile || !state.tiles || state.tiles.length <= 1 || state.tiles[0] === tile;
+  // Each tile hosts its own stack.
   const hostTracks = gsTileTracksHost(tile)
     || ((typeof tracksContainer !== "undefined" && tracksContainer)
       ? tracksContainer
@@ -601,60 +601,25 @@ async function initSmartTrackWebGPU(trackId, tile) {
     container._gsResizeObserver = ro;
   } catch (e) {}
 
-  function installCanvas2dFallback(reason) {
-    if (reason && allowGpu) console.warn(`Smart track ${trackId}: ${reason}`);
-    renderers.set(trackId, {
-      webgpuCore: null,
-      instancedRenderer: null,
-      canvas,
-      webgpuCanvas,
-      textCanvas,
-      spacer,
-      container,
-      tileId
-    });
-    pendingDone();
-    container.addEventListener("scroll", () => {
-      scheduleSmartTrackRender(trackId, tileId);
-    });
-    scheduleRepaint();
-  }
-
-  if (!allowGpu) {
-    installCanvas2dFallback('');
-    return;
-  }
-
-  if (!webgpuSupported || !navigator.gpu) {
-    installCanvas2dFallback('WebGPU not supported, using Canvas2D fallback');
-    return;
-  }
-
   try {
-    // Wait for canvas to have dimensions
-    const checkDimensions = () => {
-      const rect = webgpuCanvas.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    };
-    
-    // Wait up to 2 seconds for dimensions
-    for (let i = 0; i < 40; i++) {
-      if (checkDimensions()) break;
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    
-    if (!checkDimensions()) {
-      installCanvas2dFallback('Canvas dimensions not ready, using Canvas2D fallback');
-      return;
-    }
-    
-    // Initialize WebGPU
+    // The shared device is requested once at startup; wait for it (rather than
+    // sampling a "supported" flag that may not be set yet) so a track created
+    // early can never end up without GPU rendering.
+    await gsGpuReady();
+
+    // Dimensions are set by renderSmartTrack every frame and the projection
+    // follows the canvas size (setViewport), so no need to wait for layout here.
     const webgpuCore = new WebGPUCore();
     await webgpuCore.init(webgpuCanvas);
     const instancedRenderer = new InstancedRenderer(webgpuCore);
     
-    // The tile may have been closed while the GPU device came up.
-    if (!container.isConnected) { pendingDone(); return; }
+    // The tile may have been closed while the canvas attached.
+    if (!container.isConnected) {
+      instancedRenderer.dispose();
+      webgpuCore.dispose();
+      pendingDone();
+      return;
+    }
     // Store renderer objects
     renderers.set(trackId, {
       webgpuCore,
@@ -674,16 +639,22 @@ async function initSmartTrackWebGPU(trackId, tile) {
       scheduleSmartTrackRender(trackId, tileId);
     });
 
-    // Render now that the renderer exists. WebGPU init is async and can finish
-    // AFTER the reads-load renderAll already ran (found no renderer) — notably in
-    // full screen, where the canvas takes longer to get dimensions. Without this,
-    // reads don't appear until a scroll triggers renderSmartTrack.
+    // Render now that the renderer exists. Attaching is async and can finish
+    // AFTER the reads-load renderAll already ran (found no renderer). Without
+    // this, reads don't appear until a scroll triggers renderSmartTrack.
     scheduleRepaint();
-
-    console.log(`Smart track ${trackId}: WebGPU initialized`);
   } catch (error) {
-    installCanvas2dFallback('Failed to initialize WebGPU: ' + (error && error.message ? error.message : error));
+    pendingDone();
+    if (typeof gsShowWebGpuRequired === "function") gsShowWebGpuRequired(error);
+    else console.error(`Smart track ${trackId}: WebGPU initialization failed`, error);
   }
+}
+
+/** Release a renderer's GPU resources (its shared device/pipelines stay). */
+function gsDisposeRenderer(renderer) {
+  if (!renderer) return;
+  try { if (renderer.instancedRenderer) renderer.instancedRenderer.dispose(); } catch (_) {}
+  try { if (renderer.webgpuCore) renderer.webgpuCore.dispose(); } catch (_) {}
 }
 
 // Remove a Smart track's renderer from EVERY tile (each column owns one).
@@ -699,6 +670,7 @@ function removeSmartTrackWebGPU(trackId) {
   for (const map of maps) {
     const renderer = map.get(trackId);
     if (!renderer) continue;
+    gsDisposeRenderer(renderer);
     if (renderer.container) {
       try { if (renderer.container._gsResizeObserver) renderer.container._gsResizeObserver.disconnect(); } catch (e) {}
       if (renderer.container.parentNode) {
@@ -3273,6 +3245,25 @@ if (typeof window !== "undefined") {
   };
 
   window.__GS_TEST_renderAll = function () { renderAll(); };
+  /**
+   * GPU state for tests: whether the shared device is up, how many devices /
+   * pipelines / canvases exist, and how many primitives the bound tile's tracks
+   * and flow renderers hold from their last paint.
+   */
+  window.__GS_TEST_gpuStats = function () {
+    const sh = (typeof gsGpuShared === "function") ? gsGpuShared() : null;
+    return {
+      ready: !!(sh && sh.device),
+      epoch: sh ? sh.epoch : 0,
+      pipelines: sh ? sh.pipelines.size : 0,
+      cores: sh ? sh.cores.size : 0,
+      tracks: instancedRenderer.getStats(),
+      flow: flowInstancedRenderer.getStats(),
+      ribbons: flowRibbonRenderer.instances.length,
+      culledTracks: (state.tiles || []).reduce((n, t) => n + (t._smartRenderers
+        ? [...t._smartRenderers.values()].filter((r) => r._culled).length : 0), 0),
+    };
+  };
   window.__GS_TEST_send = function (type, data, t) { return sendCommMessage(type, data, t); };
 
   /** Simulate a hole: drop cached chunks whose key contains `pinSubstr` and intersect `sig`'s window. */
@@ -3317,6 +3308,25 @@ if (typeof window !== "undefined") {
     return out;
   };
 
+  /**
+   * RGBA pixels of any painted canvas: a 2D canvas is read directly; a WebGPU
+   * canvas (which has no 2D context and cannot be read after its frame) via the
+   * shadow copy taken at presentation.
+   */
+  function _gsCanvasPixels(cv) {
+    let ctx = null;
+    try { ctx = cv.getContext("2d"); } catch (_) {}
+    if (!ctx) {
+      // WebGPU canvas: the shadow copy taken when it was last presented
+      // (window.__GS_TEST_CAPTURE, set by the test harness page).
+      const shadow = cv._gsShadow;
+      if (!shadow) return new Uint8ClampedArray(0);
+      ctx = shadow.getContext("2d", { willReadFrequently: true });
+      return ctx.getImageData(0, 0, shadow.width, shadow.height).data;
+    }
+    return ctx.getImageData(0, 0, cv.width, cv.height).data;
+  }
+
   /** Amber soft-clip marker pixels (245,158,11) painted in each tile/track container. */
   window.__GS_TEST_tileAmber = function () {
     const out = {};
@@ -3326,10 +3336,10 @@ if (typeof window !== "undefined") {
       if (root) {
         root.querySelectorAll(".smart-track-container").forEach((c) => {
           let n = 0;
-          c.querySelectorAll("canvas.canvas, canvas.text-overlay").forEach((cv) => {
+          c.querySelectorAll("canvas.canvas, canvas.webgpu-canvas, canvas.text-overlay").forEach((cv) => {
             if (!cv.width || !cv.height || cv.style.display === "none") return;
             try {
-              const d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+              const d = _gsCanvasPixels(cv);
               for (let i = 0; i < d.length; i += 4) {
                 if (d[i + 3] > 100 && Math.abs(d[i] - 245) < 12 && Math.abs(d[i + 1] - 158) < 14 && d[i + 2] < 60) n++;
               }
@@ -3345,7 +3355,8 @@ if (typeof window !== "undefined") {
 
   /**
    * Painted-pixel dump per tile per smart track: number of non-transparent
-   * pixels across each track's 2D canvases inside that tile's DOM. Tests use
+   * pixels across each track's canvases (2D, WebGPU and text overlay) inside that
+   * tile's DOM. Tests use
    * this (not cache keys) to assert that a column actually SHOWS its reads.
    * Returns { [tileId]: { [trackId]: inkPixels } }.
    */
@@ -3358,10 +3369,10 @@ if (typeof window !== "undefined") {
         root.querySelectorAll(".smart-track-container").forEach((c) => {
           const tid = c.dataset.trackId;
           let ink = 0;
-          c.querySelectorAll("canvas.canvas, canvas.text-overlay").forEach((cv) => {
+          c.querySelectorAll("canvas.canvas, canvas.webgpu-canvas, canvas.text-overlay").forEach((cv) => {
             if (!cv.width || !cv.height || cv.style.display === "none") return;
             try {
-              const d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+              const d = _gsCanvasPixels(cv);
               for (let i = 3; i < d.length; i += 4) if (d[i] > 0) ink++;
             } catch (_) { /* tainted / lost context */ }
           });

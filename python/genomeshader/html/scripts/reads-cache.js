@@ -200,7 +200,15 @@ function gsCoverageGaps(chunks, s, e) {
 // span a chunk boundary and unioning their elements.
 // ---------------------------------------------------------------------------
 const _assembleMemo = new Map();
-const _ASSEMBLE_MEMO_MAX = 64;
+// The memo must hold the whole working set — one entry per (track, tile) showing
+// a distinct chunk set — or LRU eviction thrashes: with more entries in use than
+// slots, every paint evicts what the next paint needs and re-merges every chunk
+// (that was ~70% of a repaint at 50 tracks x 2 tiles). Sized from live state.
+function _assembleMemoMax() {
+  const tracks = (state.smartTracks || []).length;
+  const tiles = (state.tiles || []).length || 1;
+  return Math.max(64, 3 * tracks * tiles);
+}
 
 function _readIdentity(p, i) {
   return p.query_name[i] + "|" + p.reference_start[i] + "|" + p.reference_end[i] + "|"
@@ -253,7 +261,8 @@ function gsAssembleChunks(chunks) {
   if (hit) { _assembleMemo.delete(key); _assembleMemo.set(key, hit); return hit; }
   const merged = _mergeReadPayloads(withReads.map((c) => c.reads));
   _assembleMemo.set(key, merged);
-  while (_assembleMemo.size > _ASSEMBLE_MEMO_MAX) _assembleMemo.delete(_assembleMemo.keys().next().value);
+  const _memoMax = _assembleMemoMax();
+  while (_assembleMemo.size > _memoMax) _assembleMemo.delete(_assembleMemo.keys().next().value);
   return merged;
 }
 
@@ -267,6 +276,12 @@ function gsAssembleChunks(chunks) {
 
 function _readsDisplayKey(track) {
   try { return JSON.stringify((track && track.readDisplay) || null); } catch (_) { return ""; }
+}
+
+function _sameChunkRefs(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 function gsResolveTrackView(track, tile) {
@@ -285,10 +300,16 @@ function gsResolveTrackView(track, tile) {
     if (chunks.length) {
       for (const c of chunks) { _chunks.delete(c.key); _chunks.set(c.key, c); }   // LRU touch
       const exact = gsCoverageGaps(chunks, w.s, w.e).length === 0;
-      const reads = gsAssembleChunks(chunks);
+      // Chunks are immutable (a re-cache replaces the object), so the same chunk
+      // objects mean the same payload: reuse the view's reads without touching
+      // the assemble memo at all.
+      const reads = (view && view.chunkRefs && _sameChunkRefs(view.chunkRefs, chunks))
+        ? view.reads
+        : gsAssembleChunks(chunks);
       if (!view || view.reads !== reads || view.displayKey !== dKey) {
         view = { reads, displayKey: dKey, layout: reads ? processReadsData(reads, { display }) : null };
       }
+      view.chunkRefs = chunks;
       const hullSig = w.contig + ":" + chunks[0].start + "-" + chunks[chunks.length - 1].end;
       view.sig = exact ? wantSig : hullSig;
       view.exact = exact;
@@ -464,6 +485,7 @@ function _gsSaveTileAliases() {
     flowWebGPU: (typeof flowWebGPU !== "undefined") ? flowWebGPU : null,
     flowOverlay: (typeof flowOverlay !== "undefined") ? flowOverlay : null,
     flowIndelOverlay: (typeof flowIndelOverlay !== "undefined") ? flowIndelOverlay : null,
+    webgpuCore, instancedRenderer, flowWebGPUCore, flowInstancedRenderer, flowRibbonRenderer,
   };
 }
 function _gsRestoreTileAliases(a) {
@@ -478,6 +500,9 @@ function _gsRestoreTileAliases(a) {
   if (typeof flowWebGPU !== "undefined") flowWebGPU = a.flowWebGPU;
   if (typeof flowOverlay !== "undefined") flowOverlay = a.flowOverlay;
   if (typeof flowIndelOverlay !== "undefined") flowIndelOverlay = a.flowIndelOverlay;
+  webgpuCore = a.webgpuCore; instancedRenderer = a.instancedRenderer;
+  flowWebGPUCore = a.flowWebGPUCore; flowInstancedRenderer = a.flowInstancedRenderer;
+  flowRibbonRenderer = a.flowRibbonRenderer;
 }
 function _gsApplyTileToState(tile) {
   state.contig = tile.contig;
@@ -489,11 +514,14 @@ function _gsApplyTileToState(tile) {
   if (tile.expandedInsertions instanceof Set) state.expandedInsertions = tile.expandedInsertions;
 }
 
+// > 0 while a tile-aware paint is running (renderSmartTrack must not redirect again).
+let _gsTilePaintDepth = 0;
+
 /**
- * Paint one smart track into ONE tile's own container. In multi-tile mode all
- * reads paint through Canvas2D (deterministic, identical for every column).
- * Assumes aliases/DOM are already bound to `tile` when called from renderAll
- * (opts.bound); otherwise binds + restores them (scroll / resize repaints).
+ * Paint one smart track into ONE tile's own container, on that tile's own GPU
+ * canvas. Assumes aliases/DOM are already bound to `tile` when called from
+ * renderAll (opts.bound); otherwise binds + restores them (scroll / resize
+ * repaints).
  */
 function gsRenderSmartTrackInTile(trackId, tile, opts) {
   const track = (state.smartTracks || []).find((t) => t.id === trackId);
@@ -502,12 +530,11 @@ function gsRenderSmartTrackInTile(trackId, tile, opts) {
   if (!tile || !multi) { renderSmartTrack(trackId); return; }
   if (tile.blank) return;
   const paint = () => {
-    const prevForce = window.__GS_FORCE_SMART_TRACK_CANVAS2D;
-    window.__GS_FORCE_SMART_TRACK_CANVAS2D = true;
+    _gsTilePaintDepth++;
     try {
       gsWithTrackView(track, tile, () => renderSmartTrack(trackId));
     } finally {
-      window.__GS_FORCE_SMART_TRACK_CANVAS2D = prevForce;
+      _gsTilePaintDepth--;
     }
   };
   if (opts && opts.bound) {

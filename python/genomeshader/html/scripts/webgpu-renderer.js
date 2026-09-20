@@ -1,33 +1,60 @@
+// Instanced 2D primitives (rects / triangles / lines) on the SHARED GPU device.
+//
+// Pipelines are compiled once per device (GpuShared.pipeline) and reused by every
+// renderer. Each renderer only owns its staging arrays and GPU instance buffers.
+// Instances are written straight into growable Float32Arrays — no per-primitive
+// objects — so a paint of hundreds of thousands of primitives allocates nothing.
+const GS_RECT_STRIDE = 8;      // x,y (center), w,h, r,g,b,a
+const GS_TRI_STRIDE = 10;      // v0.xy v1.xy v2.xy, r,g,b,a
+const GS_LINE_STRIDE = 8;      // x0,y0, x1,y1, r,g,b,a
+
 class InstancedRenderer {
   constructor(webgpuCore) {
     this.core = webgpuCore;
-    this.device = webgpuCore.device;
-    
-    // Rectangle rendering
-    this.rectPipeline = null;
-    this.rectInstances = [];
+    this._epoch = -1;           // shared-device epoch our pipelines / buffers belong to
+
+    // Staging: one growable Float32Array per primitive kind + a live count.
+    this._rect = new Float32Array(GS_RECT_STRIDE * 256);
+    this._rectN = 0;
+    this._tri = new Float32Array(GS_TRI_STRIDE * 16);
+    this._triN = 0;
+    this._line = new Float32Array(GS_LINE_STRIDE * 64);
+    this._lineN = 0;
+
+    // GPU-side instance buffers (capacity in bytes) and cached bind groups.
     this.rectBuffer = null;
-    this.rectVertexBuffer = null;
-    
-    // Triangle rendering
-    this.trianglePipeline = null;
-    this.triangleInstances = [];
     this.triangleBuffer = null;
-    this.triangleVertexBuffer = null;
-    
-    // Line rendering
-    this.linePipeline = null;
-    this.lineInstances = [];
     this.lineBuffer = null;
-    
+    this._bind = { rect: null, tri: null, line: null, ubo: null };
+
+    this.rectPipeline = null;
+    this.trianglePipeline = null;
+    this.linePipeline = null;
+
     this.init();
   }
 
+  get device() { return this.core.device; }
+
   init() {
-    this.createRectPipeline();
-    this.createTrianglePipeline();
-    this.createLinePipeline();
-    this.createGeometryBuffers();
+    this._bindToDevice();
+  }
+
+  // (Re)attach to the current shared device: fetch the shared pipelines and drop
+  // any buffers / bind groups that belonged to a previous (lost) device.
+  _bindToDevice() {
+    const shared = this.core.shared;
+    this._epoch = shared.epoch;
+    this.rectBuffer = this.triangleBuffer = this.lineBuffer = null;
+    this._bind = { rect: null, tri: null, line: null, ubo: null };
+    this.rectPipeline = shared.pipeline("rect", () => { this.createRectPipeline(); return this.rectPipeline; });
+    this.trianglePipeline = shared.pipeline("triangle", () => { this.createTrianglePipeline(); return this.trianglePipeline; });
+    this.linePipeline = shared.pipeline("line", () => { this.createLinePipeline(); return this.linePipeline; });
+  }
+
+  /** True when there is anything to draw. */
+  hasInstances() {
+    return (this._rectN | this._triN | this._lineN) > 0;
   }
 
   // Convert hex color to normalized RGBA
@@ -403,54 +430,109 @@ class InstancedRenderer {
     // Line uses line-list, no vertex buffer needed (generated in shader)
   }
 
+  _growRect(n) {
+    const need = (this._rectN + n) * GS_RECT_STRIDE;
+    if (need <= this._rect.length) return;
+    const next = new Float32Array(Math.max(need, this._rect.length * 2));
+    next.set(this._rect.subarray(0, this._rectN * GS_RECT_STRIDE));
+    this._rect = next;
+  }
+
   // Add rectangle instance
   // color can be: hex string (e.g., "#FF0000"), hex number, or rgba array [r, g, b, a]
   addRect(x, y, width, height, color, alpha = 1.0) {
-    let rgba;
+    let r, g, b, a;
     if (Array.isArray(color) && color.length >= 3) {
-      // Already an rgba array
-      rgba = color.length === 4 ? color : [...color, alpha];
+      r = color[0]; g = color[1]; b = color[2];
+      a = color.length === 4 ? color[3] : alpha;
     } else {
-      // Convert hex to rgba
-      rgba = this.hexToRgba(color, alpha);
+      const c = this.hexToRgba(color, alpha);
+      r = c[0]; g = c[1]; b = c[2]; a = c[3];
     }
-    this.rectInstances.push({
-      position: [x + width / 2, y + height / 2], // center position
-      size: [width, height],
-      color: rgba,
-    });
+    if (this._rect.length < (this._rectN + 1) * GS_RECT_STRIDE) this._growRect(1);
+    const o = this._rectN * GS_RECT_STRIDE;
+    const d = this._rect;
+    d[o] = x + width / 2;       // center position
+    d[o + 1] = y + height / 2;
+    d[o + 2] = width;
+    d[o + 3] = height;
+    d[o + 4] = r; d[o + 5] = g; d[o + 6] = b; d[o + 7] = a;
+    this._rectN++;
   }
 
   // Add triangle instance
   addTriangle(x0, y0, x1, y1, x2, y2, color, alpha = 1.0) {
-    const rgba = this.hexToRgba(color, alpha);
-    this.triangleInstances.push({
-      v0: [x0, y0],
-      v1: [x1, y1],
-      v2: [x2, y2],
-      color: rgba,
-    });
+    const c = this.hexToRgba(color, alpha);
+    if (this._tri.length < (this._triN + 1) * GS_TRI_STRIDE) {
+      const next = new Float32Array(Math.max((this._triN + 1) * GS_TRI_STRIDE, this._tri.length * 2));
+      next.set(this._tri.subarray(0, this._triN * GS_TRI_STRIDE));
+      this._tri = next;
+    }
+    const o = this._triN * GS_TRI_STRIDE;
+    const d = this._tri;
+    d[o] = x0; d[o + 1] = y0; d[o + 2] = x1; d[o + 3] = y1; d[o + 4] = x2; d[o + 5] = y2;
+    d[o + 6] = c[0]; d[o + 7] = c[1]; d[o + 8] = c[2]; d[o + 9] = c[3];
+    this._triN++;
   }
 
   // Add line instance
   addLine(x0, y0, x1, y1, color, alpha = 1.0) {
-    const rgba = this.hexToRgba(color, alpha);
-    this.lineInstances.push({
-      start: [x0, y0],
-      end: [x1, y1],
-      color: rgba,
-    });
+    const c = this.hexToRgba(color, alpha);
+    if (this._line.length < (this._lineN + 1) * GS_LINE_STRIDE) {
+      const next = new Float32Array(Math.max((this._lineN + 1) * GS_LINE_STRIDE, this._line.length * 2));
+      next.set(this._line.subarray(0, this._lineN * GS_LINE_STRIDE));
+      this._line = next;
+    }
+    const o = this._lineN * GS_LINE_STRIDE;
+    const d = this._line;
+    d[o] = x0; d[o + 1] = y0; d[o + 2] = x1; d[o + 3] = y1;
+    d[o + 4] = c[0]; d[o + 5] = c[1]; d[o + 6] = c[2]; d[o + 7] = c[3];
+    this._lineN++;
   }
 
-  // Clear all instances
+  // Clear all instances (keeps the staging arrays — nothing is reallocated)
   clear() {
-    this.rectInstances = [];
-    this.triangleInstances = [];
-    this.lineInstances = [];
+    this._rectN = 0;
+    this._triN = 0;
+    this._lineN = 0;
+  }
+
+  // Upload `count` instances from `data` into `buf` (growing it geometrically),
+  // returning the (possibly new) buffer.
+  _upload(buf, data, count, stride) {
+    const floats = count * stride;
+    const bytes = floats * 4;
+    if (!buf || buf.size < bytes) {
+      if (buf) buf.destroy();
+      buf = this.device.createBuffer({
+        size: Math.max(bytes, buf ? buf.size * 2 : 0, 4096),
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+    }
+    this.device.queue.writeBuffer(buf, 0, data.buffer, data.byteOffset, bytes);
+    return buf;
+  }
+
+  // Bind group for one pipeline against this canvas's projection uniform, cached
+  // until the uniform buffer (or the device) changes.
+  _bindGroup(kind, pipeline) {
+    const ubo = this.core.projectionBuffer;
+    if (this._bind.ubo !== ubo) {
+      this._bind = { rect: null, tri: null, line: null, ubo };
+    }
+    if (!this._bind[kind]) {
+      this._bind[kind] = this.device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: ubo } }],
+      });
+    }
+    return this._bind[kind];
   }
 
   // Render all instances
   render(encoder, renderPass) {
+    if (this._epoch !== this.core.shared.epoch) this._bindToDevice();
+
     // Keep the projection matched to the CURRENT canvas size every frame. The
     // canvas can be resized between init and now (first paint before layout
     // settled, orientation swap); previously the projection was only updated at
@@ -460,151 +542,129 @@ class InstancedRenderer {
       this.core.setViewport(this.core.canvas.width, this.core.canvas.height);
     }
 
-    // Create uniform bind group (same layout for all pipelines)
-    const uniformBindGroupLayout = this.rectPipeline.getBindGroupLayout(0);
-    const uniformBindGroup = this.device.createBindGroup({
-      layout: uniformBindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: {
-            buffer: this.core.projectionBuffer,
-          },
-        },
-      ],
-    });
-
-    // Render rectangles
-    if (this.rectInstances.length > 0) {
-      const instanceData = new Float32Array(this.rectInstances.length * 8);
-      for (let i = 0; i < this.rectInstances.length; i++) {
-        const inst = this.rectInstances[i];
-        const offset = i * 8;
-        instanceData[offset + 0] = inst.position[0];
-        instanceData[offset + 1] = inst.position[1];
-        instanceData[offset + 2] = inst.size[0];
-        instanceData[offset + 3] = inst.size[1];
-        instanceData[offset + 4] = inst.color[0];
-        instanceData[offset + 5] = inst.color[1];
-        instanceData[offset + 6] = inst.color[2];
-        instanceData[offset + 7] = inst.color[3];
-      }
-
-      if (!this.rectBuffer || this.rectBuffer.size < instanceData.byteLength) {
-        if (this.rectBuffer) this.rectBuffer.destroy();
-        this.rectBuffer = this.device.createBuffer({
-          size: instanceData.byteLength,
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-        });
-      }
-
-      this.device.queue.writeBuffer(this.rectBuffer, 0, instanceData);
-
+    if (this._rectN > 0) {
+      this.rectBuffer = this._upload(this.rectBuffer, this._rect, this._rectN, GS_RECT_STRIDE);
       renderPass.setPipeline(this.rectPipeline);
-      renderPass.setBindGroup(0, uniformBindGroup);
+      renderPass.setBindGroup(0, this._bindGroup("rect", this.rectPipeline));
       renderPass.setVertexBuffer(0, this.rectBuffer);
-      renderPass.draw(4, this.rectInstances.length); // 4 vertices per quad
+      renderPass.draw(4, this._rectN); // 4 vertices per quad
     }
 
-    // Render triangles
-    if (this.triangleInstances.length > 0) {
-      // v0(2) + v1(2) + v2(2) + color(4) = 10 floats per instance
-      const instanceData = new Float32Array(this.triangleInstances.length * 10);
-      for (let i = 0; i < this.triangleInstances.length; i++) {
-        const inst = this.triangleInstances[i];
-        const offset = i * 10;
-        instanceData[offset + 0] = inst.v0[0];
-        instanceData[offset + 1] = inst.v0[1];
-        instanceData[offset + 2] = inst.v1[0];
-        instanceData[offset + 3] = inst.v1[1];
-        instanceData[offset + 4] = inst.v2[0];
-        instanceData[offset + 5] = inst.v2[1];
-        instanceData[offset + 6] = inst.color[0];
-        instanceData[offset + 7] = inst.color[1];
-        instanceData[offset + 8] = inst.color[2];
-        instanceData[offset + 9] = inst.color[3];
-      }
-
-      if (!this.triangleBuffer || this.triangleBuffer.size < instanceData.byteLength) {
-        if (this.triangleBuffer) this.triangleBuffer.destroy();
-        this.triangleBuffer = this.device.createBuffer({
-          size: instanceData.byteLength,
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-        });
-      }
-
-      this.device.queue.writeBuffer(this.triangleBuffer, 0, instanceData);
-
-      const triangleUniformBindGroup = this.device.createBindGroup({
-        layout: this.trianglePipeline.getBindGroupLayout(0),
-        entries: [
-          {
-            binding: 0,
-            resource: {
-              buffer: this.core.projectionBuffer,
-            },
-          },
-        ],
-      });
-      
+    if (this._triN > 0) {
+      this.triangleBuffer = this._upload(this.triangleBuffer, this._tri, this._triN, GS_TRI_STRIDE);
       renderPass.setPipeline(this.trianglePipeline);
-      renderPass.setBindGroup(0, triangleUniformBindGroup);
+      renderPass.setBindGroup(0, this._bindGroup("tri", this.trianglePipeline));
       renderPass.setVertexBuffer(0, this.triangleBuffer);
-      renderPass.draw(3, this.triangleInstances.length); // 3 vertices per triangle
+      renderPass.draw(3, this._triN); // 3 vertices per triangle
     }
 
-    // Render lines
-    if (this.lineInstances.length > 0) {
-      const instanceData = new Float32Array(this.lineInstances.length * 8);
-      for (let i = 0; i < this.lineInstances.length; i++) {
-        const inst = this.lineInstances[i];
-        const offset = i * 8;
-        instanceData[offset + 0] = inst.start[0];
-        instanceData[offset + 1] = inst.start[1];
-        instanceData[offset + 2] = inst.end[0];
-        instanceData[offset + 3] = inst.end[1];
-        instanceData[offset + 4] = inst.color[0];
-        instanceData[offset + 5] = inst.color[1];
-        instanceData[offset + 6] = inst.color[2];
-        instanceData[offset + 7] = inst.color[3];
-      }
-
-      if (!this.lineBuffer || this.lineBuffer.size < instanceData.byteLength) {
-        if (this.lineBuffer) this.lineBuffer.destroy();
-        this.lineBuffer = this.device.createBuffer({
-          size: instanceData.byteLength,
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-        });
-      }
-
-      this.device.queue.writeBuffer(this.lineBuffer, 0, instanceData);
-
-      const lineUniformBindGroup = this.device.createBindGroup({
-        layout: this.linePipeline.getBindGroupLayout(0),
-        entries: [
-          {
-            binding: 0,
-            resource: {
-              buffer: this.core.projectionBuffer,
-            },
-          },
-        ],
-      });
-      
+    if (this._lineN > 0) {
+      this.lineBuffer = this._upload(this.lineBuffer, this._line, this._lineN, GS_LINE_STRIDE);
       renderPass.setPipeline(this.linePipeline);
-      renderPass.setBindGroup(0, lineUniformBindGroup);
+      renderPass.setBindGroup(0, this._bindGroup("line", this.linePipeline));
       renderPass.setVertexBuffer(0, this.lineBuffer);
-      renderPass.draw(2, this.lineInstances.length); // 2 vertices per line
+      renderPass.draw(2, this._lineN); // 2 vertices per line
     }
+  }
+
+  /** Free this renderer's GPU buffers (pipelines belong to the shared device). */
+  dispose() {
+    for (const k of ["rectBuffer", "triangleBuffer", "lineBuffer"]) {
+      if (this[k]) { try { this[k].destroy(); } catch (_) {} this[k] = null; }
+    }
+    this._bind = { rect: null, tri: null, line: null, ubo: null };
+    this.clear();
   }
 
   // Get rendering statistics
   getStats() {
     return {
-      rectangles: this.rectInstances.length,
-      triangles: this.triangleInstances.length,
-      lines: this.lineInstances.length,
-      totalPolygons: this.rectInstances.length + this.triangleInstances.length + this.lineInstances.length,
+      rectangles: this._rectN,
+      triangles: this._triN,
+      lines: this._lineN,
+      totalPolygons: this._rectN + this._triN + this._lineN,
     };
   }
 }
+
+/**
+ * Size a GPU canvas's backing store only when it actually changed: assigning
+ * width/height resets the drawing buffer even for an identical value, which a
+ * per-frame repaint must not do. Rounded so a fractional devicePixelRatio is
+ * stable.
+ */
+function gsSetGpuCanvasSize(canvas, w, h) {
+  const rw = Math.max(1, Math.round(w));
+  const rh = Math.max(1, Math.round(h));
+  if (canvas.width !== rw) canvas.width = rw;
+  if (canvas.height !== rh) canvas.height = rh;
+}
+
+/**
+ * Test hook (window.__GS_TEST_CAPTURE): a WebGPU canvas can only be read back in
+ * the task that painted it, so tests that assert on painted pixels get a shadow
+ * 2D copy taken at the moment of presentation. Never enabled in production.
+ */
+function gsCaptureGpuCanvas(canvas) {
+  const sh = canvas._gsShadow || (canvas._gsShadow = document.createElement("canvas"));
+  if (sh.width !== canvas.width) sh.width = canvas.width;
+  if (sh.height !== canvas.height) sh.height = canvas.height;
+  const ctx = sh.getContext("2d", { willReadFrequently: true });
+  ctx.clearRect(0, 0, sh.width, sh.height);
+  try { ctx.drawImage(canvas, 0, 0); } catch (_) {}
+}
+
+/**
+ * Present one canvas: size its backing store to its CSS box (rounded, so a
+ * fractional devicePixelRatio does not reset the swap chain every frame), then
+ * draw `ribbons` (an underlay, if given) then `renderer`'s instances in a single
+ * pass. With nothing queued the pass just clears the canvas.
+ */
+function gsFlushGpuCanvas(core, renderer, canvas, ribbons, opts) {
+  if (!core || !renderer || !canvas || !core.device || !core.context) return;
+  try {
+    // keepSize: the caller has already sized the backing store (virtualized canvases).
+    if (!(opts && opts.keepSize)) {
+      const dpr = window.devicePixelRatio || 1;
+      const w = Math.round(canvas.clientWidth * dpr);
+      const h = Math.round(canvas.clientHeight * dpr);
+      if (w > 0 && h > 0 && (canvas.width !== w || canvas.height !== h)) {
+        canvas.width = w;
+        canvas.height = h;
+        core.handleResize();
+      }
+    }
+    const encoder = core.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: core.getCurrentTexture().createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+    if (ribbons) ribbons.render(encoder, pass);
+    renderer.render(encoder, pass);
+    pass.end();
+    core.submit([encoder.finish()]);
+    if (window.__GS_TEST_CAPTURE) gsCaptureGpuCanvas(canvas);
+  } catch (error) {
+    console.error("WebGPU flush error:", error);
+    renderer.clear();
+    if (ribbons) ribbons.clear();
+  }
+}
+
+/**
+ * Stand-in bound before the shared device exists (the first paint runs before
+ * WebGPU is ready): accepts every draw call and draws nothing. The repaint that
+ * follows device readiness fills the canvases in, so paint code never needs a
+ * "is the GPU up yet" guard.
+ */
+const GS_NULL_RENDERER = Object.freeze({
+  addRect() {}, addLine() {}, addTriangle() {}, addRibbon() {},
+  clear() {}, render() {}, dispose() {},
+  hasInstances() { return false; },
+  instances: Object.freeze([]),
+  getStats() { return { rectangles: 0, triangles: 0, lines: 0, totalPolygons: 0 }; },
+});

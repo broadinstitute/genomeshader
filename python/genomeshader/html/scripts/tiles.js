@@ -364,16 +364,8 @@ function gsRemoveTile(tileId) {
   }
   gsSyncFocusedAliases();
   if (typeof gsEnsureTileStripDom === "function") gsEnsureTileStripDom();
-  // Back to a single tile: it should paint with WebGPU again. A tile that was
-  // opened in multi-tile mode only has Canvas2D renderers, so rebuild them.
+  // Back to a single tile: every tile already owns GPU renderers, so nothing to rebuild.
   if (state.tiles.length === 1 && typeof gsEnsureSmartRenderers === "function") {
-    const only = state.tiles[0];
-    const gpuOk = typeof webgpuSupported !== "undefined" && webgpuSupported
-      && typeof navigator !== "undefined" && !!navigator.gpu;
-    if (gpuOk && only._smartRenderers instanceof Map
-        && Array.from(only._smartRenderers.values()).some((r) => r && !r.webgpuCore)) {
-      if (typeof gsDisposeTileRenderers === "function") gsDisposeTileRenderers(only);
-    }
     gsEnsureSmartRenderers();
     // Single-tile painting reads the tracks' live payload, which still belongs
     // to whichever tile was focused before — point it at the survivor's locus.

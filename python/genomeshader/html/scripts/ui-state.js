@@ -340,10 +340,10 @@ let flowIndelOverlay = byId(root, "flowIndelOverlay");
 
 // Initialize WebGPU infrastructure
 let webgpuCore = null;
-let instancedRenderer = null;
+let instancedRenderer = GS_NULL_RENDERER;
 let flowWebGPUCore = null;
-let flowInstancedRenderer = null;
-let flowRibbonRenderer = null;
+let flowInstancedRenderer = GS_NULL_RENDERER;
+let flowRibbonRenderer = GS_NULL_RENDERER;
 let webgpuSupported = false;
 let repeatHitTestData = []; // For tooltip hit testing
 
@@ -410,54 +410,108 @@ function expandedVariantWindow(paddingFraction = 0.3) {
   return variants.filter(v => v.pos >= expandedStart && v.pos <= expandedEnd);
 }
 
-async function initWebGPU() {
-  if (!navigator.gpu) {
-    console.warn("WebGPU not supported, falling back to SVG rendering");
-    if (tracksWebGPU) tracksWebGPU.style.display = 'none';
-    return false;
-  }
+// WebGPU is required. There is no Canvas2D/SVG fallback: without it we say so.
+let _gpuRequiredShown = false;
+function gsShowWebGpuRequired(error) {
+  if (_gpuRequiredShown) return;
+  _gpuRequiredShown = true;
+  const reason = (error && error.message) ? error.message : String(error || "WebGPU is unavailable");
+  console.error("GenomeShader requires WebGPU:", reason);
+  try {
+    const host = root && root.nodeType === 1 ? root : document.body;
+    const box = document.createElement("div");
+    box.className = "gs-webgpu-required";
+    box.setAttribute("role", "alert");
+    box.style.cssText = "position:absolute;inset:0;z-index:100000;display:flex;align-items:center;"
+      + "justify-content:center;padding:24px;background:rgba(18,20,26,.94);color:#f2f4f8;"
+      + "font:14px/1.5 system-ui,sans-serif;text-align:center;";
+    const inner = document.createElement("div");
+    inner.style.cssText = "max-width:460px;";
+    const h = document.createElement("div");
+    h.style.cssText = "font-size:18px;font-weight:600;margin-bottom:8px;";
+    h.textContent = "GenomeShader needs WebGPU";
+    const p = document.createElement("div");
+    p.textContent = "This viewer draws with WebGPU and has no fallback. Use a current Chrome, Edge or "
+      + "Safari with hardware acceleration enabled, then reload.";
+    const r = document.createElement("div");
+    r.style.cssText = "margin-top:10px;font-size:12px;opacity:.7;";
+    r.textContent = reason;
+    inner.append(h, p, r);
+    box.appendChild(inner);
+    host.appendChild(box);
+  } catch (_) {}
+}
 
-  // Wait for canvas to have dimensions
-  if (!tracksWebGPU) {
-    return false;
-  }
-  
-  const checkDimensions = () => {
-    const rect = tracksWebGPU.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+// GPU record (context + instanced renderer, plus ribbons for flow canvases) per
+// canvas element. Every tile owns its own tracks/flow canvases; all of them draw
+// on the one shared device with the one shared set of pipelines.
+const _gpuByCanvas = new WeakMap();
+
+function gsCanvasGpu(canvas, withRibbons) {
+  if (!canvas) return null;
+  let rec = _gpuByCanvas.get(canvas);
+  if (rec) return rec;
+  const shared = gsGpuShared();
+  if (!shared.device) return null;   // not ready yet — initWebGPU repaints once it is
+  const core = new WebGPUCore();
+  core.attach(canvas);
+  rec = {
+    core,
+    renderer: new InstancedRenderer(core),
+    ribbons: withRibbons ? new BezierRibbonRenderer(core, { segments: 44 }) : null,
   };
-  
-  // Wait up to 2 seconds for dimensions
-  for (let i = 0; i < 40; i++) {
-    if (checkDimensions()) {
-      break;
-    }
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-  
-  if (!checkDimensions()) {
-    if (tracksWebGPU) tracksWebGPU.style.display = 'none';
+  _gpuByCanvas.set(canvas, rec);
+  return rec;
+}
+
+function gsDisposeCanvasGpu(canvas) {
+  const rec = canvas ? _gpuByCanvas.get(canvas) : null;
+  if (!rec) return;
+  try { rec.renderer.dispose(); } catch (_) {}
+  try { rec.core.dispose(); } catch (_) {}
+  _gpuByCanvas.delete(canvas);
+}
+
+/**
+ * Point the GPU aliases (webgpuCore, instancedRenderer, flow*) at whichever
+ * tile's canvases `tracksWebGPU` / `flowWebGPU` currently reference, exactly as
+ * gsBindTileDom re-points the DOM aliases. Single- and multi-tile paint through
+ * the same objects this way.
+ */
+function gsBindTileGpu() {
+  const t = gsCanvasGpu(tracksWebGPU, false);
+  const f = gsCanvasGpu(flowWebGPU, true);
+  webgpuCore = t ? t.core : null;
+  instancedRenderer = t ? t.renderer : GS_NULL_RENDERER;
+  flowWebGPUCore = f ? f.core : null;
+  flowInstancedRenderer = f ? f.renderer : GS_NULL_RENDERER;
+  flowRibbonRenderer = f ? f.ribbons : GS_NULL_RENDERER;
+}
+
+async function initWebGPU() {
+  // The shared device is requested once, immediately (see gsGpuReady in
+  // webgpu-core.js). Every canvas — main, flow, and each smart track in each
+  // tile — awaits this same promise, so none can be built "too early" and lose
+  // GPU rendering.
+  try {
+    await gsGpuReady();
+  } catch (error) {
+    gsShowWebGpuRequired(error);
     return false;
   }
+  webgpuSupported = true;
 
   try {
-    webgpuCore = new WebGPUCore();
-    await webgpuCore.init(tracksWebGPU);
-    instancedRenderer = new InstancedRenderer(webgpuCore);
-
-    // Flow WebGPU (separate canvas)
-    if (flowWebGPU) {
-      flowWebGPUCore = new WebGPUCore();
-      await flowWebGPUCore.init(flowWebGPU);
-      flowInstancedRenderer = new InstancedRenderer(flowWebGPUCore);
-      flowRibbonRenderer = new BezierRibbonRenderer(flowWebGPUCore, { segments: 44 });
+    gsBindTileGpu();
+    // After a device loss the canvases are re-attached to the recovered device;
+    // repaint everything from the (unchanged) data.
+    if (!window.__gsGpuRestoreHooked) {
+      window.__gsGpuRestoreHooked = true;
+      gsGpuShared().onRestored(() => { if (typeof window.renderAll === "function") window.renderAll(); });
     }
-
-    webgpuSupported = true;
     return true;
   } catch (error) {
-    console.warn("Failed to initialize WebGPU:", error);
-    if (tracksWebGPU) tracksWebGPU.style.display = 'none';
+    gsShowWebGpuRequired(error);
     return false;
   }
 }
@@ -492,7 +546,10 @@ function scheduleInitialWebGPURender() {
   tryRender();
 }
 
-// Initialize WebGPU after a short delay to ensure DOM is ready
+// Ask for the shared GPU device right away (it does not need the DOM); canvases
+// attach to it as their elements get dimensions.
+try { gsGpuReady().catch(() => {}); } catch (_) {}
+// Initialize the main canvases after a short delay to ensure DOM is ready
 setTimeout(() => {
   initWebGPU()
     .then((ok) => {

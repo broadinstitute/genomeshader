@@ -89,7 +89,13 @@ def test_actions_hidden_at_rest_visible_on_focus(browser):
     assert at_rest["actionsPE"] == "none", at_rest
 
     page.focus(SMART_ITEM)
-    page.wait_for_timeout(150)
+    # Wait for the opacity transition to settle rather than guessing a delay; real
+    # Chrome's transition clock differs from the old headless shell's.
+    page.wait_for_function(
+        """(sel) => parseFloat(getComputedStyle(
+             document.querySelector(sel).querySelector('.smart-track-item-actions')).opacity) > 0.99""",
+        arg=SMART_ITEM, timeout=3000,
+    )
     focused = page.evaluate(
         """(sel) => {
           const item = document.querySelector(sel);
@@ -103,8 +109,8 @@ def test_actions_hidden_at_rest_visible_on_focus(browser):
         }""",
         SMART_ITEM,
     )
-    assert focused["actionsOpacity"] == 1.0, focused
-    assert focused["gripOpacity"] == 1.0, focused
+    assert focused["actionsOpacity"] == pytest.approx(1.0, abs=0.02), focused
+    assert focused["gripOpacity"] == pytest.approx(1.0, abs=0.02), focused
     assert focused["actionsPE"] == "auto", focused
     page.close()
 

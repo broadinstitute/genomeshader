@@ -118,14 +118,159 @@ function positionSmartScrollWrapper() {
   if (spacer) spacer.style.height = Math.max(0, bottom - headerTop) + "px";
 }
 
+// ---------------------------------------------------------------------------
+// Paint signatures: skip repainting a (tile, track) whose inputs did not change
+// ---------------------------------------------------------------------------
+// A smart-track paint is a pure function of: the tile's window/size, the track's
+// packed layout + display config + collapse/loading state, the scroll offset,
+// expanded insertions, and (multi-tile) the cross-tile bundle colours and other
+// tiles' windows (SA-mate flags). This string is that input list; equal string
+// => identical pixels, so the canvases are left as painted. renderAll() and every
+// data/UI change still go through here, so anything not covered by the string is
+// a bug — window.__GS_VERIFY_PAINT (tests) repaints on every hit and reports any
+// pixel difference as PAINT_KEY_MISS.
+var _gsObjIds = new WeakMap();
+var _gsObjIdNext = 1;
+function _gsObjId(o) {
+  if (!o) return 0;
+  let id = _gsObjIds.get(o);
+  if (!id) { id = _gsObjIdNext++; _gsObjIds.set(o, id); }
+  return id;
+}
+
+function gsSmartPaintKey(track, renderer, trackLayout, ctx) {
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
+  const multi = typeof gsIsMultiTile === "function" && gsIsMultiTile();
+  const layout = track.readsLayout;
+  const exp = state.expandedInsertions;
+  let cross = "";
+  if (multi) {
+    // Cross-tile inputs: bundle colours, and — only when this track has split
+    // reads — every tile's window and the focused tile (an SA-mate flag
+    // appears/disappears as another tile pans over the mate or focus moves).
+    cross = state._bundleColorSig || "";
+    if (layout && layout._hasSa === undefined) {
+      layout._hasSa = !!(layout.reads && layout.reads.some((r) => r && r.saTag));
+    }
+    if (layout && layout._hasSa) {
+      // (the flag lookup is relative to the FOCUSED tile, so focus is an input too)
+      cross += "|" + (state.focusedTileId || "") + "|"
+        + (state.tiles || []).map((x) => `${x.id}:${x.contig}:${x.startBp}-${x.endBp}:${x.linkColor || ""}`).join(",");
+    }
+  }
+  return [
+    t ? t.id : "", state.contig, state.startBp, state.endBp, state.pxPerBp,
+    state.renderPadBp, state.renderPadPx, t ? (t.reversed ? 1 : 0) : 0,
+    ctx.isVertical ? 1 : 0, ctx.W, ctx.H, ctx.dpr,
+    _gsObjId(layout), track._readsLocusSig || "", ctx.canPaint ? 1 : 0, ctx.showLoading ? 1 : 0,
+    track.collapsed ? 1 : 0, track.closedHeight || 0, track.loading ? 1 : 0, track._loadingLocusSig || "",
+    trackLayout.contentTop, trackLayout.contentHeight, state._readsHeaderTop || 0,
+    (renderer.container && renderer.container.scrollTop) || 0,
+    (exp && exp.size) ? Array.from(exp).sort().join(",") : "",
+    (typeof _readsDisplayKey === "function") ? _readsDisplayKey(track) : "",
+    state._viewCoverageMax == null ? "" : state._viewCoverageMax,
+    cross,
+  ].join("|");
+}
+
+/** Pixel fingerprints of the canvases a track owns [2d, gpu, text] (verification mode only). */
+function gsRendererPixelHash(renderer) {
+  const out = [];
+  for (const cv of [renderer.canvas, renderer.webgpuCanvas, renderer.textCanvas]) {
+    let h = 2166136261;
+    if (cv && cv.width && cv.height) {
+      let ctx = null;
+      try { ctx = cv.getContext("2d"); } catch (_) {}
+      let d = null;
+      if (ctx) d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+      else if (cv._gsShadow) d = cv._gsShadow.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, cv._gsShadow.width, cv._gsShadow.height).data;
+      if (d) for (let i = 0; i < d.length; i += 4) { h = Math.imul(h ^ d[i] ^ (d[i + 1] << 8) ^ (d[i + 2] << 16) ^ (d[i + 3] << 24), 16777619); }
+      out._px = out._px || []; out._px.push(d ? new Uint8ClampedArray(d) : null);
+    } else { out._px = out._px || []; out._px.push(null); }
+    out.push(h >>> 0);
+  }
+  return out;
+}
+
+/**
+ * Bounding box + sample of pixels that differ between two RGBA buffers by more
+ * than `tol` in any premultiplied channel (default 4: anti-aliased text edges
+ * legitimately jitter by a level or two between a GPU-raster and a read-back paint).
+ */
+function gsPixelDiffSummary(a, b, w, tol) {
+  if (!a || !b || a.length !== b.length) return { sizeChanged: true };
+  const T = tol == null ? 4 : tol;
+  let n = 0, x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, ex = null;
+  for (let i = 0; i < a.length; i += 4) {
+    // Compare premultiplied: at low alpha the unpremultiplied RGB read back from
+    // a canvas is pure quantisation noise ((255,170,0,9) ~ (255,153,0,10)).
+    const aa = a[i + 3], ba = b[i + 3];
+    if (Math.abs(aa - ba) > T
+        || Math.abs(a[i] * aa - b[i] * ba) / 255 > T
+        || Math.abs(a[i + 1] * aa - b[i + 1] * ba) / 255 > T
+        || Math.abs(a[i + 2] * aa - b[i + 2] * ba) / 255 > T) {
+      n++; const x = (i / 4) % w, y = Math.floor(i / 4 / w);
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      if (!ex) ex = { old: [a[i], a[i + 1], a[i + 2], a[i + 3]], now: [b[i], b[i + 1], b[i + 2], b[i + 3]] };
+    }
+  }
+  return { n, box: [x0, y0, x1, y1], ex };
+}
+
+/**
+ * True when a smart track's container is far enough outside the visible part of
+ * its scroll wrapper (and of the browser window) that painting it would be
+ * invisible. A generous margin (half a viewport) means tracks are painted
+ * before they scroll into view.
+ */
+function gsTrackCulled(container, rect) {
+  if (window.__GS_NO_CULL) return false;
+  const wrap = container.closest ? container.closest(".gs-smart-scroll") : null;
+  if (!wrap) return false;
+  const wr = wrap.getBoundingClientRect();
+  const winH = window.innerHeight || document.documentElement.clientHeight || 0;
+  const visTop = Math.max(wr.top, 0);
+  const visBottom = Math.min(wr.bottom, winH || wr.bottom);
+  const margin = Math.max(160, (visBottom - visTop) * 0.5);
+  return rect.bottom < visTop - margin || rect.top > visBottom + margin;
+}
+
+/** Repaint culled tracks that have scrolled (or the page has scrolled) into range. */
+function gsRepaintCulledTracks() {
+  for (const tile of (state.tiles || [])) {
+    if (!tile || tile.blank || !(tile._smartRenderers instanceof Map)) continue;
+    tile._smartRenderers.forEach((r, trackId) => {
+      if (!r._culled || !r.container) return;
+      if (!gsTrackCulled(r.container, r.container.getBoundingClientRect())) {
+        scheduleSmartTrackRender(trackId, tile.id);
+      }
+    });
+  }
+}
+
+// Scrolling anywhere (the reads wrapper, the notebook, the page) or resizing may
+// bring a culled track into range. Capture phase so nested scroll containers
+// (JupyterLab) are seen; coalesced to one check per frame.
+var _cullCheckPending = false;
+function gsScheduleCullCheck() {
+  if (_cullCheckPending) return;
+  _cullCheckPending = true;
+  requestAnimationFrame(() => {
+    _cullCheckPending = false;
+    try { gsRepaintCulledTracks(); } catch (_) {}
+  });
+}
+document.addEventListener("scroll", gsScheduleCullCheck, { capture: true, passive: true });
+window.addEventListener("resize", gsScheduleCullCheck, { passive: true });
+
 function renderSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
   // Multi-tile: every entry point (toggles, resize, scroll, …) must paint the
-  // tile's own view through Canvas2D exactly like renderAll does. The tile-aware
-  // wrapper sets the 2D flag and re-enters here, so this only redirects callers
-  // that did not come through it.
-  if (!window.__GS_FORCE_SMART_TRACK_CANVAS2D
+  // tile's own view exactly like renderAll does. The tile-aware wrapper re-enters
+  // here inside a tile paint, so this only redirects callers that did not come
+  // through it.
+  if (!_gsTilePaintDepth
       && typeof gsIsMultiTile === "function" && gsIsMultiTile()
       && typeof gsRenderSmartTrackInTile === "function") {
     const paintTile = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
@@ -169,16 +314,8 @@ function renderSmartTrack(trackId) {
   const renderer = gsActiveRenderers().get(trackId);
   if (!renderer) return;
   
-  let { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore, spacer, textCanvas } = renderer;
-  // Multi-tile unfocused snapshots: force the Canvas2D path so freeze can copy
-  // pixels (WebGPU canvases don't reliably blit via drawImage in all browsers).
-  if (window.__GS_FORCE_SMART_TRACK_CANVAS2D) {
-    instancedRenderer = null;
-    if (webgpuCanvas) webgpuCanvas.style.display = "none";
-    if (canvas) canvas.style.display = "";
-  } else if (webgpuCanvas) {
-    webgpuCanvas.style.display = "";
-  }
+  const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore, spacer, textCanvas } = renderer;
+  if (webgpuCanvas) webgpuCanvas.style.display = "";
   
   // Multi-tile: track may still hold pileups for a sibling locus. Never paint
   // those into this window (wrong coords) and never clear them (nearline cost).
@@ -268,6 +405,16 @@ function renderSmartTrack(trackId) {
   const containerRect = container.getBoundingClientRect();
   const actualContainerWidth = containerRect.width;
   const actualContainerHeight = containerRect.height;
+
+  // Off-screen tracks are not painted at all (a 50-sample stack shows a screenful
+  // of them). They repaint when scrolled toward the viewport — see
+  // gsRepaintCulledTracks. Layout above (slot size / position) already ran, so
+  // the stack's geometry stays correct.
+  if (!isVertical && gsTrackCulled(container, containerRect)) {
+    renderer._culled = true;
+    return;
+  }
+  renderer._culled = false;
   
   // Use actual container dimensions for both canvas sizing AND coordinate calculations
   // This ensures consistency between inline and overlay modes
@@ -299,6 +446,16 @@ function renderSmartTrack(trackId) {
     return;
   }
   renderer._sizeRetries = 0;
+
+  // Unchanged inputs => the canvases already hold this paint.
+  const _paintCtx = { isVertical, W, H, dpr, canPaint: _canPaintReads, showLoading: _showReadsLoading };
+  const _paintKey = gsSmartPaintKey(track, renderer, trackLayout, _paintCtx);
+  const _verify = !!window.__GS_VERIFY_PAINT;
+  let _expectHash = null;
+  if (renderer._paintKey === _paintKey && !window.__GS_FORCE_REPAINT) {
+    if (!_verify) return;
+    _expectHash = renderer._paintHash;   // repaint anyway and compare below
+  }
   
   // Calculate total content height if reads are loaded (horizontal mode)
   let totalContentHeight = H;
@@ -366,8 +523,7 @@ function renderSmartTrack(trackId) {
     canvas.width = canvasW * dpr;
 
     // Set WebGPU canvas dimensions to match regular canvas (viewport-sized)
-    webgpuCanvas.width = canvasW * dpr;
-    webgpuCanvas.height = viewportH * dpr;
+    gsSetGpuCanvasSize(webgpuCanvas, canvasW * dpr, viewportH * dpr);
     webgpuCanvas.style.height = viewportH + 'px';
     webgpuCanvas.style.width = canvasW + 'px';
     webgpuCanvas.style.gridRow = '';
@@ -480,8 +636,7 @@ function renderSmartTrack(trackId) {
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
       // Also set WebGPU canvas dimensions
-      webgpuCanvas.width = rect.width * dpr;
-      webgpuCanvas.height = rect.height * dpr;
+      gsSetGpuCanvasSize(webgpuCanvas, rect.width * dpr, rect.height * dpr);
       if (textCanvas) {
         textCanvas.width = rect.width * dpr;
         textCanvas.height = rect.height * dpr;
@@ -527,13 +682,8 @@ function renderSmartTrack(trackId) {
   // was active. Route them through the instanced renderer too (added after each
   // read body => on top of it), falling back to ctx only in Canvas2D mode.
   const drawMarkerRect = (mx, my, mw, mh, r, g, b, al) => {
-    if (instancedRenderer && webgpuSupported) {
-      instancedRenderer.addRect(mx * dpr, (my - _scrollOffset) * dpr, mw * dpr, mh * dpr,
-        [r / 255, g / 255, b / 255, al]);
-    } else {
-      ctx.fillStyle = `rgba(${r},${g},${b},${al})`;
-      ctx.fillRect(mx, my, mw, mh);
-    }
+    instancedRenderer.addRect(mx * dpr, (my - _scrollOffset) * dpr, mw * dpr, mh * dpr,
+      [r / 255, g / 255, b / 255, al]);
   };
   // Collapsed tracks show an aggregate summary; draw point markers (SNP/ins) at
   // the variant track's node width so they line up with it visually, instead of
@@ -827,17 +977,10 @@ function renderSmartTrack(trackId) {
     const w = Math.max(4, x2 - x1);
 
     // Single outer capsule (rounded in Canvas2D; axis-aligned via WebGPU).
-    if (instancedRenderer && webgpuSupported) {
-      instancedRenderer.addRect(
-        x1 * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
-        [150 / 255, 150 / 255, 150 / 255, 0.15]
-      );
-    } else {
-      ctx.fillStyle = `rgba(150,150,150,0.15)`;
-      ctx.beginPath();
-      roundRect(ctx, x1, y, w, h, 3);
-      ctx.fill();
-    }
+    instancedRenderer.addRect(
+      x1 * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
+      [150 / 255, 150 / 255, 150 / 255, 0.15]
+    );
     if (cutGaps) cutReadBodyAtExpandedInsertionGaps(mn, mx, x1, y, w, h);
 
     // Haplotype-colored washes inside the capsule when split (flush halves —
@@ -1003,27 +1146,17 @@ function renderSmartTrack(trackId) {
   function drawPairConnectorRect(x, y, w, h) {
     if (!(w > 0.5) || !(h > 0.5)) return;
     // Light gray so the insert line reads on both dark and light track backgrounds.
-    if (instancedRenderer && webgpuSupported) {
-      instancedRenderer.addRect(
-        x * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
-        [200 / 255, 200 / 255, 200 / 255, 0.9]
-      );
-    } else {
-      ctx.fillStyle = "rgba(200,200,200,0.9)";
-      ctx.fillRect(x, y, w, h);
-    }
+    instancedRenderer.addRect(
+      x * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
+      [200 / 255, 200 / 255, 200 / 255, 0.9]
+    );
   }
   function drawSpliceConnectorRect(x, y, w, h) {
     if (!(w > 0.5) || !(h > 0.5)) return;
-    if (instancedRenderer && webgpuSupported) {
-      instancedRenderer.addRect(
-        x * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
-        [180 / 255, 180 / 255, 180 / 255, 0.95]
-      );
-    } else {
-      ctx.fillStyle = "rgba(180,180,180,0.95)";
-      ctx.fillRect(x, y, w, h);
-    }
+    instancedRenderer.addRect(
+      x * dpr, (y - _scrollOffset) * dpr, w * dpr, h * dpr,
+      [180 / 255, 180 / 255, 180 / 255, 0.95]
+    );
   }
   
   if (isVertical) {
@@ -1067,17 +1200,10 @@ function renderSmartTrack(trackId) {
           const h = Math.max(4, Math.abs(y2 - y1));
 
           // Single gray capsule for the sample span.
-          if (instancedRenderer && webgpuSupported) {
-            instancedRenderer.addRect(
-              cx * dpr, (y - _scrollOffset) * dpr, cw * dpr, h * dpr,
-              [150 / 255, 150 / 255, 150 / 255, 0.15]
-            );
-          } else {
-            ctx.fillStyle = `rgba(150,150,150,0.15)`;
-            ctx.beginPath();
-            roundRect(ctx, cx, y, cw, h, 3);
-            ctx.fill();
-          }
+          instancedRenderer.addRect(
+            cx * dpr, (y - _scrollOffset) * dpr, cw * dpr, h * dpr,
+            [150 / 255, 150 / 255, 150 / 255, 0.15]
+          );
 
           // Haplotype washes inside the capsule when split.
           if (bands.split) {
@@ -1154,18 +1280,11 @@ function renderSmartTrack(trackId) {
           const y = Math.min(y1, y2);
           const h = Math.max(blocks.length === 1 ? 4 : 1, Math.abs(y2 - y1));
           
-          if (instancedRenderer && webgpuSupported) {
-            instancedRenderer.addRect(
-              x * dpr, (y - _scrollOffset) * dpr,
-              w * dpr, h * dpr,
-              [color[0]/255, color[1]/255, color[2]/255, alpha]
-            );
-          } else {
-            ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
-            ctx.beginPath();
-            roundRect(ctx, x, y, w, h, 3);
-            ctx.fill();
-          }
+          instancedRenderer.addRect(
+            x * dpr, (y - _scrollOffset) * dpr,
+            w * dpr, h * dpr,
+            [color[0]/255, color[1]/255, color[2]/255, alpha]
+          );
 
           // Strand direction arrow on the 3' exon. Genome axis is Y (higher bp = up):
           // forward points UP, reverse DOWN.
@@ -1183,16 +1302,9 @@ function renderSmartTrack(trackId) {
               tx1 = acx;       ty1 = y + h - 1;
               tx2 = x + w - 1; ty2 = y + h - arrowSize - 1;
             }
-            if (instancedRenderer && webgpuSupported) {
-              instancedRenderer.addTriangle(
-                tx0 * dpr, (ty0 - _scrollOffset) * dpr, tx1 * dpr, (ty1 - _scrollOffset) * dpr,
-                tx2 * dpr, (ty2 - _scrollOffset) * dpr, [1, 1, 1], 0.95);
-            } else {
-              ctx.fillStyle = `rgba(255,255,255,0.9)`;
-              ctx.beginPath();
-              ctx.moveTo(tx0, ty0); ctx.lineTo(tx1, ty1); ctx.lineTo(tx2, ty2);
-              ctx.fill();
-            }
+            instancedRenderer.addTriangle(
+              tx0 * dpr, (ty0 - _scrollOffset) * dpr, tx1 * dpr, (ty1 - _scrollOffset) * dpr,
+              tx2 * dpr, (ty2 - _scrollOffset) * dpr, [1, 1, 1], 0.95);
           }
         }
         // Draw insertion/deletion/diff markers (vertical mode, expanded)
@@ -1376,18 +1488,11 @@ function renderSmartTrack(trackId) {
             const x = x1;
             const w = Math.max(blocks.length === 1 ? 4 : 1, x2 - x1);
             
-            if (instancedRenderer && webgpuSupported) {
-              instancedRenderer.addRect(
-                x * dpr, (y - _scrollOffset) * dpr,
-                w * dpr, h * dpr,
-                [color[0]/255, color[1]/255, color[2]/255, baseAlpha]
-              );
-            } else {
-              ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${baseAlpha})`;
-              ctx.beginPath();
-              roundRect(ctx, x, y, w, h, 3);
-              ctx.fill();
-            }
+            instancedRenderer.addRect(
+              x * dpr, (y - _scrollOffset) * dpr,
+              w * dpr, h * dpr,
+              [color[0]/255, color[1]/255, color[2]/255, baseAlpha]
+            );
             cutReadBodyAtExpandedInsertionGaps(block.start, block.end, x, y, w, h);
 
             const isThreePrime = read.isForward ? bi === blocks.length - 1 : bi === 0;
@@ -1404,18 +1509,11 @@ function renderSmartTrack(trackId) {
               ax1 = x + 1;             ay1 = cy;
               ax2 = x + arrowSize + 1; ay2 = cy + arrowSize / 2;
             }
-            if (instancedRenderer && webgpuSupported) {
-              instancedRenderer.addTriangle(
-                ax0 * dpr, (ay0 - _scrollOffset) * dpr, ax1 * dpr, (ay1 - _scrollOffset) * dpr,
-                ax2 * dpr, (ay2 - _scrollOffset) * dpr,
-                [1, 1, 1], 0.95
-              );
-            } else {
-              ctx.fillStyle = "rgba(255,255,255,0.95)";
-              ctx.beginPath();
-              ctx.moveTo(ax0, ay0); ctx.lineTo(ax1, ay1); ctx.lineTo(ax2, ay2); ctx.closePath();
-              ctx.fill();
-            }
+            instancedRenderer.addTriangle(
+              ax0 * dpr, (ay0 - _scrollOffset) * dpr, ax1 * dpr, (ay1 - _scrollOffset) * dpr,
+              ax2 * dpr, (ay2 - _scrollOffset) * dpr,
+              [1, 1, 1], 0.95
+            );
 
             // Cross-tile split flag: SA mate lands in another open tile.
             if (read.saTag && typeof gsParseSaTag === "function" && typeof gsFindOpenTileForMate === "function"
@@ -1434,16 +1532,11 @@ function renderSmartTrack(trackId) {
                     parseInt(flagColor.slice(5, 7), 16),
                   ];
                 }
-                if (instancedRenderer && webgpuSupported) {
-                  instancedRenderer.addRect(
-                    fx * dpr, (y - _scrollOffset) * dpr,
-                    4 * dpr, h * dpr,
-                    [rgb[0]/255, rgb[1]/255, rgb[2]/255, 0.95]
-                  );
-                } else {
-                  ctx.fillStyle = flagColor;
-                  ctx.fillRect(fx, y, 4, h);
-                }
+                instancedRenderer.addRect(
+                  fx * dpr, (y - _scrollOffset) * dpr,
+                  4 * dpr, h * dpr,
+                  [rgb[0]/255, rgb[1]/255, rgb[2]/255, 0.95]
+                );
                 break;
               }
             }
@@ -1615,91 +1708,26 @@ function renderSmartTrack(trackId) {
     // (variant->read guide lines removed by request)
   }
   
-  // Execute WebGPU render pass
-  if (webgpuSupported && instancedRenderer && 
-      (instancedRenderer.rectInstances.length > 0 || instancedRenderer.lineInstances.length > 0)) {
-    try {
-      // Use the dimensions we already calculated and set above
-      // For horizontal mode with reads, we already set webgpuCanvas.width and height above
-      const width = webgpuCanvas.width || W * dpr;
-      const height = webgpuCanvas.height || (isVertical ? H * dpr : viewportH * dpr);
-      
-      // Ensure dimensions are valid
-      if (width <= 0 || height <= 0 || isNaN(width) || isNaN(height)) {
-        console.warn(`Smart track ${trackId}: Invalid WebGPU canvas dimensions (${width}x${height}), skipping render`);
-        return;
-      }
-      
-      // Check if canvas needs resize notification (dimensions might have changed)
-      // Only call handleResize if dimensions actually changed from what WebGPU core knows
-      const needsResize = webgpuCanvas.width !== width || webgpuCanvas.height !== height;
-      if (needsResize && webgpuCore) {
-        webgpuCanvas.width = width;
-        webgpuCanvas.height = height;
-        webgpuCore.handleResize();
-        
-        // Clear the canvas after resize to remove any leftover content from old dimensions
-        const clearEncoder = webgpuCore.createCommandEncoder();
-        const clearTexture = webgpuCore.getCurrentTexture();
-        const clearPass = clearEncoder.beginRenderPass({
-          colorAttachments: [{
-            view: clearTexture.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          }],
-        });
-        clearPass.end();
-        webgpuCore.submit([clearEncoder.finish()]);
-      }
-      
-      const encoder = webgpuCore.createCommandEncoder();
-      const texture = webgpuCore.getCurrentTexture();
-      const renderPass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: texture.createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        }],
-      });
-      
-      instancedRenderer.render(encoder, renderPass);
-      renderPass.end();
-      webgpuCore.submit([encoder.finish()]);
-    } catch (error) {
-      console.error(`Smart track ${trackId} WebGPU render error:`, error);
-      if (instancedRenderer) instancedRenderer.clear();
-    }
-  } else if (webgpuSupported && instancedRenderer) {
-    // Clear WebGPU canvas if no instances
-    try {
-      // Ensure dimensions are correct before clearing
-      const width = webgpuCanvas.clientWidth * dpr;
-      // Viewport-sized canvas (virtualized) — use its own client height, not the
-      // full read stack.
-      const height = webgpuCanvas.clientHeight * dpr;
+  // Present this track's (viewport-sized) GPU canvas. renderSmartTrack has
+  // already sized its backing store, so the flush must not resize it.
+  gsFlushGpuCanvas(webgpuCore, instancedRenderer, webgpuCanvas, null, { keepSize: true });
 
-      if (webgpuCanvas.width !== width || webgpuCanvas.height !== height) {
-        webgpuCanvas.width = width;
-        webgpuCanvas.height = height;
-      }
-      
-      const encoder = webgpuCore.createCommandEncoder();
-      const texture = webgpuCore.getCurrentTexture();
-      const renderPass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: texture.createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        }],
+  renderer._paintKey = _paintKey;
+  if (_verify) {
+    const h = gsRendererPixelHash(renderer);
+    if (_expectHash != null) {
+      const cvs = [renderer.canvas, renderer.webgpuCanvas, renderer.textCanvas];
+      const detail = {};
+      h.forEach((v, i) => {
+        if (v === _expectHash[i]) return;
+        const d = gsPixelDiffSummary(_expectHash._px[i], h._px[i], (cvs[i] && cvs[i].width) || 1);
+        if (d.sizeChanged || d.n > 0) detail[["2d", "gpu", "text"][i]] = d;
       });
-      renderPass.end();
-      webgpuCore.submit([encoder.finish()]);
-    } catch (error) {
-      // Ignore errors when clearing
+      if (Object.keys(detail).length) {
+        console.error("PAINT_KEY_MISS " + JSON.stringify({ track: trackId, tile: renderer.tileId, detail, key: _paintKey.slice(0, 120) }));
+      }
     }
+    renderer._paintHash = h;
   }
 }
 
@@ -3260,13 +3288,13 @@ function renderAll() {
 
   if (multi && focused && typeof gsWithTile === "function" && typeof gsBindTileDom === "function") {
     // Paint every non-blank tile into its OWN DOM, including its own reads
-    // stack. Nothing is relocated, snapshotted or frozen: an unfocused column
-    // is repainted from the reads cache exactly like the focused one (through
-    // Canvas2D), so it can never be left blank by a focus change.
+    // stack and its own GPU canvases. Nothing is relocated, snapshotted or
+    // frozen: an unfocused column is repainted from the reads cache exactly like
+    // the focused one, so it can never be left blank by a focus change.
     const tiles = state.tiles || [];
     const focusedId = focused.id;
     if (typeof gsEnsureSmartRenderers === "function") gsEnsureSmartRenderers();
-    // Unfocused first so the focused pass leaves globals / WebGPU in the live state.
+    // Unfocused first so the focused pass leaves the aliases in the live state.
     const ordered = tiles.slice().sort((a, b) => {
       if (a.id === focusedId) return 1;
       if (b.id === focusedId) return -1;
@@ -3299,10 +3327,6 @@ function renderAll() {
         state._viewCoverageMax = null;
 
         const isFocused = tile.id === focusedId;
-        const liveGpu = !!(typeof tracksWebGPU !== "undefined" && tracksWebGPU
-          && tracksWebGPU.id === "tracksWebGPU");
-        const prevForce = window.__GS_FORCE_SVG_TRACKS;
-        if (!isFocused || !liveGpu) window.__GS_FORCE_SVG_TRACKS = true;
 
         renderTracks();
 
@@ -3321,8 +3345,6 @@ function renderAll() {
           if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
           renderGenesPanel();
         }
-
-        window.__GS_FORCE_SVG_TRACKS = prevForce;
       });
     }
 
@@ -3347,7 +3369,7 @@ function renderAll() {
       .map(t => state.smartTracks.find(st => st.id === t.id))
       .filter(st => st !== undefined);
     // The sole tile resolves its reads from the chunk store exactly like every
-    // multi-tile column does (WebGPU stays on in this mode).
+    // multi-tile column does.
     const soleTile = (typeof gsFocusedTile === "function") ? gsFocusedTile() : null;
     smartTracksInOrder.forEach(track => {
       if (soleTile && typeof gsWithTrackView === "function") {
@@ -3425,12 +3447,20 @@ function scheduleSmartTrackRender(trackId, tileId) {
   });
 }
 
-// Hit testing for WebGPU-rendered repeats (only add listeners once)
-const tracksHoverTarget = tracksContainer || tracksSvg;
-if (tracksHoverTarget && !tracksHoverTarget._tooltipListenersAdded) {
+// Hit testing for WebGPU-rendered repeats. Every tile's tracks container gets
+// the listener (once); each tile keeps its own hit list (tile._repeatHits) from
+// its last paint. Coordinates convert through the focused-tile aliases, so a
+// hover only resolves in the focused tile (hover-to-focus moves it there).
+function gsInstallRepeatHover(tracksHoverTarget) {
+  if (!tracksHoverTarget || tracksHoverTarget._tooltipListenersAdded) return;
   tracksHoverTarget._tooltipListenersAdded = true;
   const tracksWebGPUHoverHandler = (e) => {
-    if (!webgpuSupported || repeatHitTestData.length === 0) return;
+    const tileEl = tracksHoverTarget.closest ? tracksHoverTarget.closest(".gs-tile") : null;
+    const tileId = tileEl ? tileEl.getAttribute("data-tile-id") : null;
+    const tile = tileId ? (state.tiles || []).find((t) => t.id === tileId) : null;
+    if (tile && state.focusedTileId && tile.id !== state.focusedTileId) return;
+    const repeatHits = (tile && tile._repeatHits) || repeatHitTestData;
+    if (repeatHits.length === 0) return;
     
     const rect = tracksHoverTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -3481,7 +3511,7 @@ if (tracksHoverTarget && !tracksHoverTarget._tooltipListenersAdded) {
     }
     
     // Find overlapping repeat (check against original coordinates)
-    const hitRepeat = repeatHitTestData.find(r => 
+    const hitRepeat = repeatHits.find(r => 
       bp >= r.start && bp <= r.end
     );
     
@@ -3506,6 +3536,8 @@ if (tracksHoverTarget && !tracksHoverTarget._tooltipListenersAdded) {
     updateTooltip();
   });
 }
+
+gsInstallRepeatHover(tracksContainer || tracksSvg);
 
 // Setup hover detection for canvas elements
 let flowHoverHandler = null;

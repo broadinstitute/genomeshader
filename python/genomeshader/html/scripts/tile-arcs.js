@@ -96,6 +96,16 @@ function gsOutgoingLinksForRead(read) {
  * Stores state.tileBundles and state.bundleColorByReadKey.
  */
 function gsRebuildTileBundles() {
+  _gsRebuildTileBundlesRaw();
+  // Content signature of what the read painter consumes from the bundles (the
+  // colour map is rebuilt as a new object every render, so identity is useless).
+  let sig = "";
+  const m = state.bundleColorByReadKey;
+  for (const k in m) sig += k + "=" + m[k] + ";";
+  state._bundleColorSig = sig;
+}
+
+function _gsRebuildTileBundlesRaw() {
   state.tileBundles = [];
   state.bundleColorByReadKey = Object.create(null);
   if (typeof gsIsMultiTile !== "function" || !gsIsMultiTile()) return;

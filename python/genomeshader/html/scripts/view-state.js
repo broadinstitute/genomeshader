@@ -353,6 +353,9 @@ function getTotalExpandedInsertionGapBp(expandedInsertions, tile) {
   const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
   const expanded = expandedInsertions || (t && t.expandedInsertions) || (state && state.expandedInsertions);
   if (!expanded) return 0;
+  // No expanded insertion (the usual case): nothing to sum. This runs once per
+  // painted coordinate, so scanning the insertion list here dominated repaints.
+  if (expanded.size === 0) return 0;
 
   if (insertionVariantsLookup && insertionVariantsLookup.length > 0) {
     let totalBp = 0;
@@ -410,7 +413,7 @@ function getInsertionPaintPxForLookupEntry(entry) {
 }
 
 function getGapAfterBpPx(bp, expandedInsertions) {
-  if (!expandedInsertions) return 0;
+  if (!expandedInsertions || expandedInsertions.size === 0) return 0;
   const bpNum = Number(bp);
   if (!Number.isFinite(bpNum)) return 0;
   if (!isInsertionPosWithinCurrentView(bpNum)) return 0;
@@ -463,7 +466,7 @@ function getAccumulatedGapPx(bp, expandedInsertions) {
 }
 
 function getAccumulatedGapBp(bp, expandedInsertions, tile) {
-  if (!expandedInsertions) return 0;
+  if (!expandedInsertions || expandedInsertions.size === 0) return 0;
   const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
   const viewStart = (t && Number.isFinite(t.startBp)) ? t.startBp : -Infinity;
   const bpNum = Number(bp);
