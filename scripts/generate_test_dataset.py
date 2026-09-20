@@ -10,6 +10,9 @@ the display features that are hard to cover with production callsets:
     duplicate / MAPQ=0 pairs)
   * spliced RNA: Illumina PE CRAMs + Iso-Seq BAMs over ARHGAP5 (CIGAR ``N``
     intron skips for split-read display)
+  * complex multi-locus SVs across ARHGAP5 (gene-fusion TRA, intra-gene INV,
+    exon-spanning DEL, 3-way chr14→chr20→chr21) with matching SA / discordant
+    evidence in PE WGS, long-read WGS, RNA-seq, Iso-Seq, and diploid assemblies
   * a joint VCF of SNVs, MNPs, delins, indels, and SVs with statistical phasing
     (`0|1`, two FORMAT/PS blocks), plus mixed unphased / half-call / missing GTs
   * per-sample TRGT VCFs with unphased genotypes (GT uses `/`, no PS)
@@ -113,6 +116,28 @@ RNA_EXONS = ARHGAP5_EXONS[3:]         # e4–e7
 RNA_SHORT_COVERAGE = 30
 RNA_LONG_MOLECULES = 10
 
+# ---------------------------------------------------------------------------
+# Complex SVs for multi-locus tile / Phase 7 refinement.
+# All breakpoints sit inside the existing chr14 / chr20 / chr21 slices so UCSC
+# gene tracks resolve and no extra FASTA fetches are needed.
+# Carrier: SYN001 + SYN002 (hap1); SYN003/SYN004 stay reference at these sites.
+# ---------------------------------------------------------------------------
+# Gene-fusion TRA: ARHGAP5 exon 5 ↔ chr20 showcase (opens two tiles + RNA fusion).
+FUSION_BP14 = 32_149_950                 # mid ARHGAP5 e5
+FUSION_BP20 = ORIGIN + 5_500             # chr20:32,005,500
+# Intra-gene inversion: ARHGAP5 e3–e4 (mate strand '-', auto-flip tile).
+INV_LEFT = 32_117_200                    # near e3 start
+INV_RIGHT = 32_146_300                   # near e4 end
+# Large exon-spanning DEL: ARHGAP5 e2 body → just before e4 (~54 kb).
+DEL_LEFT = 32_092_000
+DEL_RIGHT = 32_146_000
+# Three-breakpoint complex: ARHGAP5 5' → chr20 BND cluster → chr21 (3-tile path).
+CX_BP14 = 32_080_500
+CX_BP20 = ORIGIN + 10_450
+CX_BP21 = ORIGIN2 + 2_000
+# Samples that carry the complex SV haplotypes (hap1 ALT).
+COMPLEX_SV_CARRIERS = frozenset({0, 1})  # SYN001, SYN002
+
 
 def other_base(b: str, rng: random.Random, extra: Optional[str] = None) -> str:
     choices = [x for x in "ACGT" if x != b.upper() and x != (extra or "")]
@@ -169,6 +194,9 @@ class Site:
     # Optional BND mate locus (defaults to same-contig pos+5000 when unset).
     mate_chrom: str = ""
     mate_pos: int = 0
+    mate_strand: str = "+"          # '+' → N[chr:pos[ ; '-' → N]chr:pos]
+    mate_id: str = ""               # INFO/MATEID for reciprocal breakends
+    bnd_alt: str = ""               # explicit ALT (overrides mate_* formatting)
 
     @property
     def end(self) -> int:
@@ -404,6 +432,59 @@ def catalog(rng: random.Random) -> List[Site]:
         Site("chr14_rnu6", 32_202_080, "snv",
              _g(h01, r, r, r), chrom=CONTIG3,
              note="SNV next to RNU6-7"),
+        # ---- Complex multi-locus SVs (Phase 7) ----
+        # Reciprocal gene-fusion TRA: ARHGAP5 e5 ↔ chr20 showcase.
+        Site("bnd_fusion_14", FUSION_BP14, "bnd",
+             _g(h01, h01, r, r), chrom=CONTIG3,
+             mate_chrom=CONTIG, mate_pos=FUSION_BP20, mate_strand="+",
+             mate_id="bnd_fusion_20",
+             note="ARHGAP5–chr20 gene-fusion TRA (tile open + RNA fusion SA)"),
+        Site("bnd_fusion_20", FUSION_BP20, "bnd",
+             _g(h01, h01, r, r), chrom=CONTIG,
+             mate_chrom=CONTIG3, mate_pos=FUSION_BP14, mate_strand="+",
+             mate_id="bnd_fusion_14",
+             bnd_alt=f"]{CONTIG3}:{FUSION_BP14}]N",
+             note="reciprocal mate of bnd_fusion_14 (MATEID pair)"),
+        # Intra-gene INV with reverse-orientation BND (auto-flip linked tile).
+        Site("bnd_inv_left", INV_LEFT, "bnd",
+             _g(h01, h01, r, r), chrom=CONTIG3,
+             mate_chrom=CONTIG3, mate_pos=INV_RIGHT, mate_strand="-",
+             mate_id="bnd_inv_right",
+             note="ARHGAP5 e3–e4 inversion left breakend (mate strand '-')"),
+        Site("bnd_inv_right", INV_RIGHT, "bnd",
+             _g(h01, h01, r, r), chrom=CONTIG3,
+             mate_chrom=CONTIG3, mate_pos=INV_LEFT, mate_strand="-",
+             mate_id="bnd_inv_left",
+             bnd_alt=f"]{CONTIG3}:{INV_LEFT}]N",
+             note="ARHGAP5 e3–e4 inversion right breakend"),
+        # Large ~54 kb DEL spanning ARHGAP5 exons (symbolic + split-read evidence).
+        Site("sv_del_arhgap5_exons", DEL_LEFT, "sv_sym",
+             _g(h01, h01, r, r), chrom=CONTIG3,
+             svtype="DEL", svlen=-(DEL_RIGHT - DEL_LEFT),
+             note="~54 kb ARHGAP5 exon-spanning <DEL>; PE discordants + LR SA"),
+        # Three-way complex rearrangement path: chr14 → chr20 → chr21.
+        Site("bnd_cx_14", CX_BP14, "bnd",
+             _g(h01, r, r, r), chrom=CONTIG3,
+             mate_chrom=CONTIG, mate_pos=CX_BP20, mate_strand="+",
+             mate_id="bnd_cx_20a",
+             note="complex SV leg 1: ARHGAP5 5' → chr20 (3-tile path)"),
+        Site("bnd_cx_20a", CX_BP20, "bnd",
+             _g(h01, r, r, r), chrom=CONTIG,
+             mate_chrom=CONTIG3, mate_pos=CX_BP14, mate_strand="+",
+             mate_id="bnd_cx_14",
+             bnd_alt=f"]{CONTIG3}:{CX_BP14}]N",
+             note="complex SV leg 1 reciprocal on chr20"),
+        Site("bnd_cx_20b", CX_BP20 + 80, "bnd",
+             _g(h01, r, r, r), chrom=CONTIG,
+             mate_chrom=CONTIG2, mate_pos=CX_BP21, mate_strand="+",
+             mate_id="bnd_cx_21",
+             note="complex SV leg 2: chr20 → chr21"),
+        Site("bnd_cx_21", CX_BP21, "bnd",
+             _g(h01, r, r, r), chrom=CONTIG2,
+             mate_chrom=CONTIG, mate_pos=CX_BP20 + 80, mate_strand="+",
+             mate_id="bnd_cx_20b",
+             bnd_alt=f"]{CONTIG}:{CX_BP20 + 80}]N",
+             note="complex SV leg 2 reciprocal on chr21"),
     ]
     # Fill SNV alts that weren't specified — keep deterministic via rng.
     # Actual REF/ALT strings are resolved after the FASTA is in hand.
@@ -455,9 +536,15 @@ def fill_alleles(sites: List[Site], sequences: dict, rng: random.Random) -> None
             s.alts = [s.ref + motif * 2, s.ref + motif * 5]
         elif s.kind == "bnd":
             s.ref = at(s, 1)
-            mate_chrom = s.mate_chrom or s.chrom
-            mate = s.mate_pos if s.mate_pos else s.pos + 5_000
-            s.alts = [f"N[{mate_chrom}:{mate}["]
+            if s.bnd_alt:
+                s.alts = [s.bnd_alt]
+            else:
+                mate_chrom = s.mate_chrom or s.chrom
+                mate = s.mate_pos if s.mate_pos else s.pos + 5_000
+                if s.mate_strand == "-":
+                    s.alts = [f"N]{mate_chrom}:{mate}]"]
+                else:
+                    s.alts = [f"N[{mate_chrom}:{mate}["]
         elif s.kind == "star":
             s.ref = at(s, 1)
             s.alts = ["*"]
@@ -1093,6 +1180,326 @@ def emit_short_reads(fh, sample: str, sample_idx: int, seq: str, sites: List[Sit
     return n
 
 
+def _slice_ref(sequences: dict, contig: str, origin: int, pos: int, length: int,
+               reverse: bool = False) -> Tuple[str, List[Tuple[int, str]]]:
+    """Exact reference slice as an all-M alignment (optionally reverse-complemented)."""
+    _origin, seq = sequences[contig]
+    assert _origin == origin
+    i0 = pos - origin
+    piece = seq[i0:i0 + length].upper()
+    if reverse:
+        comp = str.maketrans("ACGTN", "TGCAN")
+        piece = piece.translate(comp)[::-1]
+    return piece, [(len(piece), "M")]
+
+
+def emit_sa_chimera(
+    fh, *, qname: str, rg: str,
+    contig_a: str, pos_a: int, strand_a: str, seq_a: str, cig_a: List[Tuple[int, str]],
+    contig_b: str, pos_b: int, strand_b: str, seq_b: str, cig_b: List[Tuple[int, str]],
+    hap_tag: Optional[int] = None, mapq: int = 60, primary_on_a: bool = True,
+    softclip: bool = True,
+) -> int:
+    """Write a primary + supplementary pair with reciprocal SA:Z tags.
+
+    When ``softclip`` is True (default), both records share one chimeric SEQ
+    ``seq_a+seq_b`` with soft-clips on the unmapped half — the classic
+    BWA-MEM split-read pattern that shows a clipped cliff at the breakpoint.
+    """
+    def sa_entry(contig, pos, strand, cig, mq):
+        return f"{contig},{pos},{strand},{cigar_str(cig)},{mq},0"
+
+    if softclip:
+        # Same full query on both records; clip the half that maps elsewhere.
+        full = seq_a + seq_b
+        cig_pri = merge_cigar(list(cig_a) + [(len(seq_b), "S")])
+        cig_sup = merge_cigar([(len(seq_a), "S")] + list(cig_b))
+        seq_pri = seq_sup = full
+    else:
+        cig_pri, cig_sup = list(cig_a), list(cig_b)
+        seq_pri, seq_sup = seq_a, seq_b
+
+    sa_for_a = sa_entry(contig_b, pos_b, strand_b, cig_sup if softclip else cig_b, mapq) + ";"
+    sa_for_b = sa_entry(contig_a, pos_a, strand_a, cig_pri if softclip else cig_a, mapq) + ";"
+    qual_pri = chr(33 + 40) * len(seq_pri)
+    qual_sup = chr(33 + 40) * len(seq_sup)
+    flag_a = (0 if strand_a == "+" else 16) | (0 if primary_on_a else 2048)
+    flag_b = (0 if strand_b == "+" else 16) | (2048 if primary_on_a else 0)
+    tags_a = [f"RG:Z:{rg}", "NM:i:0", f"SA:Z:{sa_for_a}"]
+    tags_b = [f"RG:Z:{rg}", "NM:i:0", f"SA:Z:{sa_for_b}"]
+    if hap_tag is not None:
+        tags_a.append(f"HP:i:{hap_tag}")
+        tags_b.append(f"HP:i:{hap_tag}")
+    write_sam_record(
+        fh, qname=qname, flag=flag_a, pos=pos_a, mapq=mapq, cigar=cig_pri,
+        seq=seq_pri, qual=qual_pri, extra="\t".join(tags_a), contig=contig_a,
+        rnext=contig_b if contig_b != contig_a else "=", pnext=pos_b, tlen=0,
+    )
+    write_sam_record(
+        fh, qname=qname, flag=flag_b, pos=pos_b, mapq=mapq, cigar=cig_sup,
+        seq=seq_sup, qual=qual_sup, extra="\t".join(tags_b), contig=contig_b,
+        rnext=contig_a if contig_b != contig_a else "=", pnext=pos_a, tlen=0,
+    )
+    return 2
+
+
+def emit_discordant_pair(
+    fh, *, qname: str, rg: str,
+    contig1: str, pos1: int, seq1: str, cig1: List[Tuple[int, str]],
+    contig2: str, pos2: int, seq2: str, cig2: List[Tuple[int, str]],
+    flag1: int = 97, flag2: int = 145, mapq: int = 20,
+) -> int:
+    """Paired-end records spanning two loci (cross-contig or large insert)."""
+    write_sam_record(
+        fh, qname=qname, flag=flag1, pos=pos1, mapq=mapq, cigar=cig1,
+        seq=seq1, qual=chr(33 + 35) * len(seq1),
+        rnext=contig2 if contig2 != contig1 else "=", pnext=pos2, tlen=0,
+        extra=f"RG:Z:{rg}\tNM:i:0", contig=contig1,
+    )
+    write_sam_record(
+        fh, qname=qname, flag=flag2, pos=pos2, mapq=mapq, cigar=cig2,
+        seq=seq2, qual=chr(33 + 35) * len(seq2),
+        rnext=contig1 if contig2 != contig1 else "=", pnext=pos1, tlen=0,
+        extra=f"RG:Z:{rg}\tNM:i:0", contig=contig2,
+    )
+    return 2
+
+
+def emit_complex_sv_dna(
+    fh, sample: str, sample_idx: int, sequences: dict, rng: random.Random,
+    *, platform: str, rg: str, name_prefix: str,
+) -> int:
+    """Plant SA / discordant evidence for the complex SV catalog on DNA reads.
+
+    ``sequences`` maps contig → (origin_1based, seq). Long-read platforms get
+    soft-clipped SA chimeras (visible clipped cliffs at BPs); Illumina gets
+    discordant PE plus soft-clipped split reads at each breakpoint.
+    """
+    if sample_idx not in COMPLEX_SV_CARRIERS:
+        return 0
+    n = 0
+    hap = 1  # ALT on hap1
+    is_long = platform in ("pacbio", "assembly")
+    # Long enough that soft-clips are obvious in the pileup (~1–2 kb each half).
+    half = 800 if is_long else 80
+    n_copies = 3 if is_long else 1
+
+    def ref_at(contig, pos, length, reverse=False):
+        origin, _ = sequences[contig]
+        return _slice_ref(sequences, contig, origin, pos, length, reverse=reverse)
+
+    def plant_sa(tag, contig_a, pos_a, strand_a, contig_b, pos_b, strand_b,
+                 reverse_b=False):
+        nonlocal n
+        for k in range(n_copies):
+            # Jitter start a few bp so copies don't stack identically.
+            jitter = k * (12 if is_long else 3)
+            a_seq, a_cig = ref_at(contig_a, pos_a - half - jitter, half)
+            b_seq, b_cig = ref_at(contig_b, pos_b + jitter, half, reverse=reverse_b)
+            n += emit_sa_chimera(
+                fh, qname=f"{name_prefix}:{tag}:{sample}:{k}", rg=rg,
+                contig_a=contig_a, pos_a=pos_a - half - jitter, strand_a=strand_a,
+                seq_a=a_seq, cig_a=a_cig,
+                contig_b=contig_b, pos_b=pos_b + jitter, strand_b=strand_b,
+                seq_b=b_seq, cig_b=b_cig,
+                hap_tag=hap if platform == "pacbio" else None,
+            )
+
+    # --- Gene-fusion TRA: ARHGAP5 e5 ↔ chr20 ---
+    if is_long:
+        plant_sa("fusion", CONTIG3, FUSION_BP14, "+", CONTIG, FUSION_BP20, "+")
+    else:
+        a_seq, a_cig = ref_at(CONTIG3, FUSION_BP14 - SHORT_READ_LEN, SHORT_READ_LEN)
+        b_seq, b_cig = ref_at(CONTIG, FUSION_BP20, SHORT_READ_LEN)
+        for k in range(4):
+            n += emit_discordant_pair(
+                fh, qname=f"{name_prefix}:fusion:pe:{k}", rg=rg,
+                contig1=CONTIG3, pos1=FUSION_BP14 - SHORT_READ_LEN - k * 3,
+                seq1=a_seq, cig1=a_cig,
+                contig2=CONTIG, pos2=FUSION_BP20 + k * 3, seq2=b_seq, cig2=b_cig,
+            )
+        # Soft-clipped split reads at the fusion BP (visible cliff).
+        for k in range(3):
+            left, _ = ref_at(CONTIG3, FUSION_BP14 - half - k, half)
+            right, _ = ref_at(CONTIG, FUSION_BP20 + k, half)
+            n += emit_sa_chimera(
+                fh, qname=f"{name_prefix}:fusion:split:{k}", rg=rg,
+                contig_a=CONTIG3, pos_a=FUSION_BP14 - half - k, strand_a="+",
+                seq_a=left, cig_a=[(len(left), "M")],
+                contig_b=CONTIG, pos_b=FUSION_BP20 + k, strand_b="+",
+                seq_b=right, cig_b=[(len(right), "M")],
+            )
+
+    # --- Intra-gene INV (mate on reverse strand) ---
+    if is_long:
+        plant_sa("inv", CONTIG3, INV_LEFT, "+", CONTIG3, INV_RIGHT - half, "-",
+                 reverse_b=True)
+    else:
+        a_seq, a_cig = ref_at(CONTIG3, INV_LEFT - SHORT_READ_LEN, SHORT_READ_LEN)
+        b_seq, b_cig = ref_at(CONTIG3, INV_RIGHT, SHORT_READ_LEN)
+        for k in range(3):
+            n += emit_discordant_pair(
+                fh, qname=f"{name_prefix}:inv:pe:{k}", rg=rg,
+                contig1=CONTIG3, pos1=INV_LEFT - SHORT_READ_LEN,
+                seq1=a_seq, cig1=a_cig,
+                contig2=CONTIG3, pos2=INV_RIGHT + k, seq2=b_seq, cig2=b_cig,
+                flag1=65, flag2=129,
+            )
+        for k in range(2):
+            left, _ = ref_at(CONTIG3, INV_LEFT - half, half)
+            right, _ = ref_at(CONTIG3, INV_RIGHT - half + k, half, reverse=True)
+            n += emit_sa_chimera(
+                fh, qname=f"{name_prefix}:inv:split:{k}", rg=rg,
+                contig_a=CONTIG3, pos_a=INV_LEFT - half, strand_a="+",
+                seq_a=left, cig_a=[(len(left), "M")],
+                contig_b=CONTIG3, pos_b=INV_RIGHT - half + k, strand_b="-",
+                seq_b=right, cig_b=[(len(right), "M")],
+            )
+
+    # --- Large DEL: split read / discordant spanning DEL_LEFT ↔ DEL_RIGHT ---
+    if is_long:
+        plant_sa("del", CONTIG3, DEL_LEFT, "+", CONTIG3, DEL_RIGHT, "+")
+    else:
+        a_seq, a_cig = ref_at(CONTIG3, DEL_LEFT - SHORT_READ_LEN, SHORT_READ_LEN)
+        b_seq, b_cig = ref_at(CONTIG3, DEL_RIGHT, SHORT_READ_LEN)
+        for k in range(5):
+            n += emit_discordant_pair(
+                fh, qname=f"{name_prefix}:del:pe:{k}", rg=rg,
+                contig1=CONTIG3, pos1=DEL_LEFT - SHORT_READ_LEN - k,
+                seq1=a_seq, cig1=a_cig,
+                contig2=CONTIG3, pos2=DEL_RIGHT + k, seq2=b_seq, cig2=b_cig,
+            )
+        for k in range(2):
+            left, _ = ref_at(CONTIG3, DEL_LEFT - half - k, half)
+            right, _ = ref_at(CONTIG3, DEL_RIGHT + k, half)
+            n += emit_sa_chimera(
+                fh, qname=f"{name_prefix}:del:split:{k}", rg=rg,
+                contig_a=CONTIG3, pos_a=DEL_LEFT - half - k, strand_a="+",
+                seq_a=left, cig_a=[(len(left), "M")],
+                contig_b=CONTIG3, pos_b=DEL_RIGHT + k, strand_b="+",
+                seq_b=right, cig_b=[(len(right), "M")],
+            )
+
+    # --- Three-way complex: multi-SA soft-clipped long read + pairwise PE ---
+    if is_long:
+        a_seq, a_cig = ref_at(CONTIG3, CX_BP14 - half, half)
+        b_seq, b_cig = ref_at(CONTIG, CX_BP20, half)
+        c_seq, c_cig = ref_at(CONTIG2, CX_BP21, half)
+        # One chimeric molecule visiting all three loci: soft-clip unused thirds.
+        full = a_seq + b_seq + c_seq
+        la, lb, lc = len(a_seq), len(b_seq), len(c_seq)
+        qname = f"{name_prefix}:complex3:{sample}"
+        cig_a_sc = merge_cigar(list(a_cig) + [(lb + lc, "S")])
+        cig_b_sc = merge_cigar([(la, "S")] + list(b_cig) + [(lc, "S")])
+        cig_c_sc = merge_cigar([(la + lb, "S")] + list(c_cig))
+        sa_pri = (
+            f"{CONTIG},{CX_BP20},+,{cigar_str(cig_b_sc)},60,0;"
+            f"{CONTIG2},{CX_BP21},+,{cigar_str(cig_c_sc)},60,0;"
+        )
+        tags = f"RG:Z:{rg}\tNM:i:0\tSA:Z:{sa_pri}"
+        if platform == "pacbio":
+            tags += f"\tHP:i:{hap}"
+        write_sam_record(
+            fh, qname=qname, flag=0, pos=CX_BP14 - half, mapq=60, cigar=cig_a_sc,
+            seq=full, qual=chr(33 + 40) * len(full), extra=tags, contig=CONTIG3,
+        )
+        sa_b = (
+            f"{CONTIG3},{CX_BP14 - half},+,{cigar_str(cig_a_sc)},60,0;"
+            f"{CONTIG2},{CX_BP21},+,{cigar_str(cig_c_sc)},60,0;"
+        )
+        write_sam_record(
+            fh, qname=qname, flag=2048, pos=CX_BP20, mapq=60, cigar=cig_b_sc,
+            seq=full, qual=chr(33 + 40) * len(full),
+            extra=f"RG:Z:{rg}\tNM:i:0\tSA:Z:{sa_b}"
+                  + (f"\tHP:i:{hap}" if platform == "pacbio" else ""),
+            contig=CONTIG,
+        )
+        sa_c = (
+            f"{CONTIG3},{CX_BP14 - half},+,{cigar_str(cig_a_sc)},60,0;"
+            f"{CONTIG},{CX_BP20},+,{cigar_str(cig_b_sc)},60,0;"
+        )
+        write_sam_record(
+            fh, qname=qname, flag=2048, pos=CX_BP21, mapq=60, cigar=cig_c_sc,
+            seq=full, qual=chr(33 + 40) * len(full),
+            extra=f"RG:Z:{rg}\tNM:i:0\tSA:Z:{sa_c}"
+                  + (f"\tHP:i:{hap}" if platform == "pacbio" else ""),
+            contig=CONTIG2,
+        )
+        n += 3
+    else:
+        a_seq, a_cig = ref_at(CONTIG3, CX_BP14 - SHORT_READ_LEN, SHORT_READ_LEN)
+        b_seq, b_cig = ref_at(CONTIG, CX_BP20, SHORT_READ_LEN)
+        c_seq, c_cig = ref_at(CONTIG2, CX_BP21, SHORT_READ_LEN)
+        n += emit_discordant_pair(
+            fh, qname=f"{name_prefix}:complex3:14_20", rg=rg,
+            contig1=CONTIG3, pos1=CX_BP14 - SHORT_READ_LEN, seq1=a_seq, cig1=a_cig,
+            contig2=CONTIG, pos2=CX_BP20, seq2=b_seq, cig2=b_cig,
+        )
+        n += emit_discordant_pair(
+            fh, qname=f"{name_prefix}:complex3:20_21", rg=rg,
+            contig1=CONTIG, pos1=CX_BP20, seq1=b_seq, cig1=b_cig,
+            contig2=CONTIG2, pos2=CX_BP21, seq2=c_seq, cig2=c_cig,
+        )
+    _ = rng
+    return n
+
+
+def emit_complex_sv_rna(
+    fh, sample: str, sample_idx: int, seq14: str, seq20: str, rng: random.Random,
+    *, platform: str, rg: str,
+) -> int:
+    """Chimeric RNA evidence for the ARHGAP5–chr20 gene fusion (carriers only)."""
+    if sample_idx not in COMPLEX_SV_CARRIERS:
+        return 0
+    n = 0
+    # Fuse ARHGAP5 e4–e5 transcript fragment to a chr20 "exon" slice.
+    exons_5p = ARHGAP5_EXONS[3:5]  # e4, e5
+    tx_len = transcript_length(exons_5p)
+    take = min(120, tx_len - 10)
+    spliced = spliced_read(seq14, ORIGIN3, exons_5p, 0, take)
+    if spliced is None:
+        return 0
+    pos_a, cig_a, seq_a = spliced
+    # Mate "exon" on chr20 near fusion BP.
+    i0 = FUSION_BP20 - ORIGIN
+    mate_len = 100 if platform == "isoseq" else SHORT_READ_LEN
+    seq_b = seq20[i0:i0 + mate_len].upper()
+    cig_b = [(len(seq_b), "M")]
+    if platform == "isoseq":
+        n += emit_sa_chimera(
+            fh, qname=f"{sample}:isoseq:fusion:0", rg=rg,
+            contig_a=CONTIG3, pos_a=pos_a, strand_a="+", seq_a=seq_a, cig_a=cig_a,
+            contig_b=CONTIG, pos_b=FUSION_BP20, strand_b="+",
+            seq_b=seq_b, cig_b=cig_b,
+        )
+        # A second molecule with soft-clip into the fusion junction.
+        if len(seq_a) > 40:
+            clip = seq_b[:18]
+            fused = clip + seq_a
+            cig = [(18, "S")] + list(cig_a)
+            write_sam_record(
+                fh, qname=f"{sample}:isoseq:fusion:clip", flag=0, pos=pos_a,
+                mapq=60, cigar=cig, seq=fused, qual=chr(33 + 40) * len(fused),
+                extra=f"RG:Z:{rg}\tNM:i:0\tSA:Z:{CONTIG},{FUSION_BP20},+,{mate_len}M,60,0;",
+                contig=CONTIG3,
+            )
+            n += 1
+    else:
+        # Illumina PE: one mate on ARHGAP5 exon, other on chr20 (discordant fusion).
+        left = seq_a[:SHORT_READ_LEN] if len(seq_a) >= SHORT_READ_LEN else seq_a
+        right = seq_b[:SHORT_READ_LEN] if len(seq_b) >= SHORT_READ_LEN else seq_b
+        for k in range(6):
+            n += emit_discordant_pair(
+                fh, qname=f"{sample}:rnaseq:fusion:{k}", rg=rg,
+                contig1=CONTIG3, pos1=pos_a, seq1=left,
+                cig1=[(len(left), "M")],
+                contig2=CONTIG, pos2=FUSION_BP20 + k,
+                seq2=right, cig2=[(len(right), "M")],
+            )
+    _ = rng
+    return n
+
+
 def _exon_len(exons: Sequence[Tuple[int, int]], i: int) -> int:
     e0, e1 = exons[i]
     return e1 - e0 + 1
@@ -1338,6 +1745,13 @@ def write_assembly_bam(
             )
             if n:
                 fasta_records.append((qname, hap_seq))
+        # Carrier hap1 assemblies also carry SA-split contigs at complex SV BPs.
+        if hap == 0 and sample_idx in COMPLEX_SV_CARRIERS:
+            sequences = {c: (o, s) for c, o, s in windows}
+            emit_complex_sv_dna(
+                fh, sample, sample_idx, sequences, random.Random(SEED + 99),
+                platform="assembly", rg=rg, name_prefix=f"{sample}:asm:cx",
+            )
     sam_to_bam(sam, out_bam)
     return fasta_records
 
@@ -1416,6 +1830,8 @@ def info_for(site: Site) -> str:
         ]
     if site.kind == "bnd":
         parts += ["SVTYPE=BND"]
+        if site.mate_id:
+            parts.append(f"MATEID={site.mate_id}")
     if site.kind == "star":
         parts += ["SVTYPE=DEL"]
     for k, v in site.extra_info.items():
@@ -1451,6 +1867,7 @@ def write_phased_vcf(path: Path, sites: List[Site]) -> None:
         '##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant">',
         '##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">',
         '##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="SV length">',
+        '##INFO=<ID=MATEID,Number=.,Type=String,Description="ID of mate breakends">',
         '##INFO=<ID=DP,Number=1,Type=Integer,Description="Total depth">',
         '##INFO=<ID=MQ,Number=1,Type=Float,Description="RMS mapping quality">',
         '##INFO=<ID=QD,Number=1,Type=Float,Description="Quality by depth">',
@@ -1639,6 +2056,34 @@ def write_docs(out: Path, sites: List[Site], bucket: Optional[str]) -> None:
         "chr14_locus": f"{CONTIG3}:{SHOWCASE3[0]}-{SHOWCASE3[1]}",
         "chr14_region": f"{CONTIG3}:{ORIGIN3}-{REGION3_END}",
         "rna_locus": f"{CONTIG3}:{RNA_LOCUS[0]}-{RNA_LOCUS[1]}",
+        "complex_sv": {
+            "fusion": {
+                "bp_a": f"{CONTIG3}:{FUSION_BP14}",
+                "bp_b": f"{CONTIG}:{FUSION_BP20}",
+                "carriers": ["SYN001", "SYN002"],
+                "note": "ARHGAP5 e5 ↔ chr20 TRA; DNA SA + PE + RNA fusion + asm SA",
+            },
+            "inversion": {
+                "bp_a": f"{CONTIG3}:{INV_LEFT}",
+                "bp_b": f"{CONTIG3}:{INV_RIGHT}",
+                "carriers": ["SYN001", "SYN002"],
+                "note": "ARHGAP5 e3–e4 INV; reverse-strand SA (auto-flip tile)",
+            },
+            "deletion": {
+                "locus": f"{CONTIG3}:{DEL_LEFT}-{DEL_RIGHT}",
+                "carriers": ["SYN001", "SYN002"],
+                "note": "~54 kb ARHGAP5 exon-spanning DEL",
+            },
+            "complex3": {
+                "path": [
+                    f"{CONTIG3}:{CX_BP14}",
+                    f"{CONTIG}:{CX_BP20}",
+                    f"{CONTIG2}:{CX_BP21}",
+                ],
+                "carriers": ["SYN001"],
+                "note": "3-tile path chr14 → chr20 → chr21 (multi-SA long read)",
+            },
+        },
         "files": {
             "phased_vcf": "variants/phased.snv_indel_sv.vcf.gz",
             "trgt_vcfs": [f"trgt/{s}.trgt.vcf.gz" for s in SAMPLES],
@@ -1774,6 +2219,10 @@ for untagged pileups. Attaching both maps each VCF sample to both files.
 | Symbolic / BND | `{CONTIG}:{ORIGIN + 10400}-{ORIGIN + 18500}` | `<DEL>` `<DUP>` `<INV>` `<INS>` `<CNV>` + `BND` |
 | Both TRs | `{CONTIG}:{ORIGIN + 6700}-{ORIGIN + 11200}` | Phased track + unphased TRGT track at the same loci |
 | Second contig | `{CONTIG2}:{SHOWCASE2[0]}-{SHOWCASE2[1]}` | Contig switch: two SNVs + a 6 bp INS on chr21 |
+| **Gene fusion (Phase 7)** | `{CONTIG3}:{FUSION_BP14 - 2000}-{FUSION_BP14 + 2000}` | ARHGAP5 e5 TRA → chr20 `{FUSION_BP20}`; right-click SA / BND to open linked tile. DNA PE+LR SA, RNA fusion PE/Iso-Seq SA, hap1 asm SA. Carriers SYN001/SYN002 |
+| **Inversion (auto-flip)** | `{CONTIG3}:{INV_LEFT - 1500}-{INV_LEFT + 1500}` | ARHGAP5 e3–e4 INV; SA mate strand `-` → linked tile opens reversed |
+| **Exon-spanning DEL** | `{CONTIG3}:{DEL_LEFT - 2000}-{DEL_LEFT + 2000}` | ~54 kb `<DEL>` + split/discordant evidence to `{DEL_RIGHT}` |
+| **3-way complex** | `{CONTIG3}:{CX_BP14 - 1500}-{CX_BP14 + 1500}` | Multi-SA read: chr14 → chr20 → chr21 (three-tile mockup path). SYN001 only |
 
 ## Planted sites
 
@@ -1803,6 +2252,10 @@ GT convention: `0` = REF, `1`/`2` = ALT1/ALT2, `|` = phased, `/` = unphased,
 - [ ] `mnp_3bp` is a 3 bp substitution; `delins` is a mixed delins (5bp→2bp)
 - [ ] Two phase sets on chr20: `dense_1`–`dense_6` use PS={PHASE_SET_2}; chr14 ARHGAP5 SNVs use PS={PHASE_SET_14}
 - [ ] Symbolic SVs show `<DEL>`/`<DUP>`/`<INV>`/`<INS>`/`<CNV>` labels; `bnd_breakend` is a breakend
+- [ ] Phase 7: right-click fusion SA / `bnd_fusion_14` opens linked tile at chr20:{FUSION_BP20}; arc connects
+- [ ] Phase 7: inversion SA mate strand `-` opens a reversed (3′→5′) tile at `{INV_RIGHT}`
+- [ ] Phase 7: complex3 multi-SA submenu lists chr20 and chr21 mates
+- [ ] Phase 7: RNA-seq PE + Iso-Seq SA support the same ARHGAP5–chr20 fusion; hap1 assembly has SA splits
 - [ ] `{VCF_ONLY_SAMPLE}` appears in the phased VCF genotype table with no read pileup
 - [ ] `{ORPHAN_SAMPLE}` has reads but no VCF column
 - [ ] Load SYN001 with Evidence: hifiasm: two long contigs, hap1 red + hap2 blue, matching SYN001's PacBio alleles
@@ -2054,13 +2507,21 @@ def validate(out: Path) -> None:
         "chr14_loc_snv", "chr14_arhgap5_snv", "chr14_block_1", "chr14_block_12",
         "chr14_arhgap5_ins",
         "chr14_arhgap5_del", "chr14_rnu6",
+        "bnd_fusion_14", "bnd_fusion_20", "bnd_inv_left", "bnd_inv_right",
+        "sv_del_arhgap5_exons", "bnd_cx_14", "bnd_cx_20a", "bnd_cx_20b", "bnd_cx_21",
     }
     missing = required - set(by_id)
     if missing:
         sys.exit(f"missing VCF records: {sorted(missing)}")
-    if not by_id["unphased_het"].samples["SYN001"].phased:
-        pass
-    else:
+    fusion = by_id["bnd_fusion_14"]
+    if "MATEID" not in fusion.info or fusion.info["MATEID"][0] != "bnd_fusion_20":
+        sys.exit(f"bnd_fusion_14 missing MATEID=bnd_fusion_20, got {fusion.info.get('MATEID')}")
+    if not (fusion.alts and fusion.alts[0].startswith("N[chr20:")):
+        sys.exit(f"bnd_fusion_14 ALT unexpected: {fusion.alts}")
+    inv = by_id["bnd_inv_left"]
+    if not (inv.alts and "]" in inv.alts[0]):
+        sys.exit(f"bnd_inv_left should use reverse-orientation brackets, got {inv.alts}")
+    if by_id["unphased_het"].samples["SYN001"].phased:
         sys.exit("unphased_het should not be statistically phased")
     half = by_id["snv_halfcall"].samples["SYN001"]
     if half["GT"] != (0, None):
@@ -2162,6 +2623,10 @@ def validate(out: Path) -> None:
         chroms = set()
         for r in bam.fetch(until_eof=True):
             if r.is_unmapped or r.is_secondary or r.is_supplementary:
+                continue
+            # Diploid contig QNAMEs are ``SAMPLE#hap#chrom``; ignore planted
+            # complex-SV SA evidence records that share the BAM.
+            if "#" not in (r.query_name or ""):
                 continue
             n += 1
             n_hp += int(r.has_tag("HP"))
@@ -2285,11 +2750,76 @@ def validate(out: Path) -> None:
     if intron_e4_e5 <= 0 or intron_e4_e6 <= intron_e4_e5:
         sys.exit(f"unexpected intron sizes e4-e5={intron_e4_e5} e4-e6={intron_e4_e6}")
 
+    # ---- Complex SV / Phase 7 multi-locus evidence ----
+    bam = pysam.AlignmentFile(out / "long_reads" / "SYN001.bam", "rb")
+    n_fusion_sa = n_inv_sa = n_cx = n_fusion_clip = 0
+    for r in bam.fetch(CONTIG3, FUSION_BP14 - 900, FUSION_BP14 + 100):
+        if r.has_tag("SA") and CONTIG in r.get_tag("SA"):
+            n_fusion_sa += 1
+            if r.cigarstring and "S" in r.cigarstring:
+                n_fusion_clip += 1
+    for r in bam.fetch(CONTIG3, INV_LEFT - 900, INV_LEFT + 100):
+        if r.has_tag("SA") and "-" in r.get_tag("SA"):
+            n_inv_sa += 1
+    for r in bam.fetch(CONTIG3, CX_BP14 - 900, CX_BP14 + 100):
+        if r.has_tag("SA") and CONTIG2 in r.get_tag("SA"):
+            n_cx += 1
+    bam.close()
+    print(f"  complex SV long: fusion_SA={n_fusion_sa} (softclip={n_fusion_clip}), "
+          f"inv_SA={n_inv_sa}, complex3_SA={n_cx}")
+    if n_fusion_sa < 1:
+        sys.exit("expected ARHGAP5–chr20 fusion SA on long reads")
+    if n_fusion_clip < 1:
+        sys.exit("expected soft-clipped fusion SA (visible breakpoint cliff)")
+    if n_inv_sa < 1:
+        sys.exit("expected inversion SA with reverse-strand mate")
+    if n_cx < 1:
+        sys.exit("expected 3-way complex SA (chr14→chr20→chr21)")
+
+    cram = pysam.AlignmentFile(out / "short_reads" / "SYN001.cram", "rc")
+    n_pe_fusion = sum(
+        1 for r in cram.fetch(CONTIG3, FUSION_BP14 - 200, FUSION_BP14 + 50)
+        if r.is_paired and r.next_reference_name == CONTIG
+    )
+    cram.close()
+    print(f"  complex SV short: fusion_PE={n_pe_fusion}")
+    if n_pe_fusion < 2:
+        sys.exit("expected discordant PE across ARHGAP5–chr20 fusion")
+
+    cram = pysam.AlignmentFile(out / "rna_short" / "SYN001.cram", "rc")
+    n_rna_fusion = sum(
+        1 for r in cram.fetch(CONTIG3, RNA_LOCUS[0] - 1, RNA_LOCUS[1])
+        if r.is_paired and r.next_reference_name == CONTIG
+    )
+    cram.close()
+    bam = pysam.AlignmentFile(out / "rna_long" / "SYN001.bam", "rb")
+    n_iso_fusion = sum(
+        1 for r in bam.fetch(CONTIG3, RNA_LOCUS[0] - 1, RNA_LOCUS[1])
+        if r.has_tag("SA") and CONTIG in r.get_tag("SA")
+    )
+    bam.close()
+    print(f"  complex SV RNA: short_fusion_PE={n_rna_fusion}, "
+          f"isoseq_fusion_SA={n_iso_fusion}")
+    if n_rna_fusion < 2:
+        sys.exit("expected RNA-seq discordant PE for gene fusion")
+    if n_iso_fusion < 1:
+        sys.exit("expected Iso-Seq SA chimera for gene fusion")
+
+    asm = pysam.AlignmentFile(out / "assemblies" / "SYN001.hap1.bam", "rb")
+    n_asm_sa = sum(1 for r in asm.fetch(until_eof=True) if r.has_tag("SA"))
+    asm.close()
+    print(f"  complex SV assembly hap1 SA={n_asm_sa}")
+    if n_asm_sa < 3:
+        sys.exit("expected SA-split assembly contigs on SYN001 hap1")
+
     print("  validation ok")
 
 
-def generate_rna_reads(out: Path, tmp: Path, seq14: str) -> None:
-    """Spliced Illumina PE CRAMs + Iso-Seq BAMs over ARHGAP5 exons 4–7."""
+def generate_rna_reads(out: Path, tmp: Path, seq14: str, seq20: str) -> None:
+    """Spliced Illumina PE CRAMs + Iso-Seq BAMs over ARHGAP5 exons 4–7.
+
+    Carrier samples also get ARHGAP5–chr20 fusion chimeric RNA evidence.
+    """
     tmp.mkdir(parents=True, exist_ok=True)
     for i, sample in enumerate(SAMPLES):
         rna_rng = random.Random(SEED + 17 + i)
@@ -2306,6 +2836,10 @@ def generate_rna_reads(out: Path, tmp: Path, seq14: str) -> None:
                     RNA_EXONS[:1] + RNA_EXONS[2:],
                     coverage=10, name_prefix="rnaseq.skipe5",
                 )
+            n += emit_complex_sv_rna(
+                fh, sample, i, seq14, seq20, rna_rng,
+                platform="rna_illumina", rg=f"{sample}.rna.illumina",
+            )
         print(f"    {n} RNA short records")
         bam = tmp / f"{sample}.rna_illumina.bam"
         sam_to_bam(sam, bam)
@@ -2323,6 +2857,10 @@ def generate_rna_reads(out: Path, tmp: Path, seq14: str) -> None:
                     fh, sample, i, seq14, ORIGIN3, rna_rng, RNA_EXONS,
                     n_molecules=4, skip_exon=1, name_prefix="isoseq.skipe5",
                 )
+            n += emit_complex_sv_rna(
+                fh, sample, i, seq14, seq20, rna_rng,
+                platform="isoseq", rg=f"{sample}.isoseq",
+            )
         print(f"    {n} RNA long records")
         sam_to_bam(sam, out / "rna_long" / f"{sample}.bam")
 
@@ -2393,6 +2931,13 @@ def generate(out: Path, bucket: Optional[str], do_upload: bool,
                     contig=CONTIG3, origin=ORIGIN3, rg=f"{sample}.pacbio",
                     name_prefix=f"{sample}:hifi:{CONTIG3}",
                 )
+                n += emit_complex_sv_dna(
+                    fh, sample, i,
+                    {CONTIG: (ORIGIN, seq20), CONTIG2: (ORIGIN2, seq21),
+                     CONTIG3: (ORIGIN3, seq14)},
+                    rng, platform="pacbio", rg=f"{sample}.pacbio",
+                    name_prefix=f"{sample}:hifi:cx",
+                )
                 if sample == "SYN001":
                     n += emit_long_reads(
                         fh, sample, i, seq20, sites, rng,
@@ -2421,6 +2966,13 @@ def generate(out: Path, bucket: Optional[str], do_upload: bool,
                     fh, sample, i, seq14, sites, rng,
                     contig=CONTIG3, origin=ORIGIN3, span=SPAN3,
                     showcase=SHOWCASE3,
+                )
+                n += emit_complex_sv_dna(
+                    fh, sample, i,
+                    {CONTIG: (ORIGIN, seq20), CONTIG2: (ORIGIN2, seq21),
+                     CONTIG3: (ORIGIN3, seq14)},
+                    rng, platform="illumina", rg=f"{sample}.illumina",
+                    name_prefix=f"{sample}:illumina:cx",
                 )
             print(f"    {n} short records")
             bam = tmp / f"{sample}.illumina.bam"
@@ -2461,7 +3013,7 @@ def generate(out: Path, bucket: Optional[str], do_upload: bool,
         write_assemblies(out, tmp, sites, seq20, seq21, seq14)
         write_tracks(out, sites)
 
-    generate_rna_reads(out, tmp, seq14)
+    generate_rna_reads(out, tmp, seq14, seq20)
     shutil.rmtree(tmp, ignore_errors=True)
     write_docs(out, sites, bucket)
     if rna_only:

@@ -86,15 +86,30 @@ def _format_allele_label(allele):
     identically."""
     if not allele or allele == ".":
         return ". (no-call)"
+    # Breakend ALTs are not sequence — don't report them as N-bp insertions.
+    if ("[" in allele or "]" in allele) and not allele.startswith("<"):
+        display = allele if len(allele) <= 40 else allele[:37] + "..."
+        return f"BND {display}"
+    if allele.startswith("<") and allele.endswith(">"):
+        return allele  # symbolic <DEL>/<DUP>/…
     length = len(allele)
     length_label = "1 bp" if length == 1 else f"{length} bp"
     display_allele = allele[:50] + "..." if length > 50 else allele
     return f"{display_allele} ({length_label})"
 
 
+def _is_breakend_alt(allele: str) -> bool:
+    return bool(allele) and ("[" in allele or "]" in allele) and not allele.startswith("<")
+
+
 def _classify_variant(ref_allele, alt_alleles):
     """Return (variant_type, is_insertion, is_deletion, max_insertion_length) —
     same rules as the long-format builder."""
+    # Breakends / symbolic SVs must not be length-classified as INS/DEL.
+    if any(_is_breakend_alt(a) for a in (alt_alleles or [])):
+        return "bnd", False, False, 0
+    if any((a or "").startswith("<") for a in (alt_alleles or [])):
+        return "sv", False, False, 0
     ref_len = len(ref_allele) if ref_allele else 0
     is_insertion = is_deletion = False
     max_insertion_length = 0
@@ -2922,7 +2937,7 @@ class GenomeShader:
     #     column / no reference-diffed SNPs) so the widget can't serve them.
     # v4: is_paired / is_primary columns for paired-end layout.
     # v5: CIGAR N (REFSKIP) elements for split-read display.
-    _READS_CACHE_VERSION = "v8"  # v8: sa_tag column from SA:Z aux
+    _READS_CACHE_VERSION = "v9"  # v9: mate_contig/mate_pos for PE linked tiles
 
     # ----------------------------------------------------------------- debug
     def _setup_debug_logging(self):

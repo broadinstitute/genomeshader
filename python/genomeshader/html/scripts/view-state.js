@@ -635,15 +635,28 @@ if (typeof window !== "undefined") {
 // fetch is needed. Pure; the pan/zoom trigger + comm fetch are browser-wired.
 function _gsRegionKey(r) { return `${r.contig}:${r.start}-${r.end}`; }
 
-function gsWindowStoreUpdate(regions, newRegion, centerBp, keepSpan) {
+function gsWindowStoreUpdate(regions, newRegion, centerBp, keepSpan, protectKeys) {
   regions = Array.isArray(regions) ? regions.slice() : [];
   const nk = _gsRegionKey(newRegion);
   regions = regions.filter((r) => _gsRegionKey(r) !== nk);
   regions.push(newRegion);
   const kept = [], evicted = [];
+  const protect = protectKeys instanceof Set ? protectKeys : null;
   for (const r of regions) {
+    const key = _gsRegionKey(r);
     const mid = (Number(r.start) + Number(r.end)) / 2;
-    if (_gsRegionKey(r) !== nk && Math.abs(mid - centerBp) > keepSpan) evicted.push(r);
+    // Never evict windows that cover an open multi-tile column, and never evict
+    // a different contig solely because genomic coords are far apart — that was
+    // wiping tile A's variants when opening a linked tile on another chromosome.
+    if (protect && protect.has(key)) {
+      kept.push(r);
+      continue;
+    }
+    if (key !== nk && r.contig !== newRegion.contig) {
+      kept.push(r);
+      continue;
+    }
+    if (key !== nk && Math.abs(mid - centerBp) > keepSpan) evicted.push(r);
     else kept.push(r);
   }
   return { regions: kept, evicted };
@@ -869,7 +882,22 @@ async function gsLoadVariantsForViewport(force) {
         ms: Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - _t0) });
       const region = { contig, start: win.start, end: win.end };
       _gsVpData.set(_gsRegionKey(region), resp.variant_tracks);
-      const upd = gsWindowStoreUpdate(_gsVpRegions, region, (vs + ve) / 2, _gsVpKeepSpan());
+      // Protect any stored window that covers an open tile's locus.
+      const protectKeys = new Set();
+      try {
+        for (const tile of (state.tiles || [])) {
+          if (!tile || tile.blank) continue;
+          for (const r of _gsVpRegions) {
+            if (r.contig === tile.contig
+                && Number(r.start) <= tile.startBp
+                && Number(r.end) >= tile.endBp) {
+              protectKeys.add(_gsRegionKey(r));
+            }
+          }
+        }
+      } catch (_) {}
+      const upd = gsWindowStoreUpdate(
+        _gsVpRegions, region, (vs + ve) / 2, _gsVpKeepSpan(), protectKeys);
       _gsVpRegions = upd.regions;
       for (const ev of upd.evicted) _gsVpData.delete(_gsRegionKey(ev));
       if (Array.isArray(resp.insertion_variants_lookup)) {

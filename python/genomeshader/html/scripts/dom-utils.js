@@ -1500,8 +1500,14 @@ if (fullscreenItem && root && app) {
     viewerEl: root,
     toggleEl: fullscreenItem,
     viewId: viewId,
-    onEnter: triggerResize,
-    onExit: triggerResize
+    onEnter: () => {
+      triggerResize();
+      if (typeof gsInitTileContextMenus === "function") gsInitTileContextMenus();
+    },
+    onExit: () => {
+      triggerResize();
+      if (typeof gsInitTileContextMenus === "function") gsInitTileContextMenus();
+    }
   });
 
 }

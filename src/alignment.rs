@@ -271,10 +271,20 @@ pub fn extract_reads(
     // Raw SA:Z string (semicolon-separated mates). Empty when absent.
     // Parsed in JS for cross-tile linking; keep opaque here so schema stays simple.
     let mut sa_tags = Vec::new();
+    // Paired-end mate locus (1-based). Empty contig / 0 pos when unpaired or unmapped mate.
+    let mut mate_contigs = Vec::new();
+    let mut mate_positions = Vec::new();
 
     let mut mask = HashMap::new();
 
     let rg_sm_map = get_rg_to_sm_mapping(bam);
+    // Contig names by tid — resolved before the mutable records borrow.
+    let target_names: Vec<String> = {
+        let header = bam.header();
+        (0..header.target_count())
+            .map(|i| String::from_utf8_lossy(header.tid2name(i)).into_owned())
+            .collect()
+    };
 
     let _ = bam.fetch(((*chr).as_bytes(), *start, *stop));
     for (_, r) in bam.records().enumerate() {
@@ -323,6 +333,21 @@ pub fn extract_reads(
         let sa_tag: String = match record.aux(b"SA") {
             Ok(Aux::String(s)) => s.to_owned(),
             _ => String::new(),
+        };
+
+        // Mate locus for PE linking (RNEXT/PNEXT). mtid < 0 ⇒ no mate / unmapped.
+        let (mate_contig, mate_pos): (String, u32) = {
+            let mtid = record.mtid();
+            let mpos = record.mpos();
+            if mtid >= 0 && mpos >= 0 {
+                let name = target_names
+                    .get(mtid as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                (name, (mpos as u32).saturating_add(1))
+            } else {
+                (String::new(), 0)
+            }
         };
 
         reference_contigs.push(chr.to_owned());
@@ -609,6 +634,8 @@ pub fn extract_reads(
             clip_lengths.push(clip_length);
             mean_base_qualities.push(mean_base_quality);
             sa_tags.push(sa_tag.clone());
+            mate_contigs.push(mate_contig.clone());
+            mate_positions.push(mate_pos);
         }
     }
 
@@ -650,6 +677,8 @@ pub fn extract_reads(
             Series::new("clip_length", clip_lengths),
             Series::new("mean_base_quality", mean_base_qualities),
             Series::new("sa_tag", sa_tags),
+            Series::new("mate_contig", mate_contigs),
+            Series::new("mate_pos", mate_positions),
             Series::new("column_width", column_width)
         ]
     ).unwrap();

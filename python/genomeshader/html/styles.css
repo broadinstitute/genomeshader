@@ -2550,7 +2550,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .gs-context-menu {
   position: fixed;
-  z-index: 10000;
+  z-index: 2147483646;
   min-width: 180px;
   padding: 4px 0;
   border-radius: 8px;
@@ -2571,6 +2571,13 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   cursor: pointer;
 }
 .gs-context-menu button:hover { background: rgba(59, 130, 246, 0.18); }
+.gs-context-menu button:disabled,
+.gs-context-menu button.is-disabled {
+  opacity: 0.55;
+  cursor: default;
+  font-style: italic;
+}
+.gs-context-menu button:disabled:hover { background: transparent; }
 .gs-context-menu .gs-ctx-sep {
   height: 1px;
   margin: 4px 0;

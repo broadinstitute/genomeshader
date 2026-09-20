@@ -54,6 +54,8 @@ function processReadsData(rawReads, opts) {
         clipLength: rawReads.clip_length ? rawReads.clip_length[i] : 0,
         meanBaseQuality: rawReads.mean_base_quality ? rawReads.mean_base_quality[i] : 0,
         saTag: rawReads.sa_tag ? (rawReads.sa_tag[i] || "") : "",
+        mateContig: rawReads.mate_contig ? (rawReads.mate_contig[i] || "") : "",
+        matePos: rawReads.mate_pos ? Number(rawReads.mate_pos[i] || 0) : 0,
         isPaired: !!(pairedCol && pairedCol[i]),
         isPrimary: primaryCol ? !!primaryCol[i] : !(isSecondary || isSupplementary),
         isSecondary,
@@ -576,20 +578,188 @@ function removeSmartTrackWebGPU(trackId) {
 // re-fetch) for the same sample at the same locus reappears instantly instead
 // of round-tripping the comm. Keyed by sampleId|locus; capped LRU-ish.
 const _smartReadsCache = new Map();
-const _SMART_READS_CACHE_MAX = 24;
-function _readsLocusSig() {
+const _SMART_READS_CACHE_MAX = 96;
+function _readsLocusSig(tile) {
   try {
-    return state.contig + ":" + Math.floor(state.startBp) + "-" + Math.ceil(state.endBp);
+    const t = tile || state;
+    return t.contig + ":" + Math.floor(t.startBp) + "-" + Math.ceil(t.endBp);
   } catch (e) { return ""; }
 }
-function _cacheSmartReads(sampleId, reads, bamUrls, bamUrl) {
-  if (!sampleId) return;
-  const key = sampleId + "|" + (bamUrl || "") + "|" + _readsLocusSig();
+function _smartReadsCacheKey(sampleId, bamUrl, locusSig) {
+  return sampleId + "|" + (bamUrl || "") + "|" + (locusSig || _readsLocusSig());
+}
+function _cacheSmartReads(sampleId, reads, bamUrls, bamUrl, locusSig) {
+  if (!sampleId || !reads) return;
+  const key = _smartReadsCacheKey(sampleId, bamUrl, locusSig || _readsLocusSig());
   _smartReadsCache.delete(key);          // move-to-front
   _smartReadsCache.set(key, { reads: reads, bamUrls: bamUrls || [], bamUrl: bamUrl || null });
   while (_smartReadsCache.size > _SMART_READS_CACHE_MAX) {
     _smartReadsCache.delete(_smartReadsCache.keys().next().value);
   }
+}
+function _trackBamPin(track) {
+  if (!track) return "";
+  return track.requestedBamUrl
+    || (track.bamUrls && track.bamUrls.length === 1 ? track.bamUrls[0] : "")
+    || "";
+}
+/** Ensure the live track payload is stored under its known locus before switching tiles. */
+function cacheLiveSmartTrackReads() {
+  for (const track of state.smartTracks || []) {
+    if (!track || !track.sampleId || !track.readsData) continue;
+    const sig = track._readsLocusSig || _readsLocusSig();
+    if (!sig) continue;
+    _cacheSmartReads(track.sampleId, track.readsData, track.bamUrls, _trackBamPin(track), sig);
+  }
+}
+/**
+ * Swap each smart track's readsLayout to the cache entry for the CURRENT
+ * state locus (call inside gsWithTile). Returns true if any track still needs a fetch.
+ */
+function hydrateSmartTracksForCurrentLocus() {
+  const sig = _readsLocusSig();
+  if (!sig) return false;
+  let needsFetch = false;
+  for (const track of state.smartTracks || []) {
+    if (!track || !track.sampleId) continue;
+    const bam = _trackBamPin(track);
+    const key = _smartReadsCacheKey(track.sampleId, bam, sig);
+    if (_smartReadsCache.has(key)) {
+      const hit = _smartReadsCache.get(key);
+      if (track._readsLocusSig !== sig || track.readsData !== hit.reads) {
+        track.readsData = hit.reads;
+        if (hit.bamUrls && hit.bamUrls.length) track.bamUrls = hit.bamUrls;
+        layoutSmartTrackReads(track);
+        track._readsLocusSig = sig;
+      }
+      track.loading = false;
+    } else {
+      // Cache miss for this locus. Do NOT clear readsLayout / readsData — that
+      // unloads nearline-fetched pileups from sibling tiles and forces expensive
+      // re-fetches. renderSmartTrack skips painting when _readsLocusSig mismatches.
+      needsFetch = true;
+    }
+  }
+  return needsFetch;
+}
+
+// Serialized multi-tile read loading — opening a linked tile must not stampede
+// the kernel with one fetch_reads per sample track (that caused timeouts which
+// then deleted tracks via removeSmartTrack).
+const _readsInflight = new Map();
+const _readsFetchQueue = [];
+let _readsFetchActive = 0;
+const _READS_FETCH_CONCURRENCY = 1;
+let _readsRenderTimer = null;
+function _scheduleReadsRender() {
+  if (_readsRenderTimer) return;
+  _readsRenderTimer = setTimeout(() => {
+    _readsRenderTimer = null;
+    if (typeof scheduleRender === "function") scheduleRender();
+    else if (typeof renderAll === "function") renderAll();
+    if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
+  }, 50);
+}
+function _drainReadsFetchQueue() {
+  while (_readsFetchActive < _READS_FETCH_CONCURRENCY && _readsFetchQueue.length) {
+    const job = _readsFetchQueue.shift();
+    if (!job) break;
+    _readsFetchActive += 1;
+    Promise.resolve()
+      .then(job.run)
+      .catch(() => {})
+      .finally(() => {
+        _readsFetchActive = Math.max(0, _readsFetchActive - 1);
+        _drainReadsFetchQueue();
+        _scheduleReadsRender();
+      });
+  }
+}
+function _enqueueReadsFetch(cacheKey, run) {
+  if (_readsInflight.has(cacheKey)) return _readsInflight.get(cacheKey);
+  let resolveP, rejectP;
+  const p = new Promise((resolve, reject) => { resolveP = resolve; rejectP = reject; });
+  _readsInflight.set(cacheKey, p);
+  _readsFetchQueue.push({
+    run: () => Promise.resolve()
+      .then(run)
+      .then((v) => { resolveP(v); return v; })
+      .catch((e) => { rejectP(e); throw e; })
+      .finally(() => { _readsInflight.delete(cacheKey); }),
+  });
+  _drainReadsFetchQueue();
+  return p;
+}
+
+/**
+ * Hydrate from cache, then fetch ONLY missing tracks for the current locus.
+ * Fetches run one-at-a-time so sibling tiles keep their cached pileups.
+ */
+function ensureSmartTracksForCurrentLocus() {
+  cacheLiveSmartTrackReads();
+  const sig = _readsLocusSig();
+  if (!sig) return;
+  const needsFetch = hydrateSmartTracksForCurrentLocus();
+  if (!needsFetch) {
+    _scheduleReadsRender();
+    return;
+  }
+  const missing = [];
+  for (const track of state.smartTracks || []) {
+    if (!track || !track.sampleId) continue;
+    const bam = _trackBamPin(track);
+    const key = _smartReadsCacheKey(track.sampleId, bam, sig);
+    if (_smartReadsCache.has(key) || _readsInflight.has(key)) continue;
+    missing.push({ track, key, bam, sig });
+  }
+  if (!missing.length) {
+    _scheduleReadsRender();
+    return;
+  }
+  // Only the focused column should show Loading — sibling freezes must stay put.
+  const focusedSig = sig;
+  for (const m of missing) {
+    // Keep prior locus payload; flag loading so the FOCUSED paint can hint.
+    m.track._loadingLocusSig = focusedSig;
+    if (m.track._readsLocusSig === focusedSig || !m.track.readsLayout) {
+      m.track.loading = true;
+    }
+  }
+  _scheduleReadsRender();
+  for (const m of missing) {
+    const track = m.track;
+    _enqueueReadsFetch(m.key, () => fetchReadsForSmartTrack(
+      track.id,
+      track.strategy,
+      track.selectedAlleles,
+      track.sampleId,
+      m.bam || undefined,
+      {
+        locus: m.sig,
+        keepOnError: true,
+        skipLoadingRender: true,
+        skipSuccessRender: true,
+      }
+    ));
+  }
+}
+/** @deprecated alias */
+function reloadSmartTracksForCurrentLocus() {
+  ensureSmartTracksForCurrentLocus();
+}
+/** Layout reads for a track at a specific tile locus (from cache), or null. */
+function smartTrackReadsLayoutForTile(track, tile) {
+  if (!track || !tile || tile.blank) return null;
+  const sig = _readsLocusSig(tile);
+  const cur = track._readsLocusSig || _readsLocusSig();
+  if (track.readsLayout && cur === sig) return track.readsLayout;
+  if (!track.sampleId) return null;
+  const key = _smartReadsCacheKey(track.sampleId, _trackBamPin(track), sig);
+  const hit = _smartReadsCache.get(key);
+  if (!hit || !hit.reads) return null;
+  return processReadsData(hit.reads, {
+    display: track.readDisplay || DEFAULT_READ_DISPLAY,
+  });
 }
 
 // BAM/CRAM URLs resolved for a sample (from config). Empty when unknown —
@@ -712,7 +882,8 @@ function _readStatusDone(label, isError) {
   }
 }
 
-function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, bamUrl) {
+function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, bamUrl, opts) {
+  opts = opts || {};
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) {
     console.error(`Smart track ${trackId} not found`);
@@ -731,23 +902,30 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
   const requestedBam = track.requestedBamUrl || null;
 
   // Instant path: a known sample(+bam) previously loaded at this locus.
+  // opts.locus pins the request when the user has already switched tiles.
+  const locusAtReq = opts.locus || _readsLocusSig();
   const cacheKey = sampleId
-    ? (sampleId + "|" + (requestedBam || "") + "|" + _readsLocusSig())
+    ? _smartReadsCacheKey(sampleId, requestedBam || "", locusAtReq)
     : null;
   if (cacheKey && _smartReadsCache.has(cacheKey)) {
     const hit = _smartReadsCache.get(cacheKey);
     track.loading = false;
-    track.readsData = hit.reads;
-    layoutSmartTrackReads(track);
+    if (_readsLocusSig() === locusAtReq) {
+      track.readsData = hit.reads;
+      layoutSmartTrackReads(track);
+      track._readsLocusSig = locusAtReq;
+    }
     track.sampleId = sampleId;
     track.bamUrls = hit.bamUrls || [];
     track.requestedBamUrl = hit.bamUrl || requestedBam;
     updateSmartTrackLabel(track);
-    renderAll();
-    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
-    // Instant cache hit: flash a brief confirmation so the user sees something
-    // happened. If other loads are in flight, leave their busy bar alone.
-    if (window.__GS_STATUS && _readLoadsInFlight === 0) {
+    if (!opts.skipSuccessRender) {
+      renderAll();
+      requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+    } else {
+      _scheduleReadsRender();
+    }
+    if (window.__GS_STATUS && _readLoadsInFlight === 0 && !opts.skipSuccessRender) {
       const sn = sampleId || track.sampleId;
       window.__GS_STATUS('Loaded reads' + (sn ? ' for ' + sn : '') + ' (cached)',
         { autoHide: 1200 });
@@ -756,7 +934,8 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
   }
 
   track.loading = true;
-  renderAll();
+  if (!opts.skipLoadingRender) renderAll();
+  else _scheduleReadsRender();
   _readStatusStart(sampleId);
 
   // Convert selectedAlleles Set to array
@@ -770,7 +949,7 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
     // locus. Viewport paging (pan/zoom) never re-runs render(), so _last_locus
     // goes stale — reads would come back for the old region and never align with
     // what's on screen. Matches _readsLocusSig() so the client read cache agrees.
-    locus: _readsLocusSig() || null
+    locus: locusAtReq || null
   };
   if (requestedBam) req.bam_url = requestedBam;
 
@@ -823,12 +1002,19 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
             track.snpsUnavailable = false;
           }
         } catch (e) {}
-        track.readsData = response.reads;
-        layoutSmartTrackReads(track);
         track.sampleId = sampleId || response.sample_id || null;
         track.bamUrls = response.bam_urls || [];
         track.requestedBamUrl = requestedBam || (track.bamUrls.length === 1 ? track.bamUrls[0] : null);
-        _cacheSmartReads(track.sampleId, response.reads, track.bamUrls, track.requestedBamUrl);
+        // Cache under the locus we asked for (user may have switched tiles mid-flight).
+        _cacheSmartReads(track.sampleId, response.reads, track.bamUrls, track.requestedBamUrl, locusAtReq);
+        // Only replace the live payload when still viewing that locus; multi-tile
+        // paint hydrates from cache per column either way.
+        if (_readsLocusSig() === locusAtReq) {
+          track.readsData = response.reads;
+          layoutSmartTrackReads(track);
+          track._readsLocusSig = locusAtReq;
+        }
+        if (track._loadingLocusSig === locusAtReq) track._loadingLocusSig = null;
 
         // Update track label to use sample name
         updateSmartTrackLabel(track);
@@ -844,11 +1030,15 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
           track.sampleType = carriersSet.has(track.sampleId) ? 'carrier' : 'control';
         }
         
-        renderAll();
-        // Height-fit + WebGPU init can leave the first paint at 0-size or
-        // wiped by a deferred canvas resize. One more frame after layout
-        // settles so reads show without a pan/scroll.
-        requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+        if (!opts.skipSuccessRender) {
+          renderAll();
+          // Height-fit + WebGPU init can leave the first paint at 0-size or
+          // wiped by a deferred canvas resize. One more frame after layout
+          // settles so reads show without a pan/scroll.
+          requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+        } else {
+          _scheduleReadsRender();
+        }
         return track.readsLayout;
       } else if (response.type === 'fetch_reads_error') {
         console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
@@ -864,11 +1054,20 @@ function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, b
       const who = sampleId || track.sampleId;
       console.error(`Failed to fetch reads for Smart track ${trackId}:`, err);
       _readStatusDone(false);       // clear the busy bar; the modal carries the message
-      // A read track that failed to load shouldn't linger empty — remove it.
-      removeSmartTrack(trackId);    // also re-renders + refreshes the sidebar
       const missingBam = (err && err._gsMissingBam)
         || /no bam files found/i.test(String((err && err.message) || err || ''));
-      if (window.__GS_MODAL && !missingBam) {
+      const isTimeout = /timeout/i.test(String((err && err.message) || err || ''));
+      // Multi-tile background loads must NOT delete tracks on timeout.
+      if (!opts.keepOnError) {
+        removeSmartTrack(trackId);
+      } else if (window.__GS_STATUS) {
+        window.__GS_STATUS(
+          (isTimeout ? 'Timed out loading reads' : 'Failed to load reads')
+            + (who ? ' for ' + who : '') + ' — will retry when you revisit',
+          { autoHide: 4000 });
+        _scheduleReadsRender();
+      }
+      if (!opts.keepOnError && window.__GS_MODAL && !missingBam) {
         window.__GS_MODAL(
           'Failed to load reads' + (who ? ' for ' + who : '') + '.\n\n'
             + (err && err.message ? err.message : 'The read fetch failed.')
@@ -1827,6 +2026,15 @@ function fillTrackConfigPanel(host, track) {
     mapqWrap.querySelectorAll("input").forEach((i) => { i.disabled = true; });
   }
   layoutSec.appendChild(mapqRow);
+
+  const softClipDd = dropdown(READ_DISPLAY_FIELDS.softClipMode, display.softClipMode || "marker", (v) => {
+    display.softClipMode = v || "marker";
+    commit(false); // paint-only; no re-layout
+  });
+  const softClipRow = fieldRow("Soft clips", softClipDd);
+  softClipRow.title = "How soft-clipped bases at alignment edges are drawn";
+  if (readsOff) { softClipRow.classList.add("is-dimmed"); softClipDd.btn.disabled = true; }
+  layoutSec.appendChild(softClipRow);
 
   const groupDd = dropdown(READ_DISPLAY_FIELDS.groupBy, display.groupBy, (v) => {
     display.groupBy = v;
@@ -3180,6 +3388,12 @@ function initializeRightSidebar() {
 if (typeof window !== "undefined") {
   window.toggleTrackConfig = toggleTrackConfig;
   window.renderSmartTracksSidebar = renderSmartTracksSidebar;
+  window.hydrateSmartTracksForCurrentLocus = hydrateSmartTracksForCurrentLocus;
+  window.reloadSmartTracksForCurrentLocus = reloadSmartTracksForCurrentLocus;
+  window.ensureSmartTracksForCurrentLocus = ensureSmartTracksForCurrentLocus;
+  window.cacheLiveSmartTrackReads = cacheLiveSmartTrackReads;
+  window.smartTrackReadsLayoutForTile = smartTrackReadsLayoutForTile;
+  window.reloadSmartTrack = reloadSmartTrack;
   window.__GS_armRemoveSmartTrack = armRemoveSmartTrack;
   window.__GS_confirmRemoveSmartTrack = confirmRemoveSmartTrack;
   window.__GS_undoRemoveSmartTrack = undoRemoveSmartTrack;

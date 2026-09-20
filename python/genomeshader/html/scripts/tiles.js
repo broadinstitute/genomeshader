@@ -146,6 +146,7 @@ function gsFocusTile(tileId, { scroll = true } = {}) {
     return;
   }
   // Persist outgoing focused state first.
+  if (typeof cacheLiveSmartTrackReads === "function") cacheLiveSmartTrackReads();
   gsPullAliasesIntoFocused();
   state.focusedTileId = t.id;
   gsSyncFocusedAliases();
@@ -162,6 +163,15 @@ function gsFocusTile(tileId, { scroll = true } = {}) {
     gsScrollTileIntoView(t.id);
   }
   if (typeof renderAll === "function") renderAll();
+  // Load reads for this tile's locus (cache hit is instant; misses are
+  // serialized — do not stampede the kernel on every hover-focus).
+  if (!t.blank && typeof ensureSmartTracksForCurrentLocus === "function") {
+    if (gsFocusTile._readsTimer) clearTimeout(gsFocusTile._readsTimer);
+    gsFocusTile._readsTimer = setTimeout(() => {
+      gsFocusTile._readsTimer = null;
+      ensureSmartTracksForCurrentLocus();
+    }, 120);
+  }
 }
 
 function gsNextLinkColor() {
@@ -207,6 +217,7 @@ function gsFormatTileSpan(spanBp) {
  */
 function gsAddTile(opts = {}) {
   gsEnsureTilesInitialized();
+  if (typeof cacheLiveSmartTrackReads === "function") cacheLiveSmartTrackReads();
   gsPullAliasesIntoFocused();
   const source = opts.linkedFromId
     ? state.tiles.find((x) => x.id === opts.linkedFromId)
@@ -279,6 +290,13 @@ function gsAddTile(opts = {}) {
   if (!tile.blank && typeof gsScheduleViewportVariantLoad === "function") {
     gsScheduleViewportVariantLoad();
   }
+  // Fetch / hydrate reads for this tile's locus so linked columns aren't empty.
+  // Serialized; cached sibling loci are left alone.
+  if (!tile.blank && typeof ensureSmartTracksForCurrentLocus === "function") {
+    ensureSmartTracksForCurrentLocus();
+  } else if (!tile.blank && typeof reloadSmartTracksForCurrentLocus === "function") {
+    reloadSmartTracksForCurrentLocus();
+  }
   return tile;
 }
 
@@ -337,6 +355,7 @@ function gsSetTileLocus(tileId, contig, startBp, endBp) {
   t.startBp = startBp;
   t.endBp = endBp;
   t.blank = false;
+  t._freezeReadsSig = null; // locus changed — old reads snapshot is stale
   if (state.focusedTileId === t.id) {
     gsSyncFocusedAliases();
     if (typeof updateDerived === "function") updateDerived();

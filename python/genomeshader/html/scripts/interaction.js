@@ -1706,7 +1706,9 @@ function renderFlowCanvas() {
         
         if (isHovered || isPinned || isSelected) {
           let _indelTag = "";
-          if (v && v.refAllele && typeof actualAllele === "string" && actualAllele !== "." && actualAllele.length > 0) {
+          if (v && (v.mateContig || v.svtype === "BND" || v.variantType === "bnd")) {
+            _indelTag = " · BND";
+          } else if (v && v.refAllele && typeof actualAllele === "string" && actualAllele !== "." && actualAllele.length > 0) {
             if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
             else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
           }
@@ -2001,7 +2003,9 @@ function renderFlowCanvas() {
         
         if (isHovered || isPinned || isSelected) {
           let _indelTag = "";
-          if (v && v.refAllele && typeof actualAllele === "string" && actualAllele !== "." && actualAllele.length > 0) {
+          if (v && (v.mateContig || v.svtype === "BND" || v.variantType === "bnd")) {
+            _indelTag = " · BND";
+          } else if (v && v.refAllele && typeof actualAllele === "string" && actualAllele !== "." && actualAllele.length > 0) {
             if (actualAllele.length > v.refAllele.length) _indelTag = " · INS";
             else if (actualAllele.length < v.refAllele.length) _indelTag = " · DEL";
           }

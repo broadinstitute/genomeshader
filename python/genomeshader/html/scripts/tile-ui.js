@@ -1140,6 +1140,14 @@ function gsHideContextMenu() {
   if (m) m.remove();
 }
 
+/** Host for floating UI: fullscreen overlay when active, else document.body. */
+function gsFloatingUiHost() {
+  // Overlay is z-index:2147483647 on body — menus appended to body sit UNDER it.
+  const overlay = document.querySelector('[id^="genomeshader-overlay-"]');
+  if (overlay && overlay.isConnected) return overlay;
+  return document.body;
+}
+
 function gsShowContextMenu(x, y, items) {
   gsHideContextMenu();
   const menu = document.createElement("div");
@@ -1147,6 +1155,7 @@ function gsShowContextMenu(x, y, items) {
   menu.className = "gs-context-menu";
   menu.style.left = `${Math.max(4, x)}px`;
   menu.style.top = `${Math.max(4, y)}px`;
+  menu.style.zIndex = "2147483647";
   items.forEach((it) => {
     if (it === "---") {
       const sep = document.createElement("div");
@@ -1157,13 +1166,20 @@ function gsShowContextMenu(x, y, items) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = it.label;
-    btn.addEventListener("click", () => {
-      gsHideContextMenu();
-      if (typeof it.action === "function") it.action();
-    });
+    if (typeof it.action !== "function") {
+      btn.disabled = true;
+      btn.classList.add("is-disabled");
+    } else {
+      btn.addEventListener("click", () => {
+        gsHideContextMenu();
+        it.action();
+      });
+    }
     menu.appendChild(btn);
   });
-  document.body.appendChild(menu);
+  // Mount inside the fullscreen overlay when present so we aren't covered by it.
+  // Overlay is position:fixed without transform, so fixed+viewport coords still work.
+  gsFloatingUiHost().appendChild(menu);
   const dismiss = (e) => {
     if (!menu.contains(e.target)) {
       gsHideContextMenu();
@@ -1188,142 +1204,501 @@ function gsDrawTileArcs() {
   svg.setAttribute("viewBox", `0 0 ${scrollW} ${scrollH}`);
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-  // Build arcs from smart-track layouts (reads with SA mates in another open tile).
+  const rowH = (typeof SMART_TRACK_ROW_H === "number") ? SMART_TRACK_ROW_H : 18;
+
+  /** Pixel endpoint of a read edge inside a tile column (strip-local coords). */
+  function endpointForRead(tile, track, read, preferEnd) {
+    if (!tile || !track || !read) return null;
+    const tileEl = typeof gsTileRootEl === "function" ? gsTileRootEl(tile.id) : null;
+    if (!tileEl) return null;
+    // Prefer freeze snapshot for unfocused tiles; live container for focused.
+    const focusedId = state.focusedTileId;
+    let container = null;
+    if (tile.id !== focusedId) {
+      container = tileEl.querySelector(
+        `.gs-smart-scroll-freeze .smart-track-container[data-track-id="${CSS.escape(track.id)}"]`
+      );
+    }
+    if (!container) {
+      container = tileEl.querySelector(
+        `.smart-track-container[data-track-id="${CSS.escape(track.id)}"]`
+      );
+    }
+    if (!container) return null;
+    const box = container.getBoundingClientRect();
+    if (box.width < 2 || box.height < 2) return null;
+
+    const genomeW = box.width > 0 ? box.width
+      : ((typeof tracksWidthPx === "function" && tracksWidthPx() > 0) ? tracksWidthPx() : 600);
+    const labelH = 24;
+    const closedSlot = track.closedHeight || 30;
+    const summaryH = Math.max(12, labelH - 2);
+    const summaryY = Math.max(0, Math.floor((closedSlot - summaryH) / 2));
+    const top = summaryY;
+    const showSummary = !track.readDisplay || track.readDisplay.visibility.summary !== false;
+    const overviewH = track.collapsed ? 0
+      : (showSummary ? (summaryY + summaryH + 4 - top) : 0);
+    const readsTop = top + overviewH;
+    const yLocal = track.collapsed
+      ? (summaryY + summaryH / 2)
+      : (readsTop + (Number(read.row) || 0) * rowH + Number(read.groupOffsetPx || 0) + rowH / 2);
+
+    const cliffBp = preferEnd
+      ? (read.end || read.referenceEnd || read.start)
+      : (read.start || read.referenceStart);
+    const xLocal = (typeof xGenomeCanonical === "function")
+      ? xGenomeCanonical(cliffBp, genomeW, tile)
+      : (preferEnd ? box.width * 0.9 : box.width * 0.1);
+
+    return {
+      x: (box.left - stripRect.left + strip.scrollLeft) + xLocal,
+      y: (box.top - stripRect.top + strip.scrollTop) + yLocal,
+    };
+  }
+
+  function layoutReads(track, tile) {
+    if (typeof smartTrackReadsLayoutForTile === "function") {
+      const lay = smartTrackReadsLayoutForTile(track, tile);
+      if (lay && Array.isArray(lay.reads)) return lay.reads;
+    }
+    if (track.readsLayout && Array.isArray(track.readsLayout.reads)) {
+      const sig = `${tile.contig}:${Math.floor(tile.startBp)}-${Math.ceil(tile.endBp)}`;
+      if (!track._readsLocusSig || track._readsLocusSig === sig) return track.readsLayout.reads;
+    }
+    return [];
+  }
+
+  function findMateRead(reads, name, matePos) {
+    if (!name || !reads.length) return null;
+    const same = reads.filter((r) => r && r.name === name);
+    if (!same.length) return null;
+    if (Number.isFinite(matePos)) {
+      let best = null;
+      let bestDist = Infinity;
+      for (const r of same) {
+        const dist = Math.min(Math.abs(r.start - matePos), Math.abs(r.end - matePos));
+        if (dist < bestDist) { bestDist = dist; best = r; }
+      }
+      if (best && bestDist < 5000) return best;
+    }
+    return same[0];
+  }
+
   const endpoints = [];
+  const seen = new Set();
   if (Array.isArray(state.smartTracks)) {
     for (const track of state.smartTracks) {
-      const reads = track && track.readsLayout && track.readsLayout.reads;
-      if (!Array.isArray(reads)) continue;
-      for (const read of reads) {
-        if (!read) continue;
-        const mates = gsParseSaTag(read.saTag || "");
-        if (!mates.length) continue;
-        const contig = read.contig || state.contig;
-        const tile = state.tiles.find((t) =>
-          t.contig === contig
-          && (read.end || read.referenceEnd) >= t.startBp
-          && (read.start || read.referenceStart) <= t.endBp);
-        if (!tile) continue;
-        for (const mate of mates) {
-          const other = gsFindOpenTileForMate(mate.contig, mate.pos, tile.id);
-          if (!other) continue;
-          const tileEl = gsTileRootEl(tile.id);
-          const otherEl = gsTileRootEl(other.id);
-          if (!tileEl || !otherEl) continue;
-          const tr = tileEl.getBoundingClientRect();
-          const or_ = otherEl.getBoundingClientRect();
-          const color = other.linkColor || tile.linkColor || "#f59e0b";
-          const row = typeof read.row === "number" ? read.row : 0;
-          const y = (tr.top - stripRect.top + strip.scrollTop) + tr.height * 0.45 + row * 3;
-          const x1Local = (typeof xGenomeCanonical === "function")
-            ? xGenomeCanonical(read.end || read.referenceEnd || read.start, tr.width, tile)
-            : tr.width * 0.9;
-          const x2Local = (typeof xGenomeCanonical === "function")
-            ? xGenomeCanonical(mate.pos, or_.width, other)
-            : or_.width * 0.1;
-          const x1 = (tr.left - stripRect.left + strip.scrollLeft) + x1Local;
-          const x2 = (or_.left - stripRect.left + strip.scrollLeft) + x2Local;
-          endpoints.push({ x1, y1: y, x2, y2: y, color });
-        }
-      }
-    }
-  }
-
-  for (const arc of endpoints) {
-    const midX = (arc.x1 + arc.x2) / 2;
-    const lift = Math.min(80, Math.abs(arc.x2 - arc.x1) * 0.25 + 20);
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", `M ${arc.x1} ${arc.y1} C ${midX} ${arc.y1 - lift}, ${midX} ${arc.y2 - lift}, ${arc.x2} ${arc.y2}`);
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", arc.color);
-    path.setAttribute("stroke-width", "2");
-    path.setAttribute("opacity", "0.85");
-    svg.appendChild(path);
-  }
-}
-
-function gsInitTileContextMenus() {
-  const mainEl = document.getElementById("main");
-  if (!mainEl || mainEl.__gsTileCtx) return;
-  mainEl.__gsTileCtx = true;
-  mainEl.addEventListener("contextmenu", (e) => {
-    // Read SA open — look for a nearby smart-track read with SA under the cursor.
-    const tileEl = e.target.closest(".gs-tile");
-    if (!tileEl) return;
-    const tileId = tileEl.getAttribute("data-tile-id");
-    const tile = (state.tiles || []).find((t) => t.id === tileId);
-    if (!tile) return;
-
-    // Variant BND: hit-test allele nodes carrying mateContig.
-    const nodes = window._alleleNodePositions || [];
-    if (nodes.length && tileEl) {
-      const flowEl = tileEl.querySelector(".flow") || document.getElementById("flow");
-      if (flowEl) {
-        const fr = flowEl.getBoundingClientRect();
-        const lx = e.clientX - fr.left;
-        const ly = e.clientY - fr.top;
-        const hit = nodes.find((n) =>
-          n.mateContig && Number.isFinite(Number(n.matePos))
-          && lx >= n.x && lx <= n.x + n.w && ly >= n.y && ly <= n.y + n.h);
-        if (hit) {
-          e.preventDefault();
-          const contig = hit.mateContig;
-          const pos = Number(hit.matePos);
-          const strand = hit.mateStrand || "+";
-          gsShowContextMenu(e.clientX, e.clientY, [{
-            label: `Open linked tile at ${contig}:${pos.toLocaleString()}`,
-            action: () => gsOpenLinkedTile({ contig, pos, strand, sourceTileId: tileId }),
-          }]);
-          return;
-        }
-      }
-    }
-
-    // Scan smart-track reads for an SA mate near the click.
-    const mates = [];
-    const bp = (typeof bpFromXGenome === "function")
-      ? bpFromXGenome(e.offsetX || 0, tileEl.getBoundingClientRect().width, tile)
-      : null;
-    if (Array.isArray(state.smartTracks)) {
-      for (const track of state.smartTracks) {
-        const reads = track && track.readsLayout && track.readsLayout.reads;
-        if (!Array.isArray(reads)) continue;
+      if (!track) continue;
+      for (const tile of state.tiles) {
+        if (!tile || tile.blank) continue;
+        const reads = layoutReads(track, tile);
         for (const read of reads) {
-          const sa = gsParseSaTag(read.saTag || "");
-          if (!sa.length) continue;
-          // Prefer reads near the click bp, else any supplementary in this tile.
-          const near = Number.isFinite(bp)
-            && read.start <= bp + 500 && read.end >= bp - 500;
-          if (near || read.isSupplementary) {
-            for (const m of sa) {
-              mates.push({ ...m, sourceStrand: read.isForward === false ? "-" : "+", qname: read.name });
+          if (!read) continue;
+
+          const links = [];
+          for (const m of (typeof gsParseSaTag === "function" ? gsParseSaTag(read.saTag || "") : [])) {
+            links.push({ kind: "sa", contig: m.contig, pos: m.pos, strand: m.strand });
+          }
+          if (read.isPaired && read.mateContig && read.matePos) {
+            const sameLocal = read.contig === read.mateContig
+              && read.matePos >= read.start - 50
+              && read.matePos <= read.end + 50;
+            if (!sameLocal) {
+              links.push({ kind: "pe", contig: read.mateContig, pos: read.matePos, strand: "+" });
             }
+          }
+
+          for (const link of links) {
+            const other = gsFindOpenTileForMate(link.contig, link.pos, tile.id);
+            if (!other) continue;
+            // Only draw once per unordered pair (lower tile id first).
+            const pairKey = [tile.id, other.id, track.id, read.name || "", link.contig, link.pos]
+              .join("|");
+            const pairKeyRev = [other.id, tile.id, track.id, read.name || "", link.contig, link.pos]
+              .join("|");
+            if (seen.has(pairKey) || seen.has(pairKeyRev)) continue;
+            seen.add(pairKey);
+
+            const otherReads = layoutReads(track, other);
+            const mateRead = findMateRead(otherReads, read.name, link.pos);
+
+            // Prefer the soft-clip / distal edge facing the mate tile.
+            const tileEl = gsTileRootEl(tile.id);
+            const otherEl = gsTileRootEl(other.id);
+            if (!tileEl || !otherEl) continue;
+            const tr = tileEl.getBoundingClientRect();
+            const or_ = otherEl.getBoundingClientRect();
+            const mateIsRight = or_.left >= tr.left;
+            const fromPreferEnd = mateIsRight ? !!(read.isForward !== false) : !!(read.isForward === false);
+            // Soft-clip side: if a clip exists on the mate-facing edge, use it.
+            let preferEnd = fromPreferEnd;
+            if (read.elements && read.elements.some((e) => e.type === 4)) {
+              const hasLeft = read.elements.some((e) => e.type === 4 && e.start < read.start);
+              const hasRight = read.elements.some((e) => e.type === 4 && e.start >= read.start);
+              if (mateIsRight && hasRight) preferEnd = true;
+              else if (!mateIsRight && hasLeft) preferEnd = false;
+            }
+
+            const p1 = endpointForRead(tile, track, read, preferEnd);
+            let p2 = null;
+            if (mateRead) {
+              const matePreferEnd = mateIsRight ? false : true;
+              p2 = endpointForRead(other, track, mateRead, matePreferEnd);
+            }
+            if (!p1) continue;
+            if (!p2) {
+              // Fall back: mate bp x in the other column, y aligned to the same
+              // track's freeze/live container midline (not a flat strip center).
+              let y2 = p1.y;
+              const otherContainer = otherEl.querySelector(
+                `.gs-smart-scroll-freeze .smart-track-container[data-track-id="${CSS.escape(track.id)}"]`
+              ) || otherEl.querySelector(
+                `.smart-track-container[data-track-id="${CSS.escape(track.id)}"]`
+              );
+              if (otherContainer) {
+                const ob = otherContainer.getBoundingClientRect();
+                y2 = (ob.top - stripRect.top + strip.scrollTop) + ob.height * 0.45;
+              }
+              const genomeW = or_.width;
+              const xLocal = (typeof xGenomeCanonical === "function")
+                ? xGenomeCanonical(link.pos, genomeW, other)
+                : genomeW * 0.5;
+              p2 = {
+                x: (or_.left - stripRect.left + strip.scrollLeft) + xLocal,
+                y: y2,
+              };
+            }
+
+            const color = other.linkColor || tile.linkColor || "#f59e0b";
+            endpoints.push({
+              x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y,
+              color,
+              dashed: !mateRead,
+              hasMate: !!mateRead,
+            });
           }
         }
       }
     }
-    if (!mates.length) return;
-    e.preventDefault();
-    // Dedupe by contig:pos
-    const seen = new Set();
-    const items = [];
-    for (const m of mates) {
-      const key = `${m.contig}:${m.pos}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      items.push({
-        label: `Open linked tile at ${m.contig}:${Number(m.pos).toLocaleString()}`,
-        action: () => gsOpenLinkedTile({
-          contig: m.contig,
-          pos: m.pos,
-          strand: m.strand,
-          sourceStrand: m.sourceStrand,
-          sourceTileId: tileId,
-        }),
-      });
+  }
+
+  endpoints.forEach((arc, arcIdx) => {
+    const dx = arc.x2 - arc.x1;
+    const dy = arc.y2 - arc.y1;
+    // Mockup S-curve: control points sit partway across with a vertical bow so
+    // equal-y endpoints (common before the mate pileup loads) still look curved.
+    const bow = (arcIdx % 2 === 0 ? -1 : 1)
+      * Math.max(28, Math.min(70, Math.abs(dx) * 0.12 + Math.abs(dy) * 0.15));
+    const c1x = arc.x1 + dx * 0.32;
+    const c2x = arc.x1 + dx * 0.68;
+    const c1y = arc.y1 + bow * 0.85;
+    const c2y = arc.y2 + bow * 0.85;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d",
+      `M ${arc.x1.toFixed(1)} ${arc.y1.toFixed(1)} `
+      + `C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, `
+      + `${c2x.toFixed(1)} ${c2y.toFixed(1)}, `
+      + `${arc.x2.toFixed(1)} ${arc.y2.toFixed(1)}`);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", arc.color);
+    path.setAttribute("stroke-width", arc.hasMate ? "2.4" : "1.8");
+    path.setAttribute("opacity", arc.hasMate ? "0.92" : "0.6");
+    path.setAttribute("stroke-linecap", "round");
+    if (arc.dashed && !arc.hasMate) {
+      path.setAttribute("stroke-dasharray", "5 4");
     }
-    if (items.length) gsShowContextMenu(e.clientX, e.clientY, items);
+    svg.appendChild(path);
   });
+}
+
+function gsSoftClipMode(track) {
+  const m = track && track.readDisplay && track.readDisplay.softClipMode;
+  return (m === "bases" || m === "hide") ? m : "marker";
+}
+
+/** Collect distal loci for a read: SA segments, PE mate, same-qname alts in other tiles. */
+function gsLinkedLociForRead(read, sourceTileId) {
+  const out = [];
+  const seen = new Set();
+  const push = (kind, contig, pos, strand, sourceStrand) => {
+    if (!contig || !Number.isFinite(Number(pos)) || Number(pos) <= 0) return;
+    const key = `${kind}|${contig}:${pos}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      kind,
+      contig,
+      pos: Number(pos),
+      strand: strand || "+",
+      sourceStrand: sourceStrand || (read.isForward === false ? "-" : "+"),
+    });
+  };
+
+  const sourceStrand = read.isForward === false ? "-" : "+";
+  for (const m of gsParseSaTag(read.saTag || "")) {
+    push(read.isSupplementary ? "SA (primary)" : "SA", m.contig, m.pos, m.strand, sourceStrand);
+  }
+  if (read.isPaired && read.mateContig && read.matePos) {
+    // Skip mate if it clearly lands inside this same alignment span on the same contig.
+    const sameLocal = read.contig === read.mateContig
+      && read.matePos >= read.start - 50
+      && read.matePos <= read.end + 50;
+    if (!sameLocal) {
+      push("PE mate", read.mateContig, read.matePos, "+", sourceStrand);
+    }
+  }
+  // Same query name already open in another tile (secondary / other segment).
+  if (Array.isArray(state.smartTracks) && read.name) {
+    for (const track of state.smartTracks) {
+      const reads = track && track.readsLayout && track.readsLayout.reads;
+      if (!Array.isArray(reads)) continue;
+      for (const other of reads) {
+        if (!other || other === read || other.name !== read.name) continue;
+        if (other.contig === read.contig
+            && other.start <= read.end && other.end >= read.start) continue;
+        const kind = other.isSecondary ? "Secondary"
+          : (other.isSupplementary ? "Supplementary" : "Mate alignment");
+        push(kind, other.contig || state.contig, other.start, other.isForward === false ? "-" : "+", sourceStrand);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Hit-test a smart-track read under the pointer.
+ * Uses each track's renderer container bounds (positioned inside #smartScroll).
+ * Returns { track, read, tileId } or null.
+ */
+function gsHitTestSmartRead(clientX, clientY, tile) {
+  if (!state.smartTrackRenderers || typeof state.smartTrackRenderers.forEach !== "function") {
+    return null;
+  }
+  const genomeW = (typeof renderWidthPx === "function" && renderWidthPx() > 0)
+    ? renderWidthPx()
+    : ((typeof tracksWidthPx === "function" && tracksWidthPx() > 0) ? tracksWidthPx() : 0);
+
+  let hit = null;
+  let hitArea = Infinity;
+  state.smartTrackRenderers.forEach((renderer, trackId) => {
+    if (!renderer || !renderer.container) return;
+    const box = renderer.container.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return;
+    if (clientX < box.left || clientX > box.right || clientY < box.top || clientY > box.bottom) {
+      return;
+    }
+    const track = (state.smartTracks || []).find((t) => t.id === trackId)
+      || (state.tracks || []).find((t) => t.id === trackId);
+    if (!track || !track.readsLayout || !Array.isArray(track.readsLayout.reads)) return;
+
+    const scrollTop = renderer.container.scrollTop || 0;
+    const localY = clientY - box.top + scrollTop;
+    const w = genomeW > 0 ? genomeW : box.width;
+    const bp = (typeof bpFromXGenome === "function")
+      ? bpFromXGenome(clientX - box.left, w, tile)
+      : null;
+    if (!Number.isFinite(bp)) return;
+
+    // Geometry matches renderSmartTrack (horizontal).
+    const labelH = 24;
+    const closedSlot = track.closedHeight || 30;
+    const summaryH = Math.max(12, labelH - 2);
+    const summaryY = Math.max(0, Math.floor((closedSlot - summaryH) / 2));
+    const top = summaryY;
+    const showSummary = !track.readDisplay || track.readDisplay.visibility.summary !== false;
+    const overviewH = track.collapsed ? 0
+      : (showSummary ? (summaryY + summaryH + 4 - top) : 0);
+    const readsTop = top + overviewH;
+    const rowH = (typeof SMART_TRACK_ROW_H === "number") ? SMART_TRACK_ROW_H : 18;
+
+    const pickNearest = (candidates, maxDist) => {
+      let best = null;
+      let bestDist = Infinity;
+      for (const read of candidates) {
+        const dist = (bp >= read.start && bp <= read.end)
+          ? 0
+          : Math.min(Math.abs(bp - read.start), Math.abs(bp - read.end));
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = read;
+        }
+      }
+      return (best && bestDist <= maxDist) ? best : null;
+    };
+
+    let read = null;
+    if (track.collapsed || localY < readsTop) {
+      const linked = track.readsLayout.reads.filter((r) =>
+        r.saTag || (r.mateContig && r.matePos) || Number(r.clipLength) > 0
+        || (bp >= r.start - 50 && bp <= r.end + 50));
+      read = pickNearest(linked.length ? linked : track.readsLayout.reads, 400);
+    } else {
+      const onRow = track.readsLayout.reads.filter((r) => {
+        const y0 = readsTop + (Number(r.row) || 0) * rowH + Number(r.groupOffsetPx || 0);
+        return localY >= y0 && localY < y0 + rowH;
+      });
+      read = pickNearest(onRow, 80)
+        || pickNearest(onRow, 300)
+        || pickNearest(track.readsLayout.reads.filter((r) =>
+          bp >= r.start - 100 && bp <= r.end + 100), 200);
+    }
+    if (!read) return;
+    const area = box.width * box.height;
+    // Prefer the smallest containing container (avoids a stale 100%-height overlay).
+    if (area < hitArea) {
+      hitArea = area;
+      hit = { track, read, tileId: tile && tile.id };
+    }
+  });
+  return hit;
+}
+
+/** True when the pointer is over the sample-track stack (even through pointer-events:none canvases). */
+function gsPointerOverSmartTracks(clientX, clientY) {
+  const scroll = (typeof getElementById === "function" ? getElementById("smartScroll") : null)
+    || document.getElementById("smartScroll");
+  if (scroll) {
+    const r = scroll.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0
+        && clientX >= r.left && clientX <= r.right
+        && clientY >= r.top && clientY <= r.bottom) {
+      return true;
+    }
+  }
+  if (!state.smartTrackRenderers || typeof state.smartTrackRenderers.forEach !== "function") {
+    return false;
+  }
+  let over = false;
+  state.smartTrackRenderers.forEach((renderer) => {
+    if (over || !renderer || !renderer.container) return;
+    const box = renderer.container.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return;
+    if (clientX >= box.left && clientX <= box.right
+        && clientY >= box.top && clientY <= box.bottom) {
+      over = true;
+    }
+  });
+  return over;
+}
+
+function gsEventInGenomeshader(e) {
+  const t = e.target;
+  if (!t) return false;
+  if (t.closest && t.closest(
+    ".gs-tile, #main, #smartScroll, .smart-track-container, .app, "
+    + "[id^='genomeshader-root-'], [id^='genomeshader-modal-']"
+  )) {
+    return true;
+  }
+  // Canvases use pointer-events:none — fall back to geometry.
+  if (gsPointerOverSmartTracks(e.clientX, e.clientY)) return true;
+  const main = (typeof getElementById === "function" ? getElementById("main") : null)
+    || document.getElementById("main");
+  return !!(main && main.contains(t));
+}
+
+function gsOnTileContextMenu(e) {
+  if (!gsEventInGenomeshader(e)) return;
+
+  const tileEl = (e.target.closest && e.target.closest(".gs-tile"))
+    || document.querySelector(".gs-tile.is-focused")
+    || document.querySelector(".gs-tile");
+  const tileId = tileEl ? tileEl.getAttribute("data-tile-id") : (state.focusedTileId || "t0");
+  const tile = (state.tiles || []).find((t) => t.id === tileId)
+    || (typeof gsFocusedTile === "function" ? gsFocusedTile() : null);
+
+  // Variant BND hit-test.
+  const nodes = window._alleleNodePositions || [];
+  if (nodes.length && tileEl) {
+    const flowEl = tileEl.querySelector(".flow") || document.getElementById("flow");
+    if (flowEl) {
+      const fr = flowEl.getBoundingClientRect();
+      const lx = e.clientX - fr.left;
+      const ly = e.clientY - fr.top;
+      const alleleHit = nodes.find((n) =>
+        n.mateContig && Number.isFinite(Number(n.matePos))
+        && lx >= n.x && lx <= n.x + n.w && ly >= n.y && ly <= n.y + n.h);
+      if (alleleHit) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        gsShowContextMenu(e.clientX, e.clientY, [{
+          label: `Open linked tile at ${alleleHit.mateContig}:${Number(alleleHit.matePos).toLocaleString()} (BND)`,
+          action: () => gsOpenLinkedTile({
+            contig: alleleHit.mateContig,
+            pos: Number(alleleHit.matePos),
+            strand: alleleHit.mateStrand || "+",
+            sourceTileId: tileId,
+          }),
+        }]);
+        return;
+      }
+    }
+  }
+
+  const overReads = gsPointerOverSmartTracks(e.clientX, e.clientY);
+  const hitRead = gsHitTestSmartRead(e.clientX, e.clientY, tile);
+  if (!hitRead && !overReads) return;
+
+  // Own the menu whenever the pointer is over sample reads — beat Jupyter/browser.
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+
+  const items = [];
+  if (!hitRead) {
+    items.push({ label: "No read under cursor", action: null });
+  } else {
+    const links = gsLinkedLociForRead(hitRead.read, tileId);
+    if (!links.length) {
+      items.push({ label: "No linked locus on this read", action: null });
+    } else {
+      for (const m of links) {
+        items.push({
+          label: `Open ${m.kind} → ${m.contig}:${Number(m.pos).toLocaleString()}`,
+          action: () => gsOpenLinkedTile({
+            contig: m.contig,
+            pos: m.pos,
+            strand: m.strand,
+            sourceStrand: m.sourceStrand,
+            sourceTileId: tileId,
+          }),
+        });
+      }
+    }
+  }
+  gsShowContextMenu(e.clientX, e.clientY, items);
+}
+
+function gsInitTileContextMenus() {
+  // window capture runs BEFORE document — JupyterLab binds contextmenu on document
+  // with capture, so a document-only listener loses the registration race.
+  const prev = window.__gsOnTileContextMenu;
+  if (prev) {
+    try { window.removeEventListener("contextmenu", prev, true); } catch (err) {}
+    try { document.removeEventListener("contextmenu", prev, true); } catch (err) {}
+  }
+  window.__gsOnTileContextMenu = gsOnTileContextMenu;
+  window.addEventListener("contextmenu", gsOnTileContextMenu, true);
+  document.addEventListener("contextmenu", gsOnTileContextMenu, true);
+
+  const bind = (el) => {
+    if (!el || el === document || el === window) return;
+    if (el.__gsTileCtxHandler && el.__gsTileCtxHandler !== gsOnTileContextMenu) {
+      try { el.removeEventListener("contextmenu", el.__gsTileCtxHandler, true); } catch (err) {}
+    }
+    el.__gsTileCtxHandler = gsOnTileContextMenu;
+    el.addEventListener("contextmenu", gsOnTileContextMenu, true);
+  };
+
+  const root = (typeof getCurrentRoot === "function" && getCurrentRoot()) || null;
+  bind(root);
+  const mainEl = (typeof getElementById === "function" ? getElementById("main") : null)
+    || document.getElementById("main");
+  bind(mainEl);
+  // Fullscreen overlay covers the viewport at max z-index — bind there too.
+  const overlay = document.querySelector('[id^="genomeshader-overlay-"]');
+  bind(overlay);
 }
 
 function gsInitTileUi() {
@@ -1372,6 +1747,8 @@ if (typeof window !== "undefined") {
   window.gsParseSaTag = gsParseSaTag;
   window.gsOpenLinkedTile = gsOpenLinkedTile;
   window.gsFindOpenTileForMate = gsFindOpenTileForMate;
+  window.gsHitTestSmartRead = gsHitTestSmartRead;
+  window.gsLinkedLociForRead = gsLinkedLociForRead;
   window.gsInitTileUi = gsInitTileUi;
   window.gsBindTileDom = gsBindTileDom;
   window.gsMoveLiveBodyToTile = gsMoveLiveBodyToTile;

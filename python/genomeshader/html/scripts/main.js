@@ -136,6 +136,22 @@ function renderSmartTrack(trackId) {
     webgpuCanvas.style.display = "";
   }
   
+  // Multi-tile: track may still hold pileups for a sibling locus. Never paint
+  // those into this window (wrong coords) and never clear them (nearline cost).
+  const _wantReadsSig = (typeof _readsLocusSig === "function") ? _readsLocusSig() : "";
+  const _haveReadsSig = track._readsLocusSig || "";
+  const _readsLocusMismatch = !!(
+    _wantReadsSig && _haveReadsSig && _wantReadsSig !== _haveReadsSig
+    && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length
+  );
+  const _canPaintReads = !!(
+    !_readsLocusMismatch
+    && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0
+  );
+  const _showReadsLoading = !_canPaintReads && !!(
+    track.loading || (track._loadingLocusSig && track._loadingLocusSig === _wantReadsSig)
+  );
+
   // Position container based on layout
   const isVertical = isVerticalMode();
   if (isVertical) {
@@ -224,7 +240,7 @@ function renderSmartTrack(trackId) {
   
   // Calculate total content height if reads are loaded (horizontal mode)
   let totalContentHeight = H;
-  if (!isVertical && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+  if (!isVertical && _canPaintReads) {
     // Summary strip: nearly the 24px label tall, centered in closedHeight when
     // collapsed (and at the same y when expanded so it doesn't jump).
     const labelH = 24;
@@ -543,6 +559,75 @@ function renderSmartTrack(trackId) {
     };
   }
 
+  function softClipModeFor(track) {
+    const m = track && track.readDisplay && track.readDisplay.softClipMode;
+    return (m === "bases" || m === "hide") ? m : "marker";
+  }
+
+  /** Soft-clip element runs at either end of an alignment (type === 4). */
+  function softClipEdges(read) {
+    if (!read || !read.elements || !read.elements.length) return { left: null, right: null };
+    let left = null;
+    let right = null;
+    for (const el of read.elements) {
+      if (el.type !== 4) continue;
+      // Leading clips sit at synthetic coords before BAM POS; trailing at/after end.
+      if (el.start < read.start) {
+        if (!left) left = { start: el.start, end: el.end, n: 0 };
+        left.start = Math.min(left.start, el.start);
+        left.end = Math.max(left.end, el.end);
+        left.n += 1;
+      } else {
+        if (!right) right = { start: el.start, end: el.end, n: 0 };
+        right.start = Math.min(right.start, el.start);
+        right.end = Math.max(right.end, el.end);
+        right.n += 1;
+      }
+    }
+    return { left, right };
+  }
+
+  function softClipMateHint(read) {
+    if (read.saTag && typeof gsParseSaTag === "function") {
+      const mates = gsParseSaTag(read.saTag);
+      if (mates.length) {
+        const m = mates[0];
+        return `${m.contig}:${Number(m.pos).toLocaleString()}`;
+      }
+    }
+    if (read.mateContig && read.matePos) {
+      return `${read.mateContig}:${Number(read.matePos).toLocaleString()}`;
+    }
+    return "";
+  }
+
+  /** Bracket + optional mate locus label at a soft-clip cliff (horizontal). */
+  function drawSoftClipMarkerH(cliffBp, side, y, h, genomeW, hint) {
+    const cx = xGenomeCanonical(cliffBp, genomeW);
+    const arm = Math.min(14, Math.max(6, h));
+    const x0 = side === "left" ? cx - arm : cx;
+    const x1 = side === "left" ? cx : cx + arm;
+    // Amber bracket matching SA/link accent.
+    drawMarkerRect(x0, y, Math.max(1, x1 - x0), 2, 245, 158, 11, 0.95);
+    drawMarkerRect(side === "left" ? x0 : x1 - 2, y, 2, h, 245, 158, 11, 0.95);
+    drawMarkerRect(x0, y + h - 2, Math.max(1, x1 - x0), 2, 245, 158, 11, 0.95);
+    if (hint && (tctx || ctx)) {
+      const lctx = tctx || ctx;
+      lctx.save();
+      lctx.fillStyle = "rgba(245,158,11,0.95)";
+      lctx.font = "9px system-ui, sans-serif";
+      lctx.textBaseline = "middle";
+      if (side === "left") {
+        lctx.textAlign = "right";
+        lctx.fillText(hint, x0 - 2, y + h / 2);
+      } else {
+        lctx.textAlign = "left";
+        lctx.fillText(hint, x1 + 2, y + h / 2);
+      }
+      lctx.restore();
+    }
+  }
+
   function accumulateOverlap(reads, hapFilter) {
     const map = new Map();
     for (const read of reads) {
@@ -558,6 +643,8 @@ function renderSmartTrack(trackId) {
             }
           }
         } else if (elem.type === 1 || elem.type === 2) {
+          map.set(elem.start, (map.get(elem.start) || 0) + 1);
+        } else if (elem.type === 4 && softClipModeFor(track) === "bases") {
           map.set(elem.start, (map.get(elem.start) || 0) + 1);
         }
       }
@@ -718,6 +805,8 @@ function renderSmartTrack(trackId) {
 
       for (const el of read.elements) {
         if (el.type === 5) continue; // intron skip — not a CIGAR marker
+        if (el.type === 4 && softClipModeFor(track) === "hide") continue;
+        if (el.type === 4 && softClipModeFor(track) === "marker") continue; // edge ticks below
         if (el.start < renderStartBp() || el.start > renderEndBp()) continue;
         const ex = xGenomeCanonical(el.start, genomeW);
         const base = el.type === 2 ? 0.25 : (el.type === 3 ? 0.2 : 0.25);
@@ -741,17 +830,37 @@ function renderSmartTrack(trackId) {
           const ex2 = xGenomeCanonical(el.end, genomeW);
           drawMarkerRect(ex, ey + eh / 4, Math.max(1, ex2 - ex), Math.max(1, eh / 2), 0, 0, 0, a);
         } else {
+          // type 1 (SNP) or type 4 (soft-clip bases mode)
           const nuc = el.sequence ? el.sequence.toUpperCase() : '?';
           const [r, g, b] = BASE_RGB[nuc] || [156, 39, 176];
           const nextX = xGenomeCanonical(el.start + 1, genomeW);
           const gapAfterPx = getGapAfterBpPx(el.start, state.expandedInsertions);
           const bw = Math.max(1, Math.abs(nextX - ex) - gapAfterPx);
-          // Flush to the band edges so HP1/HP2 tiles meet with no dark seam
-          // (the old ey+1 / eh-2 inset left a 2px gap between halves).
           drawMarkerRect(
             ex + bw / 2 - variantMarkerW / 2, ey,
             variantMarkerW, Math.max(1, eh),
             r, g, b, 1
+          );
+        }
+      }
+    }
+    // Soft-clip edge ticks on the summary when mode=marker.
+    if (softClipModeFor(track) === "marker") {
+      for (const read of reads) {
+        if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+        const hap = haplotypeKey(read.haplotype);
+        const band = bands.bandFor(hap);
+        const edges = softClipEdges(read);
+        if (edges.left) {
+          drawMarkerRect(
+            xGenomeCanonical(read.start, genomeW) - 2, band.y,
+            2, band.h, 245, 158, 11, 0.85
+          );
+        }
+        if (edges.right) {
+          drawMarkerRect(
+            xGenomeCanonical(read.end, genomeW), band.y,
+            2, band.h, 245, 158, 11, 0.85
           );
         }
       }
@@ -872,7 +981,7 @@ function renderSmartTrack(trackId) {
     }
     
     // Draw reads if available
-    if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+    if (_canPaintReads) {
       const maxCols = Math.floor((H - left - 12) / colW);
       const vReads = track.readsLayout.reads;
 
@@ -1033,7 +1142,7 @@ function renderSmartTrack(trackId) {
               const delY = Math.min(ey, ey2);
               const delH = Math.max(2, Math.abs(ey2 - ey));
               drawMarkerRect(ex + ew/4, delY, ew/2, delH, 0, 0, 0, 0.4);
-            } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
+            } else if (elem.type === 1 || (elem.type === 4 && softClipModeFor(track) === "bases")) {
               const nextBp = elem.start + 1;
               const nextY = (nextBp <= renderEndBp() ? yGenomeCanonical(nextBp, coordHeight) : yGenomeCanonical(renderEndBp(), coordHeight));
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
@@ -1058,10 +1167,35 @@ function renderSmartTrack(trackId) {
               }
             }
           }
+          if (softClipModeFor(track) === "marker") {
+            const edges = softClipEdges(read);
+            const hint = softClipMateHint(read);
+            // Vertical mode: soft-clip cliffs along the sequence axis (Y).
+            if (edges.left) {
+              const cy = yGenomeCanonical(read.start, coordHeight);
+              drawMarkerRect(x, cy - 2, w, 2, 245, 158, 11, 0.95);
+              if (hint && (tctx || ctx)) {
+                const lctx = tctx || ctx;
+                lctx.fillStyle = "rgba(245,158,11,0.95)";
+                lctx.font = "9px system-ui, sans-serif";
+                lctx.fillText(hint, x + 2, cy - 4);
+              }
+            }
+            if (edges.right) {
+              const cy = yGenomeCanonical(read.end, coordHeight);
+              drawMarkerRect(x, cy, w, 2, 245, 158, 11, 0.95);
+              if (hint && (tctx || ctx)) {
+                const lctx = tctx || ctx;
+                lctx.fillStyle = "rgba(245,158,11,0.95)";
+                lctx.font = "9px system-ui, sans-serif";
+                lctx.fillText(hint, x + 2, cy + 10);
+              }
+            }
+          }
         }
       }
       }
-    } else if (track.loading) {
+    } else if (_showReadsLoading) {
       ctx.fillStyle = cssVar("--muted");
       ctx.font = "14px system-ui, sans-serif";
       ctx.textAlign = "center";
@@ -1089,7 +1223,7 @@ function renderSmartTrack(trackId) {
     const readsTop = top + overviewH;
 
     let totalRows = Math.floor((H - top - bottom) / rowH);
-    if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+    if (_canPaintReads) {
       // When collapsed (closed state), limit to single row
       totalRows = track.collapsed ? 1 : (track.readsLayout.rowCount || Math.max(...track.readsLayout.reads.map(r => r.row)) + 1);
       const scrollTop = container.scrollTop || 0;
@@ -1127,7 +1261,7 @@ function renderSmartTrack(trackId) {
     }
     
     // Draw reads if available
-    if (track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0) {
+    if (_canPaintReads) {
       const scrollTop = container.scrollTop || 0;
       
       // Calculate visible row range for expanded state
@@ -1292,7 +1426,7 @@ function renderSmartTrack(trackId) {
             } else if (elem.type === 3) { // Deletion - black gap
               const ex2 = xGenomeCanonical(elem.end, genomeW);
               drawMarkerRect(ex, ey + eh/4, ex2 - ex, eh/2, 0, 0, 0, elemAlpha);
-            } else if (elem.type === 1) { // Diff/mismatch - full base with nucleotide
+            } else if (elem.type === 1 || (elem.type === 4 && softClipModeFor(track) === "bases")) {
               // Calculate actual base width
               const nextBp = elem.start + 1;
               const nextX = nextBp <= renderEndBp() ? xGenomeCanonical(nextBp, genomeW) : xGenomeCanonical(renderEndBp(), genomeW);
@@ -1316,6 +1450,12 @@ function renderSmartTrack(trackId) {
                 lctx.fillText(nuc, drawX + drawWidth / 2, ey + eh / 2);
               }
             }
+          }
+          if (softClipModeFor(track) === "marker") {
+            const edges = softClipEdges(read);
+            const hint = softClipMateHint(read);
+            if (edges.left) drawSoftClipMarkerH(read.start, "left", y, h, genomeW, hint);
+            if (edges.right) drawSoftClipMarkerH(read.end, "right", y, h, genomeW, hint);
           }
         }
       }
@@ -1397,7 +1537,7 @@ function renderSmartTrack(trackId) {
         ctx.lineTo(W - 16, overviewH - 2 + so);
         ctx.stroke();
       }
-    } else if (track.loading) {
+    } else if (_showReadsLoading) {
       ctx.fillStyle = cssVar("--muted");
       ctx.font = "14px system-ui, sans-serif";
       ctx.textAlign = "center";
@@ -3088,53 +3228,97 @@ function renderAll() {
         // Reads: relocate the live #smartScroll into this tile, paint for this
         // tile's genomic window, then freeze a Canvas2D snapshot when unfocused
         // so siblings keep showing reads after the live stack moves on.
-        if (typeof gsRelocateSmartScrollToBoundContainer === "function") {
-          gsRelocateSmartScrollToBoundContainer();
-        }
-        positionSmartScrollWrapper();
-        const prevForceReads2d = window.__GS_FORCE_SMART_TRACK_CANVAS2D;
-        let restoreSmartScroll = null;
-        if (!isFocused) {
-          window.__GS_FORCE_SMART_TRACK_CANVAS2D = true;
-          if (typeof gsBeginSmartScrollSnapshotPaint === "function") {
-            restoreSmartScroll = gsBeginSmartScrollSnapshotPaint();
+        //
+        // IMPORTANT (nearline / AoU): once an unfocused tile has a freeze for its
+        // current locus, do NOT relocate/paint/re-freeze it again. Re-freezing
+        // while sibling loci load was wiping pileups with "Loading..." and
+        // forcing expensive BAM re-fetches.
+        const wantFreezeSig = `${tile.contig}:${Math.floor(tile.startBp)}-${Math.ceil(tile.endBp)}`;
+        const tileRootEl = (typeof gsTileRootEl === "function") ? gsTileRootEl(tile.id) : null;
+        const hasGoodFreeze = !!(
+          !isFocused
+          && tileRootEl
+          && tileRootEl.querySelector(".gs-smart-scroll-freeze")
+          && tile._freezeReadsSig === wantFreezeSig
+        );
+
+        if (!hasGoodFreeze) {
+          if (typeof gsRelocateSmartScrollToBoundContainer === "function") {
+            gsRelocateSmartScrollToBoundContainer();
           }
-        }
-        const smartTracksInOrder = state.tracks
-          .filter(t => t.id.startsWith("smart-track-"))
-          .map(t => state.smartTracks.find(st => st.id === t.id))
-          .filter(st => st !== undefined);
-        const paintSmartTracks = () => {
-          smartTracksInOrder.forEach(track => {
-            renderSmartTrack(track.id);
-          });
-        };
-        paintSmartTracks();
-        // Unfocused freeze needs real canvas pixels. If layout wasn't ready on
-        // the first pass (0-size bail), remeasure once before snapshotting.
-        if (!isFocused && smartTracksInOrder.length) {
-          const scroll = document.getElementById("smartScroll");
-          const ready = scroll && Array.from(scroll.querySelectorAll("canvas.canvas"))
-            .some((c) => c.width > 0 && c.height > 0);
-          if (!ready) {
-            updateTracksHeight();
-            positionSmartScrollWrapper();
-            paintSmartTracks();
+          positionSmartScrollWrapper();
+          const prevForceReads2d = window.__GS_FORCE_SMART_TRACK_CANVAS2D;
+          let restoreSmartScroll = null;
+          if (!isFocused) {
+            window.__GS_FORCE_SMART_TRACK_CANVAS2D = true;
+            if (typeof gsBeginSmartScrollSnapshotPaint === "function") {
+              restoreSmartScroll = gsBeginSmartScrollSnapshotPaint();
+            }
           }
-        }
-        window.__GS_FORCE_SMART_TRACK_CANVAS2D = prevForceReads2d;
-        if (!isFocused) {
-          if (typeof gsFreezeSmartScrollSnapshot === "function") {
-            gsFreezeSmartScrollSnapshot(tile);
+          if (typeof hydrateSmartTracksForCurrentLocus === "function") {
+            hydrateSmartTracksForCurrentLocus();
           }
-          if (typeof restoreSmartScroll === "function") restoreSmartScroll();
-        } else {
+          const smartTracksInOrder = state.tracks
+            .filter(t => t.id.startsWith("smart-track-"))
+            .map(t => state.smartTracks.find(st => st.id === t.id))
+            .filter(st => st !== undefined);
+          const paintSmartTracks = () => {
+            smartTracksInOrder.forEach(track => {
+              renderSmartTrack(track.id);
+            });
+          };
+          paintSmartTracks();
+          if (!isFocused && smartTracksInOrder.length) {
+            const scroll = document.getElementById("smartScroll");
+            const ready = scroll && Array.from(scroll.querySelectorAll("canvas.canvas"))
+              .some((c) => c.width > 0 && c.height > 0);
+            if (!ready) {
+              updateTracksHeight();
+              positionSmartScrollWrapper();
+              paintSmartTracks();
+            }
+          }
+          window.__GS_FORCE_SMART_TRACK_CANVAS2D = prevForceReads2d;
+          if (!isFocused) {
+            // Only freeze when we actually have reads for THIS locus (never freeze
+            // a Loading placeholder over a good prior snapshot).
+            const canFreeze = smartTracksInOrder.some((t) =>
+              t && t._readsLocusSig === wantFreezeSig
+              && t.readsLayout && t.readsLayout.reads && t.readsLayout.reads.length);
+            if (canFreeze && typeof gsFreezeSmartScrollSnapshot === "function") {
+              gsFreezeSmartScrollSnapshot(tile);
+              tile._freezeReadsSig = wantFreezeSig;
+            }
+            if (typeof restoreSmartScroll === "function") restoreSmartScroll();
+          } else {
+            if (typeof gsClearSmartScrollFreeze === "function") {
+              gsClearSmartScrollFreeze(tile);
+            }
+            tile._freezeReadsSig = null;
+            if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
+            renderGenesPanel();
+          }
+        } else if (isFocused) {
+          if (typeof gsRelocateSmartScrollToBoundContainer === "function") {
+            gsRelocateSmartScrollToBoundContainer();
+          }
+          positionSmartScrollWrapper();
+          if (typeof hydrateSmartTracksForCurrentLocus === "function") {
+            hydrateSmartTracksForCurrentLocus();
+          }
+          state.tracks
+            .filter(t => t.id.startsWith("smart-track-"))
+            .map(t => state.smartTracks.find(st => st.id === t.id))
+            .filter(st => st !== undefined)
+            .forEach(track => { renderSmartTrack(track.id); });
           if (typeof gsClearSmartScrollFreeze === "function") {
             gsClearSmartScrollFreeze(tile);
           }
+          tile._freezeReadsSig = null;
           if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
           renderGenesPanel();
         }
+        // else: unfocused + good freeze — leave snapshot untouched.
 
         window.__GS_FORCE_SVG_TRACKS = prevForce;
       });
@@ -4687,6 +4871,7 @@ function setupCanvasHover() {
       const summarizeChange = (ref, alt) => {
         if (!ref || !alt || ref === '.' || alt === '.') return 'Unknown';
         if (alt.startsWith('<') && alt.endsWith('>')) return alt; // symbolic ALT
+        if ((alt.includes('[') || alt.includes(']')) && !alt.startsWith('<')) return 'BND';
 
         let r = ref;
         let a = alt;
