@@ -4197,6 +4197,11 @@ function setupCanvasHover() {
   // Get information about selected alleles for loading reads
   function getSelectedAlleleInfo() {
     const selectedInfo = [];
+    if (state.selectedAlleleMeta) {
+      for (const k of Array.from(state.selectedAlleleMeta.keys())) {
+        if (!state.selectedAlleles.has(k)) state.selectedAlleleMeta.delete(k);
+      }
+    }
     for (const key of state.selectedAlleles) {
       const parsed = parseAlleleSelectionKeyCompat(key);
       if (!parsed) continue;
@@ -4206,10 +4211,12 @@ function setupCanvasHover() {
     }
     return selectedInfo;
   }
+  // Test seam: resolve a parsed selection key the way every consumer does.
+  window.__GS_TEST_resolveSelected = (parsed) => resolveSelectedAllelePair(parsed);
   window.__GS_currentSelectedVariantPosition = function () {
     const selected = getSelectedAlleleInfo();
     if (!selected.length || !selected[0].variant || selected[0].variant.pos == null) return null;
-    return { contig: state.contig, pos: Number(selected[0].variant.pos) };
+    return { contig: selected[0].contig || state.contig, pos: Number(selected[0].variant.pos) };
   };
 
   // --- Comments bridge: build an anchor from the current selection (allele /
@@ -4222,11 +4229,12 @@ function setupCanvasHover() {
     if (sel.length) {
       const s = sel[0];
       const v = s.variant || {};
-      const posText = `${contig}:${Number(v.pos || 0).toLocaleString()}`;
+      const sc = s.contig || contig;
+      const posText = `${sc}:${Number(v.pos || 0).toLocaleString()}`;
       return {
         type: (s.alleleIndex != null && s.label && s.label !== "ref") ? "allele" : "variant",
         ref: s.label ? `${posText} (${s.label})` : posText,
-        locus: { contig: contig, pos: Number(v.pos) },
+        locus: { contig: sc, pos: Number(v.pos) },
         variantId: String(s.variantId),
         alleleIndex: (s.alleleIndex != null ? Number(s.alleleIndex) : null),
         alleleLabel: s.label || null,
@@ -4254,8 +4262,9 @@ function setupCanvasHover() {
       const sel = getSelectedAlleleInfo() || [];
       if (sel.length) {
         const s = sel[0], v = s.variant || {};
-        const posText = `${contig}:${Number(v.pos || 0).toLocaleString()}`;
+        const posText = `${s.contig || contig}:${Number(v.pos || 0).toLocaleString()}`;
         opts.allele = {
+          contig: s.contig || contig,
           ref: s.label ? `${posText} (${s.label})` : posText,
           pos: Number(v.pos), variantId: String(s.variantId),
           alleleIndex: (s.alleleIndex != null ? Number(s.alleleIndex) : null),
@@ -4343,26 +4352,49 @@ function setupCanvasHover() {
     ) || null;
   }
 
+  // What a selected allele MEANS is fixed at the moment it is picked, in the tile
+  // where it is drawn: its contig, display label and allele keys. Neither the
+  // contig (state.contig follows tile FOCUS) nor the label/keys (read off the
+  // focused tile's rendered allele nodes) may change when focus moves to another
+  // tile — otherwise the chip flips to "chr20:32,149,950 · Allele 2" and a later
+  // Load would look up carriers at the wrong locus.
+  function _selectedAlleleMeta() {
+    if (!state.selectedAlleleMeta) state.selectedAlleleMeta = new Map();
+    return state.selectedAlleleMeta;
+  }
+
   function resolveSelectedAllelePair(parsed) {
     if (!parsed) return null;
     const { trackId, variantId, alleleIndex } = parsed;
     const variant = findVariantByTrackAndId(trackId, variantId);
     if (!variant) return null;
+    const metaKey = makeAlleleSelectionKeyCompat(trackId, variantId, alleleIndex);
+    const metas = _selectedAlleleMeta();
+    let meta = metas.get(metaKey) || null;
     const nodeInfo = getSelectedNodeInfo(trackId, variantId, alleleIndex);
     const sourceAlleleKeys = Array.isArray(nodeInfo?.sourceAlleleKeys)
       ? nodeInfo.sourceAlleleKeys
       : [];
     const fallbackAlleleKey = alleleIndexToAlleleKey(alleleIndex);
-    const alleleKeys = (sourceAlleleKeys.length > 0 ? sourceAlleleKeys : [fallbackAlleleKey])
-      .filter(k => typeof k === 'string' && k.length > 0)
-      .filter((k, idx, arr) => arr.indexOf(k) === idx);
+    if (nodeInfo) {
+      // The allele is drawn in the focused tile right now: (re)capture its identity.
+      const keys = (sourceAlleleKeys.length > 0 ? sourceAlleleKeys : [fallbackAlleleKey])
+        .filter(k => typeof k === 'string' && k.length > 0)
+        .filter((k, idx, arr) => arr.indexOf(k) === idx);
+      meta = { contig: state.contig, label: nodeInfo.label || null, alleleKeys: keys };
+      metas.set(metaKey, meta);
+    }
+    const alleleKeys = meta
+      ? meta.alleleKeys
+      : [fallbackAlleleKey].filter(k => typeof k === 'string' && k.length > 0);
 
     return {
       trackId,
       variantId,
       alleleIndex,
       alleleKeys,
-      label: nodeInfo?.label || `Allele ${alleleIndex}`,
+      contig: meta ? meta.contig : state.contig,
+      label: (meta && meta.label) || `Allele ${alleleIndex}`,
       variant
     };
   }
@@ -5378,8 +5410,8 @@ function setupCanvasHover() {
       pillsEl.innerHTML = '';
       let infos = [];
       try { infos = getSelectedAlleleInfo() || []; } catch (e) {}
-      const contig = state.contig;
       for (const s of infos) {
+        const contig = s.contig || state.contig;
         const v = s.variant || {};
         const pos = Number(v.pos || 0).toLocaleString();
         const label = s.label || '';
@@ -5819,7 +5851,7 @@ function setupCanvasHover() {
         const trackId = (v.trackId != null) ? v.trackId : (pair.trackId != null ? pair.trackId : null);
         const union = new Set();
         for (const allele of _alleleStringsForPair(pair)) {
-          const carriers = await _fetchCarriersForAllele(state.contig, v.pos, v.refAllele, allele, trackId, n);
+          const carriers = await _fetchCarriersForAllele(pair.contig || state.contig, v.pos, v.refAllele, allele, trackId, n);
           carriers.forEach((s) => union.add(s));
         }
         perPairSets.push(union);
