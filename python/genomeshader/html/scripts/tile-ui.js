@@ -39,11 +39,46 @@ function gsTileHeaderHtml() {
       <input class="gs-tile-locus-input" data-tile-locus-input type="text" hidden
              placeholder="chr:start-end" spellcheck="false" autocomplete="off">
       <span class="gs-tile-header-spacer" aria-hidden="true"></span>
-      <button type="button" class="gs-tile-orient" data-tile-flip
-              title="Orientation: 5′ → 3′ (click to flip)" aria-pressed="false"
-              aria-label="Orientation 5′ to 3′">→</button>
+      <div class="gs-tile-orient-seg" data-tile-orient-seg role="group" aria-label="Display orientation">
+        <button type="button" class="gs-tile-orient-btn" data-orient-choice="fwd"
+                title="5′ → 3′" aria-label="5′ to 3′">▶</button>
+        <button type="button" class="gs-tile-orient-btn" data-orient-choice="unknown"
+                title="Orientation unconfirmed" aria-label="Unconfirmed">?</button>
+        <button type="button" class="gs-tile-orient-btn" data-orient-choice="rev"
+                title="3′ → 5′" aria-label="3′ to 5′">◀</button>
+      </div>
       <button type="button" class="gs-tile-close" data-tile-close title="Close tile" aria-label="Close tile">×</button>
-    </div>`;
+    </div>
+    <div class="gs-tile-orient-banner" data-tile-orient-banner hidden></div>`;
+}
+
+/**
+ * Default resize handle width; widen when SA/PE-linked tiles need ribbon room.
+ */
+const GS_TILE_DIVIDER_PX = 8;
+const GS_TILE_RIBBON_GUTTER_PX = 64;
+
+function gsDesiredTileGutterPx() {
+  if (typeof gsIsMultiTile === "function" && !gsIsMultiTile()) return GS_TILE_DIVIDER_PX;
+  if (state.preferRibbonGutters) return GS_TILE_RIBBON_GUTTER_PX;
+  const tiles = state.tiles || [];
+  if (tiles.some((t) => t && t.linkedFromId)) return GS_TILE_RIBBON_GUTTER_PX;
+  if (state.tileBundles && state.tileBundles.length) return GS_TILE_RIBBON_GUTTER_PX;
+  return GS_TILE_DIVIDER_PX;
+}
+
+/** Apply divider widths + strip class for ribbon gutters. */
+function gsApplyTileGutterWidths() {
+  const strip = gsTileStripEl();
+  if (!strip) return;
+  const w = gsDesiredTileGutterPx();
+  const wide = w > GS_TILE_DIVIDER_PX;
+  strip.classList.toggle("has-ribbon-gutters", wide);
+  strip.style.setProperty("--gs-tile-gutter", `${w}px`);
+  strip.querySelectorAll(".gs-tile-divider:not(.gs-tile-end-resize)").forEach((d) => {
+    d.style.flex = `0 0 ${w}px`;
+    d.style.width = `${w}px`;
+  });
 }
 
 /**
@@ -85,6 +120,8 @@ function gsEnsureTileStripDom() {
         header.querySelector(".gs-tile-header-sub")
         || header.querySelector("[data-tile-edit]")
         || (flipEl && flipEl.tagName === "INPUT")
+        || !header.querySelector("[data-tile-orient-seg]")
+        || !el.querySelector(":scope > [data-tile-orient-banner]")
         || !header.querySelector(".gs-tile-header-spacer")
         || !header.querySelector("[data-tile-letter-input]")
       ));
@@ -92,10 +129,18 @@ function gsEnsureTileStripDom() {
         const body = el.querySelector(".gs-tile-body");
         const tmp = document.createElement("div");
         tmp.innerHTML = gsTileHeaderHtml();
-        const newHeader = tmp.firstElementChild;
+        const newHeader = tmp.querySelector("[data-tile-header]");
+        const newBanner = tmp.querySelector("[data-tile-orient-banner]");
         if (header && newHeader) header.replaceWith(newHeader);
+        const oldBanner = el.querySelector(":scope > [data-tile-orient-banner]");
+        if (newBanner) {
+          if (oldBanner) oldBanner.replaceWith(newBanner);
+          else if (newHeader && newHeader.nextSibling !== newBanner) {
+            newHeader.insertAdjacentElement("afterend", newBanner);
+          }
+        }
         // Re-bind on the tile root (idempotent via __gsBound on the new header).
-        delete newHeader.__gsBound;
+        if (newHeader) delete newHeader.__gsBound;
         gsBindTileHeaderEvents(el, tile.id);
         if (!body) {
           const bodyWrap = document.createElement("div");
@@ -105,11 +150,17 @@ function gsEnsureTileStripDom() {
         }
       }
     }
-    if (Number.isFinite(tile.widthPx) && tile.widthPx > 0) {
+    if (state.tiles.length === 1) {
+      // Single tile always fills the strip — never keep a stale half-width.
+      tile.widthPx = null;
+      el.style.flex = "1 1 auto";
+      el.style.width = "100%";
+      el.style.maxWidth = "none";
+    } else if (Number.isFinite(tile.widthPx) && tile.widthPx > 0) {
       el.style.flex = `0 0 ${tile.widthPx}px`;
       el.style.width = `${tile.widthPx}px`;
     } else {
-      el.style.flex = "1 0 auto";
+      el.style.flex = "1 1 auto";
       el.style.width = "";
     }
     el.classList.toggle("is-focused", tile.id === state.focusedTileId);
@@ -154,6 +205,8 @@ function gsEnsureTileStripDom() {
     svg.setAttribute("class", "gs-tile-arc-overlay");
     strip.appendChild(svg);
   }
+  strip.classList.toggle("gs-single-tile", state.tiles.length <= 1);
+  strip.classList.toggle("gs-multi-tile", state.tiles.length > 1);
 
   // Sync primary globals if focused tile is the original id set.
   gsBindTileDom(gsFocusedTile());
@@ -164,6 +217,7 @@ function gsEnsureTileStripDom() {
   });
   gsUpdateTileChrome();
   gsUpdateOrientationGate();
+  gsApplyTileGutterWidths();
   if (typeof gsUpdateTileStripScrollChrome === "function") gsUpdateTileStripScrollChrome();
 }
 
@@ -189,106 +243,13 @@ function gsBindTileDom(tile) {
   if (typeof flowIndelOverlay !== "undefined") flowIndelOverlay = q("flowIndelOverlay") || flowIndelOverlay;
 }
 
-/**
- * Move the shared #smartScroll reads stack into the currently bound
- * tracksContainer so sample tracks can be painted for this tile's window.
- */
-function gsRelocateSmartScrollToBoundContainer() {
-  if (typeof tracksContainer === "undefined" || !tracksContainer) return;
-  const rootEl = (typeof getCurrentRoot === "function") ? getCurrentRoot() : document;
-  let scroll = (rootEl && rootEl.querySelector) ? rootEl.querySelector("#smartScroll") : null;
-  if (!scroll) scroll = document.getElementById("smartScroll");
-  if (!scroll) return;
-  if (scroll.parentElement !== tracksContainer) {
-    tracksContainer.appendChild(scroll);
-  }
-}
-
-/**
- * After painting reads into the live #smartScroll for an unfocused tile, copy
- * canvases into a static freeze layer that stays in that tile when the live
- * stack moves to another column.
- */
-function gsFreezeSmartScrollSnapshot(tile) {
-  if (!tile || tile.blank) return;
-  const tileRoot = typeof gsTileRootEl === "function" ? gsTileRootEl(tile.id) : null;
-  if (!tileRoot) return;
-  const tracks = tileRoot.querySelector(".gs-tile-body > .tracks") || tileRoot.querySelector(".tracks");
-  if (!tracks) return;
-  const scroll = tracks.querySelector("#smartScroll");
-  // Clear prior freeze first.
-  tracks.querySelectorAll(":scope > .gs-smart-scroll-freeze").forEach((e) => e.remove());
-  if (!scroll || scroll.style.display === "none") return;
-
-  const freeze = scroll.cloneNode(true);
-  freeze.removeAttribute("id");
-  freeze.classList.add("gs-smart-scroll-freeze");
-  freeze.style.pointerEvents = "none";
-  // cloneNode does not copy canvas pixels — blit from the live canvases.
-  // Prefer the 2D `.canvas` / `.text-overlay` layers (WebGPU is hidden during
-  // snapshot paints). Skip display:none canvases.
-  const srcCanvases = scroll.querySelectorAll("canvas");
-  const dstCanvases = freeze.querySelectorAll("canvas");
-  for (let i = 0; i < srcCanvases.length; i++) {
-    const src = srcCanvases[i];
-    const dst = dstCanvases[i];
-    if (!src || !dst) continue;
-    if (src.style.display === "none") {
-      dst.style.display = "none";
-      continue;
-    }
-    try {
-      dst.width = src.width;
-      dst.height = src.height;
-      dst.style.cssText = src.style.cssText;
-      const ctx = dst.getContext("2d");
-      if (ctx && src.width > 0 && src.height > 0) ctx.drawImage(src, 0, 0);
-    } catch (_) { /* ignore */ }
-  }
-  // Drop nested ids so getElementById stays unique for the live stack.
-  freeze.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
-  // Snapshot at scrollTop 0 — matches how we paint unfocused tiles.
-  freeze.scrollTop = 0;
-  freeze.querySelectorAll(".smart-track-container").forEach((c) => { c.scrollTop = 0; });
-  tracks.appendChild(freeze);
-}
-
-/** Reset live reads scroll to top for a clean unfocused snapshot; returns restore fn. */
-function gsBeginSmartScrollSnapshotPaint() {
-  const scroll = document.getElementById("smartScroll");
-  if (!scroll) return null;
-  const saved = { scrollTop: scroll.scrollTop, kids: [] };
-  scroll.scrollTop = 0;
-  scroll.querySelectorAll(".smart-track-container").forEach((c) => {
-    saved.kids.push({ el: c, top: c.scrollTop });
-    c.scrollTop = 0;
-  });
-  return () => {
-    scroll.scrollTop = saved.scrollTop;
-    saved.kids.forEach(({ el, top }) => { if (el) el.scrollTop = top; });
-  };
-}
-
-function gsClearSmartScrollFreeze(tile) {
-  if (!tile) return;
-  const tileRoot = typeof gsTileRootEl === "function" ? gsTileRootEl(tile.id) : null;
-  if (!tileRoot) return;
-  tileRoot.querySelectorAll(".gs-smart-scroll-freeze").forEach((e) => e.remove());
-}
-
-/** @deprecated Live-body move blanked sibling tiles; kept as no-op for callers. */
-function gsMoveLiveBodyToTile(tileId) {
-  gsBindTileDom((state.tiles || []).find((t) => t.id === tileId));
-  gsRelocateSmartScrollToBoundContainer();
-}
-
 function gsBindTileHeaderEvents(el, tileId) {
   const header = el.querySelector("[data-tile-header]");
   if (!header || header.__gsBound) return;
   header.__gsBound = true;
 
   header.addEventListener("click", (e) => {
-    if (e.target.closest("[data-tile-flip]") || e.target.closest("[data-tile-close]")
+    if (e.target.closest("[data-tile-orient-seg], [data-tile-orient-banner]") || e.target.closest("[data-tile-close]")
         || e.target.closest("[data-tile-locus]") || e.target.closest("[data-tile-locus-input]")
         || e.target.closest("[data-tile-letter]") || e.target.closest("[data-tile-letter-input]")) {
       return;
@@ -320,32 +281,67 @@ function gsBindTileHeaderEvents(el, tileId) {
         ".gs-tile [data-tile-locus-input]:not([hidden]), .gs-tile [data-tile-letter-input]:not([hidden])"
       );
       if (editing) return;
-      if (typeof gsFocusTile === "function") gsFocusTile(tileId, { scroll: false });
-      else {
-        if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
-        if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
+      // Debounce hover-focus: rapid A↔B mouse travel was thrashing freeze/hydrate
+      // and blanking the unfocused column.
+      if (el.__gsHoverFocusTimer) clearTimeout(el.__gsHoverFocusTimer);
+      el.__gsHoverFocusTimer = setTimeout(() => {
+        el.__gsHoverFocusTimer = null;
+        if (state.focusedTileId === tileId) return;
+        if (state.dragging || (state.pointers && state.pointers.size > 0)) return;
+        if (typeof gsFocusTile === "function") gsFocusTile(tileId, { scroll: false });
+        else {
+          if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
+          if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
+        }
+      }, 140);
+    });
+    el.addEventListener("pointerleave", () => {
+      if (el.__gsHoverFocusTimer) {
+        clearTimeout(el.__gsHoverFocusTimer);
+        el.__gsHoverFocusTimer = null;
       }
     });
     // pointerdown so focus switches before a pan/zoom gesture starts on this tile.
     el.addEventListener("pointerdown", (e) => {
       state._pointerOverTileStrip = true;
+      if (el.__gsHoverFocusTimer) {
+        clearTimeout(el.__gsHoverFocusTimer);
+        el.__gsHoverFocusTimer = null;
+      }
       if (typeof gsIsMultiTile === "function" && !gsIsMultiTile()) return;
       if (state.focusedTileId === tileId) return;
-      if (e.target.closest("[data-tile-flip], [data-tile-close], [data-tile-locus], [data-tile-locus-input], [data-tile-letter], [data-tile-letter-input]")) {
+      if (e.target.closest("[data-tile-orient-seg], [data-tile-orient-banner], [data-tile-close], [data-tile-locus], [data-tile-locus-input], [data-tile-letter], [data-tile-letter-input]")) {
         return;
       }
       if (typeof gsFocusTile === "function") gsFocusTile(tileId, { scroll: false });
     });
   }
 
-  const flip = el.querySelector("[data-tile-flip]");
-  if (flip) {
-    flip.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
-    flip.addEventListener("click", (e) => {
+  const orientSeg = el.querySelector("[data-tile-orient-seg]");
+  if (orientSeg && !orientSeg.__gsBound) {
+    orientSeg.__gsBound = true;
+    orientSeg.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
+    orientSeg.addEventListener("click", (e) => {
       e.stopPropagation();
-      const tile = (state.tiles || []).find((t) => t.id === tileId);
-      if (!tile || typeof gsSetTileReversed !== "function") return;
-      gsSetTileReversed(tileId, !tile.reversed);
+      const btn = e.target.closest("[data-orient-choice]");
+      if (!btn) return;
+      const choice = btn.getAttribute("data-orient-choice");
+      if (typeof gsSetTileOrientationChoice === "function") {
+        gsSetTileOrientationChoice(tileId, choice);
+      }
+    });
+  }
+  const banner = el.querySelector("[data-tile-orient-banner]");
+  if (banner && !banner.__gsBound) {
+    banner.__gsBound = true;
+    banner.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
+    banner.addEventListener("click", (e) => {
+      const apply = e.target.closest("[data-orient-apply]");
+      if (!apply) return;
+      e.stopPropagation();
+      if (typeof gsApplySuggestedOrientation === "function") {
+        gsApplySuggestedOrientation(tileId);
+      }
     });
   }
 
@@ -505,9 +501,11 @@ function gsUpdateTileChrome() {
     const focused = showFocus && tile.id === state.focusedTileId;
     el.classList.toggle("is-focused", focused);
     el.classList.toggle("is-reversed", !!tile.reversed);
+    el.classList.toggle("is-orientation-pending", tile.orientationConfirmed === false);
     const letter = el.querySelector("[data-tile-letter]");
     const locus = el.querySelector("[data-tile-locus]");
-    const flip = el.querySelector("[data-tile-flip]");
+    const orientSeg = el.querySelector("[data-tile-orient-seg]");
+    const banner = el.querySelector("[data-tile-orient-banner]");
     const close = el.querySelector("[data-tile-close]");
     if (letter) {
       const display = (typeof gsTileDisplayName === "function")
@@ -531,15 +529,27 @@ function gsUpdateTileChrome() {
         locus.title = s ? `${s} · ${spanTxt}` : "Click to edit locus";
       }
     }
-    if (flip) {
-      const rev = !!tile.reversed;
-      flip.textContent = rev ? "←" : "→";
-      flip.title = rev
-        ? "Orientation: 3′ → 5′ (click to flip)"
-        : "Orientation: 5′ → 3′ (click to flip)";
-      flip.setAttribute("aria-label", rev ? "Orientation 3′ to 5′" : "Orientation 5′ to 3′");
-      flip.setAttribute("aria-pressed", rev ? "true" : "false");
-      flip.classList.toggle("is-reversed", rev);
+    if (orientSeg) {
+      const pending = tile.orientationConfirmed === false;
+      const choice = pending ? "unknown" : (tile.reversed ? "rev" : "fwd");
+      orientSeg.querySelectorAll("[data-orient-choice]").forEach((btn) => {
+        const c = btn.getAttribute("data-orient-choice");
+        btn.classList.toggle("is-active", c === choice);
+        btn.setAttribute("aria-pressed", c === choice ? "true" : "false");
+      });
+    }
+    if (banner) {
+      const pending = tile.orientationConfirmed === false;
+      const ev = tile.orientationEvidence;
+      if (pending && ev && ev.total > 0) {
+        banner.hidden = false;
+        banner.innerHTML = `Suggested: <strong>${ev.label}</strong> — `
+          + `${ev.agree} of ${ev.total} split reads agree `
+          + `<button type="button" class="gs-tile-orient-apply" data-orient-apply>Apply</button>`;
+      } else {
+        banner.hidden = true;
+        banner.innerHTML = "";
+      }
     }
     if (close) close.hidden = !multi;
   });
@@ -957,8 +967,8 @@ function gsEnsurePillStrip() {
     pills = document.createElement("div");
     pills.className = "gs-tile-pills";
     pills.setAttribute("role", "tablist");
-    // Insert before lock button.
-    const lock = document.getElementById("locusLockBtn");
+    // Insert before the connect / lock buttons.
+    const lock = document.getElementById("locusConnectBtn") || document.getElementById("locusLockBtn");
     if (lock) bar.insertBefore(pills, lock);
     else bar.appendChild(pills);
   }
@@ -1119,20 +1129,29 @@ function gsOpenLinkedTile(opts) {
     if (typeof gsFocusTile === "function") gsFocusTile(existing.id);
     return existing;
   }
-  const sourceStrand = opts.sourceStrand || "+";
-  const mateStrand = opts.strand || "+";
-  const reversed = (sourceStrand === "+") !== (mateStrand === "+")
-    ? !(source && source.reversed)
-    : !!(source && source.reversed);
-  // Flip relative to source when mate strand differs.
-  const autoFlip = sourceStrand !== mateStrand;
-  return gsAddTile({
+  // Widen gutters so aggregate SA/PE ribbons have room to draw.
+  state.preferRibbonGutters = true;
+  // Clear fixed widths before add so both columns flex evenly.
+  if (source) source.widthPx = null;
+  // Never auto-apply display orientation — linked tiles open unconfirmed
+  // (same direction as source) with a suggestion banner from bundle evidence.
+  const tile = gsAddTile({
     contig: opts.contig,
     centerBp: opts.pos,
-    reversed: autoFlip ? true : reversed,
+    reversed: !!(source && source.reversed),
     linkedFromId: source ? source.id : null,
     insertAfterId: source ? source.id : null,
+    orientationConfirmed: false,
+    suggestedReversed: null,
+    // Let both columns flex — never inherit a stale fixed widthPx.
+    widthPx: null,
   });
+  gsApplyTileGutterWidths();
+  // Redraw arcs after layout settles on the wider gutter.
+  requestAnimationFrame(() => {
+    if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
+  });
+  return tile;
 }
 
 function gsHideContextMenu() {
@@ -1190,226 +1209,9 @@ function gsShowContextMenu(x, y, items) {
 }
 
 function gsDrawTileArcs() {
-  const strip = gsTileStripEl();
-  const svg = document.getElementById("tileArcOverlay");
-  if (!strip || !svg || !state.tiles || state.tiles.length < 2) {
-    if (svg) while (svg.firstChild) svg.removeChild(svg.firstChild);
-    return;
-  }
-  const stripRect = strip.getBoundingClientRect();
-  const scrollW = strip.scrollWidth;
-  const scrollH = strip.clientHeight;
-  svg.setAttribute("width", String(scrollW));
-  svg.setAttribute("height", String(scrollH));
-  svg.setAttribute("viewBox", `0 0 ${scrollW} ${scrollH}`);
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-
-  const rowH = (typeof SMART_TRACK_ROW_H === "number") ? SMART_TRACK_ROW_H : 18;
-
-  /** Pixel endpoint of a read edge inside a tile column (strip-local coords). */
-  function endpointForRead(tile, track, read, preferEnd) {
-    if (!tile || !track || !read) return null;
-    const tileEl = typeof gsTileRootEl === "function" ? gsTileRootEl(tile.id) : null;
-    if (!tileEl) return null;
-    // Prefer freeze snapshot for unfocused tiles; live container for focused.
-    const focusedId = state.focusedTileId;
-    let container = null;
-    if (tile.id !== focusedId) {
-      container = tileEl.querySelector(
-        `.gs-smart-scroll-freeze .smart-track-container[data-track-id="${CSS.escape(track.id)}"]`
-      );
-    }
-    if (!container) {
-      container = tileEl.querySelector(
-        `.smart-track-container[data-track-id="${CSS.escape(track.id)}"]`
-      );
-    }
-    if (!container) return null;
-    const box = container.getBoundingClientRect();
-    if (box.width < 2 || box.height < 2) return null;
-
-    const genomeW = box.width > 0 ? box.width
-      : ((typeof tracksWidthPx === "function" && tracksWidthPx() > 0) ? tracksWidthPx() : 600);
-    const labelH = 24;
-    const closedSlot = track.closedHeight || 30;
-    const summaryH = Math.max(12, labelH - 2);
-    const summaryY = Math.max(0, Math.floor((closedSlot - summaryH) / 2));
-    const top = summaryY;
-    const showSummary = !track.readDisplay || track.readDisplay.visibility.summary !== false;
-    const overviewH = track.collapsed ? 0
-      : (showSummary ? (summaryY + summaryH + 4 - top) : 0);
-    const readsTop = top + overviewH;
-    const yLocal = track.collapsed
-      ? (summaryY + summaryH / 2)
-      : (readsTop + (Number(read.row) || 0) * rowH + Number(read.groupOffsetPx || 0) + rowH / 2);
-
-    const cliffBp = preferEnd
-      ? (read.end || read.referenceEnd || read.start)
-      : (read.start || read.referenceStart);
-    const xLocal = (typeof xGenomeCanonical === "function")
-      ? xGenomeCanonical(cliffBp, genomeW, tile)
-      : (preferEnd ? box.width * 0.9 : box.width * 0.1);
-
-    return {
-      x: (box.left - stripRect.left + strip.scrollLeft) + xLocal,
-      y: (box.top - stripRect.top + strip.scrollTop) + yLocal,
-    };
-  }
-
-  function layoutReads(track, tile) {
-    if (typeof smartTrackReadsLayoutForTile === "function") {
-      const lay = smartTrackReadsLayoutForTile(track, tile);
-      if (lay && Array.isArray(lay.reads)) return lay.reads;
-    }
-    if (track.readsLayout && Array.isArray(track.readsLayout.reads)) {
-      const sig = `${tile.contig}:${Math.floor(tile.startBp)}-${Math.ceil(tile.endBp)}`;
-      if (!track._readsLocusSig || track._readsLocusSig === sig) return track.readsLayout.reads;
-    }
-    return [];
-  }
-
-  function findMateRead(reads, name, matePos) {
-    if (!name || !reads.length) return null;
-    const same = reads.filter((r) => r && r.name === name);
-    if (!same.length) return null;
-    if (Number.isFinite(matePos)) {
-      let best = null;
-      let bestDist = Infinity;
-      for (const r of same) {
-        const dist = Math.min(Math.abs(r.start - matePos), Math.abs(r.end - matePos));
-        if (dist < bestDist) { bestDist = dist; best = r; }
-      }
-      if (best && bestDist < 5000) return best;
-    }
-    return same[0];
-  }
-
-  const endpoints = [];
-  const seen = new Set();
-  if (Array.isArray(state.smartTracks)) {
-    for (const track of state.smartTracks) {
-      if (!track) continue;
-      for (const tile of state.tiles) {
-        if (!tile || tile.blank) continue;
-        const reads = layoutReads(track, tile);
-        for (const read of reads) {
-          if (!read) continue;
-
-          const links = [];
-          for (const m of (typeof gsParseSaTag === "function" ? gsParseSaTag(read.saTag || "") : [])) {
-            links.push({ kind: "sa", contig: m.contig, pos: m.pos, strand: m.strand });
-          }
-          if (read.isPaired && read.mateContig && read.matePos) {
-            const sameLocal = read.contig === read.mateContig
-              && read.matePos >= read.start - 50
-              && read.matePos <= read.end + 50;
-            if (!sameLocal) {
-              links.push({ kind: "pe", contig: read.mateContig, pos: read.matePos, strand: "+" });
-            }
-          }
-
-          for (const link of links) {
-            const other = gsFindOpenTileForMate(link.contig, link.pos, tile.id);
-            if (!other) continue;
-            // Only draw once per unordered pair (lower tile id first).
-            const pairKey = [tile.id, other.id, track.id, read.name || "", link.contig, link.pos]
-              .join("|");
-            const pairKeyRev = [other.id, tile.id, track.id, read.name || "", link.contig, link.pos]
-              .join("|");
-            if (seen.has(pairKey) || seen.has(pairKeyRev)) continue;
-            seen.add(pairKey);
-
-            const otherReads = layoutReads(track, other);
-            const mateRead = findMateRead(otherReads, read.name, link.pos);
-
-            // Prefer the soft-clip / distal edge facing the mate tile.
-            const tileEl = gsTileRootEl(tile.id);
-            const otherEl = gsTileRootEl(other.id);
-            if (!tileEl || !otherEl) continue;
-            const tr = tileEl.getBoundingClientRect();
-            const or_ = otherEl.getBoundingClientRect();
-            const mateIsRight = or_.left >= tr.left;
-            const fromPreferEnd = mateIsRight ? !!(read.isForward !== false) : !!(read.isForward === false);
-            // Soft-clip side: if a clip exists on the mate-facing edge, use it.
-            let preferEnd = fromPreferEnd;
-            if (read.elements && read.elements.some((e) => e.type === 4)) {
-              const hasLeft = read.elements.some((e) => e.type === 4 && e.start < read.start);
-              const hasRight = read.elements.some((e) => e.type === 4 && e.start >= read.start);
-              if (mateIsRight && hasRight) preferEnd = true;
-              else if (!mateIsRight && hasLeft) preferEnd = false;
-            }
-
-            const p1 = endpointForRead(tile, track, read, preferEnd);
-            let p2 = null;
-            if (mateRead) {
-              const matePreferEnd = mateIsRight ? false : true;
-              p2 = endpointForRead(other, track, mateRead, matePreferEnd);
-            }
-            if (!p1) continue;
-            if (!p2) {
-              // Fall back: mate bp x in the other column, y aligned to the same
-              // track's freeze/live container midline (not a flat strip center).
-              let y2 = p1.y;
-              const otherContainer = otherEl.querySelector(
-                `.gs-smart-scroll-freeze .smart-track-container[data-track-id="${CSS.escape(track.id)}"]`
-              ) || otherEl.querySelector(
-                `.smart-track-container[data-track-id="${CSS.escape(track.id)}"]`
-              );
-              if (otherContainer) {
-                const ob = otherContainer.getBoundingClientRect();
-                y2 = (ob.top - stripRect.top + strip.scrollTop) + ob.height * 0.45;
-              }
-              const genomeW = or_.width;
-              const xLocal = (typeof xGenomeCanonical === "function")
-                ? xGenomeCanonical(link.pos, genomeW, other)
-                : genomeW * 0.5;
-              p2 = {
-                x: (or_.left - stripRect.left + strip.scrollLeft) + xLocal,
-                y: y2,
-              };
-            }
-
-            const color = other.linkColor || tile.linkColor || "#f59e0b";
-            endpoints.push({
-              x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y,
-              color,
-              dashed: !mateRead,
-              hasMate: !!mateRead,
-            });
-          }
-        }
-      }
-    }
-  }
-
-  endpoints.forEach((arc, arcIdx) => {
-    const dx = arc.x2 - arc.x1;
-    const dy = arc.y2 - arc.y1;
-    // Mockup S-curve: control points sit partway across with a vertical bow so
-    // equal-y endpoints (common before the mate pileup loads) still look curved.
-    const bow = (arcIdx % 2 === 0 ? -1 : 1)
-      * Math.max(28, Math.min(70, Math.abs(dx) * 0.12 + Math.abs(dy) * 0.15));
-    const c1x = arc.x1 + dx * 0.32;
-    const c2x = arc.x1 + dx * 0.68;
-    const c1y = arc.y1 + bow * 0.85;
-    const c2y = arc.y2 + bow * 0.85;
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d",
-      `M ${arc.x1.toFixed(1)} ${arc.y1.toFixed(1)} `
-      + `C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, `
-      + `${c2x.toFixed(1)} ${c2y.toFixed(1)}, `
-      + `${arc.x2.toFixed(1)} ${arc.y2.toFixed(1)}`);
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", arc.color);
-    path.setAttribute("stroke-width", arc.hasMate ? "2.4" : "1.8");
-    path.setAttribute("opacity", arc.hasMate ? "0.92" : "0.6");
-    path.setAttribute("stroke-linecap", "round");
-    if (arc.dashed && !arc.hasMate) {
-      path.setAttribute("stroke-dasharray", "5 4");
-    }
-    svg.appendChild(path);
-  });
+  // Overridden by tile-arcs.js when that script loads (aggregate ribbons).
 }
+
 
 function gsSoftClipMode(track) {
   const m = track && track.readDisplay && track.readDisplay.softClipMode;
@@ -1450,15 +1252,21 @@ function gsLinkedLociForRead(read, sourceTileId) {
   // Same query name already open in another tile (secondary / other segment).
   if (Array.isArray(state.smartTracks) && read.name) {
     for (const track of state.smartTracks) {
-      const reads = track && track.readsLayout && track.readsLayout.reads;
-      if (!Array.isArray(reads)) continue;
-      for (const other of reads) {
-        if (!other || other === read || other.name !== read.name) continue;
-        if (other.contig === read.contig
-            && other.start <= read.end && other.end >= read.start) continue;
-        const kind = other.isSecondary ? "Secondary"
-          : (other.isSupplementary ? "Supplementary" : "Mate alignment");
-        push(kind, other.contig || state.contig, other.start, other.isForward === false ? "-" : "+", sourceStrand);
+      if (!track) continue;
+      for (const otherTile of (state.tiles || [])) {
+        if (!otherTile || otherTile.blank) continue;
+        const lay = (typeof smartTrackReadsLayoutForTile === "function")
+          ? smartTrackReadsLayoutForTile(track, otherTile) : null;
+        const reads = lay && lay.reads;
+        if (!Array.isArray(reads)) continue;
+        for (const other of reads) {
+          if (!other || other === read || other.name !== read.name) continue;
+          if (other.contig === read.contig
+              && other.start <= read.end && other.end >= read.start) continue;
+          const kind = other.isSecondary ? "Secondary"
+            : (other.isSupplementary ? "Supplementary" : "Mate alignment");
+          push(kind, other.contig || otherTile.contig, other.start, other.isForward === false ? "-" : "+", sourceStrand);
+        }
       }
     }
   }
@@ -1471,7 +1279,10 @@ function gsLinkedLociForRead(read, sourceTileId) {
  * Returns { track, read, tileId } or null.
  */
 function gsHitTestSmartRead(clientX, clientY, tile) {
-  if (!state.smartTrackRenderers || typeof state.smartTrackRenderers.forEach !== "function") {
+  const renderers = (tile && tile._smartRenderers instanceof Map)
+    ? tile._smartRenderers
+    : state.smartTrackRenderers;
+  if (!renderers || typeof renderers.forEach !== "function") {
     return null;
   }
   const genomeW = (typeof renderWidthPx === "function" && renderWidthPx() > 0)
@@ -1480,7 +1291,7 @@ function gsHitTestSmartRead(clientX, clientY, tile) {
 
   let hit = null;
   let hitArea = Infinity;
-  state.smartTrackRenderers.forEach((renderer, trackId) => {
+  renderers.forEach((renderer, trackId) => {
     if (!renderer || !renderer.container) return;
     const box = renderer.container.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
@@ -1489,7 +1300,12 @@ function gsHitTestSmartRead(clientX, clientY, tile) {
     }
     const track = (state.smartTracks || []).find((t) => t.id === trackId)
       || (state.tracks || []).find((t) => t.id === trackId);
-    if (!track || !track.readsLayout || !Array.isArray(track.readsLayout.reads)) return;
+    if (!track) return;
+    // The reads THIS tile shows for the track (not the focused tile's payload).
+    const tileLayout = (tile && typeof smartTrackReadsLayoutForTile === "function")
+      ? smartTrackReadsLayoutForTile(track, tile)
+      : track.readsLayout;
+    if (!tileLayout || !Array.isArray(tileLayout.reads)) return;
 
     const scrollTop = renderer.container.scrollTop || 0;
     const localY = clientY - box.top + scrollTop;
@@ -1528,18 +1344,18 @@ function gsHitTestSmartRead(clientX, clientY, tile) {
 
     let read = null;
     if (track.collapsed || localY < readsTop) {
-      const linked = track.readsLayout.reads.filter((r) =>
+      const linked = tileLayout.reads.filter((r) =>
         r.saTag || (r.mateContig && r.matePos) || Number(r.clipLength) > 0
         || (bp >= r.start - 50 && bp <= r.end + 50));
-      read = pickNearest(linked.length ? linked : track.readsLayout.reads, 400);
+      read = pickNearest(linked.length ? linked : tileLayout.reads, 400);
     } else {
-      const onRow = track.readsLayout.reads.filter((r) => {
+      const onRow = tileLayout.reads.filter((r) => {
         const y0 = readsTop + (Number(r.row) || 0) * rowH + Number(r.groupOffsetPx || 0);
         return localY >= y0 && localY < y0 + rowH;
       });
       read = pickNearest(onRow, 80)
         || pickNearest(onRow, 300)
-        || pickNearest(track.readsLayout.reads.filter((r) =>
+        || pickNearest(tileLayout.reads.filter((r) =>
           bp >= r.start - 100 && bp <= r.end + 100), 200);
     }
     if (!read) return;
@@ -1555,29 +1371,32 @@ function gsHitTestSmartRead(clientX, clientY, tile) {
 
 /** True when the pointer is over the sample-track stack (even through pointer-events:none canvases). */
 function gsPointerOverSmartTracks(clientX, clientY) {
-  const scroll = (typeof getElementById === "function" ? getElementById("smartScroll") : null)
-    || document.getElementById("smartScroll");
-  if (scroll) {
-    const r = scroll.getBoundingClientRect();
-    if (r.width > 0 && r.height > 0
-        && clientX >= r.left && clientX <= r.right
-        && clientY >= r.top && clientY <= r.bottom) {
-      return true;
-    }
-  }
-  if (!state.smartTrackRenderers || typeof state.smartTrackRenderers.forEach !== "function") {
-    return false;
+  const overRect = (el) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0
+      && clientX >= r.left && clientX <= r.right
+      && clientY >= r.top && clientY <= r.bottom;
+  };
+  const rootEl = (typeof getCurrentRoot === "function" && getCurrentRoot()) || document;
+  for (const w of rootEl.querySelectorAll(".gs-smart-scroll")) {
+    if (overRect(w)) return true;
   }
   let over = false;
-  state.smartTrackRenderers.forEach((renderer) => {
-    if (over || !renderer || !renderer.container) return;
-    const box = renderer.container.getBoundingClientRect();
-    if (box.width < 1 || box.height < 1) return;
-    if (clientX >= box.left && clientX <= box.right
-        && clientY >= box.top && clientY <= box.bottom) {
-      over = true;
-    }
-  });
+  const scan = (renderers) => {
+    if (!renderers || typeof renderers.forEach !== "function") return;
+    renderers.forEach((renderer) => {
+      if (over || !renderer || !renderer.container) return;
+      const box = renderer.container.getBoundingClientRect();
+      if (box.width < 1 || box.height < 1) return;
+      if (clientX >= box.left && clientX <= box.right
+          && clientY >= box.top && clientY <= box.bottom) {
+        over = true;
+      }
+    });
+  };
+  for (const t of (state.tiles || [])) scan(t && t._smartRenderers);
+  if (!over) scan(state.smartTrackRenderers);
   return over;
 }
 
@@ -1585,7 +1404,7 @@ function gsEventInGenomeshader(e) {
   const t = e.target;
   if (!t) return false;
   if (t.closest && t.closest(
-    ".gs-tile, #main, #smartScroll, .smart-track-container, .app, "
+    ".gs-tile, #main, .gs-smart-scroll, .smart-track-container, .app, "
     + "[id^='genomeshader-root-'], [id^='genomeshader-modal-']"
   )) {
     return true;
@@ -1734,12 +1553,14 @@ function gsInitTileUi() {
 // Hook into ready.
 if (typeof window !== "undefined") {
   window.gsEnsureTileStripDom = gsEnsureTileStripDom;
+  window.gsApplyTileGutterWidths = gsApplyTileGutterWidths;
   window.gsUpdateTileChrome = gsUpdateTileChrome;
   window.gsUpdateLocusBarMode = gsUpdateLocusBarMode;
   window.gsScrollTileIntoView = gsScrollTileIntoView;
   window.gsScrollTileStripBy = gsScrollTileStripBy;
   window.gsScrollTileStripPage = gsScrollTileStripPage;
   window.gsTileStripCanScroll = gsTileStripCanScroll;
+  window.gsTileStripEl = gsTileStripEl;
   window.gsMaybeScrollTileStripFromWheel = gsMaybeScrollTileStripFromWheel;
   window.gsUpdateTileStripScrollChrome = gsUpdateTileStripScrollChrome;
   window.gsBindTileStripScrollInteractions = gsBindTileStripScrollInteractions;
@@ -1751,9 +1572,4 @@ if (typeof window !== "undefined") {
   window.gsLinkedLociForRead = gsLinkedLociForRead;
   window.gsInitTileUi = gsInitTileUi;
   window.gsBindTileDom = gsBindTileDom;
-  window.gsMoveLiveBodyToTile = gsMoveLiveBodyToTile;
-  window.gsRelocateSmartScrollToBoundContainer = gsRelocateSmartScrollToBoundContainer;
-  window.gsFreezeSmartScrollSnapshot = gsFreezeSmartScrollSnapshot;
-  window.gsClearSmartScrollFreeze = gsClearSmartScrollFreeze;
-  window.gsBeginSmartScrollSnapshotPaint = gsBeginSmartScrollSnapshotPaint;
 }

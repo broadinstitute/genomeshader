@@ -39,6 +39,15 @@ function gsCreateTile(opts = {}) {
     endBp: Number.isFinite(opts.endBp) ? opts.endBp : (state.endBp || 1000),
     pxPerBp: Number.isFinite(opts.pxPerBp) ? opts.pxPerBp : (state.pxPerBp || 1),
     reversed: !!opts.reversed,
+    // Display orientation confirmation (linked tiles start unconfirmed).
+    // Primary / manually opened tiles default to confirmed.
+    orientationConfirmed: Object.prototype.hasOwnProperty.call(opts, "orientationConfirmed")
+      ? !!opts.orientationConfirmed
+      : (opts.linkedFromId ? false : true),
+    suggestedReversed: Object.prototype.hasOwnProperty.call(opts, "suggestedReversed")
+      ? opts.suggestedReversed
+      : null,
+    orientationEvidence: null,
     widthPx: Number.isFinite(opts.widthPx) ? opts.widthPx : null,
     linkColor: opts.linkColor || null,
     linkedFromId: opts.linkedFromId || null,
@@ -48,6 +57,12 @@ function gsCreateTile(opts = {}) {
     blank: !!opts.blank,
     renderPadBp: 0,
     renderPadPx: 0,
+    // Persistent per-tile reads stack: Map<trackId, renderer> (DOM + canvases
+    // that live inside THIS tile's column — see gsEnsureSmartRenderers).
+    _smartRenderers: new Map(),
+    // Last reads view painted per track for this tile (Map<trackId, view>);
+    // lets a pan / pending fetch keep showing the previous window's reads.
+    _readsViews: new Map(),
   };
 }
 
@@ -109,6 +124,10 @@ function gsSyncFocusedAliases() {
   }
   state.renderPadBp = t.renderPadBp || 0;
   state.renderPadPx = t.renderPadPx || 0;
+  // Legacy alias: code that still reads state.smartTrackRenderers sees the
+  // focused tile's renderers (single-tile mode: the only tile's).
+  if (!(t._smartRenderers instanceof Map)) t._smartRenderers = new Map();
+  state.smartTrackRenderers = t._smartRenderers;
 }
 
 /** Pull global aliases back onto the focused tile (after pan/zoom/goto). */
@@ -145,17 +164,15 @@ function gsFocusTile(tileId, { scroll = true } = {}) {
     }
     return;
   }
-  // Persist outgoing focused state first.
+  // Persist the outgoing tile's live payload + window. Every tile owns a
+  // persistent reads stack (its own canvases), so there is nothing to snapshot
+  // or relocate: focus only changes which tile receives input.
   if (typeof cacheLiveSmartTrackReads === "function") cacheLiveSmartTrackReads();
   gsPullAliasesIntoFocused();
+
   state.focusedTileId = t.id;
   gsSyncFocusedAliases();
-  // Bind this tile's own canvases/SVG — never relocate the live DOM (that
-  // blanked every other tile). renderAll paints each tile in place.
   if (typeof gsBindTileDom === "function") gsBindTileDom(t);
-  if (typeof gsRelocateSmartScrollToBoundContainer === "function") {
-    gsRelocateSmartScrollToBoundContainer();
-  }
   if (typeof updateDerived === "function") updateDerived();
   if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
   if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
@@ -163,13 +180,13 @@ function gsFocusTile(tileId, { scroll = true } = {}) {
     gsScrollTileIntoView(t.id);
   }
   if (typeof renderAll === "function") renderAll();
-  // Load reads for this tile's locus (cache hit is instant; misses are
-  // serialized — do not stampede the kernel on every hover-focus).
-  if (!t.blank && typeof ensureSmartTracksForCurrentLocus === "function") {
+  // Fetch whatever any open tile is missing (cache hits are instant; misses
+  // are serialized so hover-focus never stampedes the kernel).
+  if (!t.blank && typeof ensureSmartTracksForAllTiles === "function") {
     if (gsFocusTile._readsTimer) clearTimeout(gsFocusTile._readsTimer);
     gsFocusTile._readsTimer = setTimeout(() => {
       gsFocusTile._readsTimer = null;
-      ensureSmartTracksForCurrentLocus();
+      ensureSmartTracksForAllTiles({ force: true });
     }, 120);
   }
 }
@@ -256,6 +273,10 @@ function gsAddTile(opts = {}) {
     reversed,
     linkColor: opts.linkColor || (opts.linkedFromId ? gsNextLinkColor() : null),
     linkedFromId: opts.linkedFromId || null,
+    orientationConfirmed: Object.prototype.hasOwnProperty.call(opts, "orientationConfirmed")
+      ? !!opts.orientationConfirmed
+      : (opts.linkedFromId ? false : true),
+    suggestedReversed: opts.suggestedReversed != null ? opts.suggestedReversed : null,
     blank: !!opts.blank || !contig,
     widthPx: opts.widthPx != null ? opts.widthPx : (source && source.widthPx),
   });
@@ -278,9 +299,14 @@ function gsAddTile(opts = {}) {
     }
   }
 
+  // Persist the source's live payload; its column keeps its own reads stack.
+  if (typeof cacheLiveSmartTrackReads === "function") cacheLiveSmartTrackReads();
+
   state.focusedTileId = tile.id;
   gsSyncFocusedAliases();
   if (typeof gsEnsureTileStripDom === "function") gsEnsureTileStripDom();
+  // Give the new column its own reads stack for every loaded track.
+  if (typeof gsEnsureSmartRenderers === "function") gsEnsureSmartRenderers();
   if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
   if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof updateDerived === "function") updateDerived();
@@ -290,12 +316,10 @@ function gsAddTile(opts = {}) {
   if (!tile.blank && typeof gsScheduleViewportVariantLoad === "function") {
     gsScheduleViewportVariantLoad();
   }
-  // Fetch / hydrate reads for this tile's locus so linked columns aren't empty.
-  // Serialized; cached sibling loci are left alone.
-  if (!tile.blank && typeof ensureSmartTracksForCurrentLocus === "function") {
-    ensureSmartTracksForCurrentLocus();
-  } else if (!tile.blank && typeof reloadSmartTracksForCurrentLocus === "function") {
-    reloadSmartTracksForCurrentLocus();
+  // Fetch every open tile's missing reads (per-tile, per-BAM; never cancels a
+  // sibling's in-flight load).
+  if (!tile.blank && typeof ensureSmartTracksForAllTiles === "function") {
+    ensureSmartTracksForAllTiles({ force: true });
   }
   return tile;
 }
@@ -306,18 +330,70 @@ function gsRemoveTile(tileId) {
   const idx = state.tiles.findIndex((x) => x.id === tileId);
   if (idx < 0) return false;
   const wasFocused = state.focusedTileId === tileId;
-  state.tiles.splice(idx, 1);
+  const [removedTile] = state.tiles.splice(idx, 1);
+  if (typeof gsDisposeTileRenderers === "function") gsDisposeTileRenderers(removedTile);
   gsRelabelTiles();
   if (wasFocused) {
     const next = state.tiles[Math.min(idx, state.tiles.length - 1)];
     state.focusedTileId = next.id;
   }
+  // Drop ribbon-gutter preference when no linked tiles remain.
+  if (!(state.tiles || []).some((t) => t && t.linkedFromId)) {
+    state.preferRibbonGutters = false;
+  }
+  // Clear stale linkedFromId pointing at the removed tile.
+  for (const t of state.tiles) {
+    if (t.linkedFromId === tileId) t.linkedFromId = null;
+  }
+  // Single-tile: drop fixed widths so the remaining column fills the strip.
+  if (state.tiles.length === 1) {
+    state.tiles[0].widthPx = null;
+    // A lone tile has nothing to be "linked"/unconfirmed against: drop the
+    // pending-orientation chrome (dashed border + empty suggestion banner).
+    state.tiles[0].orientationConfirmed = true;
+    state.tiles[0].suggestedReversed = null;
+    state.tiles[0].orientationEvidence = null;
+    state.tiles[0].linkedFromId = null;
+    state.preferRibbonGutters = false;
+    state.tileBundles = [];
+    state.bundleColorByReadKey = Object.create(null);
+    state.selectedArcRead = null;
+  } else {
+    // Multi still: release fixed widths so flex can redistribute.
+    for (const t of state.tiles) t.widthPx = null;
+  }
   gsSyncFocusedAliases();
   if (typeof gsEnsureTileStripDom === "function") gsEnsureTileStripDom();
+  // Back to a single tile: it should paint with WebGPU again. A tile that was
+  // opened in multi-tile mode only has Canvas2D renderers, so rebuild them.
+  if (state.tiles.length === 1 && typeof gsEnsureSmartRenderers === "function") {
+    const only = state.tiles[0];
+    const gpuOk = typeof webgpuSupported !== "undefined" && webgpuSupported
+      && typeof navigator !== "undefined" && !!navigator.gpu;
+    if (gpuOk && only._smartRenderers instanceof Map
+        && Array.from(only._smartRenderers.values()).some((r) => r && !r.webgpuCore)) {
+      if (typeof gsDisposeTileRenderers === "function") gsDisposeTileRenderers(only);
+    }
+    gsEnsureSmartRenderers();
+    // Single-tile painting reads the tracks' live payload, which still belongs
+    // to whichever tile was focused before — point it at the survivor's locus.
+    if (typeof hydrateSmartTracksForCurrentLocus === "function") hydrateSmartTracksForCurrentLocus();
+  }
   if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
   if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof updateDerived === "function") updateDerived();
-  if (typeof renderAll === "function") renderAll();
+  // Force layout so tracksWidthPx() sees the expanded tile, then repaint.
+  const strip = (typeof gsTileStripEl === "function") ? gsTileStripEl() : document.getElementById("tileStrip");
+  if (strip) void strip.offsetWidth;
+  if (typeof renderAll === "function") {
+    renderAll();
+    requestAnimationFrame(() => {
+      if (typeof updateDerived === "function") updateDerived();
+      if (typeof renderAll === "function") renderAll();
+    });
+  }
+  // Fetch anything the survivor lacks (single-tile: classic path).
+  if (typeof ensureSmartTracksForAllTiles === "function") ensureSmartTracksForAllTiles({ force: true });
   return true;
 }
 
@@ -336,16 +412,43 @@ function gsReorderTiles(fromIndex, toIndex) {
   if (typeof renderAll === "function") renderAll();
 }
 
-function gsSetTileReversed(tileId, reversed) {
+function gsSetTileReversed(tileId, reversed, opts) {
+  opts = opts || {};
   const t = (state.tiles || []).find((x) => x.id === tileId);
   if (!t) return;
   t.reversed = !!reversed;
+  if (opts.confirm !== false) {
+    t.orientationConfirmed = true;
+    t.orientationEvidence = null;
+  }
   if (state.focusedTileId === t.id && typeof gsSyncFocusedAliases === "function") {
     gsSyncFocusedAliases();
   }
   if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
   if (typeof renderAll === "function") renderAll();
+  if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
+}
+
+/** Commit suggested display orientation (Apply banner). */
+function gsApplySuggestedOrientation(tileId) {
+  const t = (state.tiles || []).find((x) => x.id === tileId);
+  if (!t || t.suggestedReversed == null) return;
+  gsSetTileReversed(tileId, !!t.suggestedReversed, { confirm: true });
+}
+
+/** Set pending/confirmed display orientation from the ▶ / ? / ◀ control. */
+function gsSetTileOrientationChoice(tileId, choice) {
+  // choice: "fwd" | "unknown" | "rev"
+  const t = (state.tiles || []).find((x) => x.id === tileId);
+  if (!t) return;
+  if (choice === "unknown") {
+    t.orientationConfirmed = false;
+    if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
+    if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
+    return;
+  }
+  gsSetTileReversed(tileId, choice === "rev", { confirm: true });
 }
 
 function gsSetTileLocus(tileId, contig, startBp, endBp) {
@@ -355,7 +458,6 @@ function gsSetTileLocus(tileId, contig, startBp, endBp) {
   t.startBp = startBp;
   t.endBp = endBp;
   t.blank = false;
-  t._freezeReadsSig = null; // locus changed — old reads snapshot is stale
   if (state.focusedTileId === t.id) {
     gsSyncFocusedAliases();
     if (typeof updateDerived === "function") updateDerived();
@@ -363,7 +465,10 @@ function gsSetTileLocus(tileId, contig, startBp, endBp) {
   if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
   if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
+  // A blank tile that just received a locus needs its reads stack.
+  if (typeof gsEnsureSmartRenderers === "function") gsEnsureSmartRenderers();
   if (typeof renderAll === "function") renderAll();
+  if (typeof ensureSmartTracksForAllTiles === "function") ensureSmartTracksForAllTiles({ force: true });
 }
 
 function gsIsMultiTile() {
@@ -375,6 +480,11 @@ function gsInitTilesFromState() {
   state.tiles = null;
   state.focusedTileId = null;
   gsEnsureTilesInitialized();
+  // The primary tile adopts the legacy renderer Map so single-tile mode (and
+  // anything holding state.smartTrackRenderers) is unchanged.
+  if (state.smartTrackRenderers instanceof Map && state.tiles[0]) {
+    state.tiles[0]._smartRenderers = state.smartTrackRenderers;
+  }
   gsSyncFocusedAliases();
 }
 
@@ -390,6 +500,8 @@ try {
     focus: gsFocusTile,
     reorder: gsReorderTiles,
     setReversed: gsSetTileReversed,
+    setOrientationChoice: gsSetTileOrientationChoice,
+    applySuggestedOrientation: gsApplySuggestedOrientation,
     setLocus: gsSetTileLocus,
     focused: gsFocusedTile,
     active: gsActiveTile,

@@ -119,7 +119,7 @@ def test_ideogram_lives_in_locus_bar_not_as_track(browser):
     # 18ch tabular readout: fits chr22:123,456,789 without ellipsis.
     assert 120 < layout["readoutW"] < 150, layout
     assert layout["lockW"] == 32, layout
-    assert layout["fsW"] == 48, layout
+    assert layout["fsW"] == 32, layout      # equal slot with Connect/Lock (icon pitch); right inset is a margin
     nine = page.evaluate("""() => {
       const el = document.getElementById('locusReadout');
       el.textContent = 'chr22:123,456,789';
@@ -463,4 +463,31 @@ def test_settings_lock_viewport_matches_padlock(browser):
     assert page.evaluate("() => window.__GS_STATE.lockView") is False
     assert page.get_attribute("#locusLockBtn", "aria-pressed") == "false"
     assert page.evaluate("() => document.getElementById('lockViewportLabel').textContent") == "Lock viewport"
+    page.close()
+
+
+def test_connect_lock_fullscreen_icons_are_equally_spaced(browser):
+    """The three right-hand toolbar icons sit at equal pitch (they used to be 32px and 40px apart)."""
+    page = _open(browser)
+    centers = page.evaluate(
+        """() => ['locusConnectBtn', 'locusLockBtn', 'locusFullscreenBtn'].map((id) => {
+             const svg = document.querySelector('#' + id + ' svg:not([style*="display: none"])');
+             const btn = document.getElementById(id);
+             const r = (svg && svg.getBoundingClientRect().width ? svg : btn).getBoundingClientRect();
+             return r.left + r.width / 2; })"""
+    )
+    gaps = [centers[1] - centers[0], centers[2] - centers[1]]
+    assert abs(gaps[0] - gaps[1]) < 0.75, (centers, gaps)
+    # Same spacing when the toggle is in its "disconnected" (broken-link) state.
+    page.evaluate("() => window.gsSetConnected(false)")
+    centers2 = page.evaluate(
+        """() => ['locusConnectBtn', 'locusLockBtn', 'locusFullscreenBtn'].map((id) =>
+             { const r = document.getElementById(id).getBoundingClientRect(); return r.left + r.width / 2; })"""
+    )
+    assert abs((centers2[1] - centers2[0]) - (centers2[2] - centers2[1])) < 0.75, centers2
+    icon = page.evaluate(
+        """() => ({ connected: getComputedStyle(document.querySelector('#locusConnectBtn .icon-connected')).display,
+                   disconnected: getComputedStyle(document.querySelector('#locusConnectBtn .icon-disconnected')).display })"""
+    )
+    assert icon == {"connected": "none", "disconnected": "block"}, icon
     page.close()

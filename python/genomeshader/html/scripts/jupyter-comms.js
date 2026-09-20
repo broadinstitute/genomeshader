@@ -83,7 +83,23 @@ function setupComm(kernel) {
   });
 }
 
+// Kernel requests that LOAD data. While the user is Disconnected these are refused
+// locally (no round-trip); everything else (comments, cache clear, debug) still works.
+const GS_DATA_FETCH_TYPES = new Set([
+  'fetch_reads', 'fetch_reads_batch', 'fetch_variants', 'fetch_track_data',
+  'fetch_carriers', 'navigate', 'resolve_feature', 'ucsc_genomes', 'ucsc_list', 'ucsc_track',
+]);
+function gsCommBlocked(type) {
+  return !!(typeof window !== 'undefined' && window.__GS_OFFLINE && GS_DATA_FETCH_TYPES.has(type));
+}
+function gsBlockedCommError(type) {
+  const e = new Error('Disconnected (' + type + ' not sent)');
+  e.gsDisconnected = true;
+  return e;
+}
+
 function sendCommMessage(type, data, timeoutMs) {
+  if (gsCommBlocked(type)) return Promise.reject(gsBlockedCommError(type));
   return ensureCommReady().then(function(comm) {
     return new Promise(function(resolve, reject) {
       const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -96,7 +112,7 @@ function sendCommMessage(type, data, timeoutMs) {
       });
       
       // Timeout - use longer timeout for fetch_reads (120 seconds), default 30 seconds
-      const timeout = timeoutMs || (type === 'fetch_reads' ? 120000 : 30000);
+      const timeout = timeoutMs || ((type === 'fetch_reads' || type === 'fetch_reads_batch') ? 120000 : 30000);
       setTimeout(function() {
         if (pendingCommRequests.has(requestId)) {
           pendingCommRequests.delete(requestId);

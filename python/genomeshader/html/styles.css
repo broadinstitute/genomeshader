@@ -2096,6 +2096,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   text-overflow: ellipsis;
 }
 #locusBar .locus-lock,
+#locusBar .locus-connect,
 #locusBar .locus-fullscreen {
   height: 36px;
   margin: 0;
@@ -2110,29 +2111,41 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   justify-content: center;
 }
 /* Compact slot, flush to the fullscreen control (cancels the bar's 8px gap). */
-#locusBar .locus-lock {
+#locusBar .locus-lock,
+#locusBar .locus-connect {
   flex: 0 0 32px;
   width: 32px;
   margin-right: -8px;
 }
+/* Connect, Lock and Fullscreen are equal 32px slots, so their icons sit at equal
+   pitch. Fullscreen's right margin (8px) reproduces the old right-edge inset. */
 #locusBar .locus-fullscreen {
-  flex: 0 0 48px;
-  width: 48px;
+  flex: 0 0 32px;
+  width: 32px;
+  margin-right: 8px;
 }
 #locusBar .locus-lock svg,
+#locusBar .locus-connect svg,
 #locusBar .locus-fullscreen svg {
   width: 20px;
   height: 20px;
 }
 #locusBar .locus-lock:hover,
+#locusBar .locus-connect:hover,
 #locusBar .locus-fullscreen:hover {
   color: var(--text);
   background: var(--panel);
 }
 #locusBar .locus-lock:active,
+#locusBar .locus-connect:active,
 #locusBar .locus-fullscreen:active { filter: brightness(0.95); }
 #locusBar .locus-lock.is-active,
 #locusBar .locus-fullscreen.is-active { color: var(--text); }
+/* Connect toggle: is-active = DISCONNECTED (amber, slashed icon) — nothing is loaded. */
+#locusBar .locus-connect .icon-disconnected { display: none; }
+#locusBar .locus-connect.is-active { color: #f59e0b; }
+#locusBar .locus-connect.is-active .icon-connected { display: none; }
+#locusBar .locus-connect.is-active .icon-disconnected { display: block; }
 #locusBar .locus-lock .icon-locked { display: none; }
 #locusBar .locus-lock.is-active .icon-unlocked { display: none; }
 #locusBar .locus-lock.is-active .icon-locked { display: block; }
@@ -2199,7 +2212,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .gs-tile {
   position: relative;
-  flex: 1 0 auto;
+  flex: 1 1 auto;
   min-width: 280px;
   height: 100%;
   display: flex;
@@ -2212,6 +2225,13 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   background: var(--bg);
   box-sizing: border-box;
   overflow: hidden;
+}
+/* Solo tile: always fill the strip (overrides any leftover inline width). */
+.gs-tile-strip.gs-single-tile .gs-tile {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0;
 }
 /* Orientation tint on the header only — no colored border when defocused,
    so inactive tiles never look selected. */
@@ -2313,6 +2333,110 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   line-height: 1;
 }
 .gs-tile-close:hover { color: var(--text); }
+/* Segmented display-orientation control: ▶ / ? / ◀ */
+.gs-tile-orient-seg {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(59, 130, 246, 0.08);
+}
+.gs-tile.is-reversed .gs-tile-orient-seg {
+  border-color: rgba(168, 85, 247, 0.45);
+  background: rgba(168, 85, 247, 0.08);
+}
+.gs-tile-orient-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-right: 1px solid rgba(59, 130, 246, 0.25);
+  background: transparent;
+  color: #93c5fd;
+  cursor: pointer;
+  font: 700 11px/1 ui-sans-serif, system-ui, sans-serif;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.gs-tile.is-reversed .gs-tile-orient-btn {
+  border-right-color: rgba(168, 85, 247, 0.25);
+  color: #d8b4fe;
+}
+.gs-tile-orient-btn:last-child { border-right: none; }
+.gs-tile-orient-btn:hover {
+  background: rgba(59, 130, 246, 0.18);
+  color: #bfdbfe;
+}
+.gs-tile.is-reversed .gs-tile-orient-btn:hover {
+  background: rgba(168, 85, 247, 0.18);
+  color: #e9d5ff;
+}
+.gs-tile-orient-btn.is-active {
+  background: rgba(59, 130, 246, 0.28);
+  color: #eff6ff;
+}
+.gs-tile.is-reversed .gs-tile-orient-btn.is-active {
+  background: rgba(168, 85, 247, 0.28);
+  color: #f5f3ff;
+}
+.gs-tile.is-orientation-pending {
+  border-style: dashed;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35);
+}
+.gs-tile.is-orientation-pending.is-focused {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.45);
+}
+.gs-tile-orient-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px;
+  font: 600 11px/1.35 ui-sans-serif, system-ui, sans-serif;
+  color: #fef3c7;
+  background: rgba(245, 158, 11, 0.14);
+  border-bottom: 1px dashed rgba(245, 158, 11, 0.45);
+}
+/* Multi-tile: reserve the banner slot even when empty so columns share the same
+   content Y. A visible "Suggested…" on only one linked tile was shoving that
+   column's tracks down and making ribbons look like they jump tracks. */
+#tileStrip.gs-multi-tile .gs-tile-orient-banner {
+  min-height: 28px;
+  box-sizing: border-box;
+}
+#tileStrip.gs-multi-tile .gs-tile-orient-banner[hidden] {
+  display: flex !important;
+  visibility: hidden;
+  pointer-events: none;
+  border-bottom-color: transparent;
+  background: transparent;
+}
+.gs-tile-orient-banner[hidden] { display: none !important; }
+.gs-tile-orient-banner strong { color: #fde68a; font-weight: 700; }
+.gs-tile-orient-apply {
+  margin-left: 4px;
+  padding: 2px 8px;
+  border: 1px solid rgba(245, 158, 11, 0.65);
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.22);
+  color: #fef3c7;
+  font: 700 11px/1.2 ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+}
+.gs-tile-orient-apply:hover {
+  background: rgba(245, 158, 11, 0.38);
+  color: #fffbeb;
+}
+/* Legacy single flip button (kept for older snapshots). */
 .gs-tile-orient {
   flex: 0 0 auto;
   width: 24px;
@@ -2365,31 +2489,29 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   overflow: hidden;
   background: var(--bg);
 }
-.gs-smart-scroll-freeze {
-  /* Static copy of #smartScroll for unfocused tiles; sits under live chrome. */
-  position: absolute;
-  left: 0;
-  right: 0;
-  z-index: 2;
-  pointer-events: none !important;
-  overflow: hidden !important;
-  background: transparent !important;
-}
-.gs-smart-scroll-freeze .smart-track-container {
-  scrollbar-width: none;
-  overflow: hidden !important;
-}
-.gs-smart-scroll-freeze .smart-track-container::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}
 .gs-tile-divider {
   flex: 0 0 8px;
+  width: 8px;
   cursor: col-resize;
   position: relative;
   align-self: stretch;
   background: transparent;
   z-index: 5;
+}
+/* SA/PE-linked multi-tile: wide gutter so aggregate ribbons + ×N badges fit. */
+.gs-tile-strip.has-ribbon-gutters .gs-tile-divider:not(.gs-tile-end-resize) {
+  flex: 0 0 var(--gs-tile-gutter, 64px);
+  width: var(--gs-tile-gutter, 64px);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(148, 163, 184, 0.06) 40%,
+    rgba(148, 163, 184, 0.06) 60%,
+    transparent 100%
+  );
+}
+.gs-tile-strip.has-ribbon-gutters .gs-tile-divider:not(.gs-tile-end-resize)::before {
+  opacity: 0.45;
 }
 .gs-tile-divider::before {
   content: "⋮";
@@ -2414,6 +2536,16 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   pointer-events: none;
   z-index: 50;
   overflow: visible;
+}
+.gs-tile-arc-overlay .gs-tile-ribbon,
+.gs-tile-arc-overlay .gs-tile-ribbon-badge {
+  pointer-events: stroke;
+}
+.gs-tile-arc-overlay .gs-tile-ribbon-badge {
+  pointer-events: all;
+}
+.gs-tile-arc-overlay .gs-tile-arc-selected {
+  pointer-events: none;
 }
 .gs-add-tile-btn {
   position: absolute;
@@ -2590,8 +2722,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   height: var(--tracks-h);
   border-bottom: 1px solid var(--border);
   /* Flat --bg: the old top-gradient wash made multi-tile columns look like
-     different shades once #smartScroll (solid --bg) covered only the focused
-     reads stack. */
+     different shades between columns. */
   background: var(--bg);
 }
 #trackControls,
@@ -3704,6 +3835,11 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   pointer-events: none;
   z-index: 5; /* above tracksWebGPU (z-index 1) */
 }
+/* A track whose data is not the tile's exact window (partial coverage, offline, or
+   a failed load) must never look authoritative: it is dimmed until it is exact. */
+.smart-track-container[data-view-state="stale"] canvas,
+.smart-track-container[data-view-state="offline"] canvas,
+.smart-track-container[data-view-state="failed"] canvas { opacity: 0.45; }
 .smart-track-container.scrollable {
   pointer-events: none;
   /* Firefox scrollbar styling */
@@ -3935,33 +4071,33 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   pointer-events: none;
 }
 
-/* IGV-style reads scroll: the #smartScroll wrapper owns the ONE scrollbar for the
+/* IGV-style reads scroll: each tile's .gs-smart-scroll wrapper owns the ONE scrollbar for the
    sample-track stack. Hide each sample's inner scrollbar (reads still scroll via
    wheel/drag chaining) so the outer bar isn't lost among a column of inner bars. */
-#smartScroll .smart-track-container { scrollbar-width: none; }
-#smartScroll .smart-track-container::-webkit-scrollbar { width: 0; height: 0; }
+.gs-smart-scroll .smart-track-container { scrollbar-width: none; }
+.gs-smart-scroll .smart-track-container::-webkit-scrollbar { width: 0; height: 0; }
 /* Force a classic, always-visible scrollbar. macOS defaults to an OVERLAY
    scrollbar that auto-hides — leaving no way to scroll the sample-track stack
    once it fades. An explicit ::-webkit-scrollbar width makes it non-overlay and
    permanent (Chrome/Safari); scrollbar-width:auto pins it on Firefox. */
-#smartScroll { overflow-y: auto; scrollbar-width: auto; }
-#smartScroll::-webkit-scrollbar {
+.gs-smart-scroll { overflow-y: auto; scrollbar-width: auto; }
+.gs-smart-scroll::-webkit-scrollbar {
   width: 14px;
   height: 14px;
 }
-#smartScroll::-webkit-scrollbar-track {
+.gs-smart-scroll::-webkit-scrollbar-track {
   background: rgba(0, 0, 0, 0.1);
   border-radius: 7px;
   border: 1px solid rgba(0, 0, 0, 0.05);
 }
-#smartScroll::-webkit-scrollbar-thumb {
+.gs-smart-scroll::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.3);
   border-radius: 7px;
   border: 2px solid rgba(0, 0, 0, 0.1);
   min-height: 20px;
 }
-#smartScroll::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.5); }
-#smartScroll::-webkit-scrollbar-thumb:active { background: rgba(0, 0, 0, 0.6); }
+.gs-smart-scroll::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.5); }
+.gs-smart-scroll::-webkit-scrollbar-thumb:active { background: rgba(0, 0, 0, 0.6); }
 
 /* Centered blocking modal dialog (window.__GS_MODAL) */
 .gs-modal-backdrop {

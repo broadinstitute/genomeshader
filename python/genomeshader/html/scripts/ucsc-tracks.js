@@ -270,8 +270,14 @@
       if (window.__GS_STATUS) window.__GS_STATUS(false);
       render();
       if (selectedGenome) loadTracks(selectedGenome);
-    }).catch(() => {
+    }).catch((err) => {
       loadingGenomes = false;
+      if (err && err.gsDisconnected) {                 // offline: leave unloaded so Connect can retry
+        genomesInfo = null;
+        if (window.__GS_STATUS) window.__GS_STATUS("Disconnected — UCSC assemblies not loaded", { autoHide: 2500 });
+        render();
+        return;
+      }
       genomesInfo = { genomes: [], default: "", genome_build: "" };
       if (window.__GS_STATUS) window.__GS_STATUS("UCSC assemblies failed", { autoHide: 3000 });
       render();
@@ -292,8 +298,13 @@
       };
       if (window.__GS_STATUS) window.__GS_STATUS(false);
       render();
-    }).catch(() => {
+    }).catch((err) => {
       loadingTracks = false;
+      if (err && err.gsDisconnected) {
+        if (window.__GS_STATUS) window.__GS_STATUS("Disconnected — UCSC tracks not loaded", { autoHide: 2500 });
+        render();
+        return;
+      }
       listing[genome] = { available: false, tracks: [], groups: [] };
       if (window.__GS_STATUS) window.__GS_STATUS("UCSC track list failed", { autoHide: 3000 });
       render();
@@ -341,7 +352,11 @@
       if (window.__GS_STATUS) window.__GS_STATUS("Loaded UCSC " + entry.label + " (" + entry.features.length + ")", { autoHide: 1800 });
       if (typeof updateTracksHeight === "function") updateTracksHeight();
       if (typeof renderAll === "function") renderAll();
-    }).catch(() => {
+    }).catch((err) => {
+      if (err && err.gsDisconnected) {
+        if (window.__GS_STATUS) window.__GS_STATUS("Disconnected — UCSC " + entry.label + " not loaded", { autoHide: 2500 });
+        return;
+      }
       if (window.__GS_STATUS) window.__GS_STATUS("UCSC " + entry.label + " failed", { autoHide: 3000 });
     });
   }

@@ -786,6 +786,7 @@ class GenomeShader:
             "ui-state.js",
             "tiles.js",
             "tile-ui.js",
+            "tile-arcs.js",
             "view-state.js",
             "read-display.js",
             "track-groups.js",
@@ -2930,6 +2931,164 @@ class GenomeShader:
             "vcf_samples": vcf_samples,
             "sample_id": sample_id,
         }
+
+    def _fetch_reads_batch_payload(self, items) -> list:
+        """Resolve reads for MANY (sample, BAM, locus) chunks in one call.
+
+        ``items``: ``[{"sample_id", "bam_url" (or None), "locus"}]``. Returns one dict
+        per input, in order: ``{"reads", "count", "bam_urls"}`` or ``{"error"}``.
+
+        The unit of work is one (locus, single BAM): its parquet/JSON/GCS cache key
+        is therefore the chunk itself, so a chunk fetched by anyone (this session,
+        an earlier session, a teammate sharing the GCS cache) is never re-read from
+        object storage. All cache misses go to the Rust extension in ONE call, which
+        fans out over chunk × BAM with rayon (GIL released).
+        """
+        out: list = [None] * len(items)
+        # (item idx, locus, [bam urls], pinned)
+        plan = []
+        for idx, it in enumerate(items):
+            try:
+                sample = it.get("sample_id")
+                locus = it.get("locus")
+                bam_url = it.get("bam_url")
+                if not sample or not locus:
+                    raise ValueError("fetch_reads_batch item needs sample_id and locus")
+                bam_urls = list(self.get_bam_samples_for_vcf_samples([sample]))
+                if bam_url:
+                    bam_url = str(bam_url)
+                    if bam_url in bam_urls:
+                        bam_urls = [bam_url]
+                    elif not bam_urls and ("://" in bam_url or bam_url.startswith("/")):
+                        bam_urls = [bam_url]
+                    else:
+                        bam_urls = []
+                if not bam_urls:
+                    out[idx] = {"reads": {}, "count": 0, "bam_urls": [], "sample_id": sample}
+                    continue
+                plan.append((idx, str(locus), bam_urls, bool(bam_url)))
+            except Exception as e:  # surfaced per item; the rest of the batch proceeds
+                out[idx] = {"error": str(e)}
+
+        # Unit results: (locus, bam) -> reads dict | Exception
+        use_cache = os.environ.get("GENOMESHADER_NO_READS_CACHE") != "1"
+        units: dict = {}
+        misses: list = []
+        for _idx, locus, bam_urls, _pinned in plan:
+            for bam in bam_urls:
+                key = (locus, bam)
+                if key in units:
+                    continue
+                cache_path = self._reads_cache_path(locus, [bam])
+                reads_dict = None
+                if use_cache and cache_path.exists():
+                    try:
+                        with open(cache_path, "r", encoding="utf-8") as f:
+                            cached = json.load(f)
+                        if isinstance(cached, dict) and "reads" in cached:
+                            reads_dict = cached["reads"]
+                            if (isinstance(reads_dict, dict) and reads_dict.get("query_name")
+                                    and "is_paired" not in reads_dict):
+                                reads_dict = None
+                    except Exception:
+                        reads_dict = None
+                if reads_dict is not None:
+                    units[key] = reads_dict
+                else:
+                    units[key] = None
+                    misses.append(key)
+
+        if misses:
+            # One reference per unique locus (shared by every BAM of that chunk).
+            refs: dict = {}
+            for locus, _bam in misses:
+                if locus in refs:
+                    continue
+                ref_seq, ref_start = "", 0
+                try:
+                    contig, lstart, lend = self._parse_locus(locus)
+                    with self._dbg_time("reads_reference_fetch", locus=locus):
+                        ref_seq = self.reference(contig, lstart - 1, lend) or ""
+                    ref_start = lstart
+                except Exception:
+                    ref_seq, ref_start = "", 0
+                refs[locus] = (ref_seq or None, int(ref_start))
+            requests = [(locus, bam, refs[locus][0], refs[locus][1]) for locus, bam in misses]
+            with self._dbg_time("reads_rust_batch", n_units=len(requests)):
+                results = self._rust_fetch_reads_units(requests)
+            for (locus, bam), res in zip(misses, results):
+                if isinstance(res, Exception):
+                    units[(locus, bam)] = res
+                    continue
+                reads_dict = res
+                units[(locus, bam)] = reads_dict
+                if use_cache:
+                    try:
+                        cache_path = self._reads_cache_path(locus, [bam])
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(cache_path, "w", encoding="utf-8") as f:
+                            json.dump({"reads": reads_dict,
+                                       "count": len(reads_dict.get("query_name", []))}, f)
+                    except Exception:
+                        pass
+
+        for idx, locus, bam_urls, _pinned in plan:
+            parts = [units[(locus, bam)] for bam in bam_urls]
+            err = next((p for p in parts if isinstance(p, Exception)), None)
+            if err is not None:
+                out[idx] = {"error": str(err)}
+                continue
+            merged = self._merge_reads_dicts(parts)
+            merged = self._apply_assembly_read_overrides(merged or {})
+            out[idx] = {
+                "reads": merged,
+                "count": len(merged.get("query_name", [])) if merged else 0,
+                "bam_urls": bam_urls,
+                "sample_id": items[idx].get("sample_id"),
+            }
+        return out
+
+    @staticmethod
+    def _merge_reads_dicts(parts: list) -> dict:
+        """Concatenate columnar reads dicts (one per BAM) in order; empty parts skip."""
+        parts = [p for p in parts if p and p.get("query_name")]
+        if not parts:
+            return {}
+        if len(parts) == 1:
+            return parts[0]
+        merged = {k: list(v) for k, v in parts[0].items()}
+        for p in parts[1:]:
+            for k in merged:
+                merged[k].extend(p.get(k, []))
+        return merged
+
+    def _rust_fetch_reads_units(self, requests: list) -> list:
+        """Fetch [(locus, bam, ref_seq, ref_start)] -> [reads dict | Exception].
+
+        Uses the Rust batch entry point when present (parallel over unit, GIL
+        released). Older extensions fall back to one call per unit.
+        """
+        batch = getattr(self._session, "fetch_reads_batch", None)
+        if batch is not None:
+            try:
+                raw = batch([(l, [b], r, rs) for (l, b, r, rs) in requests])
+            except Exception as e:
+                return [e] * len(requests)
+            results = []
+            for df, err in raw:
+                if err:
+                    results.append(RuntimeError(err))
+                else:
+                    results.append(df.to_dict(as_series=False) if df is not None else {})
+            return results
+        results = []
+        for locus, bam, ref_seq, ref_start in requests:
+            try:
+                df = self._session.fetch_reads_for_locus(locus, [bam], ref_seq, int(ref_start))
+                results.append(df.to_dict(as_series=False))
+            except Exception as e:
+                results.append(e)
+        return results
 
     # Bump when the reads payload schema changes so stale caches miss cleanly.
     # v2: reference-diffed SNPs + has_md("snps displayable") column.

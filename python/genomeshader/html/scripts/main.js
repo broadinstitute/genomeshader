@@ -6,45 +6,75 @@
 // The ruler/reference/variant header stays pinned in #tracksContainer; the stack
 // of sample (smart) tracks lives in #smartScroll and scrolls below it as one
 // unit. Each sample keeps its own bounded height + internal read scroll.
+/**
+ * The reads wrapper (.gs-smart-scroll) that lives inside ONE tile's `.tracks`
+ * host. Created on demand and never moved: every tile owns its own stack.
+ * The first wrapper keeps the classic id `smartScroll`; later ones are
+ * suffixed with their tile id.
+ */
+function gsSmartScrollIn(host, tile) {
+  if (!host) return null;
+  let w = null;
+  for (const child of host.children) {
+    if (child.classList && child.classList.contains("gs-smart-scroll")) { w = child; break; }
+  }
+  if (w) return w;
+  w = document.createElement("div");
+  w.className = "gs-smart-scroll";
+  const tileEl = host.closest ? host.closest(".gs-tile") : null;
+  const tileId = (tile && tile.id) || (tileEl && tileEl.getAttribute("data-tile-id")) || "";
+  const rootEl = (typeof getCurrentRoot === "function" && getCurrentRoot()) || document;
+  let classicTaken = false;
+  try { classicTaken = !!rootEl.querySelector("#smartScroll"); } catch (_) {}
+  w.id = (classicTaken && tileId) ? `smartScroll-${tileId}` : "smartScroll";
+  w.dataset.tileId = tileId;
+  w.style.cssText = "position:absolute;left:0;right:0;overflow-y:auto;overflow-x:hidden;"
+    + "z-index:2;scrollbar-gutter:stable;display:none;";
+  // A spacer gives the wrapper its scroll height (the tracks are absolutely
+  // positioned inside it, so they don't contribute to scrollHeight themselves).
+  const spacer = document.createElement("div");
+  spacer.className = "gs-smart-scroll-spacer";
+  spacer.id = w.id === "smartScroll" ? "smartScrollSpacer" : `smartScrollSpacer-${tileId}`;
+  spacer.style.cssText = "position:relative;width:1px;pointer-events:none;";
+  w.appendChild(spacer);
+  // A PLAIN wheel must reach the main handler to ZOOM the genome — even over
+  // the reads region (and in vertical mode this wrapper is a full-size
+  // transparent passthrough, so an unconditional stopPropagation killed zoom
+  // everywhere). Only SHIFT+wheel scrolls the reads stack natively; stop that
+  // from bubbling so it doesn't also zoom.
+  w.addEventListener("wheel", (e) => { if (e.shiftKey) e.stopPropagation(); }, { passive: true });
+  host.appendChild(w);
+  return w;
+}
+
+/** Reads wrapper of the tile currently bound to `tracksContainer`. */
 function ensureSmartScrollWrapper() {
   if (typeof tracksContainer === "undefined" || !tracksContainer) return null;
-  let w = tracksContainer.querySelector("#smartScroll");
-  // Prefer the unique live stack wherever it currently lives (another tile may
-  // hold it). Never create a second #smartScroll — duplicate ids break relocate.
-  if (!w) {
-    const rootEl = (typeof getCurrentRoot === "function") ? getCurrentRoot() : document;
-    w = (rootEl && rootEl.querySelector) ? rootEl.querySelector("#smartScroll") : null;
-    if (!w) w = document.getElementById("smartScroll");
-    if (w && w.parentElement !== tracksContainer) {
-      tracksContainer.appendChild(w);
+  return gsSmartScrollIn(tracksContainer);
+}
+
+/** Reads wrapper element for a tile (no creation), or null. */
+function gsSmartScrollEl(tile) {
+  const t = tile || ((typeof gsActiveTile === "function") ? gsActiveTile() : null);
+  const host = t ? gsTileTracksHost(t) : null;
+  if (host) {
+    for (const child of host.children) {
+      if (child.classList && child.classList.contains("gs-smart-scroll")) return child;
     }
   }
-  if (!w) {
-    w = document.createElement("div");
-    w.id = "smartScroll";
-    w.style.cssText = "position:absolute;left:0;right:0;overflow-y:auto;overflow-x:hidden;"
-      + "z-index:2;scrollbar-gutter:stable;display:none;";
-    // A spacer gives the wrapper its scroll height (the tracks are absolutely
-    // positioned inside it, so they don't contribute to scrollHeight themselves).
-    const spacer = document.createElement("div");
-    spacer.id = "smartScrollSpacer";
-    spacer.style.cssText = "position:relative;width:1px;pointer-events:none;";
-    w.appendChild(spacer);
-    // A PLAIN wheel must reach the main handler to ZOOM the genome — even over
-    // the reads region (and in vertical mode this wrapper is a full-size
-    // transparent passthrough, so an unconditional stopPropagation killed zoom
-    // everywhere). Only SHIFT+wheel scrolls the reads stack natively; stop that
-    // from bubbling so it doesn't also zoom.
-    w.addEventListener("wheel", (e) => { if (e.shiftKey) e.stopPropagation(); }, { passive: true });
-    tracksContainer.appendChild(w);
-  }
-  return w;
+  return document.getElementById("smartScroll");
+}
+
+/** Renderer Map of the tile being painted (or the focused tile). */
+function gsActiveRenderers() {
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
+  return (t && t._smartRenderers instanceof Map) ? t._smartRenderers : state.smartTrackRenderers;
 }
 
 function positionSmartScrollWrapper() {
   const w = ensureSmartScrollWrapper();
   if (!w) return;
-  const spacer = w.querySelector("#smartScrollSpacer");
+  const spacer = w.querySelector(".gs-smart-scroll-spacer");
   state._readsHeaderTop = 0;
   // Vertical mode stacks smart tracks as columns, not a scrolling row-stack — make
   // the wrapper a full-size transparent passthrough so containers render as before.
@@ -91,6 +121,19 @@ function positionSmartScrollWrapper() {
 function renderSmartTrack(trackId) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) return;
+  // Multi-tile: every entry point (toggles, resize, scroll, …) must paint the
+  // tile's own view through Canvas2D exactly like renderAll does. The tile-aware
+  // wrapper sets the 2D flag and re-enters here, so this only redirects callers
+  // that did not come through it.
+  if (!window.__GS_FORCE_SMART_TRACK_CANVAS2D
+      && typeof gsIsMultiTile === "function" && gsIsMultiTile()
+      && typeof gsRenderSmartTrackInTile === "function") {
+    const paintTile = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
+    if (paintTile && !paintTile.blank) {
+      gsRenderSmartTrackInTile(trackId, paintTile, { bound: typeof _gsRenderTile !== "undefined" && !!_gsRenderTile });
+      return;
+    }
+  }
   
   const layout = getTrackLayout();
   const trackLayout = layout.find(l => l.track.id === trackId);
@@ -98,7 +141,7 @@ function renderSmartTrack(trackId) {
   // If hidden, don't render at all
   // Default to false for backwards compatibility
   if (!trackLayout || track.hidden === true) {
-    const renderer = state.smartTrackRenderers.get(trackId);
+    const renderer = gsActiveRenderers().get(trackId);
     if (renderer) {
       // Hide the container
       if (renderer.container) {
@@ -123,7 +166,7 @@ function renderSmartTrack(trackId) {
   // If collapsed (closed state), still render but with limited height
   // (We'll handle the height in the layout calculation)
   
-  const renderer = state.smartTrackRenderers.get(trackId);
+  const renderer = gsActiveRenderers().get(trackId);
   if (!renderer) return;
   
   let { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore, spacer, textCanvas } = renderer;
@@ -132,25 +175,45 @@ function renderSmartTrack(trackId) {
   if (window.__GS_FORCE_SMART_TRACK_CANVAS2D) {
     instancedRenderer = null;
     if (webgpuCanvas) webgpuCanvas.style.display = "none";
+    if (canvas) canvas.style.display = "";
   } else if (webgpuCanvas) {
     webgpuCanvas.style.display = "";
   }
   
   // Multi-tile: track may still hold pileups for a sibling locus. Never paint
   // those into this window (wrong coords) and never clear them (nearline cost).
+  // Same-contig stale pileups from a just-panned window ARE painted when they
+  // still overlap the view — otherwise pan blanks the focused column until the
+  // debounced fetch lands.
   const _wantReadsSig = (typeof _readsLocusSig === "function") ? _readsLocusSig() : "";
   const _haveReadsSig = track._readsLocusSig || "";
-  const _readsLocusMismatch = !!(
-    _wantReadsSig && _haveReadsSig && _wantReadsSig !== _haveReadsSig
-    && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length
-  );
+  const _haveReads = !!(track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length);
+  const _sigMatch = !_wantReadsSig || !_haveReadsSig || _wantReadsSig === _haveReadsSig;
+  let _staleOk = false;
+  if (!_sigMatch && _haveReads && _haveReadsSig && _wantReadsSig) {
+    const wantC = _wantReadsSig.split(":")[0];
+    const haveC = _haveReadsSig.split(":")[0];
+    if (wantC && haveC && wantC === haveC) {
+      const rs = (typeof renderStartBp === "function") ? renderStartBp() : state.startBp;
+      const re = (typeof renderEndBp === "function") ? renderEndBp() : state.endBp;
+      _staleOk = track.readsLayout.reads.some((r) =>
+        r && Number.isFinite(r.start) && Number.isFinite(r.end)
+        && r.end >= rs && r.start <= re);
+    }
+  }
+  const _readsLocusMismatch = !!(!_sigMatch && !_staleOk);
   const _canPaintReads = !!(
     !_readsLocusMismatch
-    && track.readsLayout && track.readsLayout.reads && track.readsLayout.reads.length > 0
+    && _haveReads
   );
-  const _showReadsLoading = !_canPaintReads && !!(
-    track.loading || (track._loadingLocusSig && track._loadingLocusSig === _wantReadsSig)
-  );
+  // Never cover a usable stale pileup with "Loading…". Also ignore a stale
+  // _loadingLocusSig once we can paint matching/overlapping reads.
+  // Unfocused snapshot paints must stay blank rather than burn "Loading…" into
+  // a freeze layer that then looks stuck forever.
+  const _showReadsLoading = !_canPaintReads && !_staleOk
+    && !!(
+      track.loading || (track._loadingLocusSig && track._loadingLocusSig === _wantReadsSig)
+    );
 
   // Position container based on layout
   const isVertical = isVerticalMode();
@@ -192,8 +255,7 @@ function renderSmartTrack(trackId) {
   if (renderer && !renderer._stickyKicked) {
     renderer._stickyKicked = true;
     requestAnimationFrame(() => {
-      const sc = (typeof byId === "function" && typeof root !== "undefined"
-        ? byId(root, "smartScroll") : null) || document.getElementById("smartScroll") || container;
+      const sc = container.closest(".gs-smart-scroll") || container;
       if (sc) { const t = sc.scrollTop; sc.scrollTop = t + 1; sc.scrollTop = t; }
     });
   }
@@ -338,12 +400,12 @@ function renderSmartTrack(trackId) {
       
       // Attach scroll and wheel handlers when container becomes scrollable
       // Check if handlers are already attached to avoid duplicates
-      const renderer = state.smartTrackRenderers.get(trackId);
+      const renderer = gsActiveRenderers().get(trackId);
       if (renderer && !renderer.scrollHandlerAttached) {
         // Add scroll event listener (coalesced — scroll fires many events/sec
         // and renderSmartTrack forces a synchronous reflow).
         const scrollHandler = () => {
-          scheduleSmartTrackRender(trackId);
+          scheduleSmartTrackRender(trackId, renderer.tileId);
         };
         container.addEventListener("scroll", scrollHandler);
         
@@ -711,6 +773,12 @@ function renderSmartTrack(trackId) {
           state._viewCoverageMax = (typeof computeViewCoverageMax === "function")
             ? computeViewCoverageMax(genomeW, xGenomeCanonical, viewLo, viewHi)
             : trackMax;
+          // Diagnostic: the "View" scale each tile actually painted with.
+          const _cvTile = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
+          if (_cvTile) {
+            if (!state._viewCoverageMaxByTile) state._viewCoverageMaxByTile = {};
+            state._viewCoverageMaxByTile[_cvTile.id] = state._viewCoverageMax;
+          }
         }
         maxD = Math.max(1, state._viewCoverageMax || trackMax);
       } else {
@@ -1918,14 +1986,14 @@ function renderTrackControls() {
   controlsHost.innerHTML = "";
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
-  // Secondary tiles (not the first in the strip): rest-state = grip only so
-  // track names aren't repeated in every column; hover expands the full pill.
+  // Unfocused columns: rest-state = grip only so names aren't repeated in every
+  // column; hover expands the full pill. Focused column always shows the full
+  // chrome (was previously "not the first in the strip", which made handles
+  // jump when focus moved between A and B).
   const boundTile = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
-  const boundTileIdx = (boundTile && state.tiles)
-    ? state.tiles.findIndex((t) => t.id === boundTile.id)
-    : 0;
+  const focusedId = state.focusedTileId;
   const secondaryCompact = !!(typeof gsIsMultiTile === "function" && gsIsMultiTile()
-    && boundTileIdx > 0);
+    && boundTile && focusedId && boundTile.id !== focusedId);
 
   const makeTrackGrip = () => {
     const grip = document.createElement("span");
@@ -3180,11 +3248,24 @@ function renderAll() {
   const multi = (typeof gsIsMultiTile === "function" && gsIsMultiTile());
   const focused = (typeof gsFocusedTile === "function") ? gsFocusedTile() : null;
 
+  // Rebuild cross-tile bundles before painting so read colors match ribbons.
+  if (multi && typeof gsRebuildTileBundles === "function") {
+    try { gsRebuildTileBundles(); } catch (_) {}
+  }
+  // Lock smart-track slot heights to the max across columns BEFORE painting so
+  // every column shares the same Y per track (ribbons stay level).
+  if (multi && typeof gsUpdateMultiTileHeightLocks === "function") {
+    try { gsUpdateMultiTileHeightLocks(); } catch (_) {}
+  }
+
   if (multi && focused && typeof gsWithTile === "function" && typeof gsBindTileDom === "function") {
-    // Paint every non-blank tile into its own DOM. Unfocused tiles are SVG-only
-    // snapshots; the focused tile gets the full interactive stack.
+    // Paint every non-blank tile into its OWN DOM, including its own reads
+    // stack. Nothing is relocated, snapshotted or frozen: an unfocused column
+    // is repainted from the reads cache exactly like the focused one (through
+    // Canvas2D), so it can never be left blank by a focus change.
     const tiles = state.tiles || [];
     const focusedId = focused.id;
+    if (typeof gsEnsureSmartRenderers === "function") gsEnsureSmartRenderers();
     // Unfocused first so the focused pass leaves globals / WebGPU in the live state.
     const ordered = tiles.slice().sort((a, b) => {
       if (a.id === focusedId) return 1;
@@ -3204,11 +3285,18 @@ function renderAll() {
         if (tile.expandedInsertions instanceof Set) {
           state.expandedInsertions = tile.expandedInsertions;
         }
+        // Restore this contig's genes/repeats/reference before painting so a
+        // sibling tile's viewport fetch cannot blank this column.
+        if (typeof gsRestoreAnnotationsForContig === "function") {
+          try { gsRestoreAnnotationsForContig(tile.contig); } catch (_) {}
+        }
 
         gsBindTileDom(tile);
         if (typeof updateDerivedForBoundTile === "function") updateDerivedForBoundTile(tile);
         else updateDerived();
         updateTracksHeight();
+        // "View" coverage scale is per tile: each column normalizes to its own window.
+        state._viewCoverageMax = null;
 
         const isFocused = tile.id === focusedId;
         const liveGpu = !!(typeof tracksWebGPU !== "undefined" && tracksWebGPU
@@ -3225,100 +3313,14 @@ function renderAll() {
         renderFlowCanvas();
         renderTrackControls();
 
-        // Reads: relocate the live #smartScroll into this tile, paint for this
-        // tile's genomic window, then freeze a Canvas2D snapshot when unfocused
-        // so siblings keep showing reads after the live stack moves on.
-        //
-        // IMPORTANT (nearline / AoU): once an unfocused tile has a freeze for its
-        // current locus, do NOT relocate/paint/re-freeze it again. Re-freezing
-        // while sibling loci load was wiping pileups with "Loading..." and
-        // forcing expensive BAM re-fetches.
-        const wantFreezeSig = `${tile.contig}:${Math.floor(tile.startBp)}-${Math.ceil(tile.endBp)}`;
-        const tileRootEl = (typeof gsTileRootEl === "function") ? gsTileRootEl(tile.id) : null;
-        const hasGoodFreeze = !!(
-          !isFocused
-          && tileRootEl
-          && tileRootEl.querySelector(".gs-smart-scroll-freeze")
-          && tile._freezeReadsSig === wantFreezeSig
-        );
-
-        if (!hasGoodFreeze) {
-          if (typeof gsRelocateSmartScrollToBoundContainer === "function") {
-            gsRelocateSmartScrollToBoundContainer();
-          }
-          positionSmartScrollWrapper();
-          const prevForceReads2d = window.__GS_FORCE_SMART_TRACK_CANVAS2D;
-          let restoreSmartScroll = null;
-          if (!isFocused) {
-            window.__GS_FORCE_SMART_TRACK_CANVAS2D = true;
-            if (typeof gsBeginSmartScrollSnapshotPaint === "function") {
-              restoreSmartScroll = gsBeginSmartScrollSnapshotPaint();
-            }
-          }
-          if (typeof hydrateSmartTracksForCurrentLocus === "function") {
-            hydrateSmartTracksForCurrentLocus();
-          }
-          const smartTracksInOrder = state.tracks
-            .filter(t => t.id.startsWith("smart-track-"))
-            .map(t => state.smartTracks.find(st => st.id === t.id))
-            .filter(st => st !== undefined);
-          const paintSmartTracks = () => {
-            smartTracksInOrder.forEach(track => {
-              renderSmartTrack(track.id);
-            });
-          };
-          paintSmartTracks();
-          if (!isFocused && smartTracksInOrder.length) {
-            const scroll = document.getElementById("smartScroll");
-            const ready = scroll && Array.from(scroll.querySelectorAll("canvas.canvas"))
-              .some((c) => c.width > 0 && c.height > 0);
-            if (!ready) {
-              updateTracksHeight();
-              positionSmartScrollWrapper();
-              paintSmartTracks();
-            }
-          }
-          window.__GS_FORCE_SMART_TRACK_CANVAS2D = prevForceReads2d;
-          if (!isFocused) {
-            // Only freeze when we actually have reads for THIS locus (never freeze
-            // a Loading placeholder over a good prior snapshot).
-            const canFreeze = smartTracksInOrder.some((t) =>
-              t && t._readsLocusSig === wantFreezeSig
-              && t.readsLayout && t.readsLayout.reads && t.readsLayout.reads.length);
-            if (canFreeze && typeof gsFreezeSmartScrollSnapshot === "function") {
-              gsFreezeSmartScrollSnapshot(tile);
-              tile._freezeReadsSig = wantFreezeSig;
-            }
-            if (typeof restoreSmartScroll === "function") restoreSmartScroll();
-          } else {
-            if (typeof gsClearSmartScrollFreeze === "function") {
-              gsClearSmartScrollFreeze(tile);
-            }
-            tile._freezeReadsSig = null;
-            if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
-            renderGenesPanel();
-          }
-        } else if (isFocused) {
-          if (typeof gsRelocateSmartScrollToBoundContainer === "function") {
-            gsRelocateSmartScrollToBoundContainer();
-          }
-          positionSmartScrollWrapper();
-          if (typeof hydrateSmartTracksForCurrentLocus === "function") {
-            hydrateSmartTracksForCurrentLocus();
-          }
-          state.tracks
-            .filter(t => t.id.startsWith("smart-track-"))
-            .map(t => state.smartTracks.find(st => st.id === t.id))
-            .filter(st => st !== undefined)
-            .forEach(track => { renderSmartTrack(track.id); });
-          if (typeof gsClearSmartScrollFreeze === "function") {
-            gsClearSmartScrollFreeze(tile);
-          }
-          tile._freezeReadsSig = null;
+        // Reads: this tile's own stack, sized and painted for this tile's
+        // window from the reads cache.
+        positionSmartScrollWrapper();
+        gsPaintSmartTracksForTile(tile);
+        if (isFocused) {
           if (typeof renderLocusIdeogram === "function") renderLocusIdeogram();
           renderGenesPanel();
         }
-        // else: unfocused + good freeze — leave snapshot untouched.
 
         window.__GS_FORCE_SVG_TRACKS = prevForce;
       });
@@ -3326,10 +3328,8 @@ function renderAll() {
 
     if (typeof gsSyncFocusedAliases === "function") gsSyncFocusedAliases();
     gsBindTileDom(focused);
-    if (typeof gsRelocateSmartScrollToBoundContainer === "function") {
-      gsRelocateSmartScrollToBoundContainer();
-    }
     updateDerived();
+
   } else {
     updateDerived();
     updateTracksHeight();
@@ -3346,9 +3346,25 @@ function renderAll() {
       .filter(t => t.id.startsWith('smart-track-'))
       .map(t => state.smartTracks.find(st => st.id === t.id))
       .filter(st => st !== undefined);
+    // The sole tile resolves its reads from the chunk store exactly like every
+    // multi-tile column does (WebGPU stays on in this mode).
+    const soleTile = (typeof gsFocusedTile === "function") ? gsFocusedTile() : null;
     smartTracksInOrder.forEach(track => {
-      renderSmartTrack(track.id);
+      if (soleTile && typeof gsWithTrackView === "function") {
+        gsWithTrackView(track, soleTile, () => renderSmartTrack(track.id));
+      } else {
+        renderSmartTrack(track.id);
+      }
     });
+  }
+
+  // Any tile/track whose window is not fully covered by cached chunks (and not
+  // already being fetched) is found here and loaded — debounced so a drag/zoom in
+  // motion never requests intermediate windows. Panning inside loaded chunks
+  // finds nothing missing and does no work.
+  if (typeof gsReadsHaveDemand === "function" && typeof gsScheduleReadsReconcile === "function"
+      && gsReadsHaveDemand()) {
+    gsScheduleReadsReconcile(300, true);
   }
 
   renderHUD();
@@ -3387,16 +3403,25 @@ function scheduleRender() {
 // through here.
 var _smartRenderPending = null;
 var _smartRenderScheduled = false;
-function scheduleSmartTrackRender(trackId) {
-  if (!_smartRenderPending) _smartRenderPending = new Set();
-  _smartRenderPending.add(trackId);
+// Keyed "tileId|trackId" so a scroll in one column repaints THAT column's
+// stack (each tile owns its own containers).
+function scheduleSmartTrackRender(trackId, tileId) {
+  if (!_smartRenderPending) _smartRenderPending = new Map();
+  _smartRenderPending.set(`${tileId || ""}|${trackId}`, { trackId, tileId: tileId || null });
   if (_smartRenderScheduled) return;
   _smartRenderScheduled = true;
   requestAnimationFrame(() => {
     _smartRenderScheduled = false;
-    const ids = _smartRenderPending;
+    const jobs = _smartRenderPending;
     _smartRenderPending = null;
-    if (ids) ids.forEach((id) => { try { renderSmartTrack(id); } catch (e) {} });
+    if (!jobs) return;
+    jobs.forEach(({ trackId: id, tileId: tid }) => {
+      try {
+        const tile = tid ? (state.tiles || []).find((t) => t.id === tid) : null;
+        if (tile && typeof gsRenderSmartTrackInTile === "function") gsRenderSmartTrackInTile(id, tile);
+        else renderSmartTrack(id);
+      } catch (e) {}
+    });
   });
 }
 
@@ -7054,17 +7079,6 @@ function updateFlowAndReadsPosition() {
     }
   }
   
-  // Update Smart track container positions (actual rendering is done in renderSmartTrack)
-  // This is just for initial positioning
-  state.smartTracks.forEach(track => {
-    const trackLayout = layout.find(l => l.track.id === track.id);
-    if (trackLayout) {
-      const renderer = state.smartTrackRenderers.get(track.id);
-      if (renderer && renderer.container) {
-        // Position is handled in renderSmartTrack, but we ensure container exists
-      }
-    }
-  });
 }
 
 // -----------------------------
@@ -7093,6 +7107,7 @@ function zoomByFactor(factor, anchorBp) {
   if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   scheduleRender();
   if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
+  if (typeof gsScheduleSmartReadsLoad === "function") gsScheduleSmartReadsLoad();
 }
 
 // Center the view on a genomic position (keeps the current span).
@@ -7105,6 +7120,7 @@ function centerOnBp(pos) {
   if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   scheduleRender();
   if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
+  if (typeof gsScheduleSmartReadsLoad === "function") gsScheduleSmartReadsLoad();
 }
 
 // Slide the view the minimum amount to bring a position into view (does NOT
@@ -7122,6 +7138,8 @@ function slideToShowBp(pos, marginFrac) {
   clampToChromosomeBounds();
   if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   scheduleRender();
+  if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
+  if (typeof gsScheduleSmartReadsLoad === "function") gsScheduleSmartReadsLoad();
 }
 
 function panByPixels(dxPx, dyPx) {
@@ -7168,6 +7186,8 @@ function panByPixels(dxPx, dyPx) {
 
   if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   scheduleRender();
+  if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
+  if (typeof gsScheduleSmartReadsLoad === "function") gsScheduleSmartReadsLoad();
 }
 
 // Vertical mode: scroll the side-by-side track columns horizontally by dxPx (the
@@ -7285,7 +7305,7 @@ function _clearSiblingPanTransforms() {
     "#flowOverlay", "[id^='flowOverlay-']",
     "#flowIndelOverlay", "[id^='flowIndelOverlay-']",
     "#commentPinOverlay", "[id^='commentPinOverlay-']",
-    "#smartScroll",
+    ".gs-smart-scroll",
   ].join(",");
   strip.querySelectorAll(sel).forEach((e) => {
     if (tileRoot && tileRoot.contains(e)) return;
@@ -7358,10 +7378,12 @@ function _commitLivePan() {
   state.renderPadBp = 0;
   state.renderPadPx = 0;
   _setPanLayerOverscan(false);   // restore layer geometry (width/left) to the view window
+  if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   renderAll();
   // Viewport-driven variant loading (#71): fetch the new window ± overscan if it
   // isn't already covered by a loaded window. No-op unless enabled in config.
   if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad();
+  if (typeof gsScheduleSmartReadsLoad === "function") gsScheduleSmartReadsLoad(0);
 }
 function endLivePan() {
   _commitLivePan();  // final refill at the settled position
@@ -7565,7 +7587,7 @@ function bindInteractions(root, state, main) {
         } else {
           // Group scroll: children are positioned inside #smartScroll, so the
           // browser repaints them natively — no per-track redraw needed.
-          scrollEl(document.getElementById("smartScroll"));
+          scrollEl(gsSmartScrollEl());
         }
         return;
       }
@@ -7573,7 +7595,12 @@ function bindInteractions(root, state, main) {
 
     // Allow scrolling in Smart Track containers - don't intercept wheel events there
     const target = e.target;
-    for (const [trackId, renderer] of state.smartTrackRenderers.entries()) {
+    const _allRenderers = [];
+    for (const tl of (state.tiles || [])) {
+      if (tl && tl._smartRenderers instanceof Map) tl._smartRenderers.forEach((r) => _allRenderers.push(r));
+    }
+    if (!_allRenderers.length) state.smartTrackRenderers.forEach((r) => _allRenderers.push(r));
+    for (const renderer of _allRenderers) {
       const smartContainer = renderer.container;
       if (smartContainer && (smartContainer.contains(target) || path.includes(smartContainer))) {
         // Allow native pileup scroll only on shift+wheel; a plain wheel falls

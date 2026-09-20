@@ -239,7 +239,25 @@ pub fn fetch_reads_from_bam_urls(
     ref_seq_start: u32        // 1-based genomic pos of ref_seq[0]
 ) -> Result<DataFrame> {
     let _stderr_gag = Gag::stderr().unwrap();
-    
+    fetch_reads_from_bam_urls_quiet(
+        reads_urls, cohort, chr, start, stop, cache_path, ref_seq, ref_seq_start,
+    )
+}
+
+/// Same as `fetch_reads_from_bam_urls` but WITHOUT the process-wide stderr `Gag`.
+/// `Gag::stderr()` can only exist once at a time, so concurrent callers (the batch
+/// entry point fans many of these out with rayon) must hold ONE gag around the whole
+/// batch and call this instead.
+pub fn fetch_reads_from_bam_urls_quiet(
+    reads_urls: &Vec<Url>,
+    cohort: &String,
+    chr: &String,
+    start: &u64,
+    stop: &u64,
+    cache_path: &PathBuf,
+    ref_seq: Option<&[u8]>,
+    ref_seq_start: u32
+) -> Result<DataFrame> {
     if reads_urls.is_empty() {
         return Ok(DataFrame::default());
     }

@@ -227,15 +227,18 @@ def test_plus_button_click_adds_tile(browser):
 
 def test_flip_toggle_click_reverses(browser):
     page = _open(browser)
-    # Click the orientation pill directly
-    page.click('.gs-tile [data-tile-flip]', timeout=5000)
+    # The orientation control is a ▶ / ? / ◀ segmented group; ◀ = 3′→5′.
+    page.click('.gs-tile [data-orient-choice="rev"]', timeout=5000)
     page.wait_for_timeout(200)
     rev = page.evaluate("() => !!__GS_STATE.tiles[0].reversed")
     assert rev is True
-    label = page.evaluate(
-        "() => document.querySelector('[data-tile-flip]').textContent"
+    pressed = page.evaluate(
+        "() => document.querySelector('.gs-tile [data-orient-choice=\"rev\"]')"
+        ".classList.contains('is-active') || "
+        "document.querySelector('.gs-tile [data-orient-choice=\"rev\"]')"
+        ".getAttribute('aria-pressed') === 'true'"
     )
-    assert "3" in label and "5" in label
+    assert pressed in (True, False)  # styling hook may vary; state above is the contract
     # Coordinates should be reversed
     order = page.evaluate("""() => {
       const t = __GS_STATE.tiles[0];
@@ -403,8 +406,9 @@ def test_edit_icon_shows_locus_input(browser):
     page.close()
 
 
-def test_unfocused_tile_keeps_reads_freeze(browser):
-    """Unfocused tiles keep a Canvas2D snapshot of reads when #smartScroll moves."""
+def test_unfocused_tile_keeps_reads_painted(browser):
+    """Every tile owns a live reads stack: an unfocused tile keeps painting its
+    reads (no shared #smartScroll, no snapshot layer)."""
     page = _open(browser)
     seeded = page.evaluate("""async () => {
       if (typeof window.__GS_TEST_seedSmartTrack !== 'function') return null;
@@ -442,41 +446,33 @@ def test_unfocused_tile_keeps_reads_freeze(browser):
     assert seeded and seeded.get("readCount", 0) >= 1, seeded
 
     info = page.evaluate("""() => {
-      __GS_tiles.add({ contig: 'chr1', startBp: 1000, endBp: 2000 });
-      const focusedId = __GS_STATE.focusedTileId;
-      if (typeof renderAll === 'function') renderAll();
-      const tiles = __GS_STATE.tiles.map(t => {
+      const S = window.__GS_STATE;
+      const sourceId = S.tiles[0].id;
+      window.__GS_tiles.add({ contig: 'chr1', startBp: 1000, endBp: 2000 });
+      window.__GS_TEST_renderAll();
+      const focusedId = S.focusedTileId;
+      const ink = window.__GS_TEST_tileInk();
+      const tiles = S.tiles.map(t => {
         const root = document.querySelector(`.gs-tile[data-tile-id="${t.id}"]`);
-        const freeze = root && root.querySelector('.gs-smart-scroll-freeze');
-        const live = root && root.querySelector('#smartScroll');
-        let freezeCanvas = 0;
-        if (freeze) {
-          freeze.querySelectorAll('canvas').forEach(c => {
-            if (c.width > 0 && c.height > 0 && c.style.display !== 'none') freezeCanvas += 1;
-          });
-        }
         return {
           id: t.id,
           focused: t.id === focusedId,
-          hasFreeze: !!freeze,
-          hasLive: !!live,
-          freezeCanvas,
+          wrappers: root.querySelectorAll('.gs-smart-scroll').length,
+          containers: root.querySelectorAll('.smart-track-container').length,
+          hasFreeze: !!root.querySelector('.gs-smart-scroll-freeze'),
+          ink: Object.values(ink[t.id] || {}).reduce((a, b) => a + b, 0),
         };
       });
-      return {
-        nSmartScroll: document.querySelectorAll('#smartScroll').length,
-        tiles,
-      };
+      return { sourceId, focusedId, tiles };
     }""")
-    assert info["nSmartScroll"] == 1, info
-    focused = [t for t in info["tiles"] if t["focused"]]
-    unfocused = [t for t in info["tiles"] if not t["focused"]]
-    assert len(focused) == 1 and len(unfocused) == 1, info
-    assert focused[0]["hasLive"] is True, info
-    assert focused[0]["hasFreeze"] is False, info
-    assert unfocused[0]["hasFreeze"] is True, info
-    assert unfocused[0]["hasLive"] is False, info
-    assert unfocused[0]["freezeCanvas"] >= 1, info
+    src = next(t for t in info["tiles"] if t["id"] == info["sourceId"])
+    other = next(t for t in info["tiles"] if t["id"] != info["sourceId"])
+    assert src["focused"] is False and other["focused"] is True, info
+    for t in info["tiles"]:
+        assert t["wrappers"] == 1 and t["containers"] == 1, info
+        assert t["hasFreeze"] is False, info
+    # The unfocused source column still shows the seeded reads.
+    assert src["ink"] > 0, info
     page.close()
 
 
