@@ -484,6 +484,14 @@ function renderSmartTrack(trackId) {
   const genomeW = isVertical ? (W + 2 * (state.renderPadPx || 0))
     : ((typeof renderWidthPx === "function" && renderWidthPx() > 0) ? renderWidthPx() : W);
   
+  // One bp->x mapper for the whole paint (see gsMakeXMapper).
+  const xG = gsMakeXMapper(genomeW);
+  // Reads overlapping the window, once per paint (binary-searched, not a pass over
+  // every read the layout holds).
+  let _winReadsMemo = null;
+  const winReads = () => _winReadsMemo
+    || (_winReadsMemo = gsWindowReads(track.readsLayout, renderStartBp(), renderEndBp()));
+
   // Fallback to layout dimensions if container has no dimensions yet.
   // Retry: first paint often races layout (especially after shrinking to the
   // packed read stack). Without a retry, a 0-size bail stays blank until pan.
@@ -760,12 +768,23 @@ function renderSmartTrack(trackId) {
 
   function haplotypeBands(reads, y, h, gapPx = 0) {
     let has1 = false, has2 = false;
+    const viewLo = renderStartBp(), viewHi = renderEndBp();
     for (const read of reads) {
-      if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+      if (read.end < viewLo || read.start > viewHi) continue;
       if (read.haplotype === 1) has1 = true;
       else if (read.haplotype === 2) has2 = true;
       if (has1 && has2) break;
     }
+    return _haplotypeBandsFrom(has1, has2, y, h, gapPx);
+  }
+
+  /** Layout-indexed variant: presence of each haplotype in the window in O(log n). */
+  function haplotypeBandsL(layout, y, h, gapPx = 0) {
+    const lo = renderStartBp(), hi = renderEndBp();
+    return _haplotypeBandsFrom(gsHapPresent(layout, 1, lo, hi), gsHapPresent(layout, 2, lo, hi), y, h, gapPx);
+  }
+
+  function _haplotypeBandsFrom(has1, has2, y, h, gapPx) {
     const full = { y, h };
     if (!(has1 && has2) || h < 4) {
       return { split: false, full, bandFor(_hap) { return full; } };
@@ -864,7 +883,7 @@ function renderSmartTrack(trackId) {
 
   /** Bracket + optional mate locus label at a soft-clip cliff (horizontal). */
   function drawSoftClipMarkerH(cliffBp, side, y, h, genomeW, hint) {
-    const cx = xGenomeCanonical(cliffBp, genomeW);
+    const cx = xG(cliffBp);
     const arm = Math.min(14, Math.max(6, h));
     const x0 = side === "left" ? cx - arm : cx;
     const x1 = side === "left" ? cx : cx + arm;
@@ -889,28 +908,12 @@ function renderSmartTrack(trackId) {
     }
   }
 
+  const _SUMMARY_NUC_RGB = [BASE_RGB.A, BASE_RGB.C, BASE_RGB.G, BASE_RGB.T];
+  // Per-bp event counts for one haplotype — a property of the layout, built once
+  // (gsOverlapMap) rather than per frame.
   function accumulateOverlap(reads, hapFilter) {
-    const map = new Map();
-    for (const read of reads) {
-      if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
-      if (haplotypeKey(read.haplotype) !== hapFilter) continue;
-      if (!read.elements || !read.elements.length) continue;
-      for (const elem of read.elements) {
-        if (elem.start < renderStartBp() || elem.start > renderEndBp()) continue;
-        if (elem.type === 3) {
-          for (let bp = elem.start; bp <= elem.end; bp++) {
-            if (bp >= renderStartBp() && bp <= renderEndBp()) {
-              map.set(bp, (map.get(bp) || 0) + 1);
-            }
-          }
-        } else if (elem.type === 1 || elem.type === 2) {
-          map.set(elem.start, (map.get(elem.start) || 0) + 1);
-        } else if (elem.type === 4 && softClipModeFor(track) === "bases") {
-          map.set(elem.start, (map.get(elem.start) || 0) + 1);
-        }
-      }
-    }
-    return map;
+    const layout = track.readsLayout;
+    return gsOverlapMap(layout, hapFilter, softClipModeFor(track) === "bases");
   }
 
   function readSpanExtents(reads) {
@@ -920,8 +923,9 @@ function renderSmartTrack(trackId) {
       1: [Infinity, -Infinity],
       2: [Infinity, -Infinity]
     };
+    const viewLo = renderStartBp(), viewHi = renderEndBp();
     for (const read of reads) {
-      if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
+      if (read.end < viewLo || read.start > viewHi) continue;
       mn = Math.min(mn, read.start);
       mx = Math.max(mx, read.end);
       const k = haplotypeKey(read.haplotype);
@@ -945,10 +949,10 @@ function renderSmartTrack(trackId) {
       const bins = Math.max(1, Math.ceil(genomeW));
       const depths = new Float32Array(bins);
       let trackMax = 0;
-      for (const read of reads) {
+      for (const read of (reads || winReads())) {
         if (read.end < viewLo || read.start > viewHi) continue;
-        const xa = xGenomeCanonical(Math.max(read.start, viewLo), genomeW);
-        const xb = xGenomeCanonical(Math.min(read.end, viewHi), genomeW);
+        const xa = xG(Math.max(read.start, viewLo));
+        const xb = xG(Math.min(read.end, viewHi));
         const i0 = Math.max(0, Math.min(bins - 1, Math.floor(Math.min(xa, xb))));
         const i1 = Math.max(0, Math.min(bins - 1, Math.floor(Math.max(xa, xb))));
         for (let i = i0; i <= i1; i++) {
@@ -1016,13 +1020,13 @@ function renderSmartTrack(trackId) {
       flush(bins);
       return null;
     }
-    const bands = (opts && opts.bands) || haplotypeBands(reads, y, h);
+    const bands = (opts && opts.bands) || haplotypeBandsL(track.readsLayout, y, h);
     const cutGaps = !!(opts && opts.cutGaps);
-    const { mn, mx, perHap } = readSpanExtents(reads);
+    const { mn, mx, perHap } = gsSpanExtents(track.readsLayout, renderStartBp(), renderEndBp());
     if (mn === Infinity) return bands;
 
-    const x1 = xGenomeCanonical(mn, genomeW);
-    const x2 = xGenomeCanonical(mx, genomeW);
+    const x1 = xG(mn);
+    const x2 = xG(mx);
     const w = Math.max(4, x2 - x1);
 
     // Single outer capsule (rounded in Canvas2D; axis-aligned via WebGPU).
@@ -1039,8 +1043,8 @@ function renderSmartTrack(trackId) {
         const [hs, he] = perHap[hap];
         if (hs === Infinity) continue;
         const band = bands.bandFor(hap);
-        const hx1 = xGenomeCanonical(hs, genomeW);
-        const hx2 = xGenomeCanonical(he, genomeW);
+        const hx1 = xG(hs);
+        const hx2 = xG(he);
         const hw = Math.max(4, hx2 - hx1);
         const [cr, cg, cb] = HAP_BODY_COLORS[hap];
         drawMarkerRect(hx1, band.y, hw, band.h, cr, cg, cb, 0.15);
@@ -1048,81 +1052,81 @@ function renderSmartTrack(trackId) {
       }
     }
 
-    const ovMaps = {
-      0: accumulateOverlap(reads, 0),
-      1: accumulateOverlap(reads, 1),
-      2: accumulateOverlap(reads, 2)
-    };
-
-    for (const read of reads) {
-      if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
-      if (!read.elements || !read.elements.length) continue;
-      const hap = haplotypeKey(read.haplotype);
+    // CIGAR markers, folded into pixel columns (level of detail): thousands of
+    // sub-pixel events collapse to at most one tick per column and kind, so cost is
+    // O(pixels) drawing + a binary-searched typed-array pass, not O(events) rects.
+    // Translucent kinds combine as 1 - prod(1 - a_i), i.e. exactly what stacking
+    // that many same-colour markers rendered; opaque SNP ticks keep the last base.
+    const scMode = softClipModeFor(track);
+    const sLo = renderStartBp(), sHi = renderEndBp();
+    const ev = gsSummaryEvents(track.readsLayout, scMode);
+    const nCols = Math.max(2, Math.ceil(genomeW) + 2);
+    const tIns = new Float32Array(nCols), tDel = new Float32Array(nCols);
+    const wDel = new Float32Array(nCols), snpCode = new Int8Array(nCols);
+    const hasExpandedGaps = !!(state.expandedInsertions && state.expandedInsertions.size);
+    const colOf = (x) => { const c = x | 0; return c < 0 ? 0 : (c >= nCols ? nCols - 1 : c); };
+    for (const hap of [0, 1, 2]) {
+      const e = ev[hap];
+      if (!e.ins.pos.length && !e.del.pos.length && !e.snp.pos.length) continue;
       const band = bands.bandFor(hap);
-      const ovMap = ovMaps[hap];
-      const ey = band.y;
-      const eh = band.h;
-
-      for (const el of read.elements) {
-        if (el.type === 5) continue; // intron skip — not a CIGAR marker
-        if (el.type === 4 && softClipModeFor(track) === "hide") continue;
-        if (el.type === 4 && softClipModeFor(track) === "marker") continue; // edge ticks below
-        if (el.start < renderStartBp() || el.start > renderEndBp()) continue;
-        const ex = xGenomeCanonical(el.start, genomeW);
-        const base = el.type === 2 ? 0.25 : (el.type === 3 ? 0.2 : 0.25);
-        let ov;
-        if (el.type === 3) {
-          let t = 0, c = 0;
-          for (let bp = el.start; bp <= el.end; bp++) {
-            if (bp >= renderStartBp() && bp <= renderEndBp()) {
-              t += ovMap.get(bp) || 0;
-              c++;
-            }
-          }
-          ov = c ? t / c : 0;
-        } else {
-          ov = ovMap.get(el.start) || 0;
+      const ey = band.y, eh = band.h;
+      // deletions (black, half height)
+      let i0 = _gsLowerBound(e.del.pos, sLo), i1 = _gsUpperBound(e.del.pos, sHi);
+      if (i1 > i0) {
+        tDel.fill(1); wDel.fill(0);
+        for (let i = i0; i < i1; i++) {
+          const x = xG(e.del.pos[i]);
+          const c = colOf(x);
+          tDel[c] *= (1 - e.del.aux[i]);
+          const w = Math.max(1, xG(e.del.end[i]) - x);
+          if (w > wDel[c]) wDel[c] = w;
         }
-        const a = Math.min(0.8, base * (1 + (ov - 1) * 0.25));
-        if (el.type === 2) {
-          drawMarkerRect(ex - variantMarkerW / 2, ey, variantMarkerW, eh, 200, 100, 255, a);
-        } else if (el.type === 3) {
-          const ex2 = xGenomeCanonical(el.end, genomeW);
-          drawMarkerRect(ex, ey + eh / 4, Math.max(1, ex2 - ex), Math.max(1, eh / 2), 0, 0, 0, a);
-        } else {
-          // type 1 (SNP) or type 4 (soft-clip bases mode)
-          const nuc = el.sequence ? el.sequence.toUpperCase() : '?';
-          const [r, g, b] = BASE_RGB[nuc] || [156, 39, 176];
-          const nextX = xGenomeCanonical(el.start + 1, genomeW);
-          const gapAfterPx = getGapAfterBpPx(el.start, state.expandedInsertions);
-          const bw = Math.max(1, Math.abs(nextX - ex) - gapAfterPx);
-          drawMarkerRect(
-            ex + bw / 2 - variantMarkerW / 2, ey,
-            variantMarkerW, Math.max(1, eh),
-            r, g, b, 1
-          );
+        for (let c = 0; c < nCols; c++) {
+          if (tDel[c] < 1) drawMarkerRect(c, ey + eh / 4, wDel[c], Math.max(1, eh / 2), 0, 0, 0, 1 - tDel[c]);
+        }
+      }
+      // insertions (purple ticks)
+      i0 = _gsLowerBound(e.ins.pos, sLo); i1 = _gsUpperBound(e.ins.pos, sHi);
+      if (i1 > i0) {
+        tIns.fill(1);
+        for (let i = i0; i < i1; i++) { const c = colOf(xG(e.ins.pos[i])); tIns[c] *= (1 - e.ins.aux[i]); }
+        for (let c = 0; c < nCols; c++) {
+          if (tIns[c] < 1) drawMarkerRect(c + 0.5 - variantMarkerW / 2, ey, variantMarkerW, eh, 200, 100, 255, 1 - tIns[c]);
+        }
+      }
+      // SNPs / clipped bases (opaque, base colour; last one in a column wins)
+      i0 = _gsLowerBound(e.snp.pos, sLo); i1 = _gsUpperBound(e.snp.pos, sHi);
+      if (i1 > i0) {
+        snpCode.fill(-1);
+        for (let i = i0; i < i1; i++) {
+          const pos = e.snp.pos[i];
+          const ex = xG(pos);
+          const gap = hasExpandedGaps ? getGapAfterBpPx(pos, state.expandedInsertions) : 0;
+          const bw = Math.max(1, Math.abs(xG(pos + 1) - ex) - gap);
+          snpCode[colOf(ex + bw / 2)] = e.snp.aux[i];
+        }
+        for (let c = 0; c < nCols; c++) {
+          const code = snpCode[c];
+          if (code < 0) continue;
+          const [r, g, b] = _SUMMARY_NUC_RGB[code] || [156, 39, 176];
+          drawMarkerRect(c + 0.5 - variantMarkerW / 2, ey, variantMarkerW, Math.max(1, eh), r, g, b, 1);
         }
       }
     }
-    // Soft-clip edge ticks on the summary when mode=marker.
-    if (softClipModeFor(track) === "marker") {
-      for (const read of reads) {
-        if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
-        const hap = haplotypeKey(read.haplotype);
-        const band = bands.bandFor(hap);
-        const edges = softClipEdges(read);
-        if (edges.left) {
-          drawMarkerRect(
-            xGenomeCanonical(read.start, genomeW) - 2, band.y,
-            2, band.h, 245, 158, 11, 0.85
-          );
-        }
-        if (edges.right) {
-          drawMarkerRect(
-            xGenomeCanonical(read.end, genomeW), band.y,
-            2, band.h, 245, 158, 11, 0.85
-          );
-        }
+    // Soft-clip edge ticks on the summary when mode=marker. Only reads that HAVE a
+    // clip matter, and which edges they have is a property of the read, so that
+    // short list is built once per layout instead of testing every read per frame.
+    if (scMode === "marker") {
+      const layout = track.readsLayout;
+      const clipped = layout._clipEdges || (layout._clipEdges = layout.reads
+        .map((read) => ({ read, hap: haplotypeKey(read.haplotype), edges: softClipEdges(read) }))
+        .filter((c) => c.edges.left || c.edges.right));
+      for (const c of clipped) {
+        const read = c.read;
+        if (read.end < sLo || read.start > sHi) continue;
+        const band = bands.bandFor(c.hap);
+        if (c.edges.left) drawMarkerRect(xG(read.start) - 2, band.y, 2, band.h, 245, 158, 11, 0.85);
+        if (c.edges.right) drawMarkerRect(xG(read.end), band.y, 2, band.h, 245, 158, 11, 0.85);
       }
     }
     return bands;
@@ -1149,7 +1153,7 @@ function renderSmartTrack(trackId) {
       if (pos < renderStartBp() || pos > renderEndBp()) return;
       const gapPx = getGapAfterBpPx(pos, state.expandedInsertions);
       if (!(gapPx > 0)) return;
-      const afterBaseX = xGenomeCanonical(pos + 1, genomeW);
+      const afterBaseX = xG(pos + 1);
       expandedInsertionGapSegments.push({
         pos,
         gapStart: afterBaseX - gapPx,
@@ -1496,23 +1500,22 @@ function renderSmartTrack(trackId) {
       // Calculate visible row range for expanded state
       const startRow = Math.max(0, Math.floor(scrollTop / rowH) - 1);
       const endRow = Math.min(totalRows, Math.ceil((scrollTop + H) / rowH) + 1);
+      // Only the reads in the visible rows AND overlapping the window (row-indexed).
+      const _winRowReads = track.collapsed ? [] : gsRowReadsInWindow(
+        track.readsLayout, startRow, endRow, renderStartBp(), renderEndBp());
       
       if (track.collapsed) {
         // One capsule (HP1/HP2 stacked when both present), sized/centered to
         // match the track label midline.
         if (summaryY + summaryH >= 0 && summaryY <= totalContentHeight) {
-          drawAggregateSummary(track.readsLayout.reads, summaryY, summaryH, {
+          drawAggregateSummary(null, summaryY, summaryH, {
             cutGaps: true,
             summaryField: (track.readDisplay && track.readDisplay.summaryField) || "haplotypeConsensus",
           });
         }
       } else {
         // Expanded state: Render individual reads
-        for (const read of track.readsLayout.reads) {
-          // Only show reads in visible rows
-          if (read.row < startRow || read.row > endRow) continue;
-          if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
-          
+        for (const read of _winRowReads) {
           const paint = readPaintStyle(read, track);
           const color = paint.color;
           const baseAlpha = paint.alpha;
@@ -1524,16 +1527,16 @@ function renderSmartTrack(trackId) {
 
           for (const elem of (read.elements || [])) {
             if (elem.type !== 5) continue;
-            const sx1 = xGenomeCanonical(elem.start, genomeW);
-            const sx2 = xGenomeCanonical(elem.end, genomeW);
+            const sx1 = xG(elem.start);
+            const sx2 = xG(elem.end);
             drawSpliceConnectorRect(Math.min(sx1, sx2), y + h / 2 - 1, Math.abs(sx2 - sx1), 2);
           }
 
           const blocks = alignedBlocks(read);
           for (let bi = 0; bi < blocks.length; bi++) {
             const block = blocks[bi];
-            const x1 = xGenomeCanonical(block.start, genomeW);
-            const x2 = xGenomeCanonical(block.end, genomeW);
+            const x1 = xG(block.start);
+            const x2 = xG(block.end);
             const x = x1;
             const w = Math.max(blocks.length === 1 ? 4 : 1, x2 - x1);
             
@@ -1592,12 +1595,11 @@ function renderSmartTrack(trackId) {
           }
         }
         // Insert-gap connectors after bodies so they sit in the empty pair space.
-        for (const read of track.readsLayout.reads) {
-          if (read.row < startRow || read.row > endRow) continue;
+        for (const read of gsRowReadsInWindow(track.readsLayout, startRow, endRow)) {
           const gap = pairConnectorGap(read);
           if (!gap) continue;
-          const x1 = xGenomeCanonical(gap.a.end, genomeW);
-          const x2 = xGenomeCanonical(gap.b.start, genomeW);
+          const x1 = xG(gap.a.end);
+          const x2 = xG(gap.b.start);
           const y = readsTop + read.row * rowH + Number(read.groupOffsetPx || 0) + 2;
           const h = rowH - 4;
           drawPairConnectorRect(Math.min(x1, x2), y + h / 2 - 1.5, Math.abs(x2 - x1), 3);
@@ -1607,10 +1609,7 @@ function renderSmartTrack(trackId) {
       // Third pass: per-read CIGAR elements (expanded only). Collapsed CIGAR is
       // already painted by drawAggregateSummary above (with haplotype bands).
       if (!track.collapsed) {
-      for (const read of track.readsLayout.reads) {
-        if (read.row < startRow || read.row > endRow) continue;
-        if (read.end < renderStartBp() || read.start > renderEndBp()) continue;
-        
+      for (const read of _winRowReads) {
         const y = readsTop + read.row * rowH + Number(read.groupOffsetPx || 0) + 2;
         const h = rowH - 4;
         
@@ -1618,7 +1617,7 @@ function renderSmartTrack(trackId) {
         if (read.elements && read.elements.length > 0) {
           for (const elem of read.elements) {
             if (elem.start < renderStartBp() || elem.start > renderEndBp()) continue;
-            const ex = xGenomeCanonical(elem.start, genomeW);
+            const ex = xG(elem.start);
             const ey = y;
             const eh = h;
             
@@ -1634,12 +1633,12 @@ function renderSmartTrack(trackId) {
             if (elem.type === 2) { // Insertion - purple tick
               drawMarkerRect(ex - 1, ey, 2, eh, 200, 100, 255, elemAlpha);
             } else if (elem.type === 3) { // Deletion - black gap
-              const ex2 = xGenomeCanonical(elem.end, genomeW);
+              const ex2 = xG(elem.end);
               drawMarkerRect(ex, ey + eh/4, ex2 - ex, eh/2, 0, 0, 0, elemAlpha);
             } else if (elem.type === 1 || (elem.type === 4 && softClipModeFor(track) === "bases")) {
               // Calculate actual base width
               const nextBp = elem.start + 1;
-              const nextX = nextBp <= renderEndBp() ? xGenomeCanonical(nextBp, genomeW) : xGenomeCanonical(renderEndBp(), genomeW);
+              const nextX = nextBp <= renderEndBp() ? xG(nextBp) : xG(renderEndBp());
               const gapAfterPx = getGapAfterBpPx(elem.start, state.expandedInsertions);
               const actualBaseWidth = Math.max(1, Math.abs(nextX - ex) - gapAfterPx);
 
@@ -1699,7 +1698,7 @@ function renderSmartTrack(trackId) {
       // Aggregate OVERVIEW row: same geometry as the collapsed summary so it
       // stays aligned with the track label when the track is opened.
       if (!track.collapsed && overviewH > 0) {
-        const oReads = track.readsLayout.reads;
+        const oReads = null;
         // Pin the overview to the track's viewport top so it stays in-line with
         // the (pinned) sample name as the read pileup scrolls under it. World-Y =
         // summaryY + scrollOffset makes screen-Y = summaryY after drawMarkerRect

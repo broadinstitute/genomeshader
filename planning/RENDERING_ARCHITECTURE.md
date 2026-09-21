@@ -124,6 +124,66 @@ repainted on every pan frame; skipping its window-independent work is the next
 cheap win. The cost that remains is re-emitting geometry from JS, which only
 GPU-resident geometry removes.
 
+## Scale: millions of reads (Stage 1 done, Stages 2-4 planned)
+
+Target: 20-50 samples of deep short-read data (~1M+ reads / ~2M+ CIGAR elements
+loaded). `pan_bench.py --samples N --coverage 30 --read-len 150 --snp-rate 0.01
+--indel-rate 0.001 --tiles 1 --open 2 --span1 120000 --dpr 2 --uncapped` builds
+that (synthetic mock kernel) and reports reads held, JS heap, load time and the
+in-page `renderAll` cost during a real drag.
+
+Baseline (before Stage 1), 1 tile, 2 tracks expanded, others collapsed:
+
+| samples | reads held | JS heap | pan `renderAll` | worst stall |
+| --- | --- | --- | --- | --- |
+| 1 | 62k | 54 MB | 24 ms | 7.4 s |
+| 5 | 311k | 255 MB | 99 ms | 8.6 s |
+| 10 | 622k | 506 MB | 181 ms | 17 s |
+
+Why: reads are JS objects (~25 fields each) with a sub-object per CIGAR element,
+~820 B of heap per read; row packing rescanned every row per read and re-sorted the
+row on every insert (quadratic: the multi-second stalls); the collapsed-track
+summary strip made one pass over every read per frame (several times) and emitted
+one marker rect per CIGAR element per frame. GPU drawing was <1 ms of it.
+
+Stage 1 (this change; same visuals, same first-fit row assignment):
+
+- `processReadsData`: first-fit packing with binary search over per-row sorted
+  starts/ends, no re-sort per insert; each layout keeps `rowReads[row]`.
+- `gsWindowReads` / `gsRowReadsInWindow` (smart-tracks.js): the painter touches only
+  the visible rows' reads overlapping the window (binary search on a start-sorted
+  index with running-max ends), not every read the layout holds.
+- Summary strip is O(pixels) per frame: per-layout precomputed typed-array events
+  (`gsSummaryEvents`) folded into pixel columns (LOD; translucent kinds combine as
+  `1 - prod(1 - a_i)`), per-layout overlap counts (`gsOverlapMap`), soft-clip edge
+  reads (`_clipEdges`), and per-haplotype span/presence queries in O(log n)
+  (`gsSpanExtents`, `gsHapPresent`). `gsMakeXMapper` binds the bp->x mapping once
+  per paint.
+
+| samples | reads held | JS heap | pan `renderAll` | worst stall |
+| --- | --- | --- | --- | --- |
+| 1 | 62k | 55 MB | 12 ms | 0.1 s |
+| 5 | 311k | 258 MB | 17 ms | 0.5 s |
+| 10 | 622k | 512 MB | 20 ms | 1.1 s |
+| 20 | 1.24M | 1.05 GB | 22 ms | 2.2 s |
+
+Steady-state pan cost is now nearly flat in the number of collapsed tracks (the
+remainder is the two expanded tracks). What remains, and why the later stages exist:
+
+- **Stalls when a chunk arrives** (0.5-2 s): a new chunk set re-merges payloads and
+  re-runs `processReadsData` for hundreds of thousands of reads on the main thread.
+- **Memory / load**: ~840 B per read as JS objects; 40 samples (2.5M reads) did not
+  finish loading in the benchmark's 60 s. JSON payloads are also parsed on the main
+  thread.
+- The two expanded tracks still emit per-read/per-element rects from JS each frame.
+
+Planned: **Stage 2** columnar typed-array layouts (no per-read objects; CSR for
+elements) + incremental layout of a new chunk; **Stage 3** GPU-resident geometry for
+the core horizontal modes (reads/elements uploaded once in genomic coordinates, view
+transform in the vertex shader, pan = uniform update; pairs/splice/vertical stay on
+the current painter until ported); **Stage 4** binary transfer from Python instead
+of JSON. Tests: `test_summary_lod.py` pins what the strip draws.
+
 ## The paint signature (and how it is verified)
 
 `gsSmartPaintKey` lists every input to a smart-track paint (tile window / size /

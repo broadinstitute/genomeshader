@@ -96,13 +96,16 @@ def open_scene(browser, args):
     page.wait_for_function("() => window.__GS_TEST_gpuStats().ready", timeout=30000)
     if names:
         # Long, sparse alignments (assembly-like): ~2x coverage of 80 kb contigs.
-        page.evaluate(bench_render.INSTALL_JS, {"coverage": 2.0, "readLen": 80000, "snpRate": 0.001, "indelRate": 0.0005})
+        page.evaluate(bench_render.INSTALL_JS, {"coverage": args.coverage, "readLen": args.read_len,
+                                                "snpRate": args.snp_rate, "indelRate": args.indel_rate})
+        t_load = __import__("time").time()
         page.evaluate("async (ids) => { await Promise.all(ids.map(id => window.__GS_TEST_spawnSample(id, 'best_evidence'))); }", names)
         settle(page)
-        # Open the first two tracks (like the report); the rest stay collapsed.
-        page.evaluate("""() => { window.__GS_STATE.smartTracks.forEach((t, i) => {
-            const open = i < 2; t.collapsed = !open; t.readDisplay.visibility.reads = open; t.readDisplay.visibility.summary = true; });
-            window.__GS_TEST_renderAll(); }""")
+        args.load_s = __import__("time").time() - t_load
+        # Open the first N tracks (like the report); the rest stay collapsed.
+        page.evaluate("""(n) => { window.__GS_STATE.smartTracks.forEach((t, i) => {
+            const open = i < n; t.collapsed = !open; t.readDisplay.visibility.reads = open; t.readDisplay.visibility.summary = true; });
+            window.__GS_TEST_renderAll(); }""", args.open)
     else:
         page.evaluate(reads_mock.INSTALL_JS, {"delay": 30})
         page.evaluate("() => Promise.all([__GS_TEST_spawnSample('SYN001','best_evidence'), __GS_TEST_spawnSample('SYN002','best_evidence')])")
@@ -117,7 +120,7 @@ def open_scene(browser, args):
         const S = window.__GS_STATE; const c = 32149950;
         S.startBp = c - {args.span1 // 2}; S.endBp = c + {args.span1 // 2};
         window.__GS_tiles.pull();
-        window.__GS_tiles.add({{contig: 'chr20', startBp: 32005500 - {args.span2 // 2}, endBp: 32005500 + {args.span2 // 2}}});
+        if ({args.tiles} > 1) window.__GS_tiles.add({{contig: 'chr20', startBp: 32005500 - {args.span2 // 2}, endBp: 32005500 + {args.span2 // 2}}});
         window.__GS_tiles.focus(S.tiles[0].id);
         window.__GS_TEST_renderAll(); }}""")
     settle(page)
@@ -182,6 +185,12 @@ def main():
     ap.add_argument("--amp", type=float, default=220)
     ap.add_argument("--profile", action="store_true")
     ap.add_argument("--samples", type=int, default=0, help="N synthetic samples (assembly-like long reads); 0 = the 2-sample hifiasm mock")
+    ap.add_argument("--coverage", type=float, default=2.0)
+    ap.add_argument("--read-len", type=int, default=80000)
+    ap.add_argument("--snp-rate", type=float, default=0.001)
+    ap.add_argument("--indel-rate", type=float, default=0.0005)
+    ap.add_argument("--tiles", type=int, default=2)
+    ap.add_argument("--open", type=int, default=2, help="how many tracks to expand")
     ap.add_argument("--rich", action="store_true", help="genes + 4000 repeats + 400 variants in view")
     ap.add_argument("--dpr", type=float, default=1.0, help="device scale factor (2 = Retina)")
     ap.add_argument("--headed", action="store_true", help="real window, real vsync/compositor")
@@ -197,6 +206,18 @@ def main():
         st = page.evaluate("() => ({tiles: window.__GS_STATE.tiles.map(t => [t.contig, t.startBp, t.endBp, t.endBp - t.startBp]), tracks: window.__GS_STATE.smartTracks.length, gpu: window.__GS_TEST_gpuStats()})")
         print("scene:", st["tiles"], "tracks:", st["tracks"])
         cdp = page.context.new_cdp_session(page)
+        cdp.send("HeapProfiler.enable"); cdp.send("HeapProfiler.collectGarbage")
+        heap = cdp.send("Runtime.getHeapUsage")["usedSize"] / 1e6
+        sc = page.evaluate("""() => { let reads = 0, elems = 0, rows = 0;
+            const seen = new Set();
+            for (const t of window.__GS_STATE.tiles) for (const tr of window.__GS_STATE.smartTracks) {
+              const v = t._readsViews && t._readsViews.get(tr.id); const L = v && v.layout;
+              if (!L || seen.has(L)) continue; seen.add(L);
+              reads += L.reads.length; for (const r of L.reads) elems += r.elements.length; rows += L.rowCount || 0; }
+            return {reads, elems}; }""")
+        print(f"SCALE: tracks={a.samples or 'mock'} reads held={sc['reads']:,} elements held={sc['elems']:,} "
+              f"JS heap={heap:.0f} MB  load={getattr(a, 'load_s', 0):.1f}s  "
+              f"=> {heap*1e6/max(1, sc['reads']):.0f} B/read (incl. everything else)")
         if a.profile:
             cdp.send("Profiler.enable"); cdp.send("Profiler.setSamplingInterval", {"interval": 200}); cdp.send("Profiler.start")
         page.evaluate("() => { window.__GS_TIME_RENDER = true; window.__GS_RENDER_MS = []; }")

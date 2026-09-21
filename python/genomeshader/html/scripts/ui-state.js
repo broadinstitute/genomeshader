@@ -770,6 +770,36 @@ function xGenomeCanonical(bp, W, tile) {
   return isNaN(result) ? leftPad : Math.max(leftPad, Math.min(leftPad + innerW, result));
 }
 
+/**
+ * bp -> x mapper bound to one (W, tile) for a whole paint. Identical to calling
+ * xGenomeCanonical(bp, W, tile) each time, but resolves the tile, window, span and
+ * insertion-gap state ONCE. With no expanded insertion (the usual case) mapping is
+ * a single multiply-add; otherwise it defers to xGenomeCanonical. Painting maps
+ * hundreds of thousands of coordinates, so per-call setup dominated.
+ */
+function gsMakeXMapper(W, tile) {
+  const generic = (bp) => xGenomeCanonical(bp, W, tile);
+  if (!W || W <= 0 || isNaN(W)) return generic;
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  const expanded = (t.expandedInsertions instanceof Set) ? t.expandedInsertions : state.expandedInsertions;
+  if (expanded && expanded.size) return generic;
+  const leftPad = 16;
+  const innerW = Math.max(0, W - 32);
+  if (innerW <= 0) return generic;
+  const rStart = renderStartBp(t), rEnd = renderEndBp(t);
+  const span = rEnd - rStart;
+  if (span <= 0 || isNaN(span)) return generic;
+  const rev = !!t.reversed;
+  const lo = leftPad, hi = leftPad + innerW;
+  return (bp) => {
+    if (isNaN(bp)) return leftPad;
+    let n = (bp - rStart) / span;
+    if (rev) n = 1 - n;
+    const r = leftPad + n * innerW;
+    return isNaN(r) ? leftPad : (r < lo ? lo : (r > hi ? hi : r));
+  };
+}
+
 function xGenome(bp, tile) {
   return xGenomeCanonical(bp, renderWidthPx(), tile);
 }

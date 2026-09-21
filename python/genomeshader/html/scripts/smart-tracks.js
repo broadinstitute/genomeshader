@@ -174,27 +174,56 @@ function processReadsData(rawReads, opts) {
   let rowBase = 0;
   let groupOffsetPx = 0;
   const groupLayouts = [];
+  const rowReads = [];   // rowReads[row] = that row's reads, sorted by start
   for (const name of groupNames) {
     const groupUnits = groups.get(name);
     groupUnits.sort(compareUnits);
+    // First-fit into the lowest row with room. A row holds disjoint units sorted by
+    // start (so its ends ascend too), which means a unit fits iff it clears its two
+    // neighbours — binary search instead of scanning every unit in every row, and
+    // no re-sort per insert (that was quadratic and froze 100k+ read tracks).
     const rows = [];
     for (const unit of groupUnits) {
       let target = -1;
-      for (let r = 0; r < rows.length && target < 0; r++) {
-        if (rows[r].every((existing) =>
-          unit.end < existing.start - 10 || unit.start > existing.end + 10)) target = r;
+      let at = 0;
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r];
+        const st = row.starts;
+        const n = st.length;
+        // insertion point = number of existing units with start <= unit.start
+        let p;
+        if (n === 0 || unit.start >= st[n - 1]) p = n;
+        else {
+          let lo = 0, hi = n;
+          while (lo < hi) { const mid = (lo + hi) >> 1; if (st[mid] <= unit.start) lo = mid + 1; else hi = mid; }
+          p = lo;
+        }
+        if (p > 0 && !(unit.start > row.ends[p - 1] + 10)) continue;
+        if (p < n && !(unit.end < st[p] - 10)) continue;
+        target = r; at = p;
+        break;
       }
       if (target < 0) {
         target = rows.length;
-        rows.push([]);
+        rows.push({ units: [], starts: [], ends: [] });
+        at = 0;
       }
       for (const read of unit.reads) {
         read.row = rowBase + target;
         read.groupOffsetPx = groupOffsetPx;
         read.groupKey = name;
       }
-      rows[target].push(unit);
-      rows[target].sort((a, b) => a.start - b.start);
+      const row = rows[target];
+      if (at === row.units.length) {
+        row.units.push(unit); row.starts.push(unit.start); row.ends.push(unit.end);
+      } else {
+        row.units.splice(at, 0, unit); row.starts.splice(at, 0, unit.start); row.ends.splice(at, 0, unit.end);
+      }
+    }
+    for (let r = 0; r < rows.length; r++) {
+      const list = [];
+      for (const unit of rows[r].units) for (const read of unit.reads) list.push(read);
+      rowReads[rowBase + r] = list;
     }
     groupLayouts.push({ key: name, rowStart: rowBase, rowCount: rows.length, offsetPx: groupOffsetPx });
     rowBase += rows.length;
@@ -203,8 +232,218 @@ function processReadsData(rawReads, opts) {
 
   return {
     reads: readArray, rowCount: rowBase, groupGapPx: groupOffsetPx,
-    groups: groupLayouts, medianInsertSize,
+    groups: groupLayouts, medianInsertSize, rowReads,
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Window / row access into a layout (so a paint touches only what is on screen)
+// ---------------------------------------------------------------------------
+// A layout can hold hundreds of thousands of reads (whole cached chunks, several
+// windows wide) while a paint needs the ~1/3 overlapping the window, and of those
+// only the rows currently scrolled into view. Everything here is memoized on the
+// layout object, so a pan costs binary searches, not passes over every read.
+
+function _gsLowerBound(arr, v) {          // first index with arr[i] >= v (arr ascending)
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] < v) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+function _gsUpperBound(arr, v) {          // first index with arr[i] > v
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] <= v) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
+/** Reads sorted by start + parallel starts[] and running-max end[] (built once). */
+function gsLayoutIndex(layout) {
+  if (layout._idx) return layout._idx;
+  const reads = layout.reads.slice().sort((a, b) => a.start - b.start);
+  const n = reads.length;
+  const starts = new Float64Array(n);
+  const pmax = new Float64Array(n);
+  let m = -Infinity;
+  for (let i = 0; i < n; i++) {
+    starts[i] = reads[i].start;
+    if (reads[i].end > m) m = reads[i].end;
+    pmax[i] = m;
+  }
+  return (layout._idx = { reads, starts, pmax });
+}
+
+/** Reads overlapping [lo, hi] (any order-independent consumer may use these). */
+function gsWindowReads(layout, lo, hi) {
+  if (!layout || !layout.reads || !layout.reads.length) return [];
+  const ix = gsLayoutIndex(layout);
+  const i0 = _gsLowerBound(ix.pmax, lo);          // everything before has end < lo
+  const i1 = _gsUpperBound(ix.starts, hi);        // everything from here has start > hi
+  const out = [];
+  for (let i = i0; i < i1; i++) {
+    const r = ix.reads[i];
+    if (r.end >= lo) out.push(r);
+  }
+  return out;
+}
+
+/**
+ * Reads in rows [startRow, endRow] (inclusive). With lo/hi given, only those
+ * overlapping the window; without, every read in those rows.
+ */
+function gsRowReadsInWindow(layout, startRow, endRow, lo, hi) {
+  const rr = layout && layout.rowReads;
+  if (!rr) return (layout && layout.reads) ? layout.reads.filter((r) => r.row >= startRow && r.row <= endRow
+    && (lo === undefined || (r.end >= lo && r.start <= hi))) : [];
+  const windowed = lo !== undefined;
+  const out = [];
+  const r0 = Math.max(0, startRow), r1 = Math.min(rr.length - 1, endRow);
+  for (let r = r0; r <= r1; r++) {
+    const arr = rr[r];
+    if (!arr || !arr.length) continue;
+    if (!windowed) { for (let i = 0; i < arr.length; i++) out.push(arr[i]); continue; }
+    let pm = arr._pmax;
+    if (!pm) {
+      pm = arr._pmax = new Float64Array(arr.length);
+      let m = -Infinity;
+      for (let i = 0; i < arr.length; i++) { if (arr[i].end > m) m = arr[i].end; pm[i] = m; }
+    }
+    for (let i = _gsLowerBound(pm, lo); i < arr.length; i++) {
+      const read = arr[i];
+      if (read.start > hi) break;                 // row is sorted by start
+      if (read.end >= lo) out.push(read);
+    }
+  }
+  return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// Summary-strip events, per layout (not per frame)
+// ---------------------------------------------------------------------------
+// The collapsed-track strip (and an expanded track's overview row) summarizes the
+// CIGAR events of every read. Drawing one marker per event per frame is
+// O(events) of JS work per track; instead each layout precomputes, per haplotype
+// and kind, position-sorted typed arrays (with each event's alpha already
+// resolved from the per-bp overlap counts). A frame then binary-searches the
+// window and folds events into pixel columns.
+
+/** Per-bp event counts for one haplotype's reads (0 = untagged, 1, 2). Memoized. */
+function gsOverlapMap(layout, hap, clipBases) {
+  const key = "_ov" + (clipBases ? "B" : "N");
+  const memo = layout[key] || (layout[key] = {});
+  if (memo[hap]) return memo[hap];
+  const map = new Map();
+  for (const read of layout.reads) {
+    if (_gsHapKey(read.haplotype) !== hap) continue;
+    if (!read.elements || !read.elements.length) continue;
+    for (const elem of read.elements) {
+      if (elem.type === 3) {
+        for (let bp = elem.start; bp <= elem.end; bp++) map.set(bp, (map.get(bp) || 0) + 1);
+      } else if (elem.type === 1 || elem.type === 2 || (elem.type === 4 && clipBases)) {
+        map.set(elem.start, (map.get(elem.start) || 0) + 1);
+      }
+    }
+  }
+  memo[hap] = map;
+  return map;
+}
+function _gsHapKey(h) { return h === 1 ? 1 : (h === 2 ? 2 : 0); }
+
+const _GS_NUC_CODE = { A: 0, C: 1, G: 2, T: 3 };
+
+/**
+ * { [hap]: { ins:{pos,a}, del:{pos,end,a}, snp:{pos,code} } } — position-sorted
+ * typed arrays. `scMode` is the track's soft-clip mode (only "bases" turns clipped
+ * bases into ticks; "hide"/"marker" drop them from the strip).
+ */
+function gsSummaryEvents(layout, scMode) {
+  const key = "_sumEv_" + scMode;
+  if (layout[key]) return layout[key];
+  const clipBases = scMode === "bases";
+  const raw = { 0: { ins: [], del: [], snp: [] }, 1: { ins: [], del: [], snp: [] }, 2: { ins: [], del: [], snp: [] } };
+  const maps = { 0: gsOverlapMap(layout, 0, clipBases), 1: gsOverlapMap(layout, 1, clipBases), 2: gsOverlapMap(layout, 2, clipBases) };
+  for (const read of layout.reads) {
+    if (!read.elements || !read.elements.length) continue;
+    const h = _gsHapKey(read.haplotype);
+    const ov = maps[h];
+    for (const el of read.elements) {
+      const t = el.type;
+      if (t === 5) continue;                                   // intron skip
+      if (t === 4 && !clipBases) continue;                     // hide / edge-tick modes
+      if (t === 2) {
+        const a = Math.min(0.8, 0.25 * (1 + ((ov.get(el.start) || 0) - 1) * 0.25));
+        raw[h].ins.push([el.start, a]);
+      } else if (t === 3) {
+        let tot = 0, c = 0;
+        for (let bp = el.start; bp <= el.end; bp++) { tot += ov.get(bp) || 0; c++; }
+        const o = c ? tot / c : 0;
+        raw[h].del.push([el.start, Math.min(0.8, 0.2 * (1 + (o - 1) * 0.25)), el.end]);
+      } else {                                                 // 1 (SNP) or 4 in "bases" mode
+        const nuc = el.sequence ? String(el.sequence).toUpperCase() : "?";
+        raw[h].snp.push([el.start, nuc in _GS_NUC_CODE ? _GS_NUC_CODE[nuc] : 4]);
+      }
+    }
+  }
+  const pack = (list, withEnd) => {
+    list.sort((a, b) => a[0] - b[0]);
+    const n = list.length;
+    const pos = new Float64Array(n), aux = new Float32Array(n);
+    const end = withEnd ? new Float64Array(n) : null;
+    for (let i = 0; i < n; i++) { pos[i] = list[i][0]; aux[i] = list[i][1]; if (withEnd) end[i] = list[i][2]; }
+    return { pos, aux, end };
+  };
+  const out = {};
+  for (const h of [0, 1, 2]) out[h] = { ins: pack(raw[h].ins), del: pack(raw[h].del, true), snp: pack(raw[h].snp) };
+  return (layout[key] = out);
+}
+
+
+/** Per-haplotype start-sorted index (starts[], running-max ends[]) of a layout. */
+function gsHapIndex(layout, h) {
+  const memo = layout._hapIdx || (layout._hapIdx = {});
+  if (memo[h]) return memo[h];
+  const reads = layout.reads.filter((r) => _gsHapKey(r.haplotype) === h).sort((a, b) => a.start - b.start);
+  const n = reads.length;
+  const starts = new Float64Array(n), pmax = new Float64Array(n);
+  let m = -Infinity;
+  for (let i = 0; i < n; i++) {
+    starts[i] = reads[i].start;
+    if (reads[i].end > m) m = reads[i].end;
+    pmax[i] = m;
+  }
+  return (memo[h] = { reads, starts, pmax });
+}
+
+/** Is any read of haplotype h (0 = untagged, 1, 2) overlapping [lo, hi]? O(log n). */
+function gsHapPresent(layout, h, lo, hi) {
+  if (!layout || !layout.reads) return false;
+  const ix = gsHapIndex(layout, h);
+  const i0 = _gsLowerBound(ix.pmax, lo);         // read i0 is the first with end >= lo
+  return i0 < ix.starts.length && ix.starts[i0] <= hi;
+}
+
+/**
+ * {mn, mx, perHap:{0,1,2:[min start, max end]}} over the reads overlapping
+ * [lo, hi] — what a pass over every window read used to compute — in O(log n):
+ * the first overlapping read (by start) is at the lower bound of the running-max
+ * ends, and the largest end among reads starting <= hi is the running max there.
+ */
+function gsSpanExtents(layout, lo, hi) {
+  let mn = Infinity, mx = -Infinity;
+  const perHap = { 0: [Infinity, -Infinity], 1: [Infinity, -Infinity], 2: [Infinity, -Infinity] };
+  if (layout && layout.reads) {
+    for (const h of [0, 1, 2]) {
+      const ix = gsHapIndex(layout, h);
+      const i0 = _gsLowerBound(ix.pmax, lo);
+      const i1 = _gsUpperBound(ix.starts, hi);
+      if (i0 >= i1) continue;
+      const a = ix.starts[i0], b = ix.pmax[i1 - 1];
+      perHap[h] = [a, b];
+      if (a < mn) mn = a;
+      if (b > mx) mx = b;
+    }
+  }
+  return { mn, mx, perHap };
 }
 
 // CIGAR N (element_type 5) intron skips. Aligned blocks are the exons; the
