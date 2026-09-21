@@ -572,6 +572,70 @@ const _gsAnnoByContig = {
   // mis-index every other contig's sequence (its reference bases vanished).
   bounds: new Map(),
 };
+// ---------------------------------------------------------------------------
+// Reference sequence, as SEGMENTS per contig
+// ---------------------------------------------------------------------------
+// One string per contig (replaced by every viewport response) could only ever hold
+// the most recent window: variants counted as "covered" for an earlier window, no
+// reference was refetched, and its bases were gone — and two tiles on the SAME
+// contig (the breakpoint case) could never both have bases. Instead every loaded
+// window is kept as a segment {start, seq} (sequence[i] is genomic position
+// start + i), overlapping/adjacent segments merge, and each tile looks up the
+// segment covering ITS window.
+const _gsRefSegs = new Map();          // contig -> [{start, seq, t}] sorted, disjoint
+let _gsRefTick = 0;
+const GS_REF_MAX_CHARS_PER_CONTIG = 4000000;
+
+function gsAddReferenceSegment(contig, start, seq) {
+  if (!contig || typeof seq !== "string" || !seq.length || !Number.isFinite(start)) return;
+  let segs = _gsRefSegs.get(contig);
+  if (!segs) { segs = []; _gsRefSegs.set(contig, segs); }
+  let ns = start, nseq = seq;
+  const keep = [];
+  for (const g of segs) {
+    const gEnd = g.start + g.seq.length, nEnd = ns + nseq.length;
+    if (g.start <= nEnd && ns <= gEnd) {            // overlap or adjacent: union them
+      const head = g.start < ns ? g.seq.slice(0, ns - g.start) : "";
+      const tail = gEnd > nEnd ? g.seq.slice(nEnd - g.start) : "";
+      ns = Math.min(g.start, ns);
+      nseq = head + nseq + tail;
+    } else keep.push(g);
+  }
+  keep.push({ start: ns, seq: nseq, t: ++_gsRefTick });
+  keep.sort((a, b) => a.start - b.start);
+  // Bound memory: drop the least recently added segments that no open tile shows.
+  let total = keep.reduce((n, g) => n + g.seq.length, 0);
+  if (total > GS_REF_MAX_CHARS_PER_CONTIG) {
+    const shown = (g) => (typeof state !== "undefined" && state.tiles || []).some((t) =>
+      t && t.contig === contig && t.endBp >= g.start && t.startBp <= g.start + g.seq.length);
+    for (const g of keep.slice().sort((a, b) => a.t - b.t)) {
+      if (total <= GS_REF_MAX_CHARS_PER_CONTIG) break;
+      if (shown(g)) continue;
+      keep.splice(keep.indexOf(g), 1);
+      total -= g.seq.length;
+    }
+  }
+  _gsRefSegs.set(contig, keep);
+}
+
+/** The segment of `contig` covering most of [viewStart, viewEnd], or null. */
+function gsReferenceFor(contig, viewStart, viewEnd) {
+  const segs = _gsRefSegs.get(contig);
+  if (!segs) return null;
+  let best = null, bestOv = 0;
+  for (const g of segs) {
+    const ov = Math.min(g.start + g.seq.length, viewEnd + 1) - Math.max(g.start, viewStart);
+    if (ov > bestOv) { bestOv = ov; best = g; }
+  }
+  return best;
+}
+
+/** Is [viewStart, viewEnd] fully inside one loaded reference segment? */
+function gsReferenceCovers(contig, viewStart, viewEnd) {
+  const g = gsReferenceFor(contig, viewStart, viewEnd);
+  return !!g && g.start <= viewStart && g.start + g.seq.length >= viewEnd + 1;
+}
+
 (function _gsSeedAnnoByContig() {
   try {
     const cfg = window.GENOMESHADER_CONFIG || {};
@@ -585,6 +649,9 @@ const _gsAnnoByContig = {
     }
     if (cfg.data_bounds && typeof cfg.data_bounds.start === "number") {
       _gsAnnoByContig.bounds.set(contig, cfg.data_bounds);
+    }
+    if (typeof cfg.reference_data === "string" && cfg.data_bounds && typeof cfg.data_bounds.start === "number") {
+      gsAddReferenceSegment(contig, cfg.data_bounds.start, cfg.reference_data);
     }
   } catch (_) {}
 })();
@@ -603,6 +670,9 @@ function gsStoreAnnotationsForContig(contig, payload) {
   }
   if (payload.data_bounds && typeof payload.data_bounds.start === "number") {
     _gsAnnoByContig.bounds.set(contig, payload.data_bounds);
+    if (typeof payload.reference_data === "string") {
+      gsAddReferenceSegment(contig, payload.data_bounds.start, payload.reference_data);
+    }
   }
   // Also accept direct cfg fields when seeding.
   if (payload === cfg) {
@@ -794,6 +864,7 @@ if (typeof window !== "undefined") {
 // render from GENOMESHADER_CONFIG.variant_tracks; we rebuild that from the kept
 // windows (union, deduped by variant id). Uses the pure store cores above
 // (overscanRegion / gsRegionCovered / gsWindowStoreUpdate).
+const GS_VP_MIN_WINDOW_BP = 4000;        // smallest window a viewport fetch requests
 const GS_VP_OVERSCAN = 0.5;      // fetch viewport ± 50% on each side
 const GS_VP_MAX_SPAN_BP = 1000000; // above this span, skip loading individual variants (zoom gate)
 // Settle window: only load variants after the view has been still (no scroll /
@@ -946,6 +1017,15 @@ async function gsLoadVariantsForViewport(force) {
     return; // coverage skip
   }
   const win = overscanRegion(vs, ve, GS_VP_OVERSCAN);
+  // Never fetch a tiny window. At base-level zoom the view (+50%) is ~100 bp, so
+  // moving a few hundred bp left it uncovered until a kernel round trip finished
+  // (seconds when the kernel is busy loading reads) and the reference bases blanked.
+  // The reference and nearby variants are cheap: load a few kb around the view.
+  if (win.end - win.start < GS_VP_MIN_WINDOW_BP) {
+    const mid = (win.start + win.end) / 2;
+    win.start = Math.floor(mid - GS_VP_MIN_WINDOW_BP / 2);
+    win.end = Math.ceil(mid + GS_VP_MIN_WINDOW_BP / 2);
+  }
   // Clamp to the contig so a pan near an end doesn't request off-contig coords.
   const chrLen = Number((cfg.chrom_lengths || {})[contig])
     || (typeof chrLengths !== "undefined" ? Number(chrLengths[contig]) : 0) || 0;
@@ -1924,6 +2004,21 @@ function gsApplyNavigatePayload(p) {
     cfg.data_bounds = { start: p.start, end: p.end };
     dataBounds = { start: p.start, end: p.end };
   }
+  // Snapshot what this jump delivered for ITS contig. Multi-tile painting restores
+  // each tile's reference / genes / repeats / bounds from these per-contig snapshots
+  // (gsRestoreAnnotationsForContig); a jump that only updated the globals left the
+  // tile's older snapshot in place, so the next paint swapped stale data back in
+  // and the tile lost its reference bases and annotations. The bounds are stored
+  // only together with a reference sequence (they are that sequence's origin).
+  {
+    const contig = (typeof p.contig === "string" && p.contig) ? p.contig : state.contig;
+    const snap = { genes_track: p.genes_track, repeats_track: p.repeats_track };
+    if (typeof p.reference_data === "string") {
+      snap.reference_data = p.reference_data;
+      if (typeof p.start === "number" && typeof p.end === "number") snap.data_bounds = { start: p.start, end: p.end };
+    }
+    gsStoreAnnotationsForContig(contig, snap);
+  }
   if (Array.isArray(p.insertion_variants_lookup)) {
     cfg.insertion_variants_lookup = p.insertion_variants_lookup;
   }
@@ -1963,6 +2058,7 @@ function gsApplyNavigatePayload(p) {
 
 if (typeof window !== "undefined") {
   window.gsSwitchContig = gsSwitchContig;
+  window.__GS_TEST_requestNavigate = (contig, start, end) => gsRequestNavigate(contig, start, end);
   window.gsPopulateContigSelect = gsPopulateContigSelect;
   window.gsAnnotationFeatures = gsAnnotationFeatures;
   window.gsSetAnnotationTrack = gsSetAnnotationTrack;

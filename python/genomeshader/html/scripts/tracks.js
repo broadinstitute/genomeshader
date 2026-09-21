@@ -1263,7 +1263,20 @@ function renderTracks() {
     // Helper function to get reference sequence for a region
     // Returns { sequence: array, startBp: number } where startBp is the genomic position of sequence[0]
     function getReferenceSequence(startBp, endBp) {
-      // Use the real reference sequence from config if available
+      // Preferred: the loaded segment of THIS tile's contig covering its window
+      // (see gsReferenceFor — one segment per loaded window, not one string per contig).
+      const tile = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
+      const contig = (tile && tile.contig) || state.contig;
+      const seg = (typeof gsReferenceFor === "function") ? gsReferenceFor(contig, Math.floor(startBp), Math.floor(endBp)) : null;
+      if (seg) {
+        const viewStart = Math.floor(startBp), viewEnd = Math.floor(endBp);
+        const seqStart = Math.max(0, viewStart - seg.start);
+        const seqEnd = Math.min(seg.seq.length, viewEnd - seg.start + 1);
+        if (seqEnd > seqStart && seqStart < seg.seq.length) {
+          return { sequence: seg.seq.slice(seqStart, seqEnd).split(''), startBp: seg.start + seqStart };
+        }
+      }
+      // Legacy: the single global sequence + config bounds (single-string callers).
       if (referenceSequence && referenceSequence.length > 0) {
         // Calculate the offset into the sequence
         // The reference sequence starts at data_bounds.start (0-based)
