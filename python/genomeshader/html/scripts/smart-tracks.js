@@ -2,7 +2,19 @@
 // -----------------------------
 
 // Process raw reads data into a layout structure (used by Smart Tracks)
+//
+// A generator so large inputs can be laid out in time slices (see gsSubmitJob in
+// reads-cache.js): with a slice controller `sl` it yields whenever the slice's time
+// budget is spent; with none it runs straight through, and processReadsData() is
+// exactly the old synchronous function.
 function processReadsData(rawReads, opts) {
+  const g = _processReadsDataGen(rawReads, opts, null);
+  let r;
+  while (!(r = g.next()).done) { /* no slice controller: never yields */ }
+  return r.value;
+}
+
+function* _processReadsDataGen(rawReads, opts, sl) {
   if (!rawReads || !rawReads.query_name) return null;
   opts = opts || {};
   const display = cloneReadDisplayConfig(opts.display || DEFAULT_READ_DISPLAY);
@@ -31,6 +43,7 @@ function processReadsData(rawReads, opts) {
   const readArray = [];
   let current = null;
   for (let i = 0; i < numRows; i++) {
+    if (sl && (i & 4095) === 0 && sl.expired()) yield;
     if (rawReads.element_type[i] === 0) { // READ element starts a new alignment
       const isSecondary = secondaryCol ? !!secondaryCol[i]
         : (primaryCol ? !primaryCol[i] : false);
@@ -79,6 +92,7 @@ function processReadsData(rawReads, opts) {
     }
   }
 
+  if (sl && sl.expired()) yield;
   const insertMagnitudes = readArray
     .filter((r) => r.isPaired && Number(r.insertSize))
     .map((r) => Math.abs(Number(r.insertSize)));
@@ -123,6 +137,7 @@ function processReadsData(rawReads, opts) {
       units.push({ start: read.start, end: read.end, reads: [read] });
     }
   }
+  if (sl && sl.expired()) yield;
   const representative = (unit) => unit.reads[0];
   const groupKey = (unit) => display.groupBy
     ? readCategory(representative(unit), display.groupBy)
@@ -183,7 +198,9 @@ function processReadsData(rawReads, opts) {
     // neighbours — binary search instead of scanning every unit in every row, and
     // no re-sort per insert (that was quadratic and froze 100k+ read tracks).
     const rows = [];
+    let _packN = 0;
     for (const unit of groupUnits) {
+      if (sl && (++_packN & 2047) === 0 && sl.expired()) yield;
       let target = -1;
       let at = 0;
       for (let r = 0; r < rows.length; r++) {
@@ -3485,6 +3502,22 @@ if (typeof window !== "undefined") {
 
   window.__GS_TEST_renderAll = function () { renderAll(); };
   /**
+   * Async-vs-sync layout check for the first tile/track: the layout the viewer
+   * shows (possibly built by a background job) vs a fresh synchronous one.
+   */
+  window.__GS_TEST_layoutCompare = function () {
+    const tile = state.tiles[0], track = state.smartTracks[0];
+    const v = gsResolveTrackView(track, tile);
+    if (!v) return null;
+    const sync = processReadsData(v.reads, { display: track.readDisplay });
+    const sig = (L) => {
+      let h = 0;
+      for (let i = 0; i < L.reads.length; i++) h = (Math.imul(h, 31) + L.reads[i].row * 7 + (L.reads[i].start | 0)) | 0;
+      return { n: L.reads.length, rows: L.rowCount, h };
+    };
+    return { pending: !!v.pending, rowsIn: v.reads ? v.reads.query_name.length : 0, async: sig(v.layout), sync: sig(sync) };
+  };
+  /**
    * GPU state for tests: whether the shared device is up, how many devices /
    * pipelines / canvases exist, and how many primitives the bound tile's tracks
    * and flow renderers hold from their last paint.
@@ -3695,7 +3728,7 @@ if (typeof window !== "undefined") {
       inflightKeys: Array.from(_inflightChunks.keys()),
       queuedKeys: _readsQueue.map((d) => d && d.key).filter(Boolean),
       fetchActive: _batchInFlight ? 1 : 0,
-      schedulerPending: !!(_reconcileTimer || _pumpTimer || _gsSmartReadsLoadTimer),
+      schedulerPending: !!(_reconcileTimer || _pumpTimer || _gsSmartReadsLoadTimer || gsJobsPending()),
       readLoadsInFlight: _readLoadsInFlight,
       tracks,
       ribbons,

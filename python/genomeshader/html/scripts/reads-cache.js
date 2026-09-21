@@ -251,6 +251,221 @@ function _mergeReadPayloads(payloads) {
   return out;
 }
 
+/**
+ * Same result as _mergeReadPayloads, but only reads that overlap ANOTHER chunk's
+ * range can possibly appear twice, so only those get identity keys; every other
+ * read (and its element rows) is copied straight through. The general merge built
+ * a string key per read and per element, which dominated chunk-arrival stalls.
+ * `ranges[k]` = [start, end] of payload k's chunk.
+ */
+function _mergeReadPayloadsFast(payloads, ranges) {
+  const g = _mergeReadPayloadsFastGen(payloads, ranges, null);
+  let r;
+  while (!(r = g.next()).done) { /* no slice controller: never yields */ }
+  return r.value;
+}
+
+function* _mergeReadPayloadsFastGen(payloads, ranges, sl) {
+  const cols = Object.keys(payloads[0]);
+  const out = {};
+  for (const c of cols) out[c] = [];
+  const nc = cols.length;
+  const seen = new Map();           // identity -> { elems: Map, at }  (candidates only)
+  const outIdx = [];                // candidate reads, in first-seen order
+  const pushRow = (src, i) => {
+    for (let k = 0; k < nc; k++) { const col = src[cols[k]]; out[cols[k]].push(col ? col[i] : undefined); }
+  };
+  const MARGIN = 2;
+  for (let pi = 0; pi < payloads.length; pi++) {
+    const p = payloads[pi];
+    const n = p.query_name.length;
+    const et = p.element_type, rs = p.reference_start, re = p.reference_end;
+    // other chunks' union bounds (a read outside all of them cannot be duplicated)
+    let i = 0;
+    let _reads = 0;
+    while (i < n) {
+      if (sl && (++_reads & 1023) === 0 && sl.expired()) yield;
+      if (et[i] !== 0) { i++; continue; }          // stray element row (no owning read): skip as before
+      let j = i + 1;
+      while (j < n && et[j] !== 0) j++;            // elements of this read: i+1 .. j-1
+      let candidate = false;
+      for (let q = 0; q < ranges.length && !candidate; q++) {
+        if (q === pi) continue;
+        if (re[i] >= ranges[q][0] - MARGIN && rs[i] <= ranges[q][1] + MARGIN) candidate = true;
+      }
+      if (!candidate) {
+        pushRow(p, i);
+        // Elements ascending by start (the general merge sorted them; usually already
+        // sorted) and without identical repeats (it de-duplicated by type/start/end/seq).
+        let sorted = true;
+        for (let e = i + 2; e < j; e++) if (rs[e] < rs[e - 1]) { sorted = false; break; }
+        let order = null;
+        if (!sorted) {
+          order = []; for (let e = i + 1; e < j; e++) order.push(e);
+          order.sort((a, b) => rs[a] - rs[b]);
+        }
+        const emitted = [];
+        for (let x = i + 1; x < j; x++) {
+          const e = order ? order[x - i - 1] : x;
+          let dup = false;
+          for (let y = emitted.length - 1; y >= 0 && rs[emitted[y]] === rs[e]; y--) {
+            const f = emitted[y];
+            if (et[f] === et[e] && re[f] === re[e] && (p.sequence ? p.sequence[f] === p.sequence[e] : true)) { dup = true; break; }
+          }
+          if (dup) continue;
+          emitted.push(e);
+          pushRow(p, e);
+        }
+      } else {
+        const key = _readIdentity(p, i);
+        let g = seen.get(key);
+        if (!g) {
+          // First sight: emit the read row here (this fixes its place in output order);
+          // its element rows are merged across every duplicate and inserted after it.
+          g = { src: p, i, elems: new Map(), placeholder: out.query_name.length };
+          seen.set(key, g);
+          outIdx.push(g);
+          pushRow(p, i);
+        }
+        for (let e = i + 1; e < j; e++) {
+          const ek = et[e] + "|" + rs[e] + "|" + re[e] + "|" + (p.sequence ? p.sequence[e] : "");
+          if (!g.elems.has(ek)) g.elems.set(ek, { src: p, i: e });
+        }
+      }
+      i = j;
+    }
+  }
+  // Candidate reads were emitted (one row each) at first sight; their element rows
+  // must follow that row, merged + sorted. Rebuild output in one pass if any exist.
+  if (!outIdx.length) return out;
+  const groupAt = new Map();
+  for (const g of outIdx) groupAt.set(g.placeholder, g);
+  const final = {};
+  for (const c of cols) final[c] = [];
+  const N = out.query_name.length;
+  const copy = (r) => { for (let k = 0; k < nc; k++) final[cols[k]].push(out[cols[k]][r]); };
+  for (let r = 0; r < N; r++) {
+    if (sl && (r & 8191) === 0 && sl.expired()) yield;
+    const g = groupAt.get(r);
+    if (g) {
+      copy(r);
+      const els = Array.from(g.elems.values());
+      els.sort((a, b) => a.src.reference_start[a.i] - b.src.reference_start[b.i]);
+      for (const e of els) { for (let k = 0; k < nc; k++) { const col = e.src[cols[k]]; final[cols[k]].push(col ? col[e.i] : undefined); } }
+    } else copy(r);
+  }
+  return final;
+}
+
+// ---------------------------------------------------------------------------
+// Time-sliced background jobs
+// ---------------------------------------------------------------------------
+// Merging chunk payloads and laying out hundreds of thousands of reads is real
+// work; done in the frame a chunk arrives it froze the viewer for seconds. Large
+// jobs run as generators in ~6 ms slices between frames while the tile keeps
+// painting its previous view, and repaint when they finish. Small inputs
+// (<= GS_SYNC_MAX_ROWS rows) stay fully synchronous — no latency, no behaviour
+// change for light sessions.
+const GS_SYNC_MAX_ROWS = 20000;
+const GS_JOB_SLICE_MS = 6;
+const _gsJobs = new Map();                        // key -> { key, gen, onDone, wanted }
+const _gsSlice = { deadline: 0, expired() { return performance.now() > this.deadline; } };
+let _gsJobPumpScheduled = false;
+const _gsJobChannel = (typeof MessageChannel !== "undefined") ? new MessageChannel() : null;
+if (_gsJobChannel) _gsJobChannel.port1.onmessage = () => _gsJobPump();
+
+function gsJobsPending() { return _gsJobs.size > 0; }
+
+function gsSubmitJob(key, makeGen, onDone) {
+  let job = _gsJobs.get(key);
+  if (job) { job.wanted = performance.now(); return job; }
+  job = { key, gen: makeGen(_gsSlice), onDone, wanted: performance.now() };
+  _gsJobs.set(key, job);
+  _gsScheduleJobPump();
+  return job;
+}
+
+function _gsScheduleJobPump() {
+  if (_gsJobPumpScheduled) return;
+  _gsJobPumpScheduled = true;
+  if (_gsJobChannel) _gsJobChannel.port2.postMessage(0);
+  else setTimeout(_gsJobPump, 0);
+}
+
+function _gsJobPump() {
+  _gsJobPumpScheduled = false;
+  const t0 = performance.now();
+  _gsSlice.deadline = t0 + GS_JOB_SLICE_MS;
+  // Drop jobs nobody has asked for lately (the view moved on); they restart if wanted again.
+  for (const [k, j] of _gsJobs) if (t0 - j.wanted > 3000) _gsJobs.delete(k);
+  let finished = false;
+  while (_gsJobs.size && performance.now() < _gsSlice.deadline) {
+    let best = null;                              // most recently wanted first
+    for (const j of _gsJobs.values()) if (!best || j.wanted > best.wanted) best = j;
+    let r;
+    try { r = best.gen.next(); } catch (e) { console.error("read job failed", best.key, e); _gsJobs.delete(best.key); continue; }
+    if (r.done) {
+      _gsJobs.delete(best.key);
+      try { best.onDone(r.value); } catch (e) { console.error("read job completion failed", best.key, e); }
+      finished = true;
+    }
+  }
+  if (_gsJobs.size) _gsScheduleJobPump();
+  if (finished && typeof scheduleRender === "function") scheduleRender();
+}
+
+/** Precompute everything the painter would otherwise build lazily in a frame. */
+function* _gsPrepareLayoutGen(layout, display) {
+  gsLayoutIndex(layout); yield;
+  for (const h of [0, 1, 2]) { gsHapIndex(layout, h); yield; }
+  const m = display && display.softClipMode;
+  gsSummaryEvents(layout, (m === "bases" || m === "hide") ? m : "marker");
+}
+
+const _layoutCache = new WeakMap();               // reads payload -> Map(displayKey -> layout)
+
+/** The layout of `reads` under `display`, or null while a background job computes it. */
+function gsLayoutFor(reads, display, dKey) {
+  let byKey = _layoutCache.get(reads);
+  if (byKey && byKey.has(dKey)) return byKey.get(dKey);
+  const store = (lay) => {
+    let m = _layoutCache.get(reads);
+    if (!m) { m = new Map(); _layoutCache.set(reads, m); }
+    m.set(dKey, lay);
+  };
+  if (_chunkRowCount(reads) <= GS_SYNC_MAX_ROWS) {
+    const lay = processReadsData(reads, { display });
+    store(lay);
+    return lay;
+  }
+  gsSubmitJob("layout|" + _gsObjId(reads) + "|" + dKey, function* (sl) {
+    const lay = yield* _processReadsDataGen(reads, { display }, sl);
+    if (lay) yield* _gsPrepareLayoutGen(lay, display);
+    return lay;
+  }, store);
+  return null;
+}
+
+/** { ready, reads } for a chunk list; when large and not yet merged, starts a job. */
+function gsAssembleChunksAsync(chunks) {
+  const withReads = chunks.filter((c) => _chunkRowCount(c.reads) > 0);
+  if (!withReads.length) return { ready: true, reads: null };
+  if (withReads.length === 1) return { ready: true, reads: withReads[0].reads };
+  const key = withReads.map((c) => c.key).join("~");
+  const hit = _assembleMemo.get(key);
+  if (hit) { _assembleMemo.delete(key); _assembleMemo.set(key, hit); return { ready: true, reads: hit }; }
+  const total = withReads.reduce((n, c) => n + _chunkRowCount(c.reads), 0);
+  if (total <= GS_SYNC_MAX_ROWS) return { ready: true, reads: gsAssembleChunks(chunks) };
+  const payloads = withReads.map((c) => c.reads);
+  const ranges = withReads.map((c) => [c.start, c.end]);
+  gsSubmitJob("merge|" + key, (sl) => _mergeReadPayloadsFastGen(payloads, ranges, sl), (merged) => {
+    _assembleMemo.set(key, merged);
+    const max = _assembleMemoMax();
+    while (_assembleMemo.size > max) _assembleMemo.delete(_assembleMemo.keys().next().value);
+  });
+  return { ready: false };
+}
+
 /** One reads payload for a chunk list, or null when there are no reads at all. */
 function gsAssembleChunks(chunks) {
   const withReads = chunks.filter((c) => _chunkRowCount(c.reads) > 0);
@@ -259,7 +474,9 @@ function gsAssembleChunks(chunks) {
   const key = withReads.map((c) => c.key).join("~");
   const hit = _assembleMemo.get(key);
   if (hit) { _assembleMemo.delete(key); _assembleMemo.set(key, hit); return hit; }
-  const merged = _mergeReadPayloads(withReads.map((c) => c.reads));
+  const merged = window.__GS_SLOW_MERGE
+    ? _mergeReadPayloads(withReads.map((c) => c.reads))
+    : _mergeReadPayloadsFast(withReads.map((c) => c.reads), withReads.map((c) => [c.start, c.end]));
   _assembleMemo.set(key, merged);
   const _memoMax = _assembleMemoMax();
   while (_assembleMemo.size > _memoMax) _assembleMemo.delete(_assembleMemo.keys().next().value);
@@ -303,11 +520,29 @@ function gsResolveTrackView(track, tile) {
       // Chunks are immutable (a re-cache replaces the object), so the same chunk
       // objects mean the same payload: reuse the view's reads without touching
       // the assemble memo at all.
-      const reads = (view && view.chunkRefs && _sameChunkRefs(view.chunkRefs, chunks))
-        ? view.reads
-        : gsAssembleChunks(chunks);
+      // Large merges / layouts run as background jobs: until they finish keep painting
+      // the tile's previous layout (flagged pending) rather than freezing the frame.
+      let reads;
+      let pending = false;
+      if (view && view.chunkRefs && _sameChunkRefs(view.chunkRefs, chunks)) reads = view.reads;
+      else {
+        const a = gsAssembleChunksAsync(chunks);
+        if (a.ready) reads = a.reads; else pending = true;
+      }
+      let layout = null;
+      if (!pending && reads) {
+        layout = (view && view.reads === reads && view.displayKey === dKey && view.layout)
+          ? view.layout : gsLayoutFor(reads, display, dKey);
+        if (layout === null) pending = true;
+      }
+      if (pending) {
+        if (view && view.layout) {
+          return { sig: view.sig, wantSig, exact: false, pending: true, reads: view.reads, layout: view.layout };
+        }
+        return null;
+      }
       if (!view || view.reads !== reads || view.displayKey !== dKey) {
-        view = { reads, displayKey: dKey, layout: reads ? processReadsData(reads, { display }) : null };
+        view = { reads, displayKey: dKey, layout };
       }
       view.chunkRefs = chunks;
       const hullSig = w.contig + ":" + chunks[0].start + "-" + chunks[chunks.length - 1].end;
@@ -340,7 +575,11 @@ function gsResolveTrackView(track, tile) {
     if (have && want && have.contig === want.contig
         && have.end >= want.start && have.start <= want.end) {
       if (view.displayKey !== dKey) {
-        view.layout = processReadsData(view.reads, { display });
+        const lay = gsLayoutFor(view.reads, display, dKey);
+        if (lay === null) {
+          return { sig: view.sig, wantSig, exact: false, pending: true, reads: view.reads, layout: view.layout };
+        }
+        view.layout = lay;
         view.displayKey = dKey;
       }
       return { sig: view.sig, wantSig, exact: false, reads: view.reads, layout: view.layout };
@@ -370,6 +609,7 @@ function gsTrackTileLoading(track, tile) {
 /** Freshness of what `tile` shows for `track`: exact | stale | loading | offline | failed. */
 function gsTrackTileViewState(track, tile, view) {
   if (!track || !track.sampleId) return "exact";      // nothing to fetch (seeded/test tracks)
+  if (view && view.pending) return "stale";           // still laying out: what shows is the previous layout
   if (view && view.exact) return "exact";
   const w = _tileWindow(tile);
   const chunks = gsChunksForWindow(track.sampleId, _trackBamPin(track), w.contig, w.s, w.e);
@@ -935,4 +1175,10 @@ if (typeof window !== "undefined") {
   window.gsCacheChunk = gsCacheChunk;
   window.gsCoverageGaps = gsCoverageGaps;
   window.gsReadTileSize = gsReadTileSize;
+}
+
+// Test seam: run both merges on the same input.
+if (typeof window !== "undefined") {
+  window.__GS_TEST_merge = (payloads, ranges, slow) =>
+    (slow ? _mergeReadPayloads(payloads) : _mergeReadPayloadsFast(payloads, ranges));
 }

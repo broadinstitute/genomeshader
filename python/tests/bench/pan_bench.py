@@ -288,7 +288,7 @@ def main():
             shown = 0
             for (fn, url, ln), us in incl.most_common(80):
                 if fn in ("(root)", "(program)", "(idle)", "(anon)", "evaluate", "sleep"): continue
-                print(f"  {us/1000/nfr:6.2f}  {fn}  {url}:{ln}")
+                print(f"  {us/1000/nfr:6.2f}  ({us/1000:7.0f} ms total)  {fn}  {url}:{ln}")
                 shown += 1
                 if shown >= 28: break
             print("\ntop self time over the drag:")
