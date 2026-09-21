@@ -567,6 +567,10 @@ const _gsAnnoByContig = {
   genes: new Map(),
   repeats: new Map(),
   reference: new Map(),
+  // data_bounds is the genomic origin of the reference string, so it must travel
+  // with it: one global value made whichever tile's viewport load landed last
+  // mis-index every other contig's sequence (its reference bases vanished).
+  bounds: new Map(),
 };
 (function _gsSeedAnnoByContig() {
   try {
@@ -578,6 +582,9 @@ const _gsAnnoByContig = {
     if (cfg.repeats_track) _gsAnnoByContig.repeats.set(contig, cfg.repeats_track);
     if (typeof cfg.reference_data === "string") {
       _gsAnnoByContig.reference.set(contig, cfg.reference_data);
+    }
+    if (cfg.data_bounds && typeof cfg.data_bounds.start === "number") {
+      _gsAnnoByContig.bounds.set(contig, cfg.data_bounds);
     }
   } catch (_) {}
 })();
@@ -594,12 +601,18 @@ function gsStoreAnnotationsForContig(contig, payload) {
   if (typeof payload.reference_data === "string") {
     _gsAnnoByContig.reference.set(contig, payload.reference_data);
   }
+  if (payload.data_bounds && typeof payload.data_bounds.start === "number") {
+    _gsAnnoByContig.bounds.set(contig, payload.data_bounds);
+  }
   // Also accept direct cfg fields when seeding.
   if (payload === cfg) {
     if (cfg.genes_track) _gsAnnoByContig.genes.set(contig, cfg.genes_track);
     if (cfg.repeats_track) _gsAnnoByContig.repeats.set(contig, cfg.repeats_track);
     if (typeof cfg.reference_data === "string") {
       _gsAnnoByContig.reference.set(contig, cfg.reference_data);
+    }
+    if (cfg.data_bounds && typeof cfg.data_bounds.start === "number") {
+      _gsAnnoByContig.bounds.set(contig, cfg.data_bounds);
     }
   }
 }
@@ -622,6 +635,12 @@ function gsRestoreAnnotationsForContig(contig) {
   if (typeof ref === "string") {
     cfg.reference_data = ref;
     if (typeof referenceSequence !== "undefined") referenceSequence = ref;
+  }
+  // The sequence's origin/extent: always restored WITH the sequence (see above).
+  const bounds = _gsAnnoByContig.bounds.get(contig);
+  if (bounds) {
+    cfg.data_bounds = bounds;
+    if (typeof dataBounds !== "undefined") dataBounds = bounds;
   }
 }
 
