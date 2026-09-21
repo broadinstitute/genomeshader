@@ -358,6 +358,68 @@ function* _mergeReadPayloadsFastGen(payloads, ranges, sl) {
 }
 
 // ---------------------------------------------------------------------------
+// Binary reads transport (see python/genomeshader/reads_codec.py)
+// ---------------------------------------------------------------------------
+// The kernel can send a chunk's columns as raw buffers on the widget's binary
+// channel instead of JSON text. JupyterLab would otherwise JSON.parse every reads
+// batch on the main thread before we see it. The transport is negotiated per
+// request and self-healing: any decode problem switches the session back to JSON.
+
+/** Aligned ArrayBuffer copy of a buffer-ish value (DataView / typed array / ArrayBuffer). */
+function _gsBufToArrayBuffer(b) {
+  if (b instanceof ArrayBuffer) return b;
+  if (ArrayBuffer.isView(b)) return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+  throw new Error("unsupported buffer type");
+}
+
+/** {name: column} from a reads_bin manifest + the message's buffers. */
+function gsDecodeReadsBinary(manifest, buffers) {
+  if (!manifest || manifest.v !== 1) throw new Error("unsupported reads_bin version");
+  const n = manifest.n;
+  const out = {};
+  for (const c of manifest.cols) {
+    const raw = buffers[c.buf];
+    if (raw == null) throw new Error("missing buffer for column " + c.name);
+    const ab = _gsBufToArrayBuffer(raw);
+    let col;
+    if (c.kind === "i32") col = new Int32Array(ab);
+    else if (c.kind === "f64") col = new Float64Array(ab);
+    else if (c.kind === "bool") {
+      const u8 = new Uint8Array(ab);
+      col = new Array(u8.length);
+      for (let i = 0; i < u8.length; i++) col[i] = u8[i] === 1;        // real booleans (code tests === false)
+    } else if (c.kind === "str") col = new TextDecoder("utf-8").decode(ab).split("\0");
+    else throw new Error("unknown column kind " + c.kind);
+    if (col.length !== n) throw new Error("column " + c.name + ": expected " + n + " rows, got " + col.length);
+    out[c.name] = col;
+  }
+  return out;
+}
+
+/** Decode every binary item of a fetch_reads_batch response in place (items[i].reads). */
+function gsDecodeBatchResponse(resp) {
+  if (!resp || !Array.isArray(resp.items)) return resp;
+  for (const it of resp.items) {
+    if (it && it.reads_bin) {
+      it.reads = gsDecodeReadsBinary(it.reads_bin, resp._buffers || []);
+      delete it.reads_bin;
+    }
+  }
+  delete resp._buffers;
+  return resp;
+}
+
+/**
+ * Ask for binary only when it is enabled (config.reads_binary, from
+ * GENOMESHADER_READS_BINARY=1), the host transport delivers buffers, and it has not
+ * failed this session. Off by default: see reads_codec.py for the trade-offs.
+ */
+function _gsWantBinaryReads() {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  return !!(cfg.reads_binary === true && window.__GS_TRANSPORT_BINARY && window.__GS_READS_BINARY !== false);
+}
+
+// ---------------------------------------------------------------------------
 // Time-sliced background jobs
 // ---------------------------------------------------------------------------
 // Merging chunk payloads and laying out hundreds of thousands of reads is real
@@ -981,7 +1043,19 @@ function _gsPumpNow() {
   _scheduleReadsRender();      // paint the pending (dimmed) state
   let p;
   try {
-    p = sendCommMessage("fetch_reads_batch", { items }, 300000);
+    const binary = _gsWantBinaryReads();
+    p = sendCommMessage("fetch_reads_batch", binary ? { items, accept_binary: true } : { items }, 300000);
+    if (binary) {
+      // Decode at the boundary. A failure here means the binary path does not work in this
+      // host: fall back to JSON for the rest of the session and let the normal retry run.
+      p = p.then((resp) => {
+        try { return gsDecodeBatchResponse(resp); } catch (e) {
+          window.__GS_READS_BINARY = false;
+          console.warn("binary reads transport failed; retrying as JSON:", e);
+          return sendCommMessage("fetch_reads_batch", { items }, 300000);   // transparent to the caller
+        }
+      });
+    }
   } catch (e) {
     p = Promise.reject(e);
   }
@@ -1181,4 +1255,13 @@ if (typeof window !== "undefined") {
 if (typeof window !== "undefined") {
   window.__GS_TEST_merge = (payloads, ranges, slow) =>
     (slow ? _mergeReadPayloads(payloads) : _mergeReadPayloadsFast(payloads, ranges));
+}
+
+if (typeof window !== "undefined") {
+  const _b64ToView = (b64) => { const bin = atob(b64); const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new DataView(u.buffer, 0); };
+  window.__GS_TEST_toViews = (b64Buffers) => (window.__GS_TEST_views = b64Buffers.map(_b64ToView)).length;
+  // Decode only (buffers prepared by __GS_TEST_toViews) so timing excludes test plumbing.
+  window.__GS_TEST_decodePrepared = (manifest) => gsDecodeReadsBinary(manifest, window.__GS_TEST_views);
+  window.__GS_TEST_decodeReads = (manifest, b64Buffers) => gsDecodeReadsBinary(manifest, b64Buffers.map(_b64ToView));
 }

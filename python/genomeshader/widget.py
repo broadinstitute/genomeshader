@@ -199,7 +199,9 @@ def _build_esm() -> str:
         "    window.GENOMESHADER_VIEW_ID = model.get('view_id') || 'gswidget';\n"
         "    window.GENOMESHADER_JUPYTER_ORIGIN = '';\n"
         "    const __pending = new Map();\n"
-        "    model.on('msg:custom', function (msg) {\n"
+        "    window.__GS_TRANSPORT_BINARY = true;\n"
+        "    model.on('msg:custom', function (msg, buffers) {\n"
+        "      if (msg && buffers && buffers.length) msg._buffers = buffers;\n"
         "      if (msg && msg.request_id && __pending.has(msg.request_id)) {\n"
         "        const resolve = __pending.get(msg.request_id);\n"
         "        __pending.delete(msg.request_id); resolve(msg);\n"
@@ -319,8 +321,17 @@ class GenomeShaderWidget(anywidget.AnyWidget):
         elif msg_type == "fetch_reads_batch":
             try:
                 results = self._shader._fetch_reads_batch_payload(content.get("items") or [])
+                buffers = None
+                if content.get("accept_binary"):
+                    # Binary columns on the widget's buffer channel (no JSON parse in the
+                    # browser). Any chunk the codec cannot represent exactly stays JSON.
+                    try:
+                        from . import reads_codec
+                        results, buffers = reads_codec.encode_batch_items(results)
+                    except Exception:
+                        buffers = None
                 self.send({"type": "fetch_reads_batch_response", "request_id": request_id,
-                           "items": results})
+                           "items": results}, buffers or None)
             except Exception as e:  # whole-batch failure; per-item errors ride in `items`
                 hint = self._shader._report_fetch_failure("reads", e, sample=None)
                 self.send({"type": "fetch_reads_batch_error", "request_id": request_id,

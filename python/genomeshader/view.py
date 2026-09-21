@@ -5921,6 +5921,10 @@ class GenomeShader:
             # IGV-style dynamic loading: fetch variants for the visible window on
             # pan/zoom (not just the startup region). Needs the comm round-trip.
             'viewport_variant_loading': bool(comm_available),
+            # Opt-in binary transport for reads (GENOMESHADER_READS_BINARY=1): columns ride the
+            # widget's buffer channel instead of JSON. ~25% smaller and a little cheaper to
+            # decode; off by default until it has been run against a live kernel/frontend.
+            'reads_binary': os.environ.get("GENOMESHADER_READS_BINARY") == "1",
             # Zoom gate: above this span, skip loading individual variants (too
             # many/dense to draw); tune per callset density.
             'variant_max_span_bp': int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "1000000")),
