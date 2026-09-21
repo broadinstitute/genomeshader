@@ -184,6 +184,54 @@ transform in the vertex shader, pan = uniform update; pairs/splice/vertical stay
 the current painter until ported); **Stage 4** binary transfer from Python instead
 of JSON. Tests: `test_summary_lod.py` pins what the strip draws.
 
+## Stages 2-4 (done overnight 2026-09-21) and what the data says about the rest
+
+**Reference bases (a real bug, separate from the perf work).** The reference was one
+string per contig replaced by each viewport response, and the loader requested only
+view +/- 50% (~100 bp at base zoom), so a small move left the bases uncovered until a
+kernel round trip finished. Now: per-contig reference *segments* (`gsAddReferenceSegment`
+/ `gsReferenceFor`, merged, bounded; two tiles on one contig each get theirs), `data_bounds`
+stored per contig, jumps snapshotted per contig, and viewport loads request >= 4 kb.
+(`test_tile_reference.py`; the same-contig and slow-kernel tests fail on the prior commit.)
+
+**Stage 2a - time-sliced layout (done).** Merging chunk payloads and laying out a large
+read set ran in the frame a chunk arrived. Now `processReadsData` and the merge are
+generators run by a small job scheduler (`gsSubmitJob`, ~6 ms slices, most-recently-wanted
+first); the tile keeps painting its previous layout ("stale") until the job finishes.
+Inputs <= 20000 rows stay synchronous. Worst frame during a real drag:
+
+| samples | before | after |
+| --- | --- | --- |
+| 5 (311k reads) | 570 ms | 35 ms |
+| 10 (622k reads) | 1170 ms | 37 ms |
+
+**Stage 4 - binary transport (done, OFF by default).** `reads_codec.py` +
+`gsDecodeReadsBinary`; enable with `GENOMESHADER_READS_BINARY=1`. Negotiated per request,
+exact-or-JSON per chunk, self-healing (a decode failure retries as JSON and disables it for
+the session). I expected JSON parsing to be a large browser-side stall; measured, it is
+not: `JSON.parse` of a 120k-row / 14 MB chunk is 18 ms vs 12.6 ms for the binary decode
+(kernel-side the encode is ~50 ms vs 30 ms for `json.dumps`); wire size is ~25% smaller.
+A modest win, and unverified against a live kernel/frontend, hence opt-in.
+
+**Stage 2b - columnar, object-free layouts (NOT done).** ~900 B of JS heap per read =
+read object (~25 fields, ~220 B) + element objects (~70 B) + raw column arrays (~300 B) + a
+merged copy of the columns (~300 B) + names. 50 deep short-read samples over 120 kb would be
+~3M reads / ~2.7 GB, near a tab's ceiling. Real fix: typed-array columns end to end (CSR for
+elements), read objects materialised lazily for the reads actually drawn/hovered, and the
+merge fused into layout so no merged copy exists. That touches every consumer of
+`layout.reads` (painter, hover, selection, bundles, read-display sorting/grouping), so it
+needs its own careful pass with the paint verifier on.
+
+**Stage 3 - GPU-resident geometry (NOT done, on evidence).** Profiling the heavy case (10
+samples, 2 expanded, 30x short reads, 120 kb) shows a ~20 ms frame whose top self-time is
+the JS painting of the two *expanded* tracks (coordinate mapping + per-read/element loops)
+and the summary strips (~0.3 ms each). GPU-resident geometry would remove those, i.e. at
+most ~20-30% of that frame and ~0% of the light case (3 tracks, 2 tiles: 4.6 ms, which is
+DOM/annotations, not reads). It is the right endgame for far deeper expanded views, but it
+is a large rewrite of the painter's core modes with real visual-parity risk, and the
+measured walls at these scales were the stalls (fixed) and memory (Stage 2b). I would do
+2b first.
+
 ## The paint signature (and how it is verified)
 
 `gsSmartPaintKey` lists every input to a smart-track paint (tile window / size /
