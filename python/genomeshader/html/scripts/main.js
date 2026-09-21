@@ -1595,7 +1595,7 @@ function renderSmartTrack(trackId) {
           }
         }
         // Insert-gap connectors after bodies so they sit in the empty pair space.
-        for (const read of gsRowReadsInWindow(track.readsLayout, startRow, endRow)) {
+        for (const read of (track.readsLayout.hasMates === false ? [] : gsRowReadsInWindow(track.readsLayout, startRow, endRow))) {
           const gap = pairConnectorGap(read);
           if (!gap) continue;
           const x1 = xG(gap.a.end);

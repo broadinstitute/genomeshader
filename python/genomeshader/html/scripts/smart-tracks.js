@@ -247,9 +247,12 @@ function* _processReadsDataGen(rawReads, opts, sl) {
     if (name !== groupNames[groupNames.length - 1]) groupOffsetPx += 8;
   }
 
+  // Any mate links at all? (the connector pass in the painter is skipped otherwise)
+  let hasMates = false;
+  if (asPairs) { for (const r of readArray) { if (r.mate) { hasMates = true; break; } } }
   return {
     reads: readArray, rowCount: rowBase, groupGapPx: groupOffsetPx,
-    groups: groupLayouts, medianInsertSize, rowReads,
+    groups: groupLayouts, medianInsertSize, rowReads, hasMates,
   };
 }
 

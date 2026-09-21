@@ -207,7 +207,9 @@ const _assembleMemo = new Map();
 function _assembleMemoMax() {
   const tracks = (state.smartTracks || []).length;
   const tiles = (state.tiles || []).length || 1;
-  return Math.max(64, 3 * tracks * tiles);
+  // Each entry is a FULL merged copy of a chunk set's columns (~half of a track's
+  // memory), so keep the working set plus slack, not several generations of it.
+  return Math.max(16, Math.ceil(1.5 * tracks * tiles));
 }
 
 function _readIdentity(p, i) {
@@ -672,6 +674,7 @@ function gsTrackTileLoading(track, tile) {
 function gsTrackTileViewState(track, tile, view) {
   if (!track || !track.sampleId) return "exact";      // nothing to fetch (seeded/test tracks)
   if (view && view.pending) return "stale";           // still laying out: what shows is the previous layout
+  if (!view && gsJobsPending()) return "loading";     // first big layout still being built: say so
   if (view && view.exact) return "exact";
   const w = _tileWindow(tile);
   const chunks = gsChunksForWindow(track.sampleId, _trackBamPin(track), w.contig, w.s, w.e);
