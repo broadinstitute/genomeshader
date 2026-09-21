@@ -563,9 +563,27 @@ setTimeout(() => {
 // Initialize orientation state after DOM elements are available
 updateOrientationState();
 
+// Width measurements are cached for the duration of ONE renderAll pass. A paint
+// maps thousands of coordinates (every repeat, gene exon, read element) through
+// tracksWidthPx(); measuring the DOM for each forces a synchronous layout after
+// the previous DOM write. Outside a pass (hover, interaction) nothing is cached.
+// Layout-changing steps inside a pass call gsMeasureInvalidate().
+let _gsMeasureScope = false;
+const _gsWidthCache = new Map();
+function _gsMeasureClear() { _gsWidthCache.clear(); if (typeof _gsWrapViewCache !== "undefined") _gsWrapViewCache.clear(); }
+function gsMeasureBegin() { _gsMeasureScope = true; _gsMeasureClear(); }
+function gsMeasureEnd() { _gsMeasureScope = false; _gsMeasureClear(); }
+function gsMeasureInvalidate() { _gsMeasureClear(); }
+function _gsElWidth(el) {
+  if (!_gsMeasureScope) return el.getBoundingClientRect().width;
+  let w = _gsWidthCache.get(el);
+  if (w === undefined) { w = el.getBoundingClientRect().width; _gsWidthCache.set(el, w); }
+  return w;
+}
+
 function rectW(el) { 
   if (!el) return 0;
-  const w = el.getBoundingClientRect().width;
+  const w = _gsElWidth(el);
   return isNaN(w) || w <= 0 ? 0 : w;
 }
 function rectH(el) { 
@@ -576,13 +594,13 @@ function rectH(el) {
 
 function tracksWidthPx() { 
   if (tracksContainer) {
-    const w = tracksContainer.getBoundingClientRect().width;
+    const w = _gsElWidth(tracksContainer);
     if (!isNaN(w) && w > 0) {
       return w;
     }
   }
   if (!tracksSvg) return 0;
-  const w = tracksSvg.getBoundingClientRect().width;
+  const w = _gsElWidth(tracksSvg);
   return isNaN(w) || w <= 0 ? 0 : w;
 }
 function flowWidthPx() {

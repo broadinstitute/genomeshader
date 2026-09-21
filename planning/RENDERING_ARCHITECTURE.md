@@ -84,6 +84,46 @@ An unchanged repaint ("idle") is now 2.6 ms at 1×1 and 24 ms at 50×3.
 "Before" is a clean `git archive` of the feature/tiles HEAD. These are main-thread
 CPU numbers; GPU time is not measured.
 
+## Panning: what a frame costs (real-drag benchmark)
+
+`renderAll` benchmarks with a synthetic pan hid a fixed per-frame cost that is
+invisible at 60 Hz in headless Chrome but is the "not butter smooth" feel on a
+120 Hz display (8.3 ms budget). `python/tests/bench/pan_bench.py` drives a REAL
+mouse drag (pointer -> `panByPixels` -> `scheduleRender` -> `renderAll`) in a scene
+like a hifiasm session — 2 tiles at ~120 kb and ~59 kb, genes + 4000 repeats +
+400 variants in view, dpr 2 — and reports the in-page, unprofiled `renderAll` time
+(`--samples N` scales the track count; `--uncapped` removes Chrome's 60 Hz cap so
+rAF cadence is the real frame cost; `--profile`, `--trace`, `--flush-probe` for
+attribution). Note the CPU profiler inflates absolute times and attributes native
+getters (`clientHeight`) to the caller; trust the in-page timers.
+
+Median `renderAll` ms during the drag:
+
+| tracks | before | after |
+| --- | --- | --- |
+| 3 | 7.3 | 4.6 |
+| 10 | 9.4 | 6.5 |
+| 25 | 13.4 | 7.3 |
+| 50 | 19.6 | 8.2 |
+
+What it was: (1) `xGenome()` -> `tracksWidthPx()` -> `getBoundingClientRect()` per
+coordinate (thousands of repeats/exons per frame), each a forced layout; widths are
+now cached for one `renderAll` pass (`gsMeasureBegin/End`, invalidated by
+`updateTracksHeight` / `positionSmartScrollWrapper`). (2) `renderTrackControls`
+rebuilt every pill's DOM every frame and dirtied layout for everything after it
+(~7.5 ms/frame of forced layout at 50 tracks); it now keeps the pills when
+`gsTrackControlsKey()` is unchanged (verified: `GS_VERIFY_PAINT` rebuilds and
+compares `innerHTML`). (3) Culled tracks still paid style writes + rect reads;
+`gsTrackCulledFast` exits before any DOM work (conservative: it can only say
+"culled" when the exact test would). (4) Bundle building scanned every read of every
+track; `gsLayoutMayLink` skips tracks with no SA / off-locus-mate reads.
+
+Remaining per frame (3 tracks): ruler/genes/repeats SVG+GPU (~2 ms for two tiles),
+smart-track paint (~1 ms), bundles/arcs/chrome. The unfocused tile is still fully
+repainted on every pan frame; skipping its window-independent work is the next
+cheap win. The cost that remains is re-emitting geometry from JS, which only
+GPU-resident geometry removes.
+
 ## The paint signature (and how it is verified)
 
 `gsSmartPaintKey` lists every input to a smart-track paint (tile window / size /
@@ -110,7 +150,10 @@ anything `renderSmartTrack` reads.
   canvases; every tile's tracks on the GPU; two tiles on the same locus emit
   identical primitives; closing a tile releases its canvases; recovery after the
   device is replaced; the "needs WebGPU" message.
-- Render benchmark + profiler: `python/tests/bench/`.
+- `test_render_skips.py`: off-screen tracks are not painted (paint signature
+  unchanged on pan) and paint when scrolled into view; unchanged control pills are
+  kept and a real change rebuilds them.
+- Render benchmark, real-drag pan benchmark + profiler: `python/tests/bench/`.
 
 ## Not done / next
 

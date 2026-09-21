@@ -72,6 +72,12 @@ function gsActiveRenderers() {
 }
 
 function positionSmartScrollWrapper() {
+  try { _positionSmartScrollWrapperImpl(); } finally {
+    gsMeasureInvalidate();  // wrapper geometry / scrollbars may have changed widths
+  }
+}
+
+function _positionSmartScrollWrapperImpl() {
   const w = ensureSmartScrollWrapper();
   if (!w) return;
   const spacer = w.querySelector(".gs-smart-scroll-spacer");
@@ -235,6 +241,41 @@ function gsTrackCulled(container, rect) {
   return rect.bottom < visTop - margin || rect.top > visBottom + margin;
 }
 
+// Wrapper viewport numbers cached for one render pass (see gsMeasureBegin).
+var _gsWrapViewCache = new Map();
+function gsWrapperView(wrap) {
+  let v = _gsMeasureScope ? _gsWrapViewCache.get(wrap) : null;
+  if (!v) {
+    const r = wrap.getBoundingClientRect();
+    v = { top: r.top, h: r.height, scroll: wrap.scrollTop };
+    if (_gsMeasureScope) _gsWrapViewCache.set(wrap, v);
+  }
+  return v;
+}
+
+function gsGeoSig(trackLayout) {
+  return trackLayout.contentTop + "|" + trackLayout.contentHeight + "|" + (state._readsHeaderTop || 0);
+}
+
+/**
+ * Cheap, CONSERVATIVE cull test for a track already known to be culled with the
+ * same geometry: pure arithmetic on cached wrapper numbers (no style writes, no
+ * per-track DOM reads). It only says "culled" when the track is well past the
+ * exact test's margin, so it can never skip a track gsTrackCulled would paint.
+ */
+function gsTrackCulledFast(renderer, trackLayout) {
+  if (window.__GS_NO_CULL) return false;
+  const wrap = renderer.container && renderer.container.parentElement;
+  if (!wrap || !wrap.classList || !wrap.classList.contains("gs-smart-scroll")) return false;
+  const v = gsWrapperView(wrap);
+  const winH = window.innerHeight || document.documentElement.clientHeight || 0;
+  const visTop = Math.max(v.top, 0);
+  const visBottom = Math.min(v.top + v.h, winH || v.top + v.h);
+  const margin = Math.max(160, (visBottom - visTop) * 0.5) + 60;
+  const y = v.top + (trackLayout.contentTop - (state._readsHeaderTop || 0)) - v.scroll;
+  return y + trackLayout.contentHeight < visTop - margin || y > visBottom + margin;
+}
+
 /** Repaint culled tracks that have scrolled (or the page has scrolled) into range. */
 function gsRepaintCulledTracks() {
   for (const tile of (state.tiles || [])) {
@@ -314,6 +355,13 @@ function renderSmartTrack(trackId) {
   const renderer = gsActiveRenderers().get(trackId);
   if (!renderer) return;
   
+  // A track that is culled and whose slot has not moved stays culled: skip the
+  // style writes and DOM reads entirely (they scale with the track count).
+  if (renderer._culled && !isVerticalMode() && renderer._geoSig === gsGeoSig(trackLayout)
+      && gsTrackCulledFast(renderer, trackLayout)) {
+    return;
+  }
+
   const { canvas, webgpuCanvas, container, instancedRenderer, webgpuCore, spacer, textCanvas } = renderer;
   if (webgpuCanvas) webgpuCanvas.style.display = "";
   
@@ -412,6 +460,7 @@ function renderSmartTrack(trackId) {
   // the stack's geometry stays correct.
   if (!isVertical && gsTrackCulled(container, containerRect)) {
     renderer._culled = true;
+    renderer._geoSig = gsGeoSig(trackLayout);
     return;
   }
   renderer._culled = false;
@@ -2007,10 +2056,57 @@ function syncReadDisplayAnchors(position) {
 }
 if (typeof window !== "undefined") window.__GS_syncReadDisplayAnchors = syncReadDisplayAnchors;
 
+/**
+ * Everything the control-pill builder reads at BUILD time (handlers read live
+ * state when clicked): layout geometry, per-track label/collapse/hidden/group/
+ * read-visibility state, pinned + expanded-config ids, orientation, and which
+ * tile is bound / focused.
+ */
+function gsTrackControlsKey() {
+  const layout = getTrackLayout();
+  const bound = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
+  const parts = [
+    isVerticalMode() ? "v" : "h", bound ? bound.id : "", state.focusedTileId || "",
+    typeof gsIsMultiTile === "function" && gsIsMultiTile() ? "m" : "s",
+    state.expandedTrackConfigId || "",
+    state.pinnedSmartTrackControls ? Array.from(state.pinnedSmartTrackControls).join(",") : "",
+  ];
+  for (const it of layout) {
+    const t = it.track;
+    const smart = typeof t.id === "string" && t.id.startsWith("smart-track-");
+    let gc = "", tg = "";
+    if (smart) {
+      if (typeof groupColorForSmartTrack === "function") gc = groupColorForSmartTrack(t) || "";
+      if (t.groupId && typeof getTrackGroup === "function") { const g = getTrackGroup(t.groupId); tg = (g && g.color) || ""; }
+    }
+    parts.push(t.id, it.top, it.left, it.width, it.height, t.collapsed ? 1 : 0, t.hidden === true ? 1 : 0,
+      t.label || "", t.closedHeight || 0, t.groupId || "",
+      (t.readDisplay && t.readDisplay.visibility && t.readDisplay.visibility.reads) ? 1 : 0, gc, tg);
+  }
+  return parts.join("|");
+}
+
 function renderTrackControls() {
   syncReadDisplayAnchors();
   const controlsHost = getTrackControlsEl();
   if (!controlsHost) return;
+  // Pills rebuilt from scratch every frame were the largest per-track pan cost
+  // (and dirtied layout for everything after them). Unchanged inputs => keep them.
+  const key = gsTrackControlsKey();
+  if (!window.__GS_FORCE_REPAINT && controlsHost._gsCtlKey === key && controlsHost.firstChild) {
+    if (!window.__GS_VERIFY_PAINT) return;
+    const before = controlsHost.innerHTML;
+    _renderTrackControlsBuild(controlsHost);
+    if (controlsHost.innerHTML !== before) {
+      console.error("PAINT_KEY_MISS " + JSON.stringify({ controls: true, key: key.slice(0, 160) }));
+    }
+  } else {
+    _renderTrackControlsBuild(controlsHost);
+  }
+  controlsHost._gsCtlKey = key;
+}
+
+function _renderTrackControlsBuild(controlsHost) {
   controlsHost.innerHTML = "";
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
@@ -3270,6 +3366,13 @@ function renderHoverOnly() {
 }
 
 function renderAll() {
+  const t0 = window.__GS_TIME_RENDER ? performance.now() : 0;   // benchmark hook
+  gsMeasureBegin();
+  try { _renderAllImpl(); } finally { gsMeasureEnd(); }
+  if (t0) (window.__GS_RENDER_MS || (window.__GS_RENDER_MS = [])).push(performance.now() - t0);
+}
+
+function _renderAllImpl() {
   window.__renderCount = (window.__renderCount || 0) + 1;  // perf instrumentation
   state._viewCoverageMax = null; // recompute View-scale coverage max this frame
 
@@ -3397,6 +3500,51 @@ function renderAll() {
   if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
   if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
+}
+
+// Benchmark-only phase timers: with window.__GS_TIME_PHASES set before load, each
+// named render phase is wrapped with a performance.now() pair and its total is
+// accumulated in window.__GS_PHASE_MS ("flush" also bills forced layout separately,
+// which perturbs timings slightly). Not installed otherwise (zero overhead).
+if (window.__GS_TIME_PHASES) {
+  const acc = window.__GS_PHASE_MS = {};
+  const timed = (name, fn) => function () {
+    // Flush pending layout first and bill it separately, so a phase is charged
+    // only for its own work, not for layout dirtied by earlier phases.
+    if (window.__GS_TIME_PHASES === "flush") {
+      const p0 = performance.now();
+      void document.documentElement.offsetHeight;
+      const f = acc["(layout flush before phases)"] || (acc["(layout flush before phases)"] = { ms: 0, n: 0 });
+      f.ms += performance.now() - p0; f.n++;
+    }
+    const t0 = performance.now();
+    try { return fn.apply(this, arguments); } finally {
+      const a = acc[name] || (acc[name] = { ms: 0, n: 0 });
+      a.ms += performance.now() - t0; a.n++;
+    }
+  };
+  updateTracksHeight = timed("updateTracksHeight", updateTracksHeight);
+  renderTracks = timed("renderTracks", renderTracks);
+  renderFlowCanvas = timed("renderFlowCanvas", renderFlowCanvas);
+  renderTrackControls = timed("renderTrackControls", renderTrackControls);
+  positionSmartScrollWrapper = timed("positionSmartScrollWrapper", positionSmartScrollWrapper);
+  updateFlowAndReadsPosition = timed("updateFlowAndReadsPosition", updateFlowAndReadsPosition);
+  renderGenesPanel = timed("renderGenesPanel", renderGenesPanel);
+  renderHUD = timed("renderHUD", renderHUD);
+  updateTooltip = timed("updateTooltip", updateTooltip);
+  setupCanvasHover = timed("setupCanvasHover", setupCanvasHover);
+  setupVariantHoverAreas = timed("setupVariantHoverAreas", setupVariantHoverAreas);
+  updateDocumentTitle = timed("updateDocumentTitle", updateDocumentTitle);
+  updateDerived = timed("updateDerived", updateDerived);
+  gsPaintSmartTracksForTile = timed("gsPaintSmartTracksForTile", gsPaintSmartTracksForTile);
+  gsRebuildTileBundles = timed("gsRebuildTileBundles", gsRebuildTileBundles);
+  gsDrawTileArcs = timed("gsDrawTileArcs", gsDrawTileArcs);
+  gsUpdateTileChrome = timed("gsUpdateTileChrome", gsUpdateTileChrome);
+  gsSyncLocusBar = timed("gsSyncLocusBar", gsSyncLocusBar);
+  gsBindTileDom = timed("gsBindTileDom", gsBindTileDom);
+  gsUpdateMultiTileHeightLocks = timed("gsUpdateMultiTileHeightLocks", gsUpdateMultiTileHeightLocks);
+  gsEnsureSmartRenderers = timed("gsEnsureSmartRenderers", gsEnsureSmartRenderers);
+  gsRestoreAnnotationsForContig = timed("gsRestoreAnnotationsForContig", gsRestoreAnnotationsForContig);
 }
 
 // Coalesce renders during rapid interaction (pan/zoom/pinch): many events in a

@@ -321,6 +321,12 @@ function getTrackLayout() {
 }
 
 function updateTracksHeight() {
+  try { _updateTracksHeightImpl(); } finally {
+    gsMeasureInvalidate();  // --tracks-h changed: cached widths may be stale (scrollbars)
+  }
+}
+
+function _updateTracksHeightImpl() {
   const layout = getTrackLayout();
   const isVertical = isVerticalMode();
   // Exclude flow (and flow-N) and reads from tracks height/width since they're positioned separately

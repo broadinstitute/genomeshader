@@ -53,6 +53,21 @@ function gsLayoutReadsForTile(track, tile) {
   return [];
 }
 
+/**
+ * Can this track's view in `tile` produce any cross-tile link at all (an SA tag
+ * or an off-locus mate)? Computed once per layout object, so bundle building does
+ * not filter and scan every read of every track on every frame.
+ */
+function gsLayoutMayLink(track, tile) {
+  if (typeof smartTrackReadsLayoutForTile !== "function") return true;
+  const lay = smartTrackReadsLayoutForTile(track, tile);
+  if (!lay || !Array.isArray(lay.reads)) return false;
+  if (lay._mayLink === undefined) {
+    lay._mayLink = lay.reads.some((r) => r && (r.saTag || (r.isPaired && r.mateContig && r.matePos)));
+  }
+  return lay._mayLink;
+}
+
 function gsOutgoingLinksForRead(read) {
   const links = [];
   const parse = (typeof gsParseSaTag === "function") ? gsParseSaTag : () => [];
@@ -118,6 +133,7 @@ function _gsRebuildTileBundlesRaw() {
     if (!track) continue;
     for (const tile of tiles) {
       if (!tile || tile.blank) continue;
+      if (!gsLayoutMayLink(track, tile)) continue;
       const reads = gsLayoutReadsForTile(track, tile);
       for (const read of reads) {
         if (!read) continue;
