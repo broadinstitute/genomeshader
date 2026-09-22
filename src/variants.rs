@@ -1163,7 +1163,9 @@ mod tests {
         // reader must return an empty, correctly-typed frame rather than panic.
         let df = extract_variants(&fixture(), None, None, &"chrZ".to_string(), &1, &1000).unwrap();
         assert_eq!(df.height(), 0);
-        assert_eq!(df.get_column_names().len(), 11);
+        // 11 genotype columns plus breakend fields: mate_contig, mate_pos,
+        // mate_strand, svtype, mate_id.
+        assert_eq!(df.get_column_names().len(), 16);
     }
 
     #[test]
