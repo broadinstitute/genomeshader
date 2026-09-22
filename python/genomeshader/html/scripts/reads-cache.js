@@ -893,7 +893,6 @@ function _scheduleReadsRender() {
     _readsRenderTimer = null;
     if (typeof scheduleRender === "function") scheduleRender();
     else if (typeof renderAll === "function") renderAll();
-    if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
   }, 50);
 }
 

@@ -2,6 +2,15 @@
 
 Written 2026-09-20 (Claude Code), after the multi-locus tiles work.
 
+**Update 2026-09-22:** the cross-tile aggregate-ribbon feature (`tile-arcs.js`
+— bundle clustering, gutter SVG ribbons, per-read bundle-color tinting, and
+the "unconfirmed orientation" suggestion banner it drove) was removed at the
+user's request as an unwanted complication. Tile orientation is now always a
+definite 5′→3′/3′→5′ choice (`tile.reversed`), never a suggested/unconfirmed
+third state. Mentions of "bundles"/"ribbons"/"orientation suggestions" below
+are historical (describing the code as it stood when each section was
+written) except where already corrected inline.
+
 ## Decision
 
 Genomeshader **requires WebGPU**. There is no Canvas2D/SVG fallback for data;
@@ -16,7 +25,7 @@ Which layer draws what:
 | --- | --- |
 | **WebGPU** (anything that scales with data) | read bodies, CIGAR marks, soft-clip / SA-flag markers, strand arrows, reference-base blocks, genes / repeats / data-track marks, variant nodes, flow ribbons |
 | **Canvas2D** (text and small counts) | SNP letters, "Loading…" text, grid lines, depth heatmap, node strokes, hover / selection overlays |
-| **SVG** (bounded chrome) | ruler ticks and labels, gene names, reference-base letters, cross-tile ribbons and handles |
+| **SVG** (bounded chrome) | ruler ticks and labels, gene names, reference-base letters, tile resize handles |
 
 ## How it is built
 
@@ -219,7 +228,7 @@ merged copy of the columns (~300 B) + names. 50 deep short-read samples over 120
 ~3M reads / ~2.7 GB, near a tab's ceiling. Real fix: typed-array columns end to end (CSR for
 elements), read objects materialised lazily for the reads actually drawn/hovered, and the
 merge fused into layout so no merged copy exists. That touches every consumer of
-`layout.reads` (painter, hover, selection, bundles, read-display sorting/grouping), so it
+`layout.reads` (painter, hover, selection, read-display sorting/grouping), so it
 needs its own careful pass with the paint verifier on.
 
 **Stage 3 - GPU-resident geometry (NOT done, on evidence).** Profiling the heavy case (10
@@ -236,9 +245,10 @@ measured walls at these scales were the stalls (fixed) and memory (Stage 2b). I 
 
 `gsSmartPaintKey` lists every input to a smart-track paint (tile window / size /
 orientation, layout identity, display config, collapse + loading state, scroll
-offset, expanded insertions, cross-tile bundle colours, and — only for tracks with
-split reads — every tile's window and the focused tile). Equal key ⇒ the canvases
-are left as painted. A forgotten input would be a stale-pixels bug, so:
+offset, expanded insertions, and — only for tracks with split reads — every
+tile's window and the focused tile, for the cross-tile split-read flag). Equal
+key ⇒ the canvases are left as painted. A forgotten input would be a
+stale-pixels bug, so:
 
 ```bash
 GS_VERIFY_PAINT=1 pytest python/tests/headless -q

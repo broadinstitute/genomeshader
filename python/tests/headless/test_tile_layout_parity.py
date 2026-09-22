@@ -1,7 +1,8 @@
-"""Multi-tile visual parity: track Y alignment, focus chrome, ribbon trackId.
+"""Multi-tile visual parity: track Y alignment, focus chrome.
 
-Catches the class of bugs where ribbons appear to jump tracks (because column B
-grew taller), track handles flip with focus, and bundle colors disagree.
+Catches the class of bugs where a dense pileup in column B pushes that
+column's tracks down while column A stays short (same track, different Y),
+and where track handles flip with focus.
 """
 from __future__ import annotations
 
@@ -206,7 +207,6 @@ def test_smart_track_y_aligned_across_tiles(browser):
               }
               return {
                 rows,
-                nBundles: (window.__GS_STATE.tileBundles || []).length,
                 locks: tracks.map(t => ({ id: t.id, lock: t._multiTileHeightLock })),
               };
             }"""
@@ -218,57 +218,6 @@ def test_smart_track_y_aligned_across_tiles(browser):
         # Height lock should be set for at least one expanded track with mate data.
         locks = [L for L in info["locks"] if L.get("lock")]
         assert locks, f"expected multi-tile height locks, got {info['locks']}"
-    finally:
-        page.close()
-
-
-def test_ribbons_same_track_id_both_ends(browser):
-    """Every aggregate ribbon must use one trackId; endpoints must resolve to that track."""
-    page = _open(browser)
-    try:
-        page.wait_for_function(
-            "() => typeof window.__GS_TEST_loadReads === 'function'", timeout=10000
-        )
-        _setup_two_tiles_expanded(page)
-
-        info = page.evaluate(
-            """() => {
-              if (typeof gsRebuildTileBundles === 'function') gsRebuildTileBundles();
-              if (typeof gsDrawTileArcs === 'function') gsDrawTileArcs();
-              const bundles = window.__GS_STATE.tileBundles || [];
-              const strip = document.getElementById('tileStrip');
-              const stripRect = strip.getBoundingClientRect();
-              const out = [];
-              for (const b of bundles) {
-                const left = window.__GS_STATE.tiles.find(t => t.id === b.tileAId);
-                const right = window.__GS_STATE.tiles.find(t => t.id === b.tileBId);
-                const y1info = left && gsTrackContainerYInTile
-                  ? gsTrackContainerYInTile(left, b.trackId, strip, stripRect) : null;
-                const y2info = right && gsTrackContainerYInTile
-                  ? gsTrackContainerYInTile(right, b.trackId, strip, stripRect) : null;
-                out.push({
-                  id: b.id,
-                  trackId: b.trackId,
-                  count: b.count,
-                  y1: y1info && y1info.mid,
-                  y2: y2info && y2info.mid,
-                  dy: (y1info && y2info) ? Math.abs(y1info.mid - y2info.mid) : null,
-                  crossTrackKeys: (b.readKeys || []).some(k => k.trackId !== b.trackId),
-                });
-              }
-              return out;
-            }"""
-        )
-        cross = [b for b in info if b.get("crossTrackKeys")]
-        if cross:
-            _shot(page, "fail_ribbon_cross_track_keys.png")
-            pytest.fail(f"bundle readKeys mix trackIds: {cross}")
-        steep = [b for b in info if b.get("dy") is not None and b["dy"] > 40]
-        if steep:
-            _shot(page, "fail_ribbon_steep_dy.png")
-            pytest.fail(
-                f"ribbon endpoints for same trackId differ by >40px (layout skew): {steep}"
-            )
     finally:
         page.close()
 
@@ -333,36 +282,5 @@ def test_track_controls_compact_only_when_unfocused(browser):
         if b["otherTotal"] > 0 and b["otherCompact"] < max(1, b["otherTotal"] // 2):
             _shot(page, "fail_controls_a_not_compact.png")
             pytest.fail(f"unfocused tile A expected compact controls: {b}")
-    finally:
-        page.close()
-
-
-def test_bundle_color_keys_both_tiles(browser):
-    """Supporting reads should have bundle color entries for both tile ids."""
-    page = _open(browser)
-    try:
-        page.wait_for_function(
-            "() => typeof window.__GS_TEST_loadReads === 'function'", timeout=10000
-        )
-        _setup_two_tiles_expanded(page)
-        info = page.evaluate(
-            """() => {
-              if (typeof gsRebuildTileBundles === 'function') gsRebuildTileBundles();
-              const map = window.__GS_STATE.bundleColorByReadKey || {};
-              const keys = Object.keys(map);
-              const tiles = (window.__GS_STATE.tiles || []).map(t => t.id);
-              const byTile = {};
-              for (const id of tiles) byTile[id] = keys.filter(k => k.startsWith(id + '|')).length;
-              return { nKeys: keys.length, byTile, nBundles: (window.__GS_STATE.tileBundles || []).length };
-            }"""
-        )
-        if info["nBundles"] < 1:
-            _shot(page, "fail_no_bundles.png")
-            pytest.fail(f"expected tile bundles with SA reads: {info}")
-        # Both tiles should have at least one color key when bundles exist.
-        missing = [tid for tid, n in info["byTile"].items() if n < 1]
-        if missing:
-            _shot(page, "fail_bundle_color_one_tile.png")
-            pytest.fail(f"bundle colors missing for tiles {missing}: {info}")
     finally:
         page.close()

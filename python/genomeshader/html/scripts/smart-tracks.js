@@ -546,7 +546,7 @@ function smartTrackStackHeightFromLayout(track, layout) {
 function smartTrackLayoutHeight(track) {
   // Slot height for layout: summary-only uses closedHeight; with reads fits the
   // stack up to the open cap (track.height, default 220).
-  // Multi-tile: use the locked max across columns so ribbons stay horizontal.
+  // Multi-tile: use the locked max across columns so a track sits at the same Y in every tile.
   if (!track) return SMART_TRACK_OPEN_HEIGHT;
   const display = track.readDisplay || DEFAULT_READ_DISPLAY;
   const showReads = display.visibility.reads !== false;
@@ -566,7 +566,7 @@ function smartTrackLayoutHeight(track) {
 /**
  * Lock each smart track's layout height to the max stack needed by ANY open
  * tile. Without this, a dense pileup in column B pushes that column's tracks
- * down while A stays short — ribbons slant and look like they jump tracks.
+ * down while A stays short, so the same track sits at different Y in each tile.
  */
 function gsUpdateMultiTileHeightLocks() {
   const tracks = state.smartTracks || [];
@@ -3693,39 +3693,6 @@ if (typeof window !== "undefined") {
         perTile,
       };
     });
-    const ribbons = [];
-    try {
-      const strip = (typeof gsTileStripEl === "function")
-        ? gsTileStripEl()
-        : (document.getElementById("gsTileStrip")
-          || document.querySelector(".gs-tile-strip"));
-      const stripRect = strip ? strip.getBoundingClientRect() : null;
-      const tiles = (state.tiles || []).filter((t) => t && !t.blank);
-      for (const b of (state.tileBundles || [])) {
-        const left = tiles.find((t) => t.id === b.tileAId);
-        const right = tiles.find((t) => t.id === b.tileBId);
-        let y1 = null;
-        let y2 = null;
-        if (left && right && stripRect && typeof gsBundleEndpointY === "function") {
-          y1 = gsBundleEndpointY(left, b.trackId, b, strip, stripRect);
-          y2 = gsBundleEndpointY(right, b.trackId, b, strip, stripRect);
-        }
-        const track = tracks.find((t) => t.id === b.trackId);
-        ribbons.push({
-          id: b.id,
-          trackId: b.trackId,
-          sampleId: track ? track.sampleId : null,
-          bamPin: track ? track.bamPin : null,
-          count: b.count,
-          y1, y2,
-          drawable: y1 != null && y2 != null,
-          leftReads: track && left ? (track.perTile[left.id] || {}).nReads : 0,
-          rightReads: track && right ? (track.perTile[right.id] || {}).nReads : 0,
-          leftSa: track && left ? (track.perTile[left.id] || {}).nSa : 0,
-          rightSa: track && right ? (track.perTile[right.id] || {}).nSa : 0,
-        });
-      }
-    } catch (_) {}
     return {
       cacheKeys: Array.from(_chunks.keys()),
       inflightKeys: Array.from(_inflightChunks.keys()),
@@ -3734,7 +3701,6 @@ if (typeof window !== "undefined") {
       schedulerPending: !!(_reconcileTimer || _pumpTimer || _gsSmartReadsLoadTimer || gsJobsPending()),
       readLoadsInFlight: _readLoadsInFlight,
       tracks,
-      ribbons,
       tiles: (state.tiles || []).map((t) => {
         const root = (typeof gsTileRootEl === "function")
           ? gsTileRootEl(t.id)
@@ -3755,7 +3721,6 @@ if (typeof window !== "undefined") {
       focusedTileId: state.focusedTileId,
       statusText: bar ? (bar.textContent || "") : "",
       statusBusy: !!(bar && bar.classList.contains("indeterminate")),
-      nBundles: (state.tileBundles && state.tileBundles.length) || 0,
     };
   };
 }

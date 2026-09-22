@@ -151,16 +151,15 @@ function gsSmartPaintKey(track, renderer, trackLayout, ctx) {
   const exp = state.expandedInsertions;
   let cross = "";
   if (multi) {
-    // Cross-tile inputs: bundle colours, and — only when this track has split
-    // reads — every tile's window and the focused tile (an SA-mate flag
-    // appears/disappears as another tile pans over the mate or focus moves).
-    cross = state._bundleColorSig || "";
+    // Cross-tile input: only when this track has split reads, every tile's
+    // window and the focused tile (an SA-mate flag appears/disappears as
+    // another tile pans over the mate or focus moves).
     if (layout && layout._hasSa === undefined) {
       layout._hasSa = !!(layout.reads && layout.reads.some((r) => r && r.saTag));
     }
     if (layout && layout._hasSa) {
       // (the flag lookup is relative to the FOCUSED tile, so focus is an input too)
-      cross += "|" + (state.focusedTileId || "") + "|"
+      cross = (state.focusedTileId || "") + "|"
         + (state.tiles || []).map((x) => `${x.id}:${x.contig}:${x.startBp}-${x.endBp}:${x.linkColor || ""}`).join(",");
     }
   }
@@ -3378,12 +3377,8 @@ function _renderAllImpl() {
   const multi = (typeof gsIsMultiTile === "function" && gsIsMultiTile());
   const focused = (typeof gsFocusedTile === "function") ? gsFocusedTile() : null;
 
-  // Rebuild cross-tile bundles before painting so read colors match ribbons.
-  if (multi && typeof gsRebuildTileBundles === "function") {
-    try { gsRebuildTileBundles(); } catch (_) {}
-  }
   // Lock smart-track slot heights to the max across columns BEFORE painting so
-  // every column shares the same Y per track (ribbons stay level).
+  // every column shares the same Y per track.
   if (multi && typeof gsUpdateMultiTileHeightLocks === "function") {
     try { gsUpdateMultiTileHeightLocks(); } catch (_) {}
   }
@@ -3498,7 +3493,6 @@ function _renderAllImpl() {
   updateDocumentTitle();
   if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
   if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
-  if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
 }
 
 // Benchmark-only phase timers: with window.__GS_TIME_PHASES set before load, each
@@ -3536,8 +3530,6 @@ if (window.__GS_TIME_PHASES) {
   updateDocumentTitle = timed("updateDocumentTitle", updateDocumentTitle);
   updateDerived = timed("updateDerived", updateDerived);
   gsPaintSmartTracksForTile = timed("gsPaintSmartTracksForTile", gsPaintSmartTracksForTile);
-  gsRebuildTileBundles = timed("gsRebuildTileBundles", gsRebuildTileBundles);
-  gsDrawTileArcs = timed("gsDrawTileArcs", gsDrawTileArcs);
   gsUpdateTileChrome = timed("gsUpdateTileChrome", gsUpdateTileChrome);
   gsSyncLocusBar = timed("gsSyncLocusBar", gsSyncLocusBar);
   gsBindTileDom = timed("gsBindTileDom", gsBindTileDom);

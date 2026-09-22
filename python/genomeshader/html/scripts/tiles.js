@@ -38,16 +38,8 @@ function gsCreateTile(opts = {}) {
     startBp: Number.isFinite(opts.startBp) ? opts.startBp : (state.startBp || 0),
     endBp: Number.isFinite(opts.endBp) ? opts.endBp : (state.endBp || 1000),
     pxPerBp: Number.isFinite(opts.pxPerBp) ? opts.pxPerBp : (state.pxPerBp || 1),
+    // Display orientation: strictly 5'->3' (false) or 3'->5' (true), always definite.
     reversed: !!opts.reversed,
-    // Display orientation confirmation (linked tiles start unconfirmed).
-    // Primary / manually opened tiles default to confirmed.
-    orientationConfirmed: Object.prototype.hasOwnProperty.call(opts, "orientationConfirmed")
-      ? !!opts.orientationConfirmed
-      : (opts.linkedFromId ? false : true),
-    suggestedReversed: Object.prototype.hasOwnProperty.call(opts, "suggestedReversed")
-      ? opts.suggestedReversed
-      : null,
-    orientationEvidence: null,
     widthPx: Number.isFinite(opts.widthPx) ? opts.widthPx : null,
     linkColor: opts.linkColor || null,
     linkedFromId: opts.linkedFromId || null,
@@ -273,10 +265,6 @@ function gsAddTile(opts = {}) {
     reversed,
     linkColor: opts.linkColor || (opts.linkedFromId ? gsNextLinkColor() : null),
     linkedFromId: opts.linkedFromId || null,
-    orientationConfirmed: Object.prototype.hasOwnProperty.call(opts, "orientationConfirmed")
-      ? !!opts.orientationConfirmed
-      : (opts.linkedFromId ? false : true),
-    suggestedReversed: opts.suggestedReversed != null ? opts.suggestedReversed : null,
     blank: !!opts.blank || !contig,
     widthPx: opts.widthPx != null ? opts.widthPx : (source && source.widthPx),
   });
@@ -337,10 +325,6 @@ function gsRemoveTile(tileId) {
     const next = state.tiles[Math.min(idx, state.tiles.length - 1)];
     state.focusedTileId = next.id;
   }
-  // Drop ribbon-gutter preference when no linked tiles remain.
-  if (!(state.tiles || []).some((t) => t && t.linkedFromId)) {
-    state.preferRibbonGutters = false;
-  }
   // Clear stale linkedFromId pointing at the removed tile.
   for (const t of state.tiles) {
     if (t.linkedFromId === tileId) t.linkedFromId = null;
@@ -348,16 +332,7 @@ function gsRemoveTile(tileId) {
   // Single-tile: drop fixed widths so the remaining column fills the strip.
   if (state.tiles.length === 1) {
     state.tiles[0].widthPx = null;
-    // A lone tile has nothing to be "linked"/unconfirmed against: drop the
-    // pending-orientation chrome (dashed border + empty suggestion banner).
-    state.tiles[0].orientationConfirmed = true;
-    state.tiles[0].suggestedReversed = null;
-    state.tiles[0].orientationEvidence = null;
     state.tiles[0].linkedFromId = null;
-    state.preferRibbonGutters = false;
-    state.tileBundles = [];
-    state.bundleColorByReadKey = Object.create(null);
-    state.selectedArcRead = null;
   } else {
     // Multi still: release fixed widths so flex can redistribute.
     for (const t of state.tiles) t.widthPx = null;
@@ -404,43 +379,23 @@ function gsReorderTiles(fromIndex, toIndex) {
   if (typeof renderAll === "function") renderAll();
 }
 
-function gsSetTileReversed(tileId, reversed, opts) {
-  opts = opts || {};
+function gsSetTileReversed(tileId, reversed) {
   const t = (state.tiles || []).find((x) => x.id === tileId);
   if (!t) return;
   t.reversed = !!reversed;
-  if (opts.confirm !== false) {
-    t.orientationConfirmed = true;
-    t.orientationEvidence = null;
-  }
   if (state.focusedTileId === t.id && typeof gsSyncFocusedAliases === "function") {
     gsSyncFocusedAliases();
   }
   if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
   if (typeof renderAll === "function") renderAll();
-  if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
 }
 
-/** Commit suggested display orientation (Apply banner). */
-function gsApplySuggestedOrientation(tileId) {
-  const t = (state.tiles || []).find((x) => x.id === tileId);
-  if (!t || t.suggestedReversed == null) return;
-  gsSetTileReversed(tileId, !!t.suggestedReversed, { confirm: true });
-}
-
-/** Set pending/confirmed display orientation from the ▶ / ? / ◀ control. */
+/** Set display orientation from the ▶ / ◀ control: choice is "fwd" | "rev". */
 function gsSetTileOrientationChoice(tileId, choice) {
-  // choice: "fwd" | "unknown" | "rev"
   const t = (state.tiles || []).find((x) => x.id === tileId);
   if (!t) return;
-  if (choice === "unknown") {
-    t.orientationConfirmed = false;
-    if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
-    if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
-    return;
-  }
-  gsSetTileReversed(tileId, choice === "rev", { confirm: true });
+  gsSetTileReversed(tileId, choice === "rev");
 }
 
 function gsSetTileLocus(tileId, contig, startBp, endBp) {
@@ -493,7 +448,6 @@ try {
     reorder: gsReorderTiles,
     setReversed: gsSetTileReversed,
     setOrientationChoice: gsSetTileOrientationChoice,
-    applySuggestedOrientation: gsApplySuggestedOrientation,
     setLocus: gsSetTileLocus,
     focused: gsFocusedTile,
     active: gsActiveTile,

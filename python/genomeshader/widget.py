@@ -62,7 +62,7 @@ def _html_dir() -> Path:
 # (widget-comms.js) stands in for the classic-Notebook comm (jupyter-comms.js).
 _SCRIPT_ORDER = [
     "cleanup.js", "webgpu-core.js", "webgpu-renderer.js", "webgpu-bezier.js",
-    "widget-comms.js", "dom-utils.js", "ui-state.js", "tiles.js", "tile-ui.js", "tile-arcs.js", "view-state.js",
+    "widget-comms.js", "dom-utils.js", "ui-state.js", "tiles.js", "tile-ui.js", "view-state.js",
     "allele-reorder.js",
     "read-display.js", "track-groups.js", "reads-cache.js", "smart-tracks.js", "rendering.js", "tracks.js", "interaction.js", "main.js",
     "ucsc-tracks.js", "comments.js",

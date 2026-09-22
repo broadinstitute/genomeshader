@@ -227,7 +227,7 @@ def test_plus_button_click_adds_tile(browser):
 
 def test_flip_toggle_click_reverses(browser):
     page = _open(browser)
-    # The orientation control is a ▶ / ? / ◀ segmented group; ◀ = 3′→5′.
+    # The orientation control is a ▶ / ◀ segmented group; ◀ = 3′→5′.
     page.click('.gs-tile [data-orient-choice="rev"]', timeout=5000)
     page.wait_for_timeout(200)
     rev = page.evaluate("() => !!__GS_STATE.tiles[0].reversed")

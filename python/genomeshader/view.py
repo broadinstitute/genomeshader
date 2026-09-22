@@ -786,7 +786,6 @@ class GenomeShader:
             "ui-state.js",
             "tiles.js",
             "tile-ui.js",
-            "tile-arcs.js",
             "view-state.js",
             "read-display.js",
             "track-groups.js",

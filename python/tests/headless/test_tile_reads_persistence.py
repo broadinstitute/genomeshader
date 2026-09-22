@@ -3,7 +3,7 @@ painting it through focus flips, pans, slow fetches and SA-open.
 
 These tests assert on painted pixels (``__GS_TEST_tileInk``), not on cache keys
 or DOM presence — the earlier suite checked internals while users saw blank
-columns, "Loading…" stuck on siblings, and ribbons drawn out of empty tracks.
+columns and "Loading…" stuck on siblings.
 
 The shared mock (reads_mock.py) mirrors the real diploid hifiasm test BAMs.
 Reads are cached as aligned CHUNKS (16 kb+), so a small pan inside loaded chunks
@@ -275,51 +275,6 @@ def test_two_tiles_on_same_contig_both_load(browser):
         )
         page.wait_for_timeout(300)
         _assert_reads_painted(page, _ink(page), "same-contig tiles")
-    finally:
-        page.close()
-
-
-def test_ribbons_need_reads_on_both_sides_and_colors_are_stable(browser):
-    """A ribbon exists iff both tiles hold supporting reads for that track, and a
-    bundle keeps its color when unrelated tracks come and go (colors used to be
-    assigned by creation order, so they flipped as other ribbons appeared)."""
-    page = _open(browser, delay=60)
-    try:
-        _load_and_expand_hap1(page)
-        _open_sa_tile(page)
-        _idle(page)
-        page.wait_for_timeout(500)
-
-        def colors():
-            return page.evaluate(
-                """() => { window.gsRebuildTileBundles();
-                  const out = {};
-                  for (const b of window.__GS_STATE.tileBundles) {
-                    out[b.trackId + '|' + b.dstContig + '|' + b.strandCombo] = b.color;
-                  }
-                  return out; }"""
-            )
-
-        before = colors()
-        pins = page.evaluate(
-            "() => Object.fromEntries(window.__GS_STATE.smartTracks.map(t => [t.id, t.requestedBamUrl]))"
-        )
-        hap1 = {tid for tid, pin in pins.items() if ".hap1." in pin}
-        assert len(before) == 2, before          # one bundle per hap1 track, none for hap2
-        assert {k.split("|")[0] for k in before} == hap1, (before, pins)
-
-        # Drop the FIRST hap1 track; the other's ribbon color must not shift.
-        first = next(t for t in page.evaluate("() => window.__GS_STATE.smartTracks.map(t => t.id)")
-                     if t in hap1)
-        page.evaluate(
-            "(id) => { window.__GS_armRemoveSmartTrack(id); window.__GS_confirmRemoveSmartTrack(id); }",
-            first,
-        )
-        page.wait_for_timeout(300)
-        after = colors()
-        assert len(after) == 1, after
-        (k, c), = after.items()
-        assert before[k] == c, f"bundle color changed {before[k]} -> {c}"
     finally:
         page.close()
 

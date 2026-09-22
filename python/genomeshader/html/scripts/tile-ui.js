@@ -1,4 +1,4 @@
-// Multi-locus tile chrome: strip DOM, pills, resize, flip, arcs, context menu.
+// Multi-locus tile chrome: strip DOM, pills, resize, flip, context menu.
 
 const GS_TILE_MIN_WIDTH_PX = 280;
 
@@ -42,43 +42,11 @@ function gsTileHeaderHtml() {
       <div class="gs-tile-orient-seg" data-tile-orient-seg role="group" aria-label="Display orientation">
         <button type="button" class="gs-tile-orient-btn" data-orient-choice="fwd"
                 title="5′ → 3′" aria-label="5′ to 3′">▶</button>
-        <button type="button" class="gs-tile-orient-btn" data-orient-choice="unknown"
-                title="Orientation unconfirmed" aria-label="Unconfirmed">?</button>
         <button type="button" class="gs-tile-orient-btn" data-orient-choice="rev"
                 title="3′ → 5′" aria-label="3′ to 5′">◀</button>
       </div>
       <button type="button" class="gs-tile-close" data-tile-close title="Close tile" aria-label="Close tile">×</button>
-    </div>
-    <div class="gs-tile-orient-banner" data-tile-orient-banner hidden></div>`;
-}
-
-/**
- * Default resize handle width; widen when SA/PE-linked tiles need ribbon room.
- */
-const GS_TILE_DIVIDER_PX = 8;
-const GS_TILE_RIBBON_GUTTER_PX = 64;
-
-function gsDesiredTileGutterPx() {
-  if (typeof gsIsMultiTile === "function" && !gsIsMultiTile()) return GS_TILE_DIVIDER_PX;
-  if (state.preferRibbonGutters) return GS_TILE_RIBBON_GUTTER_PX;
-  const tiles = state.tiles || [];
-  if (tiles.some((t) => t && t.linkedFromId)) return GS_TILE_RIBBON_GUTTER_PX;
-  if (state.tileBundles && state.tileBundles.length) return GS_TILE_RIBBON_GUTTER_PX;
-  return GS_TILE_DIVIDER_PX;
-}
-
-/** Apply divider widths + strip class for ribbon gutters. */
-function gsApplyTileGutterWidths() {
-  const strip = gsTileStripEl();
-  if (!strip) return;
-  const w = gsDesiredTileGutterPx();
-  const wide = w > GS_TILE_DIVIDER_PX;
-  strip.classList.toggle("has-ribbon-gutters", wide);
-  strip.style.setProperty("--gs-tile-gutter", `${w}px`);
-  strip.querySelectorAll(".gs-tile-divider:not(.gs-tile-end-resize)").forEach((d) => {
-    d.style.flex = `0 0 ${w}px`;
-    d.style.width = `${w}px`;
-  });
+    </div>`;
 }
 
 /**
@@ -99,7 +67,6 @@ function gsEnsureTileStripDom() {
     existing.set(el.getAttribute("data-tile-id"), el);
   });
 
-  const arc = strip.querySelector("#tileArcOverlay");
   const frag = document.createDocumentFragment();
 
   state.tiles.forEach((tile, i) => {
@@ -121,7 +88,7 @@ function gsEnsureTileStripDom() {
         || header.querySelector("[data-tile-edit]")
         || (flipEl && flipEl.tagName === "INPUT")
         || !header.querySelector("[data-tile-orient-seg]")
-        || !el.querySelector(":scope > [data-tile-orient-banner]")
+        || header.querySelector('[data-orient-choice="unknown"]')
         || !header.querySelector(".gs-tile-header-spacer")
         || !header.querySelector("[data-tile-letter-input]")
       ));
@@ -130,15 +97,10 @@ function gsEnsureTileStripDom() {
         const tmp = document.createElement("div");
         tmp.innerHTML = gsTileHeaderHtml();
         const newHeader = tmp.querySelector("[data-tile-header]");
-        const newBanner = tmp.querySelector("[data-tile-orient-banner]");
         if (header && newHeader) header.replaceWith(newHeader);
+        // Drop a stale orientation banner from an older header layout.
         const oldBanner = el.querySelector(":scope > [data-tile-orient-banner]");
-        if (newBanner) {
-          if (oldBanner) oldBanner.replaceWith(newBanner);
-          else if (newHeader && newHeader.nextSibling !== newBanner) {
-            newHeader.insertAdjacentElement("afterend", newBanner);
-          }
-        }
+        if (oldBanner) oldBanner.remove();
         // Re-bind on the tile root (idempotent via __gsBound on the new header).
         if (newHeader) delete newHeader.__gsBound;
         gsBindTileHeaderEvents(el, tile.id);
@@ -198,16 +160,9 @@ function gsEnsureTileStripDom() {
     el.remove();
   });
 
-  // Rebuild strip contents, keeping arc overlay on top.
+  // Rebuild strip contents.
   while (strip.firstChild) strip.removeChild(strip.firstChild);
   strip.appendChild(frag);
-  if (arc) strip.appendChild(arc);
-  else {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("id", "tileArcOverlay");
-    svg.setAttribute("class", "gs-tile-arc-overlay");
-    strip.appendChild(svg);
-  }
   strip.classList.toggle("gs-single-tile", state.tiles.length <= 1);
   strip.classList.toggle("gs-multi-tile", state.tiles.length > 1);
 
@@ -220,7 +175,6 @@ function gsEnsureTileStripDom() {
   });
   gsUpdateTileChrome();
   gsUpdateOrientationGate();
-  gsApplyTileGutterWidths();
   if (typeof gsUpdateTileStripScrollChrome === "function") gsUpdateTileStripScrollChrome();
 }
 
@@ -255,7 +209,7 @@ function gsBindTileHeaderEvents(el, tileId) {
   header.__gsBound = true;
 
   header.addEventListener("click", (e) => {
-    if (e.target.closest("[data-tile-orient-seg], [data-tile-orient-banner]") || e.target.closest("[data-tile-close]")
+    if (e.target.closest("[data-tile-orient-seg]") || e.target.closest("[data-tile-close]")
         || e.target.closest("[data-tile-locus]") || e.target.closest("[data-tile-locus-input]")
         || e.target.closest("[data-tile-letter]") || e.target.closest("[data-tile-letter-input]")) {
       return;
@@ -316,7 +270,7 @@ function gsBindTileHeaderEvents(el, tileId) {
       }
       if (typeof gsIsMultiTile === "function" && !gsIsMultiTile()) return;
       if (state.focusedTileId === tileId) return;
-      if (e.target.closest("[data-tile-orient-seg], [data-tile-orient-banner], [data-tile-close], [data-tile-locus], [data-tile-locus-input], [data-tile-letter], [data-tile-letter-input]")) {
+      if (e.target.closest("[data-tile-orient-seg], [data-tile-close], [data-tile-locus], [data-tile-locus-input], [data-tile-letter], [data-tile-letter-input]")) {
         return;
       }
       if (typeof gsFocusTile === "function") gsFocusTile(tileId, { scroll: false });
@@ -334,19 +288,6 @@ function gsBindTileHeaderEvents(el, tileId) {
       const choice = btn.getAttribute("data-orient-choice");
       if (typeof gsSetTileOrientationChoice === "function") {
         gsSetTileOrientationChoice(tileId, choice);
-      }
-    });
-  }
-  const banner = el.querySelector("[data-tile-orient-banner]");
-  if (banner && !banner.__gsBound) {
-    banner.__gsBound = true;
-    banner.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
-    banner.addEventListener("click", (e) => {
-      const apply = e.target.closest("[data-orient-apply]");
-      if (!apply) return;
-      e.stopPropagation();
-      if (typeof gsApplySuggestedOrientation === "function") {
-        gsApplySuggestedOrientation(tileId);
       }
     });
   }
@@ -507,11 +448,9 @@ function gsUpdateTileChrome() {
     const focused = showFocus && tile.id === state.focusedTileId;
     el.classList.toggle("is-focused", focused);
     el.classList.toggle("is-reversed", !!tile.reversed);
-    el.classList.toggle("is-orientation-pending", tile.orientationConfirmed === false);
     const letter = el.querySelector("[data-tile-letter]");
     const locus = el.querySelector("[data-tile-locus]");
     const orientSeg = el.querySelector("[data-tile-orient-seg]");
-    const banner = el.querySelector("[data-tile-orient-banner]");
     const close = el.querySelector("[data-tile-close]");
     if (letter) {
       const display = (typeof gsTileDisplayName === "function")
@@ -536,26 +475,12 @@ function gsUpdateTileChrome() {
       }
     }
     if (orientSeg) {
-      const pending = tile.orientationConfirmed === false;
-      const choice = pending ? "unknown" : (tile.reversed ? "rev" : "fwd");
+      const choice = tile.reversed ? "rev" : "fwd";
       orientSeg.querySelectorAll("[data-orient-choice]").forEach((btn) => {
         const c = btn.getAttribute("data-orient-choice");
         btn.classList.toggle("is-active", c === choice);
         btn.setAttribute("aria-pressed", c === choice ? "true" : "false");
       });
-    }
-    if (banner) {
-      const pending = tile.orientationConfirmed === false;
-      const ev = tile.orientationEvidence;
-      if (pending && ev && ev.total > 0) {
-        banner.hidden = false;
-        banner.innerHTML = `Suggested: <strong>${ev.label}</strong> — `
-          + `${ev.agree} of ${ev.total} split reads agree `
-          + `<button type="button" class="gs-tile-orient-apply" data-orient-apply>Apply</button>`;
-      } else {
-        banner.hidden = true;
-        banner.innerHTML = "";
-      }
     }
     if (close) close.hidden = !multi;
   });
@@ -814,7 +739,6 @@ function gsBindTileStripScrollInteractions() {
     strip.__gsStripScrollChrome = true;
     strip.addEventListener("scroll", () => {
       gsUpdateTileStripScrollChrome();
-      if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
     }, { passive: true });
   }
   // Pills live outside #main — give them their own wheel → strip scroll path.
@@ -895,7 +819,6 @@ function gsBindDivider(div, leftTileId) {
       }
       if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
       if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
-      if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -938,7 +861,6 @@ function gsBindEndResize(div, tileId) {
       }
       if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
       if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
-      if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -1135,27 +1057,17 @@ function gsOpenLinkedTile(opts) {
     if (typeof gsFocusTile === "function") gsFocusTile(existing.id);
     return existing;
   }
-  // Widen gutters so aggregate SA/PE ribbons have room to draw.
-  state.preferRibbonGutters = true;
   // Clear fixed widths before add so both columns flex evenly.
   if (source) source.widthPx = null;
-  // Never auto-apply display orientation — linked tiles open unconfirmed
-  // (same direction as source) with a suggestion banner from bundle evidence.
+  // Opens in the same direction as the source tile, already confirmed.
   const tile = gsAddTile({
     contig: opts.contig,
     centerBp: opts.pos,
     reversed: !!(source && source.reversed),
     linkedFromId: source ? source.id : null,
     insertAfterId: source ? source.id : null,
-    orientationConfirmed: false,
-    suggestedReversed: null,
     // Let both columns flex — never inherit a stale fixed widthPx.
     widthPx: null,
-  });
-  gsApplyTileGutterWidths();
-  // Redraw arcs after layout settles on the wider gutter.
-  requestAnimationFrame(() => {
-    if (typeof gsDrawTileArcs === "function") gsDrawTileArcs();
   });
   return tile;
 }
@@ -1213,11 +1125,6 @@ function gsShowContextMenu(x, y, items) {
   };
   setTimeout(() => document.addEventListener("pointerdown", dismiss, true), 0);
 }
-
-function gsDrawTileArcs() {
-  // Overridden by tile-arcs.js when that script loads (aggregate ribbons).
-}
-
 
 function gsSoftClipMode(track) {
   const m = track && track.readDisplay && track.readDisplay.softClipMode;
@@ -1551,7 +1458,7 @@ function gsInitTileUi() {
 
   const strip = gsTileStripEl();
   if (strip && !strip.__gsArcScroll) {
-    // scroll chrome + arcs are bound in gsBindTileStripScrollInteractions.
+    // scroll chrome is bound in gsBindTileStripScrollInteractions.
     strip.__gsArcScroll = true;
   }
 }
@@ -1559,7 +1466,6 @@ function gsInitTileUi() {
 // Hook into ready.
 if (typeof window !== "undefined") {
   window.gsEnsureTileStripDom = gsEnsureTileStripDom;
-  window.gsApplyTileGutterWidths = gsApplyTileGutterWidths;
   window.gsUpdateTileChrome = gsUpdateTileChrome;
   window.gsUpdateLocusBarMode = gsUpdateLocusBarMode;
   window.gsScrollTileIntoView = gsScrollTileIntoView;
@@ -1570,7 +1476,6 @@ if (typeof window !== "undefined") {
   window.gsMaybeScrollTileStripFromWheel = gsMaybeScrollTileStripFromWheel;
   window.gsUpdateTileStripScrollChrome = gsUpdateTileStripScrollChrome;
   window.gsBindTileStripScrollInteractions = gsBindTileStripScrollInteractions;
-  window.gsDrawTileArcs = gsDrawTileArcs;
   window.gsParseSaTag = gsParseSaTag;
   window.gsOpenLinkedTile = gsOpenLinkedTile;
   window.gsFindOpenTileForMate = gsFindOpenTileForMate;

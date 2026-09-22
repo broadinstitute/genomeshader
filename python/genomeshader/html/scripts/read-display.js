@@ -257,55 +257,18 @@ function shadeStrength(read, field, trackMedianInsert, reversed) {
 function readPaintStyle(read, track) {
   const display = (track && track.readDisplay) || DEFAULT_READ_DISPLAY;
   const rev = display.reverse || DEFAULT_READ_DISPLAY.reverse;
-  let color = display.colorBy
+  const color = display.colorBy
     ? colorForCategory(display.colorBy, readCategory(read, display.colorBy), !!rev.colorBy)
     : [128, 128, 138];
-  let bundleTinted = false;
-  // Multi-tile bundles: supporting reads share the ribbon color in both tiles.
-  // Haplotype/pair styling yields to bundle color when multi-tile + bundles exist.
-  if (typeof gsIsMultiTile === "function" && gsIsMultiTile()
-      && typeof gsBundleColorForRead === "function"
-      && state.bundleColorByReadKey) {
-    // Prefer the tile currently being painted (gsWithTile), not only focus —
-    // otherwise unfocused freezes look up the wrong tileId and miss the tint.
-    const paintTile = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
-    const paintTileId = (paintTile && paintTile.id)
-      || state.focusedTileId
-      || "t0";
-    let hex = gsBundleColorForRead(paintTileId, track && track.id, read);
-    // Fall back: same qname on any open tile for this track (mate side often
-    // keyed without an exact start).
-    if (!hex && read && read.name && track && track.id) {
-      const prefix = `|${track.id}|${read.name}`;
-      for (const k of Object.keys(state.bundleColorByReadKey)) {
-        if (k.endsWith(prefix) || k.includes(`|${track.id}|${read.name}|`)) {
-          hex = state.bundleColorByReadKey[k];
-          break;
-        }
-      }
-    }
-    const rgb = hex && typeof gsHexToRgb === "function" ? gsHexToRgb(hex) : null;
-    if (rgb) {
-      color = rgb;
-      bundleTinted = true;
-    }
-  }
   // WebGPU rect shader: alpha > 0.5 is stroke-only (hollow). Keep read bodies
   // in the fill-only range so Color/Shade None paints uniform solid bars.
   let alpha = 0.45;
-  if (display.colorBy === "haplotype" && !bundleTinted) {
+  if (display.colorBy === "haplotype") {
     alpha = read.haplotype ? 0.5 : 0.35;
   }
-  if (display.shadeBy && !bundleTinted) {
+  if (display.shadeBy) {
     const s = shadeStrength(read, display.shadeBy, track && track._medianInsertSize, !!rev.shadeBy);
     alpha = 0.22 + 0.28 * s; // ~0.22–0.50
-  }
-  if (bundleTinted) alpha = Math.max(alpha, 0.50);
-  // Selected cross-tile arc read: slight emphasis.
-  const sel = state.selectedArcRead;
-  if (sel && read && sel.qname && sel.qname === read.name
-      && (!sel.trackId || !track || sel.trackId === track.id)) {
-    alpha = Math.min(0.50, Math.max(alpha, 0.48));
   }
   return { color, alpha };
 }
