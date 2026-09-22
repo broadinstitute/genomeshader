@@ -7,9 +7,14 @@ Written 2026-09-20 (Claude Code), after the multi-locus tiles work.
 the "unconfirmed orientation" suggestion banner it drove) was removed at the
 user's request as an unwanted complication. Tile orientation is now always a
 definite 5′→3′/3′→5′ choice (`tile.reversed`), never a suggested/unconfirmed
-third state. Mentions of "bundles"/"ribbons"/"orientation suggestions" below
-are historical (describing the code as it stood when each section was
-written) except where already corrected inline.
+third state. Also removed the lighter-weight cross-tile linkage indicator that
+was initially kept: the tile pill's colored link tick and the matching small
+colored flag drawn on a read whose SA/mate lands in another open tile — with
+many tracks each using their own coloring, a color trying to tie one specific
+tile to one specific read stopped being legible. Mentions of "bundles"/
+"ribbons"/"orientation suggestions"/"link color"/"link tick" below are
+historical (describing the code as it stood when each section was written)
+except where already corrected inline.
 
 ## Decision
 
@@ -245,10 +250,10 @@ measured walls at these scales were the stalls (fixed) and memory (Stage 2b). I 
 
 `gsSmartPaintKey` lists every input to a smart-track paint (tile window / size /
 orientation, layout identity, display config, collapse + loading state, scroll
-offset, expanded insertions, and — only for tracks with split reads — every
-tile's window and the focused tile, for the cross-tile split-read flag). Equal
-key ⇒ the canvases are left as painted. A forgotten input would be a
-stale-pixels bug, so:
+offset, expanded insertions). No input is cross-tile any more: a track's paint
+depends only on its own tile and its own data, since the cross-tile split-read
+flag (and, before it, the ribbon/bundle coloring) was removed. Equal key ⇒ the
+canvases are left as painted. A forgotten input would be a stale-pixels bug, so:
 
 ```bash
 GS_VERIFY_PAINT=1 pytest python/tests/headless -q

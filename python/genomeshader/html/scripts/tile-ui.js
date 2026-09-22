@@ -930,13 +930,11 @@ function gsUpdateLocusBarMode() {
     pill.setAttribute("data-tile-id", tile.id);
     pill.setAttribute("draggable", "true");
     const locus = tile.blank ? "(empty)" : (typeof gsTileLocusString === "function" ? gsTileLocusString(tile) : "");
-    const tickColor = tile.linkColor || "transparent";
     const display = (typeof gsTileDisplayName === "function")
       ? gsTileDisplayName(tile)
       : (tile.name || tile.letter);
     pill.innerHTML = `
       <span class="gs-tile-pill-handle" title="Drag to reorder">⋮⋮</span>
-      <span class="gs-tile-pill-tick" style="background:${tickColor}"></span>
       <span class="gs-tile-pill-label" title="${locus.replace(/"/g, "&quot;")}">${display} · ${locus}</span>
       <span class="gs-tile-pill-orient ${tile.reversed ? "is-reversed" : "is-forward"}" title="${tile.reversed ? "3′ → 5′" : "5′ → 3′"}" aria-hidden="true">${tile.reversed ? "←" : "→"}</span>
       <button type="button" class="gs-tile-pill-close" data-tile-pill-close

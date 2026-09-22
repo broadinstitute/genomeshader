@@ -2550,13 +2550,6 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   letter-spacing: -1px;
   font-size: 10px;
 }
-.gs-tile-pill-tick {
-  width: 3px;
-  height: 14px;
-  border-radius: 2px;
-  background: transparent;
-  flex: 0 0 auto;
-}
 .gs-tile-pill-label {
   overflow: hidden;
   text-overflow: ellipsis;

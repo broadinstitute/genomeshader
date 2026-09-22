@@ -146,23 +146,8 @@ function _gsObjId(o) {
 
 function gsSmartPaintKey(track, renderer, trackLayout, ctx) {
   const t = (typeof gsActiveTile === "function") ? gsActiveTile() : null;
-  const multi = typeof gsIsMultiTile === "function" && gsIsMultiTile();
   const layout = track.readsLayout;
   const exp = state.expandedInsertions;
-  let cross = "";
-  if (multi) {
-    // Cross-tile input: only when this track has split reads, every tile's
-    // window and the focused tile (an SA-mate flag appears/disappears as
-    // another tile pans over the mate or focus moves).
-    if (layout && layout._hasSa === undefined) {
-      layout._hasSa = !!(layout.reads && layout.reads.some((r) => r && r.saTag));
-    }
-    if (layout && layout._hasSa) {
-      // (the flag lookup is relative to the FOCUSED tile, so focus is an input too)
-      cross = (state.focusedTileId || "") + "|"
-        + (state.tiles || []).map((x) => `${x.id}:${x.contig}:${x.startBp}-${x.endBp}:${x.linkColor || ""}`).join(",");
-    }
-  }
   return [
     t ? t.id : "", state.contig, state.startBp, state.endBp, state.pxPerBp,
     state.renderPadBp, state.renderPadPx, t ? (t.reversed ? 1 : 0) : 0,
@@ -174,7 +159,6 @@ function gsSmartPaintKey(track, renderer, trackLayout, ctx) {
     (exp && exp.size) ? Array.from(exp).sort().join(",") : "",
     (typeof _readsDisplayKey === "function") ? _readsDisplayKey(track) : "",
     state._viewCoverageMax == null ? "" : state._viewCoverageMax,
-    cross,
   ].join("|");
 }
 
@@ -1565,32 +1549,6 @@ function renderSmartTrack(trackId) {
               ax2 * dpr, (ay2 - _scrollOffset) * dpr,
               [1, 1, 1], 0.95
             );
-
-            // Cross-tile split flag: SA mate lands in another open tile.
-            if (read.saTag && typeof gsParseSaTag === "function" && typeof gsFindOpenTileForMate === "function"
-                && typeof gsIsMultiTile === "function" && gsIsMultiTile()) {
-              const mates = gsParseSaTag(read.saTag);
-              for (const m of mates) {
-                const other = gsFindOpenTileForMate(m.contig, m.pos, state.focusedTileId);
-                if (!other) continue;
-                const flagColor = other.linkColor || "#f59e0b";
-                const fx = read.isForward ? (x + w + 1) : (x - 5);
-                let rgb = [245, 158, 11];
-                if (flagColor.charAt(0) === "#" && flagColor.length >= 7) {
-                  rgb = [
-                    parseInt(flagColor.slice(1, 3), 16),
-                    parseInt(flagColor.slice(3, 5), 16),
-                    parseInt(flagColor.slice(5, 7), 16),
-                  ];
-                }
-                instancedRenderer.addRect(
-                  fx * dpr, (y - _scrollOffset) * dpr,
-                  4 * dpr, h * dpr,
-                  [rgb[0]/255, rgb[1]/255, rgb[2]/255, 0.95]
-                );
-                break;
-              }
-            }
           }
         }
         // Insert-gap connectors after bodies so they sit in the empty pair space.

@@ -1,16 +1,6 @@
 // Multi-locus tile view — ordered strip of independent genomic viewports.
 // Single-tile mode mirrors today's singleton state.contig/startBp/endBp/pxPerBp.
 
-const GS_TILE_LINK_COLORS = [
-  "#f59e0b", // orange
-  "#a855f7", // purple
-  "#22c55e", // green
-  "#3b82f6", // blue
-  "#ef4444", // red
-  "#14b8a6", // teal
-];
-let _gsTileLinkColorIdx = 0;
-
 /** Tile currently being painted (render context). Null → focused tile / globals. */
 let _gsRenderTile = null;
 
@@ -41,7 +31,6 @@ function gsCreateTile(opts = {}) {
     // Display orientation: strictly 5'->3' (false) or 3'->5' (true), always definite.
     reversed: !!opts.reversed,
     widthPx: Number.isFinite(opts.widthPx) ? opts.widthPx : null,
-    linkColor: opts.linkColor || null,
     linkedFromId: opts.linkedFromId || null,
     expandedInsertions: opts.expandedInsertions instanceof Set
       ? new Set(opts.expandedInsertions)
@@ -183,12 +172,6 @@ function gsFocusTile(tileId, { scroll = true } = {}) {
   }
 }
 
-function gsNextLinkColor() {
-  const c = GS_TILE_LINK_COLORS[_gsTileLinkColorIdx % GS_TILE_LINK_COLORS.length];
-  _gsTileLinkColorIdx += 1;
-  return c;
-}
-
 function gsTileLocusString(tile) {
   const t = tile || gsFocusedTile();
   if (!t || t.blank) return "";
@@ -263,7 +246,6 @@ function gsAddTile(opts = {}) {
     endBp: Number.isFinite(endBp) ? endBp : 1000,
     pxPerBp: source ? source.pxPerBp : state.pxPerBp,
     reversed,
-    linkColor: opts.linkColor || (opts.linkedFromId ? gsNextLinkColor() : null),
     linkedFromId: opts.linkedFromId || null,
     blank: !!opts.blank || !contig,
     widthPx: opts.widthPx != null ? opts.widthPx : (source && source.widthPx),
