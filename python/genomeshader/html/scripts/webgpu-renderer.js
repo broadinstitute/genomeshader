@@ -653,9 +653,18 @@ function gsFinishCanvasReadback(canvas, format, pending) {
       const row = y * pending.bytesPerRow;
       for (let x = 0; x < pending.w; x++) {
         const o = row + x * 4, j = (y * pending.w + x) * 4;
-        if (bgra) { dst[j] = src[o + 2]; dst[j + 1] = src[o + 1]; dst[j + 2] = src[o]; }
-        else { dst[j] = src[o]; dst[j + 1] = src[o + 1]; dst[j + 2] = src[o + 2]; }
-        dst[j + 3] = src[o + 3];
+        // The shader writes premultiplied rgb. drawImage hands tests straight
+        // color; undo that here so a translucent tick still matches its hue.
+        let r, g, b, a;
+        if (bgra) { b = src[o]; g = src[o + 1]; r = src[o + 2]; a = src[o + 3]; }
+        else { r = src[o]; g = src[o + 1]; b = src[o + 2]; a = src[o + 3]; }
+        if (a > 0 && a < 255) {
+          const s = 255 / a;
+          r = Math.min(255, Math.round(r * s));
+          g = Math.min(255, Math.round(g * s));
+          b = Math.min(255, Math.round(b * s));
+        }
+        dst[j] = r; dst[j + 1] = g; dst[j + 2] = b; dst[j + 3] = a;
       }
     }
     ctx.putImageData(img, 0, 0);
