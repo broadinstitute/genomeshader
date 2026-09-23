@@ -47,12 +47,13 @@ jobs:
           pytest -q
 
       # Headless UI regression tests: render the real frontend in headless Chrome
-      # and assert on layout/coordinates/interactions/painted pixels. The viewer
-      # REQUIRES WebGPU (no Canvas2D/SVG fallback), and Playwright's bundled
-      # Chromium has WebGPU compiled out, so this uses the real Chrome channel with
-      # SwiftShader as the software WebGPU adapter (GS_WEBGPU_SOFTWARE=1; see
-      # python/tests/headless/conftest.py). Reuses the maturin build above
-      # (importing genomeshader pulls the Rust ext).
+      # and assert on layout/coordinates/interactions. The viewer REQUIRES WebGPU
+      # (no Canvas2D/SVG fallback), and Playwright's bundled Chromium has WebGPU
+      # compiled out, so this uses the real Chrome channel with SwiftShader
+      # (GS_WEBGPU_SOFTWARE=1; see python/tests/headless/conftest.py). Pixel
+      # screenshots stay on the self-hosted GPU workflow: that env var skips
+      # test_webgpu_pixels.py before Chrome launches. Reuses the maturin build
+      # above (importing genomeshader pulls the Rust ext).
       - name: Install Playwright + Chrome (headless UI)
         run: |
           source .venv/bin/activate
@@ -60,12 +61,14 @@ jobs:
           python -m playwright install --with-deps chrome
 
       - name: Run headless UI tests (software WebGPU)
+        timeout-minutes: 30
         working-directory: python
         env:
           GS_WEBGPU_SOFTWARE: "1"
+          PYTHONUNBUFFERED: "1"
         run: |
           source ../.venv/bin/activate
-          pytest tests/headless -q
+          pytest tests/headless -v --durations=20
 
   build-smoke-wheel:
     name: build-smoke-wheel
