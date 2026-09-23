@@ -190,13 +190,16 @@ def test_title_fills_when_actions_hidden(browser):
           const header = item.querySelector('.smart-track-item-header');
           const actions = item.querySelector('.smart-track-item-actions');
           const status = item.querySelector('.smart-track-item-status');
+          const nav = item.querySelector('.smart-track-item-nav');
           const nameBox = name.getBoundingClientRect();
           const headerBox = header.getBoundingClientRect();
           const statusBox = status.getBoundingClientRect();
+          const navBox = nav.getBoundingClientRect();
           return {
             nameWidth: nameBox.width,
             headerWidth: headerBox.width,
             statusWidth: statusBox.width,
+            betweenNavAndStatus: statusBox.left - navBox.right,
             actionsInFlow: getComputedStyle(actions).position !== 'absolute',
             actionsOpacity: parseFloat(getComputedStyle(actions).opacity),
           };
@@ -204,9 +207,11 @@ def test_title_fills_when_actions_hidden(browser):
         SMART_ITEM,
     )
     # Name should claim nearly all space between nav and status (actions overlay).
+    # A narrow sidebar makes nav+status most of the header, so this is the gap
+    # between those two, not a fraction of the whole row.
     assert widths["actionsInFlow"] is False, widths
     assert widths["actionsOpacity"] == 0.0, widths
-    assert widths["nameWidth"] > widths["headerWidth"] * 0.55, widths
+    assert widths["nameWidth"] > widths["betweenNavAndStatus"] * 0.8, widths
     page.close()
 
 

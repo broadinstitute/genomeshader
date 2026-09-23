@@ -495,6 +495,11 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+  /* The actions overlay is position:absolute and, on a narrow row, covers this
+     nav once hover turns pointer-events back on. Keep the grip and collapse
+     button above it so they stay clickable. */
+  position: relative;
+  z-index: 2;
 }
 .smart-track-item-name {
   flex: 1;

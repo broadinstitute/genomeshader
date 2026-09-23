@@ -49,16 +49,26 @@ jobs:
       # Headless UI regression tests: render the real frontend in headless Chrome
       # and assert on layout/coordinates/interactions. The viewer REQUIRES WebGPU
       # (no Canvas2D/SVG fallback), and Playwright's bundled Chromium has WebGPU
-      # compiled out, so this uses the real Chrome channel with SwiftShader
-      # (GS_WEBGPU_SOFTWARE=1; see python/tests/headless/conftest.py). Pixel
-      # screenshots stay on the self-hosted GPU workflow: that env var skips
-      # test_webgpu_pixels.py before Chrome launches. Reuses the maturin build
-      # above (importing genomeshader pulls the Rust ext).
+      # compiled out, so this uses the real Chrome channel with Mesa lavapipe as
+      # the software Vulkan driver (GS_WEBGPU_SOFTWARE=1; see
+      # python/tests/headless/conftest.py). Pixel screenshots stay on the
+      # self-hosted GPU workflow: that env var skips test_webgpu_pixels.py
+      # before Chrome launches. Reuses the maturin build above (importing
+      # genomeshader pulls the Rust ext).
       - name: Install Playwright + Chrome (headless UI)
         run: |
           source .venv/bin/activate
           pip install playwright anywidget pillow
           python -m playwright install --with-deps chrome
+
+      - name: Install lavapipe (software Vulkan for WebGPU)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers xvfb
+          icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' | head -1)
+          test -n "$icd"
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
 
       - name: Run headless UI tests (software WebGPU)
         timeout-minutes: 30
@@ -68,7 +78,8 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: |
           source ../.venv/bin/activate
-          pytest tests/headless -v --durations=20
+          # Headed Chrome (conftest) needs a display to present WebGPU canvases.
+          xvfb-run -a --server-args="-screen 0 1400x900x24" pytest tests/headless -v --durations=20
 
   build-smoke-wheel:
     name: build-smoke-wheel

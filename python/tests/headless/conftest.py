@@ -9,9 +9,11 @@ the channel and flags so they need no changes.
     python -m playwright install chrome        # once
 
 On a machine with a GPU nothing else is needed (Metal on macOS, Vulkan on
-Linux). On a GPU-less CI runner set ``GS_WEBGPU_SOFTWARE=1`` to route WebGPU
-through SwiftShader's Vulkan ICD. Do not force Chrome's fallback adapter;
-that freezes the page on a hosted runner.
+Linux). On a GPU-less CI runner set ``GS_WEBGPU_SOFTWARE=1`` and point
+``VK_DRIVER_FILES`` at Mesa lavapipe (see ``.github/workflows/ci.yml``). Chrome
+then runs headed on that display so WebGPU canvases actually present. Do not
+force Chrome's SwiftShader fallback adapter; it freezes the page or presents
+a blank canvas.
 """
 import os
 
@@ -26,16 +28,16 @@ except Exception:  # pragma: no cover - playwright not installed; tests skip the
 _PAINT_MISSES = []
 
 _GPU_ARGS = ["--enable-unsafe-webgpu", "--ignore-gpu-blocklist"]
-# Chrome's fallback adapter (`--use-webgpu-adapter=swiftshader` together with
-# `--use-angle=swiftshader`) freezes the page on a GPU-less runner: requestAdapter
-# wedges the GPU process and Playwright calls stop returning. Route WebGPU through
-# SwiftShader's Vulkan ICD instead, and don't ask ANGLE for a GL surface.
+# Software WebGPU on CI uses the Vulkan ICD in VK_DRIVER_FILES (Mesa lavapipe),
+# not Chrome's SwiftShader fallback. SwiftShader either wedges requestAdapter or
+# presents a canvas that drawImage reads back as empty, so paint tests fail.
+# Headed (under Xvfb) so the canvas has a surface to present.
 _SOFTWARE_ARGS = [
     "--use-angle=vulkan",
-    "--use-vulkan=swiftshader",
+    "--use-vulkan=native",
     "--enable-features=Vulkan",
-    "--disable-vulkan-surface",
     "--disable-gpu-sandbox",
+    "--disable-dev-shm-usage",
     "--no-sandbox",
 ]
 
@@ -56,6 +58,9 @@ def _chrome_with_webgpu():
             args += _GPU_ARGS
             if os.environ.get("GS_WEBGPU_SOFTWARE"):
                 args += _SOFTWARE_ARGS
+                # Presenting a WebGPU canvas needs a display. CI wraps pytest in
+                # xvfb-run; a headed launch uses that display.
+                kw["headless"] = False
             kw["args"] = args
         return orig(self, **kw)
 
