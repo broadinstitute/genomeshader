@@ -614,6 +614,56 @@ function gsCaptureGpuCanvas(canvas) {
   try { ctx.drawImage(canvas, 0, 0); } catch (_) {}
 }
 
+// drawImage of a WebGPU canvas is blank for a short strip on a software Vulkan
+// adapter (the summary ticks), even when the render target holds the pixels.
+// Copy that target out in the same submission and paint the shadow from it.
+function gsEncodeCanvasReadback(device, encoder, texture, canvas) {
+  const w = canvas.width | 0, h = canvas.height | 0;
+  if (w <= 0 || h <= 0 || w * h > 2000000) return null;
+  const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+  const buffer = device.createBuffer({
+    size: bytesPerRow * h,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  encoder.copyTextureToBuffer(
+    { texture },
+    { buffer, bytesPerRow, rowsPerImage: h },
+    { width: w, height: h, depthOrArrayLayers: 1 }
+  );
+  return { buffer, w, h, bytesPerRow };
+}
+
+function gsFinishCanvasReadback(canvas, format, pending) {
+  const token = (canvas._gsReadbackToken = (canvas._gsReadbackToken || 0) + 1);
+  pending.buffer.mapAsync(GPUMapMode.READ).then(() => {
+    if (canvas._gsReadbackToken !== token) {
+      try { pending.buffer.unmap(); } catch (_) {}
+      pending.buffer.destroy();
+      return;
+    }
+    const src = new Uint8Array(pending.buffer.getMappedRange());
+    const sh = canvas._gsShadow || (canvas._gsShadow = document.createElement("canvas"));
+    if (sh.width !== pending.w) sh.width = pending.w;
+    if (sh.height !== pending.h) sh.height = pending.h;
+    const ctx = sh.getContext("2d", { willReadFrequently: true });
+    const img = ctx.createImageData(pending.w, pending.h);
+    const dst = img.data;
+    const bgra = format === "bgra8unorm" || format === "bgra8unorm-srgb";
+    for (let y = 0; y < pending.h; y++) {
+      const row = y * pending.bytesPerRow;
+      for (let x = 0; x < pending.w; x++) {
+        const o = row + x * 4, j = (y * pending.w + x) * 4;
+        if (bgra) { dst[j] = src[o + 2]; dst[j + 1] = src[o + 1]; dst[j + 2] = src[o]; }
+        else { dst[j] = src[o]; dst[j + 1] = src[o + 1]; dst[j + 2] = src[o + 2]; }
+        dst[j + 3] = src[o + 3];
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    pending.buffer.unmap();
+    pending.buffer.destroy();
+  }).catch(() => { try { pending.buffer.destroy(); } catch (_) {} });
+}
+
 /**
  * Present one canvas: size its backing store to its CSS box (rounded, so a
  * fractional devicePixelRatio does not reset the swap chain every frame), then
@@ -635,9 +685,10 @@ function gsFlushGpuCanvas(core, renderer, canvas, ribbons, opts) {
       }
     }
     const encoder = core.createCommandEncoder();
+    const texture = core.getCurrentTexture();
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
-        view: core.getCurrentTexture().createView(),
+        view: texture.createView(),
         clearValue: { r: 0, g: 0, b: 0, a: 0 },
         loadOp: 'clear',
         storeOp: 'store',
@@ -646,8 +697,14 @@ function gsFlushGpuCanvas(core, renderer, canvas, ribbons, opts) {
     if (ribbons) ribbons.render(encoder, pass);
     renderer.render(encoder, pass);
     pass.end();
+    let readback = null;
+    if (window.__GS_TEST_CAPTURE) {
+      try { readback = gsEncodeCanvasReadback(core.device, encoder, texture, canvas); }
+      catch (_) { readback = null; }
+    }
     core.submit([encoder.finish()]);
     if (window.__GS_TEST_CAPTURE) gsCaptureGpuCanvas(canvas);
+    if (readback) gsFinishCanvasReadback(canvas, core.format, readback);
   } catch (error) {
     console.error("WebGPU flush error:", error);
     renderer.clear();

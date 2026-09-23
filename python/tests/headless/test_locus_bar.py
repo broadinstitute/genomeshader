@@ -251,7 +251,13 @@ def test_readout_follows_mouse_x_over_tracks(browser):
     page = _open(browser)
     idle = _readout(page)
     assert ":" in idle and "-" not in idle, idle
-    assert _readout_bp(idle) == 1500, idle  # midpoint of chr1:1000-2000
+    # Headed Chrome (CI's virtual display) may already have the cursor over the
+    # tracks, so the readout is that base instead of the view midpoint.
+    title = page.evaluate("() => document.getElementById('locusReadout').title")
+    if "midpoint" in (title or "").lower():
+        assert _readout_bp(idle) == 1500, idle  # midpoint of chr1:1000-2000
+    else:
+        assert 1000 <= _readout_bp(idle) <= 2000, idle
 
     def _hover_at_frac(frac, prev=None):
         page.evaluate(

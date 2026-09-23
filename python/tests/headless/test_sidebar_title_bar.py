@@ -195,23 +195,27 @@ def test_title_fills_when_actions_hidden(browser):
           const headerBox = header.getBoundingClientRect();
           const statusBox = status.getBoundingClientRect();
           const navBox = nav.getBoundingClientRect();
+          const gap = parseFloat(getComputedStyle(header).columnGap) || 0;
+          const statusMargin = parseFloat(getComputedStyle(status).marginLeft) || 0;
+          // nav | gap | name | gap | status-margin | status
+          const nameSlot = (statusBox.left - navBox.right) - 2 * gap - statusMargin;
           return {
             nameWidth: nameBox.width,
             headerWidth: headerBox.width,
             statusWidth: statusBox.width,
-            betweenNavAndStatus: statusBox.left - navBox.right,
+            nameSlot: nameSlot,
             actionsInFlow: getComputedStyle(actions).position !== 'absolute',
             actionsOpacity: parseFloat(getComputedStyle(actions).opacity),
           };
         }""",
         SMART_ITEM,
     )
-    # Name should claim nearly all space between nav and status (actions overlay).
-    # A narrow sidebar makes nav+status most of the header, so this is the gap
-    # between those two, not a fraction of the whole row.
+    # Name should fill the flex slot between nav and status. That slot is the
+    # distance between those boxes minus the header's two gaps and the status
+    # margin; a fraction of the whole row fails on a narrow sidebar.
     assert widths["actionsInFlow"] is False, widths
     assert widths["actionsOpacity"] == 0.0, widths
-    assert widths["nameWidth"] > widths["betweenNavAndStatus"] * 0.8, widths
+    assert abs(widths["nameWidth"] - widths["nameSlot"]) <= 1, widths
     page.close()
 
 
