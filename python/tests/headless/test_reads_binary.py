@@ -109,7 +109,17 @@ def _open(browser, corrupt=False, expose=True):
 
 
 def _spawn_and_settle(page):
-    page.evaluate("async () => { await Promise.all([__GS_TEST_spawnSample('S0','best_evidence'), __GS_TEST_spawnSample('S1','best_evidence')]); }")
+    # Don't await the spawn inside page.evaluate: that call has no timeout, so a
+    # stalled page holds the suite until the CI step is killed.
+    page.evaluate(
+        """() => { window.__GS_SPAWN_DONE = false; window.__GS_SPAWN_ERR = null;
+           Promise.all([__GS_TEST_spawnSample('S0','best_evidence'), __GS_TEST_spawnSample('S1','best_evidence')]).then(
+             () => { window.__GS_SPAWN_DONE = true; },
+             (e) => { window.__GS_SPAWN_ERR = String(e); window.__GS_SPAWN_DONE = true; }); }"""
+    )
+    page.wait_for_function("() => window.__GS_SPAWN_DONE === true", timeout=60000)
+    err = page.evaluate("() => window.__GS_SPAWN_ERR")
+    assert not err, err
     page.wait_for_function(
         """() => { const d = window.__GS_TEST_readsRaceDump();
           return d.fetchActive === 0 && (d.queuedKeys || []).length === 0

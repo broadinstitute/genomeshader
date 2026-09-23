@@ -9,7 +9,9 @@ the channel and flags so they need no changes.
     python -m playwright install chrome        # once
 
 On a machine with a GPU nothing else is needed (Metal on macOS, Vulkan on
-Linux). On a GPU-less CI runner set ``GS_WEBGPU_SOFTWARE=1`` to use SwiftShader.
+Linux). On a GPU-less CI runner set ``GS_WEBGPU_SOFTWARE=1`` to route WebGPU
+through SwiftShader's Vulkan ICD. Do not force Chrome's fallback adapter;
+that freezes the page on a hosted runner.
 """
 import os
 
@@ -24,10 +26,16 @@ except Exception:  # pragma: no cover - playwright not installed; tests skip the
 _PAINT_MISSES = []
 
 _GPU_ARGS = ["--enable-unsafe-webgpu", "--ignore-gpu-blocklist"]
+# Chrome's fallback adapter (`--use-webgpu-adapter=swiftshader` together with
+# `--use-angle=swiftshader`) freezes the page on a GPU-less runner: requestAdapter
+# wedges the GPU process and Playwright calls stop returning. Route WebGPU through
+# SwiftShader's Vulkan ICD instead, and don't ask ANGLE for a GL surface.
 _SOFTWARE_ARGS = [
-    "--use-webgpu-adapter=swiftshader",
+    "--use-angle=vulkan",
+    "--use-vulkan=swiftshader",
     "--enable-features=Vulkan",
-    "--use-angle=swiftshader",
+    "--disable-vulkan-surface",
+    "--disable-gpu-sandbox",
     "--no-sandbox",
 ]
 

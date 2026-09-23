@@ -62,9 +62,27 @@ def _settle(page):
     page.wait_for_timeout(300)
 
 
+def _spawn(page):
+    # page.evaluate waits forever for a promise. Kick the load off and wait with
+    # a timeout so a stalled software-GPU page cannot hold the suite.
+    page.evaluate(
+        """() => { window.__GS_SPAWN_DONE = false; window.__GS_SPAWN_ERR = null;
+           window.__GS_TEST_spawnSample('S0', 'best_evidence').then(
+             () => { window.__GS_SPAWN_DONE = true; },
+             (e) => { window.__GS_SPAWN_ERR = String(e); window.__GS_SPAWN_DONE = true; }); }"""
+    )
+    page.wait_for_function("() => window.__GS_SPAWN_DONE === true", timeout=60000)
+    err = page.evaluate("() => window.__GS_SPAWN_ERR")
+    assert not err, err
+
+
+@pytest.mark.skipif(
+    bool(os.environ.get("GS_WEBGPU_SOFTWARE")),
+    reason="~60k-row background layout froze software WebGPU for the whole hosted CI step",
+)
 def test_large_layout_matches_the_synchronous_one_and_runs_as_a_job(browser):
     page = _open(browser, coverage=200)            # ~60k+ rows across the chunks: over the sync limit
-    page.evaluate("async () => { await window.__GS_TEST_spawnSample('S0', 'best_evidence'); }")
+    _spawn(page)
     saw_job = page.evaluate(
         """async () => { for (let i = 0; i < 200; i++) {
              if (window.__GS_TEST_readsRaceDump().schedulerPending) return true;
@@ -82,7 +100,7 @@ def test_large_layout_matches_the_synchronous_one_and_runs_as_a_job(browser):
 
 def test_small_layouts_stay_synchronous(browser):
     page = _open(browser, coverage=4)
-    page.evaluate("async () => { await window.__GS_TEST_spawnSample('S0', 'best_evidence'); }")
+    _spawn(page)
     _settle(page)
     cmp = page.evaluate("() => window.__GS_TEST_layoutCompare()")
     assert cmp is not None and not cmp["pending"] and cmp["rowsIn"] <= 20000, cmp
