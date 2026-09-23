@@ -27,7 +27,8 @@ pytest.importorskip("playwright")
 pytest.importorskip("anywidget")
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-import harness  # noqa: E402
+import harness
+import reads_mock  # noqa: E402
 
 VIEWPORT = {"width": 1200, "height": 900}
 
@@ -1079,6 +1080,7 @@ def test_read_load_failure_removes_track_and_shows_modal(browser, tmp_path):
         type === 'fetch_reads'
           ? Promise.resolve({ type: 'fetch_reads_error', error: 'auth denied' })
           : Promise.resolve({}); }""")
+    page.evaluate(reads_mock.BATCH_SHIM_JS)   # client speaks fetch_reads_batch; adapt this legacy mock
     page.evaluate("() => window.__GS_TEST_loadReads('SAMPLE', 'best_evidence')")
     page.wait_for_function("() => !!document.querySelector('.gs-modal-backdrop')", timeout=5000)
     info = page.evaluate(
@@ -1106,6 +1108,7 @@ def test_vcf_only_sample_skips_reads_without_modal(browser, tmp_path):
           ? Promise.resolve({ type: 'fetch_reads_response', reads: {}, count: 0,
                               bam_urls: [], sample_id: 'HG005' })
           : Promise.resolve({}); }""")
+    page.evaluate(reads_mock.BATCH_SHIM_JS)   # client speaks fetch_reads_batch; adapt this legacy mock
     page.evaluate("() => window.__GS_TEST_loadReads('HG005', 'best_evidence')")
     page.wait_for_timeout(300)
     info = page.evaluate(
@@ -1126,6 +1129,7 @@ def test_no_bam_error_does_not_show_modal(browser, tmp_path):
           ? Promise.resolve({ type: 'fetch_reads_error',
                                error: "No BAM files found for sample(s): ['HG005']" })
           : Promise.resolve({}); }""")
+    page.evaluate(reads_mock.BATCH_SHIM_JS)   # client speaks fetch_reads_batch; adapt this legacy mock
     page.evaluate("() => window.__GS_TEST_loadReads('HG005', 'best_evidence')")
     page.wait_for_timeout(300)
     assert page.evaluate("() => !document.querySelector('.gs-modal-backdrop')")

@@ -363,7 +363,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 /* Right sidebar expanded state */
 .app:not(.sidebar-right-collapsed) .sidebar-right {
-  width: 320px !important;
+  width: var(--sidebar-right-w, 240px) !important;
 }
 
 /* Command Strip */
@@ -495,6 +495,11 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+  /* The actions overlay is position:absolute and, on a narrow row, covers this
+     nav once hover turns pointer-events back on. Keep the grip and collapse
+     button above it so they stay clickable. */
+  position: relative;
+  z-index: 2;
 }
 .smart-track-item-name {
   flex: 1;
@@ -2096,6 +2101,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   text-overflow: ellipsis;
 }
 #locusBar .locus-lock,
+#locusBar .locus-connect,
 #locusBar .locus-fullscreen {
   height: 36px;
   margin: 0;
@@ -2110,29 +2116,41 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   justify-content: center;
 }
 /* Compact slot, flush to the fullscreen control (cancels the bar's 8px gap). */
-#locusBar .locus-lock {
+#locusBar .locus-lock,
+#locusBar .locus-connect {
   flex: 0 0 32px;
   width: 32px;
   margin-right: -8px;
 }
+/* Connect, Lock and Fullscreen are equal 32px slots, so their icons sit at equal
+   pitch. Fullscreen's right margin (8px) reproduces the old right-edge inset. */
 #locusBar .locus-fullscreen {
-  flex: 0 0 48px;
-  width: 48px;
+  flex: 0 0 32px;
+  width: 32px;
+  margin-right: 8px;
 }
 #locusBar .locus-lock svg,
+#locusBar .locus-connect svg,
 #locusBar .locus-fullscreen svg {
   width: 20px;
   height: 20px;
 }
 #locusBar .locus-lock:hover,
+#locusBar .locus-connect:hover,
 #locusBar .locus-fullscreen:hover {
   color: var(--text);
   background: var(--panel);
 }
 #locusBar .locus-lock:active,
+#locusBar .locus-connect:active,
 #locusBar .locus-fullscreen:active { filter: brightness(0.95); }
 #locusBar .locus-lock.is-active,
 #locusBar .locus-fullscreen.is-active { color: var(--text); }
+/* Connect toggle: is-active = DISCONNECTED (amber, slashed icon) — nothing is loaded. */
+#locusBar .locus-connect .icon-disconnected { display: none; }
+#locusBar .locus-connect.is-active { color: #f59e0b; }
+#locusBar .locus-connect.is-active .icon-connected { display: none; }
+#locusBar .locus-connect.is-active .icon-disconnected { display: block; }
 #locusBar .locus-lock .icon-locked { display: none; }
 #locusBar .locus-lock.is-active .icon-unlocked { display: none; }
 #locusBar .locus-lock.is-active .icon-locked { display: block; }
@@ -2151,14 +2169,477 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   z-index: 1;
 }
 
+/* Multi-locus tile strip — flex row of independent genomic viewports. */
+.gs-tile-strip {
+  position: absolute;
+  inset: 0;
+  /* Clear the collapsed right-sidebar command rail (48px) so tile chrome
+     (flip / edit / close) is not covered by the overlaying sidebar. */
+  right: 48px;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Instant for wheel; chevron clicks pass behavior:smooth explicitly. */
+  scroll-behavior: auto;
+}
+.gs-tile-strip-chevron {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 22px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border2, var(--border));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted, var(--text));
+  font: 700 16px/1 ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+.gs-tile-strip-chevron:hover:not(:disabled) {
+  color: var(--text);
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.12);
+}
+.gs-tile-strip-chevron:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+#locusBar:not(.gs-multi-tile) .gs-tile-strip-chevron {
+  display: none;
+}
+.gs-tile {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 280px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 2px;
+  /* Same --bg as the viewer chrome. Focus is border + header tint only —
+     do not use a separate page-bg wash that makes inactive tiles drift. */
+  background: var(--bg);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+/* Solo tile: always fill the strip (overrides any leftover inline width). */
+.gs-tile-strip.gs-single-tile .gs-tile {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0;
+}
+/* Orientation tint on the header only — no colored border when defocused,
+   so inactive tiles never look selected. */
+.gs-tile:not(.is-reversed) .gs-tile-header {
+  background: rgba(59, 130, 246, 0.08);
+}
+.gs-tile.is-reversed .gs-tile-header {
+  background: rgba(168, 85, 247, 0.10);
+}
+/* Focus ring + stronger header tint (orientation-colored). */
+.gs-tile.is-focused {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.45);
+}
+.gs-tile.is-focused .gs-tile-header {
+  background: rgba(59, 130, 246, 0.14);
+}
+.gs-tile.is-reversed.is-focused {
+  border-color: #a855f7;
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.45);
+}
+.gs-tile.is-reversed.is-focused .gs-tile-header {
+  background: rgba(168, 85, 247, 0.18);
+}
+.gs-tile-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  min-height: 28px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+}
+.gs-tile-letter {
+  flex: 0 0 auto;
+  font: 700 12px/1 ui-sans-serif, system-ui, sans-serif;
+  color: var(--text);
+  opacity: 0.75;
+  cursor: text;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gs-tile-letter:hover {
+  opacity: 1;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.gs-tile-letter.is-custom {
+  opacity: 0.95;
+}
+.gs-tile-letter-input {
+  flex: 0 1 auto;
+  min-width: 40px;
+  max-width: 140px;
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: 700 12px/1.2 ui-sans-serif, system-ui, sans-serif;
+}
+.gs-tile-locus {
+  /* Shrink-wrap to the coordinate text so empty header space focuses the tile
+     instead of opening the locus editor. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 120px);
+  font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+.gs-tile-header-spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+  align-self: stretch;
+}
+.gs-tile-locus:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.gs-tile-close {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted, #8b949e);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.gs-tile-close:hover { color: var(--text); }
+/* Segmented display-orientation control: ▶ 5′→3′ / ◀ 3′→5′ */
+.gs-tile-orient-seg {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(59, 130, 246, 0.08);
+}
+.gs-tile.is-reversed .gs-tile-orient-seg {
+  border-color: rgba(168, 85, 247, 0.45);
+  background: rgba(168, 85, 247, 0.08);
+}
+.gs-tile-orient-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-right: 1px solid rgba(59, 130, 246, 0.25);
+  background: transparent;
+  color: #93c5fd;
+  cursor: pointer;
+  font: 700 11px/1 ui-sans-serif, system-ui, sans-serif;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.gs-tile.is-reversed .gs-tile-orient-btn {
+  border-right-color: rgba(168, 85, 247, 0.25);
+  color: #d8b4fe;
+}
+.gs-tile-orient-btn:last-child { border-right: none; }
+.gs-tile-orient-btn:hover {
+  background: rgba(59, 130, 246, 0.18);
+  color: #bfdbfe;
+}
+.gs-tile.is-reversed .gs-tile-orient-btn:hover {
+  background: rgba(168, 85, 247, 0.18);
+  color: #e9d5ff;
+}
+.gs-tile-orient-btn.is-active {
+  background: rgba(59, 130, 246, 0.28);
+  color: #eff6ff;
+}
+.gs-tile.is-reversed .gs-tile-orient-btn.is-active {
+  background: rgba(168, 85, 247, 0.28);
+  color: #f5f3ff;
+}
+/* Legacy single flip button (kept for older snapshots). */
+.gs-tile-orient {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.10);
+  color: #93c5fd;
+  cursor: pointer;
+  font: 700 14px/1 ui-sans-serif, system-ui, sans-serif;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.gs-tile-orient:hover {
+  color: #bfdbfe;
+  border-color: rgba(59, 130, 246, 0.75);
+  background: rgba(59, 130, 246, 0.18);
+}
+/* Same chrome weight as forward — only the hue changes for 3′→5′. */
+.gs-tile-orient.is-reversed,
+.gs-tile-orient[aria-pressed="true"] {
+  border-color: rgba(168, 85, 247, 0.45);
+  background: rgba(168, 85, 247, 0.10);
+  color: #d8b4fe;
+}
+.gs-tile-orient.is-reversed:hover,
+.gs-tile-orient[aria-pressed="true"]:hover {
+  color: #e9d5ff;
+  border-color: rgba(168, 85, 247, 0.75);
+  background: rgba(168, 85, 247, 0.18);
+}
+.gs-tile-locus-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--page-bg, #0d1117);
+  color: var(--text);
+  font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.gs-tile-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+.gs-tile-divider {
+  flex: 0 0 8px;
+  width: 8px;
+  cursor: col-resize;
+  position: relative;
+  align-self: stretch;
+  background: transparent;
+  z-index: 5;
+}
+.gs-tile-divider::before {
+  content: "⋮";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted, #8b949e);
+  font-size: 14px;
+  letter-spacing: -2px;
+  pointer-events: none;
+}
+.gs-tile-end-resize:hover::before,
+.gs-tile-divider:hover::before {
+  color: var(--text);
+}
+.gs-add-tile-btn {
+  position: absolute;
+  /* Center in the 48px gutter between tiles and the right rail/panel:
+     (48 − 36) / 2 = 6px on each side of the button. */
+  right: calc(48px + 6px);
+  top: calc(36px + (100% - 36px) / 2);
+  transform: translateY(-50%);
+  z-index: 150;
+  width: 36px;
+  height: 36px;
+  box-sizing: border-box;
+  margin: 0;
+  /* Bottom padding raises the "+" — font metrics leave it optically low. */
+  padding: 0 0 3px 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--page-bg, #161b22);
+  color: var(--text);
+  font: 700 20px/1 ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.app:not(.sidebar-right-collapsed) .gs-add-tile-btn {
+  right: calc(var(--sidebar-right-w, 240px) + 6px);
+}
+.gs-add-tile-btn:hover { filter: brightness(1.1); border-color: #3b82f6; }
+
+/* Multi-tile locus-bar pill strip */
+#locusBar.gs-multi-tile .locus-contig,
+#locusBar.gs-multi-tile .locus-pos,
+#locusBar.gs-multi-tile .locus-go,
+#locusBar.gs-multi-tile .locus-ideogram,
+#locusBar.gs-multi-tile .locus-readout {
+  display: none !important;
+}
+.gs-tile-pills {
+  display: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: 6px;
+  align-items: center;
+  padding: 0 4px;
+}
+#locusBar.gs-multi-tile .gs-tile-pills { display: flex; }
+.gs-tile-pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  padding: 3px 4px 3px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+  font: 600 11px/1.2 ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.gs-tile-pill.is-forward {
+  border-color: rgba(59, 130, 246, 0.35);
+}
+.gs-tile-pill.is-reversed {
+  border-color: rgba(168, 85, 247, 0.45);
+}
+.gs-tile-pill.is-forward.is-focused {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.12);
+}
+.gs-tile-pill.is-reversed.is-focused {
+  border-color: #a855f7;
+  box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.5);
+  background: rgba(168, 85, 247, 0.14);
+}
+.gs-tile-pill-handle {
+  opacity: 0.5;
+  cursor: grab;
+  letter-spacing: -1px;
+  font-size: 10px;
+}
+.gs-tile-pill-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+.gs-tile-pill-orient {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  font: 700 12px/1 ui-sans-serif, system-ui, sans-serif;
+  opacity: 0.85;
+}
+.gs-tile-pill-orient.is-forward {
+  color: #60a5fa;
+}
+.gs-tile-pill-orient.is-reversed {
+  color: #c084fc;
+}
+.gs-tile-pill-close {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted, #8b949e);
+  font: 700 12px/1 ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.gs-tile-pill-close:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.08);
+}
+.gs-context-menu {
+  position: fixed;
+  z-index: 2147483646;
+  min-width: 180px;
+  padding: 4px 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--page-bg, #161b22);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  color: var(--text);
+  font: 13px/1.3 ui-sans-serif, system-ui, sans-serif;
+}
+.gs-context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.gs-context-menu button:hover { background: rgba(59, 130, 246, 0.18); }
+.gs-context-menu button:disabled,
+.gs-context-menu button.is-disabled {
+  opacity: 0.55;
+  cursor: default;
+  font-style: italic;
+}
+.gs-context-menu button:disabled:hover { background: transparent; }
+.gs-context-menu .gs-ctx-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
 .tracks {
   position: absolute;
   left: 0; top: 0; right: 0;
   height: var(--tracks-h);
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(to bottom, var(--tracks-bg-top), var(--tracks-bg-bottom));
+  /* Flat --bg: the old top-gradient wash made multi-tile columns look like
+     different shades between columns. */
+  background: var(--bg);
 }
-#trackControls {
+#trackControls,
+[id^="trackControls-"] {
   position: absolute;
   inset: 0;
   /* Keep controls/resize handles above flow overlays while preserving click-through */
@@ -2277,8 +2758,23 @@ svg.overlay {
    canvas (tracksWebGPU) would win and hide the reference letters. These
    unscoped rules also govern fullscreen, where the container override
    (widget.py) no longer applies because .app is moved out of its container. */
-#tracksSvg { z-index: 3; }
-#tracksWebGPU { z-index: 1; }
+.tracks > svg,
+#tracksSvg,
+[id^="tracksSvg-"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 3;
+  overflow: visible;
+  pointer-events: auto;
+}
+#tracksWebGPU,
+[id^="tracksWebGPU-"] {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
 
 /* Single-track legacy flow canvas also sits above WebGPU */
 .flow > canvas.canvas {
@@ -2296,6 +2792,7 @@ svg.overlay {
   top: 0;
   width: 100%;
   height: 100%;
+  overflow: visible;
   pointer-events: none;
   /* MUST sit above .flow (z-index:101) — the flow container is a stacking
      context, so a lower z here buried the lollipop behind the flow's variant
@@ -2772,6 +3269,84 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   color: var(--text);
 }
 
+/* Annotation / variant tracks: same grip visibility as smart-track pills. */
+.track-control-container.standard-track .track-controls .smart-track-qc-grip,
+.track-controls.gs-standard-grip .smart-track-qc-grip {
+  opacity: 0.55;
+  pointer-events: auto;
+  cursor: grab;
+  flex-shrink: 0;
+}
+.track-control-container.standard-track .track-controls:hover .smart-track-qc-grip,
+.track-control-container.standard-track.track-hovered .track-controls .smart-track-qc-grip,
+.track-controls.gs-standard-grip:hover .smart-track-qc-grip {
+  opacity: 1;
+  color: var(--text);
+}
+.track-controls .smart-track-qc-collapse {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.track-controls .smart-track-qc-collapse:hover {
+  color: var(--text);
+}
+
+/* Secondary tiles: rest = grip only (no redundant track names); hover expands.
+   Do NOT force `display: revert` on children — that overrides the inline
+   `display:none` on .smart-track-label-input and shows a duplicate bordered
+   name next to the real label. When the hide rule below lifts, natural /
+   inline display values apply (input stays hidden until edit).
+   Match/beat smart-track max-width specificity so compact actually retracts. */
+.track-controls.gs-secondary-compact,
+.track-controls[data-track-id^="smart-track-"].gs-secondary-compact {
+  max-width: 30px;
+  min-width: 28px;
+  width: max-content;
+  padding-left: 6px;
+  padding-right: 6px;
+  gap: 0;
+  overflow: hidden;
+  transition: max-width 0.18s ease, padding 0.18s ease, gap 0.18s ease;
+  white-space: nowrap;
+}
+.track-control-container:not(.track-hovered) > .track-controls.gs-secondary-compact:not(:hover):not(:focus-within) > *:not(.smart-track-qc-grip) {
+  display: none !important;
+}
+.track-controls.gs-secondary-compact:hover,
+.track-controls.gs-secondary-compact:focus-within,
+.track-controls[data-track-id^="smart-track-"].gs-secondary-compact:hover,
+.track-controls[data-track-id^="smart-track-"].gs-secondary-compact:focus-within,
+.track-control-container.track-hovered > .track-controls.gs-secondary-compact {
+  max-width: min(100%, 560px);
+  gap: 4px;
+  padding-left: 10px;
+  padding-right: 10px;
+  overflow: visible;
+}
+/* Reveal action buttons whenever the compact pill is expanded (hover), not only
+   when the smart-track :hover rule happens to match. */
+.track-controls.gs-secondary-compact:hover .smart-track-qc-actions,
+.track-controls.gs-secondary-compact:focus-within .smart-track-qc-actions,
+.track-control-container.track-hovered > .track-controls.gs-secondary-compact .smart-track-qc-actions {
+  max-width: 120px;
+  opacity: 1;
+  overflow: visible;
+  pointer-events: auto;
+}
+.track-controls.gs-secondary-compact .smart-track-qc-grip {
+  opacity: 0.7;
+}
+/* Pinned secondary pills still rest as grip-only until hovered. */
+.track-control-container:not(.track-hovered) > .track-controls.gs-secondary-compact.is-pinned:not(:hover):not(:focus-within),
+.track-control-container:not(.track-hovered) > .track-controls[data-track-id^="smart-track-"].gs-secondary-compact.is-pinned:not(:hover):not(:focus-within) {
+  max-width: 30px;
+}
 .smart-track-qc-actions {
   display: flex;
   align-items: center;
@@ -3173,6 +3748,11 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   pointer-events: none;
   z-index: 5; /* above tracksWebGPU (z-index 1) */
 }
+/* A track whose data is not the tile's exact window (partial coverage, offline, or
+   a failed load) must never look authoritative: it is dimmed until it is exact. */
+.smart-track-container[data-view-state="stale"] canvas,
+.smart-track-container[data-view-state="offline"] canvas,
+.smart-track-container[data-view-state="failed"] canvas { opacity: 0.45; }
 .smart-track-container.scrollable {
   pointer-events: none;
   /* Firefox scrollbar styling */
@@ -3404,33 +3984,33 @@ html[data-theme="light"] .svg-geneName { fill: rgba(18, 110, 255, 0.92); }
   pointer-events: none;
 }
 
-/* IGV-style reads scroll: the #smartScroll wrapper owns the ONE scrollbar for the
+/* IGV-style reads scroll: each tile's .gs-smart-scroll wrapper owns the ONE scrollbar for the
    sample-track stack. Hide each sample's inner scrollbar (reads still scroll via
    wheel/drag chaining) so the outer bar isn't lost among a column of inner bars. */
-#smartScroll .smart-track-container { scrollbar-width: none; }
-#smartScroll .smart-track-container::-webkit-scrollbar { width: 0; height: 0; }
+.gs-smart-scroll .smart-track-container { scrollbar-width: none; }
+.gs-smart-scroll .smart-track-container::-webkit-scrollbar { width: 0; height: 0; }
 /* Force a classic, always-visible scrollbar. macOS defaults to an OVERLAY
    scrollbar that auto-hides — leaving no way to scroll the sample-track stack
    once it fades. An explicit ::-webkit-scrollbar width makes it non-overlay and
    permanent (Chrome/Safari); scrollbar-width:auto pins it on Firefox. */
-#smartScroll { overflow-y: auto; scrollbar-width: auto; }
-#smartScroll::-webkit-scrollbar {
+.gs-smart-scroll { overflow-y: auto; scrollbar-width: auto; }
+.gs-smart-scroll::-webkit-scrollbar {
   width: 14px;
   height: 14px;
 }
-#smartScroll::-webkit-scrollbar-track {
+.gs-smart-scroll::-webkit-scrollbar-track {
   background: rgba(0, 0, 0, 0.1);
   border-radius: 7px;
   border: 1px solid rgba(0, 0, 0, 0.05);
 }
-#smartScroll::-webkit-scrollbar-thumb {
+.gs-smart-scroll::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.3);
   border-radius: 7px;
   border: 2px solid rgba(0, 0, 0, 0.1);
   min-height: 20px;
 }
-#smartScroll::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.5); }
-#smartScroll::-webkit-scrollbar-thumb:active { background: rgba(0, 0, 0, 0.6); }
+.gs-smart-scroll::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.5); }
+.gs-smart-scroll::-webkit-scrollbar-thumb:active { background: rgba(0, 0, 0, 0.6); }
 
 /* Centered blocking modal dialog (window.__GS_MODAL) */
 .gs-modal-backdrop {

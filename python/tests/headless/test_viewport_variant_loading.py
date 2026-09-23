@@ -290,19 +290,40 @@ def test_error_response_is_surfaced_not_silent(browser):
     page.close()
 
 
-def test_far_ranging_evicts_distant_windows(browser):
+def test_far_ranging_keeps_loaded_windows_bounded(browser):
     page = _open(browser)
     page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")
     base = page.evaluate("() => ({s: window.__GS_STATE.startBp, e: window.__GS_STATE.endBp})")
     span = base["e"] - base["s"]
-    # March far away in big steps; each step loads a new window and should evict
-    # ones now far from center (keepSpan = 3x span).
-    for k in range(1, 7):
+    # March far away in big steps; each step loads a new window. Memory stays bounded by a
+    # count cap (and the distance rule), not by the current zoom.
+    for k in range(1, 16):
         _set_view(page, base["s"] + span * 10 * k, base["e"] + span * 10 * k)
     regions = page.evaluate("() => window.__gsVpState().regions")
     keys = page.evaluate("() => window.__gsVpState().windowKeys")
-    assert len(regions) <= 3, f"loaded windows not evicted (bounded): {regions}"
+    assert len(regions) <= 8, f"loaded windows not bounded: {regions}"
     assert len(keys) == len(regions), "evicted window data not released"
+    page.close()
+
+
+def test_zooming_in_does_not_evict_the_wide_window(browser):
+    """Reloading is the worst case: zooming IN must not throw away the wide window that
+    zooming back OUT will want (the keep-span used to shrink with the viewport)."""
+    page = _open(browser)
+    page.evaluate("async () => await window.gsLoadVariantsForViewport(true)")
+    base = page.evaluate("() => ({s: window.__GS_STATE.startBp, e: window.__GS_STATE.endBp})")
+    span = base["e"] - base["s"]
+    n_before = len(_fetch_calls(page))
+    # Zoom in far, somewhere outside the first window's overscan so a NEW window loads.
+    c = base["e"] + span * 3
+    _set_view(page, c - span / 40, c + span / 40)
+    regions = page.evaluate("() => window.__gsVpState().regions")
+    assert len(regions) >= 2, f"wide window was evicted by zooming in: {regions}"
+    # Zooming back out over the first window is then served without another fetch.
+    n_mid = len(_fetch_calls(page))
+    _set_view(page, base["s"], base["e"])
+    assert len(_fetch_calls(page)) == n_mid, "zooming back out refetched a window that was still loaded"
+    assert n_mid > n_before
     page.close()
 
 

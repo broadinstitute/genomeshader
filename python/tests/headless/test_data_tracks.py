@@ -85,16 +85,26 @@ def _base_config(style, features, track_id="data-synth"):
     }
 
 
-def _svg_tag_count(page, tag):
-    return page.evaluate(
-        """(tag) => {
-          const r = document.querySelector('[id^="genomeshader-root-"]');
-          const s = r && r.querySelector('#tracksSvg');
-          if (!s) return -1;
-          return s.querySelectorAll(tag).length;
-        }""",
-        tag,
-    )
+def _gpu_counts(page):
+    """Primitives the tracks canvas holds from its last paint (WebGPU instances)."""
+    page.wait_for_function("() => window.__GS_TEST_gpuStats && window.__GS_TEST_gpuStats().ready")
+    page.evaluate("() => window.__GS_TEST_renderAll()")
+    return page.evaluate("() => window.__GS_TEST_gpuStats().tracks")
+
+
+def _delta_vs_empty(browser, tmp_path, style, feats, kind):
+    """`kind` primitives the data track adds over an identical page whose track
+    has no features (the reference bases alone already emit rects)."""
+    page, errors = _open(browser, tmp_path, _base_config(style, feats))
+    _wait_ready(page)
+    with_feats = _gpu_counts(page)[kind]
+    assert errors == [], errors
+    page.close()
+    page, errors = _open(browser, tmp_path, _base_config(style, []))
+    _wait_ready(page)
+    without = _gpu_counts(page)[kind]
+    page.close()
+    return with_feats - without
 
 
 def test_data_track_line_renders_polyline(browser, tmp_path):
@@ -110,11 +120,11 @@ def test_data_track_line_renders_polyline(browser, tmp_path):
     assert page.evaluate(
         "() => window.__GS_STATE.tracks.some(t => t.id === 'data-synth')"
     )
-    # SVG fallback under swiftshader — polyline for line style
-    n = _svg_tag_count(page, "polyline")
-    assert n >= 1, f"expected polyline in #tracksSvg, got {n}"
     assert errors == [], errors
     page.close()
+    # A line series is drawn as one GPU line segment between consecutive points.
+    n = _delta_vs_empty(browser, tmp_path, "line", feats, "lines")
+    assert n >= len(feats) - 1, f"expected >= {len(feats) - 1} line segments, got {n}"
 
 
 def test_data_track_bar_renders_rects(browser, tmp_path):
@@ -125,10 +135,10 @@ def test_data_track_bar_renders_rects(browser, tmp_path):
     ]
     page, errors = _open(browser, tmp_path, _base_config("bar", feats))
     _wait_ready(page)
-    n = _svg_tag_count(page, "rect")
-    assert n >= 3, f"expected bar rects in #tracksSvg, got {n}"
     assert errors == [], errors
     page.close()
+    n = _delta_vs_empty(browser, tmp_path, "bar", feats, "rectangles")
+    assert n >= len(feats), f"expected >= {len(feats)} bar rects, got {n}"
 
 
 def test_data_track_scatter_renders_circles(browser, tmp_path):
@@ -139,10 +149,10 @@ def test_data_track_scatter_renders_circles(browser, tmp_path):
     ]
     page, errors = _open(browser, tmp_path, _base_config("scatter", feats))
     _wait_ready(page)
-    n = _svg_tag_count(page, "circle")
-    assert n >= 3, f"expected scatter circles in #tracksSvg, got {n}"
     assert errors == [], errors
     page.close()
+    n = _delta_vs_empty(browser, tmp_path, "scatter", feats, "rectangles")
+    assert n >= len(feats), f"expected >= {len(feats)} scatter marks, got {n}"
 
 
 def test_data_track_interval_renders_rects(browser, tmp_path):
@@ -152,7 +162,7 @@ def test_data_track_interval_renders_rects(browser, tmp_path):
     ]
     page, errors = _open(browser, tmp_path, _base_config("interval", feats))
     _wait_ready(page)
-    n = _svg_tag_count(page, "rect")
-    assert n >= 2, f"expected interval rects in #tracksSvg, got {n}"
     assert errors == [], errors
     page.close()
+    n = _delta_vs_empty(browser, tmp_path, "interval", feats, "rectangles")
+    assert n >= len(feats), f"expected >= {len(feats)} interval rects, got {n}"

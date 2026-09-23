@@ -86,15 +86,30 @@ def _format_allele_label(allele):
     identically."""
     if not allele or allele == ".":
         return ". (no-call)"
+    # Breakend ALTs are not sequence — don't report them as N-bp insertions.
+    if ("[" in allele or "]" in allele) and not allele.startswith("<"):
+        display = allele if len(allele) <= 40 else allele[:37] + "..."
+        return f"BND {display}"
+    if allele.startswith("<") and allele.endswith(">"):
+        return allele  # symbolic <DEL>/<DUP>/…
     length = len(allele)
     length_label = "1 bp" if length == 1 else f"{length} bp"
     display_allele = allele[:50] + "..." if length > 50 else allele
     return f"{display_allele} ({length_label})"
 
 
+def _is_breakend_alt(allele: str) -> bool:
+    return bool(allele) and ("[" in allele or "]" in allele) and not allele.startswith("<")
+
+
 def _classify_variant(ref_allele, alt_alleles):
     """Return (variant_type, is_insertion, is_deletion, max_insertion_length) —
     same rules as the long-format builder."""
+    # Breakends / symbolic SVs must not be length-classified as INS/DEL.
+    if any(_is_breakend_alt(a) for a in (alt_alleles or [])):
+        return "bnd", False, False, 0
+    if any((a or "").startswith("<") for a in (alt_alleles or [])):
+        return "sv", False, False, 0
     ref_len = len(ref_allele) if ref_allele else 0
     is_insertion = is_deletion = False
     max_insertion_length = 0
@@ -145,12 +160,22 @@ def _build_variants_data_from_aggregates(rows):
                 "variant_id": r.get("variant_id"),
                 "filter_status": r.get("filter_status", "PASS"),
                 "info_fields": r.get("info_fields", "."),
+                "mate_contig": r.get("mate_contig") or "",
+                "mate_pos": r.get("mate_pos"),
+                "mate_strand": r.get("mate_strand") or "",
+                "svtype": r.get("svtype") or "",
                 "rows": [],
             }
             order.append(key)
         g = groups[key]
         g["alts"].append((r.get("alt_allele"), int(r.get("n_alt", 0) or 0), len(g["alts"])))
         g["rows"].append(r)
+        # Prefer first non-empty mate locus seen for this variant group.
+        if not g.get("mate_contig") and r.get("mate_contig"):
+            g["mate_contig"] = r.get("mate_contig") or ""
+            g["mate_pos"] = r.get("mate_pos")
+            g["mate_strand"] = r.get("mate_strand") or ""
+            g["svtype"] = r.get("svtype") or g.get("svtype") or ""
 
     variants_data = []
     for key in order:
@@ -201,6 +226,10 @@ def _build_variants_data_from_aggregates(rows):
             "formattedRefAllele": _format_allele_label(ref_allele) if ref_allele else None,
             "formattedAltAlleles": [_format_allele_label(a) for a in alt_alleles],
             "displayIds": [variant_display_id],
+            "mateContig": g.get("mate_contig") or "",
+            "matePos": g.get("mate_pos"),
+            "mateStrand": g.get("mate_strand") or "",
+            "svtype": g.get("svtype") or "",
         })
     return variants_data
 
@@ -755,6 +784,8 @@ class GenomeShader:
             "jupyter-comms.js",
             "dom-utils.js",
             "ui-state.js",
+            "tiles.js",
+            "tile-ui.js",
             "view-state.js",
             "read-display.js",
             "track-groups.js",
@@ -2900,13 +2931,171 @@ class GenomeShader:
             "sample_id": sample_id,
         }
 
+    def _fetch_reads_batch_payload(self, items) -> list:
+        """Resolve reads for MANY (sample, BAM, locus) chunks in one call.
+
+        ``items``: ``[{"sample_id", "bam_url" (or None), "locus"}]``. Returns one dict
+        per input, in order: ``{"reads", "count", "bam_urls"}`` or ``{"error"}``.
+
+        The unit of work is one (locus, single BAM): its parquet/JSON/GCS cache key
+        is therefore the chunk itself, so a chunk fetched by anyone (this session,
+        an earlier session, a teammate sharing the GCS cache) is never re-read from
+        object storage. All cache misses go to the Rust extension in ONE call, which
+        fans out over chunk × BAM with rayon (GIL released).
+        """
+        out: list = [None] * len(items)
+        # (item idx, locus, [bam urls], pinned)
+        plan = []
+        for idx, it in enumerate(items):
+            try:
+                sample = it.get("sample_id")
+                locus = it.get("locus")
+                bam_url = it.get("bam_url")
+                if not sample or not locus:
+                    raise ValueError("fetch_reads_batch item needs sample_id and locus")
+                bam_urls = list(self.get_bam_samples_for_vcf_samples([sample]))
+                if bam_url:
+                    bam_url = str(bam_url)
+                    if bam_url in bam_urls:
+                        bam_urls = [bam_url]
+                    elif not bam_urls and ("://" in bam_url or bam_url.startswith("/")):
+                        bam_urls = [bam_url]
+                    else:
+                        bam_urls = []
+                if not bam_urls:
+                    out[idx] = {"reads": {}, "count": 0, "bam_urls": [], "sample_id": sample}
+                    continue
+                plan.append((idx, str(locus), bam_urls, bool(bam_url)))
+            except Exception as e:  # surfaced per item; the rest of the batch proceeds
+                out[idx] = {"error": str(e)}
+
+        # Unit results: (locus, bam) -> reads dict | Exception
+        use_cache = os.environ.get("GENOMESHADER_NO_READS_CACHE") != "1"
+        units: dict = {}
+        misses: list = []
+        for _idx, locus, bam_urls, _pinned in plan:
+            for bam in bam_urls:
+                key = (locus, bam)
+                if key in units:
+                    continue
+                cache_path = self._reads_cache_path(locus, [bam])
+                reads_dict = None
+                if use_cache and cache_path.exists():
+                    try:
+                        with open(cache_path, "r", encoding="utf-8") as f:
+                            cached = json.load(f)
+                        if isinstance(cached, dict) and "reads" in cached:
+                            reads_dict = cached["reads"]
+                            if (isinstance(reads_dict, dict) and reads_dict.get("query_name")
+                                    and "is_paired" not in reads_dict):
+                                reads_dict = None
+                    except Exception:
+                        reads_dict = None
+                if reads_dict is not None:
+                    units[key] = reads_dict
+                else:
+                    units[key] = None
+                    misses.append(key)
+
+        if misses:
+            # One reference per unique locus (shared by every BAM of that chunk).
+            refs: dict = {}
+            for locus, _bam in misses:
+                if locus in refs:
+                    continue
+                ref_seq, ref_start = "", 0
+                try:
+                    contig, lstart, lend = self._parse_locus(locus)
+                    with self._dbg_time("reads_reference_fetch", locus=locus):
+                        ref_seq = self.reference(contig, lstart - 1, lend) or ""
+                    ref_start = lstart
+                except Exception:
+                    ref_seq, ref_start = "", 0
+                refs[locus] = (ref_seq or None, int(ref_start))
+            requests = [(locus, bam, refs[locus][0], refs[locus][1]) for locus, bam in misses]
+            with self._dbg_time("reads_rust_batch", n_units=len(requests)):
+                results = self._rust_fetch_reads_units(requests)
+            for (locus, bam), res in zip(misses, results):
+                if isinstance(res, Exception):
+                    units[(locus, bam)] = res
+                    continue
+                reads_dict = res
+                units[(locus, bam)] = reads_dict
+                if use_cache:
+                    try:
+                        cache_path = self._reads_cache_path(locus, [bam])
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(cache_path, "w", encoding="utf-8") as f:
+                            json.dump({"reads": reads_dict,
+                                       "count": len(reads_dict.get("query_name", []))}, f)
+                    except Exception:
+                        pass
+
+        for idx, locus, bam_urls, _pinned in plan:
+            parts = [units[(locus, bam)] for bam in bam_urls]
+            err = next((p for p in parts if isinstance(p, Exception)), None)
+            if err is not None:
+                out[idx] = {"error": str(err)}
+                continue
+            merged = self._merge_reads_dicts(parts)
+            merged = self._apply_assembly_read_overrides(merged or {})
+            out[idx] = {
+                "reads": merged,
+                "count": len(merged.get("query_name", [])) if merged else 0,
+                "bam_urls": bam_urls,
+                "sample_id": items[idx].get("sample_id"),
+            }
+        return out
+
+    @staticmethod
+    def _merge_reads_dicts(parts: list) -> dict:
+        """Concatenate columnar reads dicts (one per BAM) in order; empty parts skip."""
+        parts = [p for p in parts if p and p.get("query_name")]
+        if not parts:
+            return {}
+        if len(parts) == 1:
+            return parts[0]
+        merged = {k: list(v) for k, v in parts[0].items()}
+        for p in parts[1:]:
+            for k in merged:
+                merged[k].extend(p.get(k, []))
+        return merged
+
+    def _rust_fetch_reads_units(self, requests: list) -> list:
+        """Fetch [(locus, bam, ref_seq, ref_start)] -> [reads dict | Exception].
+
+        Uses the Rust batch entry point when present (parallel over unit, GIL
+        released). Older extensions fall back to one call per unit.
+        """
+        batch = getattr(self._session, "fetch_reads_batch", None)
+        if batch is not None:
+            try:
+                raw = batch([(l, [b], r, rs) for (l, b, r, rs) in requests])
+            except Exception as e:
+                return [e] * len(requests)
+            results = []
+            for df, err in raw:
+                if err:
+                    results.append(RuntimeError(err))
+                else:
+                    results.append(df.to_dict(as_series=False) if df is not None else {})
+            return results
+        results = []
+        for locus, bam, ref_seq, ref_start in requests:
+            try:
+                df = self._session.fetch_reads_for_locus(locus, [bam], ref_seq, int(ref_start))
+                results.append(df.to_dict(as_series=False))
+            except Exception as e:
+                results.append(e)
+        return results
+
     # Bump when the reads payload schema changes so stale caches miss cleanly.
     # v2: reference-diffed SNPs + has_md("snps displayable") column.
     # v3: flush v2 payloads written before the extension was rebuilt (no has_md
     #     column / no reference-diffed SNPs) so the widget can't serve them.
     # v4: is_paired / is_primary columns for paired-end layout.
     # v5: CIGAR N (REFSKIP) elements for split-read display.
-    _READS_CACHE_VERSION = "v7"
+    _READS_CACHE_VERSION = "v9"  # v9: mate_contig/mate_pos for PE linked tiles
 
     # ----------------------------------------------------------------- debug
     def _setup_debug_logging(self):
@@ -3615,6 +3804,9 @@ class GenomeShader:
             select_cols.append("filter_status")
         if "info_fields" in variants_df.columns:
             select_cols.append("info_fields")
+        for optional in ("mate_contig", "mate_pos", "mate_strand", "svtype", "mate_id"):
+            if optional in variants_df.columns:
+                select_cols.append(optional)
         unique_variants = (
             variants_df.select(select_cols)
             .unique(subset=["position", "ref_allele", "alt_allele"])
@@ -3641,6 +3833,10 @@ class GenomeShader:
                     "variant_display_ids": [],
                     "filter_status": row.get("filter_status", "PASS"),
                     "info_fields": row.get("info_fields", "."),
+                    "mate_contig": row.get("mate_contig") or "",
+                    "mate_pos": row.get("mate_pos"),
+                    "mate_strand": row.get("mate_strand") or "",
+                    "svtype": row.get("svtype") or "",
                 }
             row_display_id = str(vcf_id) if vcf_id else str(pos)
             if row_display_id not in variant_groups[pos]["variant_display_ids"]:
@@ -3666,6 +3862,12 @@ class GenomeShader:
                 group["filter_status"] = row["filter_status"]
             if "info_fields" in row and row.get("info_fields") not in (None, "", "."):
                 group["info_fields"] = row["info_fields"]
+            if row.get("mate_contig") and not group.get("mate_contig"):
+                group["mate_contig"] = row.get("mate_contig") or ""
+                group["mate_pos"] = row.get("mate_pos")
+                group["mate_strand"] = row.get("mate_strand") or ""
+            if row.get("svtype") and not group.get("svtype"):
+                group["svtype"] = row.get("svtype") or ""
 
         if "genotype" in variants_df.columns and "sample_name" in variants_df.columns:
             for pos, variant_info in variant_groups.items():
@@ -3936,6 +4138,10 @@ class GenomeShader:
                 "insertionGapPx": insertion_gap_px,
                 "formattedRefAllele": formatted_ref_allele,
                 "formattedAltAlleles": formatted_alt_alleles,
+                "mateContig": variant_info.get("mate_contig") or "",
+                "matePos": variant_info.get("mate_pos"),
+                "mateStrand": variant_info.get("mate_strand") or "",
+                "svtype": variant_info.get("svtype") or "",
             })
             if is_insertion and insertion_gap_px > 0:
                 insertion_variants_lookup.append({
@@ -5714,6 +5920,10 @@ class GenomeShader:
             # IGV-style dynamic loading: fetch variants for the visible window on
             # pan/zoom (not just the startup region). Needs the comm round-trip.
             'viewport_variant_loading': bool(comm_available),
+            # Opt-in binary transport for reads (GENOMESHADER_READS_BINARY=1): columns ride the
+            # widget's buffer channel instead of JSON. ~25% smaller and a little cheaper to
+            # decode; off by default until it has been run against a live kernel/frontend.
+            'reads_binary': os.environ.get("GENOMESHADER_READS_BINARY") == "1",
             # Zoom gate: above this span, skip loading individual variants (too
             # many/dense to draw); tune per callset density.
             'variant_max_span_bp': int(os.environ.get("GENOMESHADER_VARIANT_MAX_SPAN_BP", "1000000")),

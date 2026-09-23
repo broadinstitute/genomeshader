@@ -353,7 +353,14 @@ function setCoverageScaleSource(track, source) {
 }
 
 function computeTrackCoverageMax(track, genomeW, xGenomeFn, viewLo, viewHi) {
-  const reads = track && track.readsLayout && track.readsLayout.reads;
+  // Multi-tile: the reads THIS tile shows for the track, never the focused
+  // tile's live payload.
+  let layout = track && track.readsLayout;
+  if (track && typeof gsIsMultiTile === "function" && gsIsMultiTile()
+      && typeof gsActiveTile === "function" && typeof smartTrackReadsLayoutForTile === "function") {
+    layout = smartTrackReadsLayoutForTile(track, gsActiveTile());
+  }
+  const reads = layout && layout.reads;
   if (!Array.isArray(reads) || !reads.length) return 0;
   const bins = Math.max(1, Math.ceil(genomeW || 1));
   const depths = new Float32Array(bins);

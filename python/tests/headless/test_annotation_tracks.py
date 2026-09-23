@@ -99,15 +99,14 @@ def test_genes_and_repeats_render_via_shared_envelope(browser, tmp_path):
         const s = r && r.querySelector('#tracksSvg');
         return s ? [...s.querySelectorAll('.svg-geneName')].map(n => n.textContent) : [];
       })(),
-      nRects: (() => {
-        const r = document.querySelector('[id^="genomeshader-root-"]');
-        const s = r && r.querySelector('#tracksSvg');
-        return s ? s.querySelectorAll('rect').length : -1;
-      })(),
     })""")
     assert state["hasGenes"] and state["hasRepeats"]
     assert state["nGenes"] == 1 and state["nRepeats"] == 2
     assert "GENEA" in state["geneNames"]
-    assert state["nRects"] >= 2, f"expected exon/repeat rects, got {state['nRects']}"
+    # Exons and repeats are GPU rects (gene names stay SVG text).
+    page.wait_for_function("() => window.__GS_TEST_gpuStats && window.__GS_TEST_gpuStats().ready")
+    page.evaluate("() => window.__GS_TEST_renderAll()")
+    n_rects = page.evaluate("() => window.__GS_TEST_gpuStats().tracks.rectangles")
+    assert n_rects >= 2, f"expected exon/repeat rects on the GPU canvas, got {n_rects}"
     assert errors == [], errors
     page.close()

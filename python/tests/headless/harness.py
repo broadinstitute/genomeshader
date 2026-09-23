@@ -47,12 +47,15 @@ def _assets():
     return css, body, scripts
 
 
-def build_page(config=None, instrument=False):
+def build_page(config=None, instrument=False, capture=True):
     """Standalone HTML that runs the viewer scripts like the anywidget host does.
 
     config: inlined as ``window.GENOMESHADER_CONFIG`` (empty -> demo data).
     instrument: if True, inject a ``window.__rc`` counter incremented on every
         ``renderAll()`` (for render-coalescing / perf regression checks).
+    capture: set ``window.__GS_TEST_CAPTURE`` so WebGPU canvases keep a readable
+        shadow copy of what they last presented (see ``gsCaptureGpuCanvas``).
+        The benchmark turns this off — the copy is not free.
     """
     css, body, scripts = _assets()
     if instrument:
@@ -72,10 +75,16 @@ def build_page(config=None, instrument=False):
         "window.GENOMESHADER_JUPYTER_ORIGIN='';"
         "window.__GS_SEND=function(){return Promise.reject(new Error('no comm in harness'));};"
         "window.__GS_ERR=null;"
-        "(async function __runViewer__(){\n" + scripts
+        + ("window.__GS_TEST_CAPTURE=true;" if capture else "")
+        # GS_VERIFY_PAINT=1: every paint-signature hit repaints anyway and reports
+        # any pixel change as PAINT_KEY_MISS (a paint input the signature forgot).
+        + ("window.__GS_VERIFY_PAINT=true;" if (capture and os.environ.get("GS_VERIFY_PAINT")) else "")
+        + "(async function __runViewer__(){\n" + scripts
         + "\ntry{window.__GS_STATE=(typeof state!=='undefined')?state:null;}catch(e){}\n"
         "try{window.__GS_xGenome=(typeof xGenome!=='undefined')?xGenome:null;"
-        "window.__GS_yGenome=(typeof yGenome!=='undefined')?yGenome:null;}catch(e){}\n"
+        "window.__GS_yGenome=(typeof yGenome!=='undefined')?yGenome:null;"
+        "window.__GS_xGenomeCanonical=(typeof xGenomeCanonical!=='undefined')?xGenomeCanonical:null;"
+        "window.__GS_yGenomeCanonical=(typeof yGenomeCanonical!=='undefined')?yGenomeCanonical:null;}catch(e){}\n"
         "try{window.__GS_variants=(typeof variants!=='undefined')?variants:null;}catch(e){}\n"
         "})()"
         ".then(()=>{window.__GS_READY=true;})"

@@ -7,6 +7,9 @@ const DEFAULT_READ_DISPLAY = Object.freeze({
   coverageScale: Object.freeze({ mode: "track", fixedMin: 0, fixedMax: 30 }),
   // Group-shareable field sources: "track" | "group" (group only valid when track.groupId set).
   coverageScaleSource: "track",
+  // Soft clips: "marker" = bracket + SA/mate hint; "bases" = paint clipped seq as
+  // mismatches; "hide" = omit (legacy abrupt end).
+  softClipMode: "marker",
   groupBy: null,
   sortBy: null,
   colorBy: null,
@@ -22,6 +25,11 @@ const READ_DISPLAY_FIELDS = Object.freeze({
   summaryField: [
     ["haplotypeConsensus", "Haplotype consensus"],
     ["coverage", "Coverage"],
+  ],
+  softClipMode: [
+    ["marker", "Marker"],
+    ["bases", "Show bases"],
+    ["hide", "Hide"],
   ],
   groupBy: [
     [null, "None"], ["haplotype", "Haplotype"], ["sample", "Sample"],
@@ -53,6 +61,9 @@ function cloneReadDisplayConfig(source) {
   const scale = cfg.coverageScale || DEFAULT_READ_DISPLAY.coverageScale;
   const rev = cfg.reverse || DEFAULT_READ_DISPLAY.reverse;
   const scaleMode = (scale.mode === "view" || scale.mode === "fixed") ? scale.mode : "track";
+  const softClipMode = (cfg.softClipMode === "bases" || cfg.softClipMode === "hide")
+    ? cfg.softClipMode
+    : "marker";
   // Legacy migrate: showPairs → alignments.paired when alignments absent.
   const paired = cfg.alignments
     ? !!aln.paired
@@ -79,6 +90,7 @@ function cloneReadDisplayConfig(source) {
       fixedMax: Number.isFinite(Number(scale.fixedMax)) ? Number(scale.fixedMax) : 30,
     },
     coverageScaleSource: cfg.coverageScaleSource === "group" ? "group" : "track",
+    softClipMode,
     groupBy: cfg.groupBy == null ? null : cfg.groupBy,
     sortBy: cfg.sortBy == null ? null : cfg.sortBy,
     colorBy: cfg.colorBy == null ? null : cfg.colorBy,

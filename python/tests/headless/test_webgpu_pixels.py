@@ -7,7 +7,10 @@ paths: the smart-track read canvas (#65 virtualization), the SNP glyph overlay
 
 Requires a working WebGPU GPU (see planning/WEBGPU_TESTING.md). The whole module
 skips cleanly when Playwright/Chrome/GPU aren't present, so `pytest -q` on a
-GPU-less host is unaffected.
+GPU-less host is unaffected. ``GS_WEBGPU_SOFTWARE`` (hosted CI) also skips this
+module before Chrome launches: SwiftShader is not a pixel oracle, and the
+headed browser this harness uses has no display on a GitHub runner. Those
+pixels run on the self-hosted GPU workflow instead.
 
 Reads are seeded through `window.__GS_TEST_seedSmartTrack` (the test seam in
 smart-tracks.js), which mirrors the real comm-driven read-load path.
@@ -25,11 +28,19 @@ pytest.importorskip("PIL")
 from playwright.sync_api import sync_playwright  # noqa: E402
 import harness_gpu as hg  # noqa: E402
 
+# Skip at collection so the module fixture never launches headed Chrome.
+pytestmark = pytest.mark.skipif(
+    bool(os.environ.get("GS_WEBGPU_SOFTWARE")),
+    reason="pixel tests need a real GPU; software WebGPU is not a pixel oracle",
+)
+
 
 # --- fixtures --------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def gpu_browser():
+    if os.environ.get("GS_WEBGPU_SOFTWARE"):
+        pytest.skip("pixel tests need a real GPU; software WebGPU is not a pixel oracle")
     with sync_playwright() as pw:
         browser = hg.launch(pw)
         if browser is None:

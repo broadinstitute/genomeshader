@@ -2,7 +2,19 @@
 // -----------------------------
 
 // Process raw reads data into a layout structure (used by Smart Tracks)
+//
+// A generator so large inputs can be laid out in time slices (see gsSubmitJob in
+// reads-cache.js): with a slice controller `sl` it yields whenever the slice's time
+// budget is spent; with none it runs straight through, and processReadsData() is
+// exactly the old synchronous function.
 function processReadsData(rawReads, opts) {
+  const g = _processReadsDataGen(rawReads, opts, null);
+  let r;
+  while (!(r = g.next()).done) { /* no slice controller: never yields */ }
+  return r.value;
+}
+
+function* _processReadsDataGen(rawReads, opts, sl) {
   if (!rawReads || !rawReads.query_name) return null;
   opts = opts || {};
   const display = cloneReadDisplayConfig(opts.display || DEFAULT_READ_DISPLAY);
@@ -31,6 +43,7 @@ function processReadsData(rawReads, opts) {
   const readArray = [];
   let current = null;
   for (let i = 0; i < numRows; i++) {
+    if (sl && (i & 4095) === 0 && sl.expired()) yield;
     if (rawReads.element_type[i] === 0) { // READ element starts a new alignment
       const isSecondary = secondaryCol ? !!secondaryCol[i]
         : (primaryCol ? !primaryCol[i] : false);
@@ -39,8 +52,12 @@ function processReadsData(rawReads, opts) {
       const mapq = hasMapq ? Number(rawReads.mapping_quality[i] || 0) : 60;
       current = {
         name: rawReads.query_name[i],
+        queryName: rawReads.query_name[i],
         start: rawReads.reference_start[i],
         end: rawReads.reference_end[i],
+        referenceStart: rawReads.reference_start[i],
+        referenceEnd: rawReads.reference_end[i],
+        contig: rawReads.reference_contig ? rawReads.reference_contig[i] : null,
         isForward: rawReads.is_forward[i],
         haplotype: rawReads.haplotype[i],
         sample: rawReads.sample_name[i],
@@ -49,6 +66,9 @@ function processReadsData(rawReads, opts) {
         insertSize: rawReads.insert_size ? rawReads.insert_size[i] : 0,
         clipLength: rawReads.clip_length ? rawReads.clip_length[i] : 0,
         meanBaseQuality: rawReads.mean_base_quality ? rawReads.mean_base_quality[i] : 0,
+        saTag: rawReads.sa_tag ? (rawReads.sa_tag[i] || "") : "",
+        mateContig: rawReads.mate_contig ? (rawReads.mate_contig[i] || "") : "",
+        matePos: rawReads.mate_pos ? Number(rawReads.mate_pos[i] || 0) : 0,
         isPaired: !!(pairedCol && pairedCol[i]),
         isPrimary: primaryCol ? !!primaryCol[i] : !(isSecondary || isSupplementary),
         isSecondary,
@@ -72,6 +92,7 @@ function processReadsData(rawReads, opts) {
     }
   }
 
+  if (sl && sl.expired()) yield;
   const insertMagnitudes = readArray
     .filter((r) => r.isPaired && Number(r.insertSize))
     .map((r) => Math.abs(Number(r.insertSize)));
@@ -116,6 +137,7 @@ function processReadsData(rawReads, opts) {
       units.push({ start: read.start, end: read.end, reads: [read] });
     }
   }
+  if (sl && sl.expired()) yield;
   const representative = (unit) => unit.reads[0];
   const groupKey = (unit) => display.groupBy
     ? readCategory(representative(unit), display.groupBy)
@@ -167,37 +189,281 @@ function processReadsData(rawReads, opts) {
   let rowBase = 0;
   let groupOffsetPx = 0;
   const groupLayouts = [];
+  const rowReads = [];   // rowReads[row] = that row's reads, sorted by start
   for (const name of groupNames) {
     const groupUnits = groups.get(name);
     groupUnits.sort(compareUnits);
+    // First-fit into the lowest row with room. A row holds disjoint units sorted by
+    // start (so its ends ascend too), which means a unit fits iff it clears its two
+    // neighbours — binary search instead of scanning every unit in every row, and
+    // no re-sort per insert (that was quadratic and froze 100k+ read tracks).
     const rows = [];
+    let _packN = 0;
     for (const unit of groupUnits) {
+      if (sl && (++_packN & 2047) === 0 && sl.expired()) yield;
       let target = -1;
-      for (let r = 0; r < rows.length && target < 0; r++) {
-        if (rows[r].every((existing) =>
-          unit.end < existing.start - 10 || unit.start > existing.end + 10)) target = r;
+      let at = 0;
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r];
+        const st = row.starts;
+        const n = st.length;
+        // insertion point = number of existing units with start <= unit.start
+        let p;
+        if (n === 0 || unit.start >= st[n - 1]) p = n;
+        else {
+          let lo = 0, hi = n;
+          while (lo < hi) { const mid = (lo + hi) >> 1; if (st[mid] <= unit.start) lo = mid + 1; else hi = mid; }
+          p = lo;
+        }
+        if (p > 0 && !(unit.start > row.ends[p - 1] + 10)) continue;
+        if (p < n && !(unit.end < st[p] - 10)) continue;
+        target = r; at = p;
+        break;
       }
       if (target < 0) {
         target = rows.length;
-        rows.push([]);
+        rows.push({ units: [], starts: [], ends: [] });
+        at = 0;
       }
       for (const read of unit.reads) {
         read.row = rowBase + target;
         read.groupOffsetPx = groupOffsetPx;
         read.groupKey = name;
       }
-      rows[target].push(unit);
-      rows[target].sort((a, b) => a.start - b.start);
+      const row = rows[target];
+      if (at === row.units.length) {
+        row.units.push(unit); row.starts.push(unit.start); row.ends.push(unit.end);
+      } else {
+        row.units.splice(at, 0, unit); row.starts.splice(at, 0, unit.start); row.ends.splice(at, 0, unit.end);
+      }
+    }
+    for (let r = 0; r < rows.length; r++) {
+      const list = [];
+      for (const unit of rows[r].units) for (const read of unit.reads) list.push(read);
+      rowReads[rowBase + r] = list;
     }
     groupLayouts.push({ key: name, rowStart: rowBase, rowCount: rows.length, offsetPx: groupOffsetPx });
     rowBase += rows.length;
     if (name !== groupNames[groupNames.length - 1]) groupOffsetPx += 8;
   }
 
+  // Any mate links at all? (the connector pass in the painter is skipped otherwise)
+  let hasMates = false;
+  if (asPairs) { for (const r of readArray) { if (r.mate) { hasMates = true; break; } } }
   return {
     reads: readArray, rowCount: rowBase, groupGapPx: groupOffsetPx,
-    groups: groupLayouts, medianInsertSize,
+    groups: groupLayouts, medianInsertSize, rowReads, hasMates,
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Window / row access into a layout (so a paint touches only what is on screen)
+// ---------------------------------------------------------------------------
+// A layout can hold hundreds of thousands of reads (whole cached chunks, several
+// windows wide) while a paint needs the ~1/3 overlapping the window, and of those
+// only the rows currently scrolled into view. Everything here is memoized on the
+// layout object, so a pan costs binary searches, not passes over every read.
+
+function _gsLowerBound(arr, v) {          // first index with arr[i] >= v (arr ascending)
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] < v) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+function _gsUpperBound(arr, v) {          // first index with arr[i] > v
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] <= v) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
+/** Reads sorted by start + parallel starts[] and running-max end[] (built once). */
+function gsLayoutIndex(layout) {
+  if (layout._idx) return layout._idx;
+  const reads = layout.reads.slice().sort((a, b) => a.start - b.start);
+  const n = reads.length;
+  const starts = new Float64Array(n);
+  const pmax = new Float64Array(n);
+  let m = -Infinity;
+  for (let i = 0; i < n; i++) {
+    starts[i] = reads[i].start;
+    if (reads[i].end > m) m = reads[i].end;
+    pmax[i] = m;
+  }
+  return (layout._idx = { reads, starts, pmax });
+}
+
+/** Reads overlapping [lo, hi] (any order-independent consumer may use these). */
+function gsWindowReads(layout, lo, hi) {
+  if (!layout || !layout.reads || !layout.reads.length) return [];
+  const ix = gsLayoutIndex(layout);
+  const i0 = _gsLowerBound(ix.pmax, lo);          // everything before has end < lo
+  const i1 = _gsUpperBound(ix.starts, hi);        // everything from here has start > hi
+  const out = [];
+  for (let i = i0; i < i1; i++) {
+    const r = ix.reads[i];
+    if (r.end >= lo) out.push(r);
+  }
+  return out;
+}
+
+/**
+ * Reads in rows [startRow, endRow] (inclusive). With lo/hi given, only those
+ * overlapping the window; without, every read in those rows.
+ */
+function gsRowReadsInWindow(layout, startRow, endRow, lo, hi) {
+  const rr = layout && layout.rowReads;
+  if (!rr) return (layout && layout.reads) ? layout.reads.filter((r) => r.row >= startRow && r.row <= endRow
+    && (lo === undefined || (r.end >= lo && r.start <= hi))) : [];
+  const windowed = lo !== undefined;
+  const out = [];
+  const r0 = Math.max(0, startRow), r1 = Math.min(rr.length - 1, endRow);
+  for (let r = r0; r <= r1; r++) {
+    const arr = rr[r];
+    if (!arr || !arr.length) continue;
+    if (!windowed) { for (let i = 0; i < arr.length; i++) out.push(arr[i]); continue; }
+    let pm = arr._pmax;
+    if (!pm) {
+      pm = arr._pmax = new Float64Array(arr.length);
+      let m = -Infinity;
+      for (let i = 0; i < arr.length; i++) { if (arr[i].end > m) m = arr[i].end; pm[i] = m; }
+    }
+    for (let i = _gsLowerBound(pm, lo); i < arr.length; i++) {
+      const read = arr[i];
+      if (read.start > hi) break;                 // row is sorted by start
+      if (read.end >= lo) out.push(read);
+    }
+  }
+  return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// Summary-strip events, per layout (not per frame)
+// ---------------------------------------------------------------------------
+// The collapsed-track strip (and an expanded track's overview row) summarizes the
+// CIGAR events of every read. Drawing one marker per event per frame is
+// O(events) of JS work per track; instead each layout precomputes, per haplotype
+// and kind, position-sorted typed arrays (with each event's alpha already
+// resolved from the per-bp overlap counts). A frame then binary-searches the
+// window and folds events into pixel columns.
+
+/** Per-bp event counts for one haplotype's reads (0 = untagged, 1, 2). Memoized. */
+function gsOverlapMap(layout, hap, clipBases) {
+  const key = "_ov" + (clipBases ? "B" : "N");
+  const memo = layout[key] || (layout[key] = {});
+  if (memo[hap]) return memo[hap];
+  const map = new Map();
+  for (const read of layout.reads) {
+    if (_gsHapKey(read.haplotype) !== hap) continue;
+    if (!read.elements || !read.elements.length) continue;
+    for (const elem of read.elements) {
+      if (elem.type === 3) {
+        for (let bp = elem.start; bp <= elem.end; bp++) map.set(bp, (map.get(bp) || 0) + 1);
+      } else if (elem.type === 1 || elem.type === 2 || (elem.type === 4 && clipBases)) {
+        map.set(elem.start, (map.get(elem.start) || 0) + 1);
+      }
+    }
+  }
+  memo[hap] = map;
+  return map;
+}
+function _gsHapKey(h) { return h === 1 ? 1 : (h === 2 ? 2 : 0); }
+
+const _GS_NUC_CODE = { A: 0, C: 1, G: 2, T: 3 };
+
+/**
+ * { [hap]: { ins:{pos,a}, del:{pos,end,a}, snp:{pos,code} } } — position-sorted
+ * typed arrays. `scMode` is the track's soft-clip mode (only "bases" turns clipped
+ * bases into ticks; "hide"/"marker" drop them from the strip).
+ */
+function gsSummaryEvents(layout, scMode) {
+  const key = "_sumEv_" + scMode;
+  if (layout[key]) return layout[key];
+  const clipBases = scMode === "bases";
+  const raw = { 0: { ins: [], del: [], snp: [] }, 1: { ins: [], del: [], snp: [] }, 2: { ins: [], del: [], snp: [] } };
+  const maps = { 0: gsOverlapMap(layout, 0, clipBases), 1: gsOverlapMap(layout, 1, clipBases), 2: gsOverlapMap(layout, 2, clipBases) };
+  for (const read of layout.reads) {
+    if (!read.elements || !read.elements.length) continue;
+    const h = _gsHapKey(read.haplotype);
+    const ov = maps[h];
+    for (const el of read.elements) {
+      const t = el.type;
+      if (t === 5) continue;                                   // intron skip
+      if (t === 4 && !clipBases) continue;                     // hide / edge-tick modes
+      if (t === 2) {
+        const a = Math.min(0.8, 0.25 * (1 + ((ov.get(el.start) || 0) - 1) * 0.25));
+        raw[h].ins.push([el.start, a]);
+      } else if (t === 3) {
+        let tot = 0, c = 0;
+        for (let bp = el.start; bp <= el.end; bp++) { tot += ov.get(bp) || 0; c++; }
+        const o = c ? tot / c : 0;
+        raw[h].del.push([el.start, Math.min(0.8, 0.2 * (1 + (o - 1) * 0.25)), el.end]);
+      } else {                                                 // 1 (SNP) or 4 in "bases" mode
+        const nuc = el.sequence ? String(el.sequence).toUpperCase() : "?";
+        raw[h].snp.push([el.start, nuc in _GS_NUC_CODE ? _GS_NUC_CODE[nuc] : 4]);
+      }
+    }
+  }
+  const pack = (list, withEnd) => {
+    list.sort((a, b) => a[0] - b[0]);
+    const n = list.length;
+    const pos = new Float64Array(n), aux = new Float32Array(n);
+    const end = withEnd ? new Float64Array(n) : null;
+    for (let i = 0; i < n; i++) { pos[i] = list[i][0]; aux[i] = list[i][1]; if (withEnd) end[i] = list[i][2]; }
+    return { pos, aux, end };
+  };
+  const out = {};
+  for (const h of [0, 1, 2]) out[h] = { ins: pack(raw[h].ins), del: pack(raw[h].del, true), snp: pack(raw[h].snp) };
+  return (layout[key] = out);
+}
+
+
+/** Per-haplotype start-sorted index (starts[], running-max ends[]) of a layout. */
+function gsHapIndex(layout, h) {
+  const memo = layout._hapIdx || (layout._hapIdx = {});
+  if (memo[h]) return memo[h];
+  const reads = layout.reads.filter((r) => _gsHapKey(r.haplotype) === h).sort((a, b) => a.start - b.start);
+  const n = reads.length;
+  const starts = new Float64Array(n), pmax = new Float64Array(n);
+  let m = -Infinity;
+  for (let i = 0; i < n; i++) {
+    starts[i] = reads[i].start;
+    if (reads[i].end > m) m = reads[i].end;
+    pmax[i] = m;
+  }
+  return (memo[h] = { reads, starts, pmax });
+}
+
+/** Is any read of haplotype h (0 = untagged, 1, 2) overlapping [lo, hi]? O(log n). */
+function gsHapPresent(layout, h, lo, hi) {
+  if (!layout || !layout.reads) return false;
+  const ix = gsHapIndex(layout, h);
+  const i0 = _gsLowerBound(ix.pmax, lo);         // read i0 is the first with end >= lo
+  return i0 < ix.starts.length && ix.starts[i0] <= hi;
+}
+
+/**
+ * {mn, mx, perHap:{0,1,2:[min start, max end]}} over the reads overlapping
+ * [lo, hi] — what a pass over every window read used to compute — in O(log n):
+ * the first overlapping read (by start) is at the lower bound of the running-max
+ * ends, and the largest end among reads starting <= hi is the running max there.
+ */
+function gsSpanExtents(layout, lo, hi) {
+  let mn = Infinity, mx = -Infinity;
+  const perHap = { 0: [Infinity, -Infinity], 1: [Infinity, -Infinity], 2: [Infinity, -Infinity] };
+  if (layout && layout.reads) {
+    for (const h of [0, 1, 2]) {
+      const ix = gsHapIndex(layout, h);
+      const i0 = _gsLowerBound(ix.pmax, lo);
+      const i1 = _gsUpperBound(ix.starts, hi);
+      if (i0 >= i1) continue;
+      const a = ix.starts[i0], b = ix.pmax[i1 - 1];
+      perHap[h] = [a, b];
+      if (a < mn) mn = a;
+      if (b > mx) mx = b;
+    }
+  }
+  return { mn, mx, perHap };
 }
 
 // CIGAR N (element_type 5) intron skips. Aligned blocks are the exons; the
@@ -255,6 +521,14 @@ function smartTrackStackHeight(track) {
   if (!showReads) return null;
   const layout = track.readsLayout;
   if (!layout || !layout.reads || !layout.reads.length) return null;
+  return smartTrackStackHeightFromLayout(track, layout);
+}
+
+/** Stack height from an arbitrary readsLayout (multi-tile height lock). */
+function smartTrackStackHeightFromLayout(track, layout) {
+  if (!track || !layout || !layout.reads || !layout.reads.length) return null;
+  const display = track.readDisplay || DEFAULT_READ_DISPLAY;
+  const showSummary = display.visibility.summary !== false;
   const labelH = 24;
   const closedSlot = track.closedHeight || 30;
   const summaryH = Math.max(12, labelH - 2);
@@ -272,6 +546,7 @@ function smartTrackStackHeight(track) {
 function smartTrackLayoutHeight(track) {
   // Slot height for layout: summary-only uses closedHeight; with reads fits the
   // stack up to the open cap (track.height, default 220).
+  // Multi-tile: use the locked max across columns so a track sits at the same Y in every tile.
   if (!track) return SMART_TRACK_OPEN_HEIGHT;
   const display = track.readDisplay || DEFAULT_READ_DISPLAY;
   const showReads = display.visibility.reads !== false;
@@ -279,12 +554,56 @@ function smartTrackLayoutHeight(track) {
   if (!showReads && !showSummary) return track.closedHeight || 30;
   if (!showReads) return track.closedHeight || 30;
   const cap = track.height || SMART_TRACK_OPEN_HEIGHT;
+  if (typeof gsIsMultiTile === "function" && gsIsMultiTile()
+      && Number.isFinite(track._multiTileHeightLock) && track._multiTileHeightLock > 0) {
+    return Math.min(cap, track._multiTileHeightLock);
+  }
   const stack = smartTrackStackHeight(track);
   if (stack == null) return cap;
   return Math.min(cap, stack);
 }
+
+/**
+ * Lock each smart track's layout height to the max stack needed by ANY open
+ * tile. Without this, a dense pileup in column B pushes that column's tracks
+ * down while A stays short, so the same track sits at different Y in each tile.
+ */
+function gsUpdateMultiTileHeightLocks() {
+  const tracks = state.smartTracks || [];
+  if (typeof gsIsMultiTile !== "function" || !gsIsMultiTile()) {
+    for (const t of tracks) {
+      if (t) t._multiTileHeightLock = null;
+    }
+    return;
+  }
+  const tiles = (state.tiles || []).filter((t) => t && !t.blank);
+  for (const track of tracks) {
+    if (!track) continue;
+    if (track.collapsed || (track.readDisplay && track.readDisplay.visibility
+        && track.readDisplay.visibility.reads === false)) {
+      track._multiTileHeightLock = null;
+      continue;
+    }
+    const cap = track.height || SMART_TRACK_OPEN_HEIGHT;
+    let maxH = 0;
+    for (const tile of tiles) {
+      let layout = null;
+      if (typeof smartTrackReadsLayoutForTile === "function") {
+        layout = smartTrackReadsLayoutForTile(track, tile);
+      }
+      if (!layout && track.readsLayout && track._readsLocusSig) {
+        const sig = `${tile.contig}:${Math.floor(tile.startBp)}-${Math.ceil(tile.endBp)}`;
+        if (track._readsLocusSig === sig) layout = track.readsLayout;
+      }
+      const stack = smartTrackStackHeightFromLayout(track, layout);
+      if (stack != null) maxH = Math.max(maxH, stack);
+    }
+    track._multiTileHeightLock = maxH > 0 ? Math.min(cap, maxH) : null;
+  }
+}
 if (typeof window !== "undefined") {
   window.__GS_smartTrackLayoutHeight = smartTrackLayoutHeight;
+  window.gsUpdateMultiTileHeightLocks = gsUpdateMultiTileHeightLocks;
 }
 
 // Exposed for the headless harness to regression-test read grouping (paired-end
@@ -345,8 +664,10 @@ function createSmartTrack(strategy, selectedAlleles) {
   const insertIndex = flowIndex >= 0 ? flowIndex + 1 : state.tracks.length;
   state.tracks.splice(insertIndex, 0, track);
   
-  // Initialize WebGPU renderer (async, but don't await - it will complete in background)
-  initSmartTrackWebGPU(trackId);
+  // Initialize a reads renderer in every tile (async, but don't await - it
+  // will complete in background). Single-tile: the one primary WebGPU renderer.
+  if (typeof gsEnsureSmartRenderers === "function") gsEnsureSmartRenderers();
+  else initSmartTrackWebGPU(trackId);
   
   // Update layout
   updateTracksHeight();
@@ -356,30 +677,101 @@ function createSmartTrack(strategy, selectedAlleles) {
   return track;
 }
 
-// Initialize WebGPU renderer for a Smart track
-async function initSmartTrackWebGPU(trackId) {
+// ---- Per-tile reads stacks ------------------------------------------------
+// Every tile owns a persistent reads stack (a .gs-smart-scroll wrapper holding
+// one container + canvases per smart track) inside its own column. Nothing is
+// ever moved between columns or snapshotted: each column repaints its own
+// canvases from the reads cache, so focus changes cannot blank a sibling.
+
+/** Renderer Map (trackId -> renderer record) owned by a tile. */
+function gsTileRenderers(tile) {
+  if (!tile) return state.smartTrackRenderers;
+  if (!(tile._smartRenderers instanceof Map)) tile._smartRenderers = new Map();
+  return tile._smartRenderers;
+}
+
+/** The tile's `.tracks` host element (its own tracksContainer). */
+function gsTileTracksHost(tile) {
+  const rootEl = (tile && typeof gsTileRootEl === "function") ? gsTileRootEl(tile.id) : null;
+  if (!rootEl) return null;
+  return rootEl.querySelector(".gs-tile-body > .tracks") || rootEl.querySelector(".tracks");
+}
+
+/** DOM id unique within this widget: classic id for the first holder, suffixed after. */
+function gsUniqueDomId(base, tile) {
+  const rootEl = (typeof getCurrentRoot === "function" && getCurrentRoot()) || document;
+  let taken = false;
+  try { taken = !!rootEl.querySelector("#" + CSS.escape(base)); } catch (_) {}
+  return taken && tile ? `${base}-${tile.id}` : base;
+}
+
+/**
+ * Make sure every non-blank tile has a renderer (container + canvases) for
+ * every smart track. Cheap when nothing is missing; safe to call every render.
+ */
+function gsEnsureSmartRenderers() {
+  const tiles = (state.tiles || []).filter((t) => t && !t.blank);
+  for (const tile of tiles) {
+    const map = gsTileRenderers(tile);
+    for (const track of state.smartTracks || []) {
+      if (!track || map.has(track.id) || (tile._rendererPending && tile._rendererPending.has(track.id))) continue;
+      initSmartTrackWebGPU(track.id, tile);
+    }
+  }
+}
+
+/** Drop a closed tile's renderers (its DOM goes away with the column). */
+function gsDisposeTileRenderers(tile) {
+  if (!tile || !(tile._smartRenderers instanceof Map)) return;
+  tile._smartRenderers.forEach((renderer) => {
+    gsDisposeRenderer(renderer);
+    try { if (renderer.container && renderer.container._gsResizeObserver) renderer.container._gsResizeObserver.disconnect(); } catch (_) {}
+    try { if (renderer.container && renderer.container.parentNode) renderer.container.parentNode.removeChild(renderer.container); } catch (_) {}
+  });
+  tile._smartRenderers.clear();
+  if (tile._readsViews) tile._readsViews.clear();
+}
+
+// Initialize the reads renderer for one Smart track inside one tile. Every tile
+// paints with WebGPU on the page's single shared device and pipelines, so a
+// single-tile and a multi-tile column are drawn by exactly the same code.
+async function initSmartTrackWebGPU(trackId, tile) {
+  tile = tile || ((typeof gsActiveTile === "function") ? gsActiveTile() : null);
+  const renderers = gsTileRenderers(tile);
   // Check if renderer already exists - prevent re-initialization
-  if (state.smartTrackRenderers.has(trackId)) {
-    // console.log(`Smart track ${trackId}: WebGPU already initialized, skipping`);
+  if (renderers.has(trackId)) {
     return;
   }
-  
-  if (!webgpuSupported || !navigator.gpu) {
-    console.warn('WebGPU not supported, Smart track will use Canvas2D fallback');
-    return;
+  if (tile) {
+    if (!tile._rendererPending) tile._rendererPending = new Set();
+    if (tile._rendererPending.has(trackId)) return;
+    tile._rendererPending.add(trackId);
   }
-  
+
   const track = state.smartTracks.find(t => t.id === trackId);
-  if (!track) return;
-  
-  // Find tracks container
-  const tracksContainer = document.getElementById('tracksContainer');
-  if (!tracksContainer) return;
-  
+  if (!track) { if (tile && tile._rendererPending) tile._rendererPending.delete(trackId); return; }
+
+  // Each tile hosts its own stack.
+  const hostTracks = gsTileTracksHost(tile)
+    || ((typeof tracksContainer !== "undefined" && tracksContainer)
+      ? tracksContainer
+      : document.getElementById('tracksContainer'));
+  if (!hostTracks) { if (tile && tile._rendererPending) tile._rendererPending.delete(trackId); return; }
+  const tileId = tile ? tile.id : null;
+  const scheduleRepaint = () => {
+    requestAnimationFrame(() => {
+      try {
+        if (typeof gsRenderSmartTrackInTile === "function") gsRenderSmartTrackInTile(trackId, tile);
+        else renderSmartTrack(trackId);
+      } catch (e) {}
+    });
+  };
+  const pendingDone = () => { if (tile && tile._rendererPending) tile._rendererPending.delete(trackId); };
+
   // Create container div for this Smart track
   const container = document.createElement('div');
   container.className = 'smart-track-container';
-  container.id = `smart-track-container-${trackId}`;
+  container.id = gsUniqueDomId(`smart-track-container-${trackId}`, tile);
   container.dataset.trackId = trackId;
   container.style.position = 'absolute';
   container.style.width = '100%';
@@ -389,7 +781,7 @@ async function initSmartTrackWebGPU(trackId) {
   // Create Canvas2D canvas
   const canvas = document.createElement('canvas');
   canvas.className = 'canvas';
-  canvas.id = `smart-track-canvas-${trackId}`;
+  canvas.id = gsUniqueDomId(`smart-track-canvas-${trackId}`, tile);
   canvas.style.position = 'absolute';
   canvas.style.top = '0';
   canvas.style.left = '0';
@@ -400,7 +792,7 @@ async function initSmartTrackWebGPU(trackId) {
   // Create WebGPU canvas
   const webgpuCanvas = document.createElement('canvas');
   webgpuCanvas.className = 'webgpu-canvas';
-  webgpuCanvas.id = `smart-track-webgpu-${trackId}`;
+  webgpuCanvas.id = gsUniqueDomId(`smart-track-webgpu-${trackId}`, tile);
   webgpuCanvas.style.position = 'absolute';
   webgpuCanvas.style.top = '0';
   webgpuCanvas.style.left = '0';
@@ -413,7 +805,7 @@ async function initSmartTrackWebGPU(trackId) {
   // full stack that caused the earlier GPU stall). Sticky + zIndex above WebGPU.
   const textCanvas = document.createElement('canvas');
   textCanvas.className = 'text-overlay';
-  textCanvas.id = `smart-track-text-${trackId}`;
+  textCanvas.id = gsUniqueDomId(`smart-track-text-${trackId}`, tile);
   textCanvas.style.position = 'sticky';
   textCanvas.style.top = '0';
   textCanvas.style.left = '0';
@@ -438,8 +830,8 @@ async function initSmartTrackWebGPU(trackId) {
   container.appendChild(spacer);
   // Live in the scrolling reads region (#smartScroll) so the whole sample-track
   // stack scrolls together below the pinned header.
-  ((typeof ensureSmartScrollWrapper === "function" && ensureSmartScrollWrapper())
-    || tracksContainer).appendChild(container);
+  ((typeof gsSmartScrollIn === "function" && gsSmartScrollIn(hostTracks, tile))
+    || hostTracks).appendChild(container);
 
   // Re-render whenever the container gets a REAL size change. renderSmartTrack
   // bails when the measured width is 0 (layout not settled — common right after
@@ -461,7 +853,7 @@ async function initSmartTrackWebGPU(trackId) {
       const w = container.getBoundingClientRect().width || 0;
       if (w <= 0) return;
       _roPainted = true;
-      requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+      scheduleRepaint();
     });
     ro.observe(container);
     // Stash for cleanup even before the renderer record exists.
@@ -469,124 +861,92 @@ async function initSmartTrackWebGPU(trackId) {
   } catch (e) {}
 
   try {
-    // Wait for canvas to have dimensions
-    const checkDimensions = () => {
-      const rect = webgpuCanvas.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    };
-    
-    // Wait up to 2 seconds for dimensions
-    for (let i = 0; i < 40; i++) {
-      if (checkDimensions()) break;
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    
-    if (!checkDimensions()) {
-      console.warn(`Smart track ${trackId}: Canvas dimensions not ready`);
-      return;
-    }
-    
-    // Initialize WebGPU
+    // The shared device is requested once at startup; wait for it (rather than
+    // sampling a "supported" flag that may not be set yet) so a track created
+    // early can never end up without GPU rendering.
+    await gsGpuReady();
+
+    // Dimensions are set by renderSmartTrack every frame and the projection
+    // follows the canvas size (setViewport), so no need to wait for layout here.
     const webgpuCore = new WebGPUCore();
     await webgpuCore.init(webgpuCanvas);
     const instancedRenderer = new InstancedRenderer(webgpuCore);
     
+    // The tile may have been closed while the canvas attached.
+    if (!container.isConnected) {
+      instancedRenderer.dispose();
+      webgpuCore.dispose();
+      pendingDone();
+      return;
+    }
     // Store renderer objects
-    state.smartTrackRenderers.set(trackId, {
+    renderers.set(trackId, {
       webgpuCore,
       instancedRenderer,
       canvas,
       webgpuCanvas,
       textCanvas,
       spacer,
-      container
+      container,
+      tileId
     });
+    pendingDone();
 
     // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
     // But we need a basic scroll handler for re-rendering
     container.addEventListener("scroll", () => {
-      scheduleSmartTrackRender(trackId);
+      scheduleSmartTrackRender(trackId, tileId);
     });
 
-    // Render now that the renderer exists. WebGPU init is async and can finish
-    // AFTER the reads-load renderAll already ran (found no renderer) — notably in
-    // full screen, where the canvas takes longer to get dimensions. Without this,
-    // reads don't appear until a scroll triggers renderSmartTrack.
-    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
-
-    console.log(`Smart track ${trackId}: WebGPU initialized`);
+    // Render now that the renderer exists. Attaching is async and can finish
+    // AFTER the reads-load renderAll already ran (found no renderer). Without
+    // this, reads don't appear until a scroll triggers renderSmartTrack.
+    scheduleRepaint();
   } catch (error) {
-    console.warn(`Smart track ${trackId}: Failed to initialize WebGPU:`, error);
-    // Continue without WebGPU - will use Canvas2D fallback
-    
-    // Still store the renderer objects (without WebGPU)
-    state.smartTrackRenderers.set(trackId, {
-      webgpuCore: null,
-      instancedRenderer: null,
-      canvas,
-      webgpuCanvas,
-      textCanvas,
-      spacer: null,
-      container
-    });
-    
-    // Scroll and wheel handlers will be attached in renderSmartTrack when container becomes scrollable
-    // But we need a basic scroll handler for re-rendering
-    container.addEventListener("scroll", () => {
-      scheduleSmartTrackRender(trackId);
-    });
-    // Paint once the (Canvas2D-fallback) renderer exists — see note above.
-    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
+    pendingDone();
+    if (typeof gsShowWebGpuRequired === "function") gsShowWebGpuRequired(error);
+    else console.error(`Smart track ${trackId}: WebGPU initialization failed`, error);
   }
 }
 
-// Remove WebGPU renderer for a Smart track
+/** Release a renderer's GPU resources (its shared device/pipelines stay). */
+function gsDisposeRenderer(renderer) {
+  if (!renderer) return;
+  try { if (renderer.instancedRenderer) renderer.instancedRenderer.dispose(); } catch (_) {}
+  try { if (renderer.webgpuCore) renderer.webgpuCore.dispose(); } catch (_) {}
+}
+
+// Remove a Smart track's renderer from EVERY tile (each column owns one).
 function removeSmartTrackWebGPU(trackId) {
-  const renderer = state.smartTrackRenderers.get(trackId);
-  if (renderer) {
-    // Clean up WebGPU resources
-    if (renderer.webgpuCore && renderer.webgpuCore.device) {
-      // WebGPU cleanup is handled automatically when canvas is removed
-    }
-    
-    // Remove DOM elements
+  const maps = [];
+  for (const tile of (state.tiles || [])) {
+    if (tile && tile._smartRenderers instanceof Map) maps.push(tile._smartRenderers);
+    if (tile && tile._readsViews) tile._readsViews.delete(trackId);
+  }
+  if (state.smartTrackRenderers instanceof Map && !maps.includes(state.smartTrackRenderers)) {
+    maps.push(state.smartTrackRenderers);
+  }
+  for (const map of maps) {
+    const renderer = map.get(trackId);
+    if (!renderer) continue;
+    gsDisposeRenderer(renderer);
     if (renderer.container) {
       try { if (renderer.container._gsResizeObserver) renderer.container._gsResizeObserver.disconnect(); } catch (e) {}
       if (renderer.container.parentNode) {
         renderer.container.parentNode.removeChild(renderer.container);
       }
-      // Also try to remove by ID as fallback
-      const containerById = document.getElementById(`smart-track-container-${trackId}`);
-      if (containerById && containerById.parentNode) {
-        containerById.parentNode.removeChild(containerById);
-      }
     }
-    
-    // Remove from Map
-    state.smartTrackRenderers.delete(trackId);
+    map.delete(trackId);
+  }
+  // Also try to remove by ID as fallback (classic single-tile id).
+  const containerById = document.getElementById(`smart-track-container-${trackId}`);
+  if (containerById && containerById.parentNode) {
+    containerById.parentNode.removeChild(containerById);
   }
 }
 
-// Fetch reads for a Smart track
-// In-memory reads cache so re-opening a read track (remove + re-add, or any
-// re-fetch) for the same sample at the same locus reappears instantly instead
-// of round-tripping the comm. Keyed by sampleId|locus; capped LRU-ish.
-const _smartReadsCache = new Map();
-const _SMART_READS_CACHE_MAX = 24;
-function _readsLocusSig() {
-  try {
-    return state.contig + ":" + Math.floor(state.startBp) + "-" + Math.ceil(state.endBp);
-  } catch (e) { return ""; }
-}
-function _cacheSmartReads(sampleId, reads, bamUrls, bamUrl) {
-  if (!sampleId) return;
-  const key = sampleId + "|" + (bamUrl || "") + "|" + _readsLocusSig();
-  _smartReadsCache.delete(key);          // move-to-front
-  _smartReadsCache.set(key, { reads: reads, bamUrls: bamUrls || [], bamUrl: bamUrl || null });
-  while (_smartReadsCache.size > _SMART_READS_CACHE_MAX) {
-    _smartReadsCache.delete(_smartReadsCache.keys().next().value);
-  }
-}
+// Reads cache, chunk scheduler, per-tile views and the connection toggle live in
+// reads-cache.js (loaded before this file).
 
 // BAM/CRAM URLs resolved for a sample (from config). Empty when unknown —
 // fetch_reads will resolve on the kernel. Multi-URL samples get one track each.
@@ -659,20 +1019,26 @@ function spawnSmartTracksForSample(sampleId, strategy, selectedAlleles, sampleTy
   const bamList = urls.length
     ? urls.filter((u) => !isSampleBamTrackLoaded(sampleId, u))
     : [null];
+  const created = [];
   for (const bamUrl of bamList) {
     const track = createSmartTrack(strategy, Array.from(alleles));
     track.sampleId = sampleId;
     track.requestedBamUrl = bamUrl || null;
     if (sampleType) track.sampleType = sampleType;
-    promises.push(
-      fetchReadsForSmartTrack(track.id, strategy, alleles, sampleId, bamUrl || undefined)
-        .catch((err) => {
-          console.error("Failed to load reads for Smart track:", err);
-        })
-    );
+    created.push(track);
   }
   if (typeof clusterSmartTracksByGrouping === "function") {
     clusterSmartTracksByGrouping();
+  }
+  // One scheduler pass covers every new track (and every open tile): a single
+  // batched request for all missing chunks. An explicit load ignores retry backoff.
+  gsEnsureReads({ force: true });
+  for (const track of created) {
+    promises.push(
+      gsWhenTrackReady(track.id).catch((err) => {
+        if (!(err && err.gsDisconnected)) console.error("Failed to load reads for Smart track:", err);
+      })
+    );
   }
   return promises;
 }
@@ -708,172 +1074,32 @@ function _readStatusDone(label, isError) {
   }
 }
 
-function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, bamUrl) {
+/**
+ * Make sure `track` has reads for the focused tile's window, resolving when it does.
+ * Loading itself is done by the chunk scheduler (reads-cache.js): this only pins the
+ * track's sample/BAM and asks it to look. Already-cached windows resolve immediately.
+ */
+function fetchReadsForSmartTrack(trackId, strategy, selectedAlleles, sampleId, bamUrl, opts) {
   const track = state.smartTracks.find(t => t.id === trackId);
   if (!track) {
     console.error(`Smart track ${trackId} not found`);
     return Promise.reject(new Error('Track not found'));
   }
   // Pin an explicit BAM when the caller asks for one. When switching samples
-  // without a new BAM, drop the previous pin — otherwise shuffle/reload sends
-  // the old sample's bam_url for the new sample_id, the kernel returns an empty
-  // payload, and we delete the track.
+  // without a new BAM, drop the previous pin — otherwise a stale bam_url would be
+  // asked of the new sample and the kernel would return nothing.
   if (bamUrl) {
     track.requestedBamUrl = bamUrl;
   } else if (sampleId != null && track.sampleId != null
       && String(sampleId) !== String(track.sampleId)) {
     track.requestedBamUrl = null;
   }
-  const requestedBam = track.requestedBamUrl || null;
-
-  // Instant path: a known sample(+bam) previously loaded at this locus.
-  const cacheKey = sampleId
-    ? (sampleId + "|" + (requestedBam || "") + "|" + _readsLocusSig())
-    : null;
-  if (cacheKey && _smartReadsCache.has(cacheKey)) {
-    const hit = _smartReadsCache.get(cacheKey);
-    track.loading = false;
-    track.readsData = hit.reads;
-    layoutSmartTrackReads(track);
-    track.sampleId = sampleId;
-    track.bamUrls = hit.bamUrls || [];
-    track.requestedBamUrl = hit.bamUrl || requestedBam;
-    updateSmartTrackLabel(track);
-    renderAll();
-    requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
-    // Instant cache hit: flash a brief confirmation so the user sees something
-    // happened. If other loads are in flight, leave their busy bar alone.
-    if (window.__GS_STATUS && _readLoadsInFlight === 0) {
-      const sn = sampleId || track.sampleId;
-      window.__GS_STATUS('Loaded reads' + (sn ? ' for ' + sn : '') + ' (cached)',
-        { autoHide: 1200 });
-    }
-    return Promise.resolve(track.readsLayout);
-  }
-
-  track.loading = true;
+  if (sampleId != null) track.sampleId = sampleId;
+  if (strategy) track.strategy = strategy;
+  if (typeof updateSmartTrackLabel === "function") updateSmartTrackLabel(track);
+  gsEnsureReads({ force: true });
   renderAll();
-  _readStatusStart(sampleId);
-
-  // Convert selectedAlleles Set to array
-  const allelesArray = Array.from(selectedAlleles);
-
-  const req = {
-    strategy: strategy,
-    selected_alleles: allelesArray,
-    sample_id: sampleId || null,
-    // Fetch reads for the CURRENTLY VIEWED window, not the server's last-rendered
-    // locus. Viewport paging (pan/zoom) never re-runs render(), so _last_locus
-    // goes stale — reads would come back for the old region and never align with
-    // what's on screen. Matches _readsLocusSig() so the client read cache agrees.
-    locus: _readsLocusSig() || null
-  };
-  if (requestedBam) req.bam_url = requestedBam;
-
-  return sendCommMessage('fetch_reads', req)
-    .then(function(response) {
-      track.loading = false;
-      if (response.type === 'fetch_reads_response') {
-        // No BAM resolved for this sample (VCF-only). Drop the empty track
-        // quietly — not an error modal.
-        if (!response.bam_urls || !response.bam_urls.length) {
-          _readStatusDone(false);
-          removeSmartTrack(trackId);
-          return null;
-        }
-        // Stale config / no bam_url requested but the kernel resolved multiple
-        // BAMs for this sample: keep this track for the first URL and spawn
-        // sibling tracks for the rest (one track per BAM).
-        if (!requestedBam && response.bam_urls.length > 1) {
-          const urls = response.bam_urls.slice();
-          _readStatusDone(false);
-          track.requestedBamUrl = urls[0];
-          for (let i = 1; i < urls.length; i++) {
-            if (isSampleBamTrackLoaded(sampleId || response.sample_id, urls[i])) continue;
-            const sibling = createSmartTrack(strategy, selectedAlleles);
-            sibling.sampleId = sampleId || response.sample_id || null;
-            sibling.requestedBamUrl = urls[i];
-            sibling.sampleType = track.sampleType || null;
-            fetchReadsForSmartTrack(sibling.id, strategy, selectedAlleles,
-              sibling.sampleId, urls[i]).catch(() => {});
-          }
-          return fetchReadsForSmartTrack(trackId, strategy, selectedAlleles,
-            sampleId || response.sample_id, urls[0]);
-        }
-        const sn = sampleId || response.sample_id;
-        _readStatusDone('Loaded reads' + (sn ? ' for ' + sn : ''), false);
-        // Warn only when SNPs truly can't be shown: has_md is per-element and now
-        // means "SNP-displayable" — true if the read had an MD tag OR the staged
-        // reference was available to diff against. All-false => neither, i.e. no
-        // MD and no reference staged for this locus (indels still render).
-        try {
-          const hm = response.reads && response.reads.has_md;
-          if (Array.isArray(hm) && hm.length && !hm.some(Boolean)) {
-            track.snpsUnavailable = true;
-            if (window.__GS_STATUS) {
-              window.__GS_STATUS('SNPs not shown for ' + (sn || 'this sample')
-                + ' — no reference staged for this locus and BAM has no MD tag',
-                { autoHide: 6000 });
-            }
-          } else {
-            track.snpsUnavailable = false;
-          }
-        } catch (e) {}
-        track.readsData = response.reads;
-        layoutSmartTrackReads(track);
-        track.sampleId = sampleId || response.sample_id || null;
-        track.bamUrls = response.bam_urls || [];
-        track.requestedBamUrl = requestedBam || (track.bamUrls.length === 1 ? track.bamUrls[0] : null);
-        _cacheSmartReads(track.sampleId, response.reads, track.bamUrls, track.requestedBamUrl);
-
-        // Update track label to use sample name
-        updateSmartTrackLabel(track);
-        
-        // Set sampleType for carriers_controls strategy if not already set
-        if (strategy === 'carriers_controls' && track.sampleId && !track.sampleType) {
-          // Determine if this sample is a carrier or control
-          const combineMode = state.sampleSelection.combineMode;
-          const carriers = window.computeCandidateSamplesForAlleles 
-            ? window.computeCandidateSamplesForAlleles(selectedAlleles, combineMode)
-            : [];
-          const carriersSet = new Set(carriers);
-          track.sampleType = carriersSet.has(track.sampleId) ? 'carrier' : 'control';
-        }
-        
-        renderAll();
-        // Height-fit + WebGPU init can leave the first paint at 0-size or
-        // wiped by a deferred canvas resize. One more frame after layout
-        // settles so reads show without a pan/scroll.
-        requestAnimationFrame(() => { try { renderSmartTrack(trackId); } catch (e) {} });
-        return track.readsLayout;
-      } else if (response.type === 'fetch_reads_error') {
-        console.error(`Failed to fetch reads for Smart track ${trackId}:`, response.error);
-        const err = new Error(response.error, { cause: response.hint });
-        err._gsMissingBam = /no bam files found/i.test(String(response.error || ''));
-        throw err;  // handled in .catch
-      }
-      _readStatusDone(false);            // unknown response: decrement, don't leak
-      return null;
-    })
-    .catch(function(err) {
-      track.loading = false;
-      const who = sampleId || track.sampleId;
-      console.error(`Failed to fetch reads for Smart track ${trackId}:`, err);
-      _readStatusDone(false);       // clear the busy bar; the modal carries the message
-      // A read track that failed to load shouldn't linger empty — remove it.
-      removeSmartTrack(trackId);    // also re-renders + refreshes the sidebar
-      const missingBam = (err && err._gsMissingBam)
-        || /no bam files found/i.test(String((err && err.message) || err || ''));
-      if (window.__GS_MODAL && !missingBam) {
-        window.__GS_MODAL(
-          'Failed to load reads' + (who ? ' for ' + who : '') + '.\n\n'
-            + (err && err.message ? err.message : 'The read fetch failed.')
-            + '\n\n' + (err && err.cause ? String(err.cause)
-                : 'Check that you are authenticated and can access the BAM/CRAM files.'),
-          { title: 'Failed to load reads' });
-      }
-      throw err;
-    });
+  return gsWhenTrackReady(trackId).then(() => track.readsLayout);
 }
 
 // Remove a Smart track
@@ -985,7 +1211,8 @@ function undoRemoveSmartTrack() {
     if (!state.smartTracks.find((t) => t.id === smartMeta.id)) {
       state.smartTracks.push(smartMeta);
     }
-    initSmartTrackWebGPU(smartMeta.id);
+    if (typeof gsEnsureSmartRenderers === "function") gsEnsureSmartRenderers();
+    else initSmartTrackWebGPU(smartMeta.id);
   }
   updateTracksHeight();
   renderAll();
@@ -1823,6 +2050,15 @@ function fillTrackConfigPanel(host, track) {
     mapqWrap.querySelectorAll("input").forEach((i) => { i.disabled = true; });
   }
   layoutSec.appendChild(mapqRow);
+
+  const softClipDd = dropdown(READ_DISPLAY_FIELDS.softClipMode, display.softClipMode || "marker", (v) => {
+    display.softClipMode = v || "marker";
+    commit(false); // paint-only; no re-layout
+  });
+  const softClipRow = fieldRow("Soft clips", softClipDd.wrap);
+  softClipRow.title = "How soft-clipped bases at alignment edges are drawn";
+  if (readsOff) { softClipRow.classList.add("is-dimmed"); softClipDd.btn.disabled = true; }
+  layoutSec.appendChild(softClipRow);
 
   const groupDd = dropdown(READ_DISPLAY_FIELDS.groupBy, display.groupBy, (v) => {
     display.groupBy = v;
@@ -3176,6 +3412,7 @@ function initializeRightSidebar() {
 if (typeof window !== "undefined") {
   window.toggleTrackConfig = toggleTrackConfig;
   window.renderSmartTracksSidebar = renderSmartTracksSidebar;
+  window.reloadSmartTrack = reloadSmartTrack;
   window.__GS_armRemoveSmartTrack = armRemoveSmartTrack;
   window.__GS_confirmRemoveSmartTrack = confirmRemoveSmartTrack;
   window.__GS_undoRemoveSmartTrack = undoRemoveSmartTrack;
@@ -3201,6 +3438,13 @@ if (typeof window !== "undefined") {
       syncTrackCollapsedFromVisibility(track);
     }
     layoutSmartTrackReads(track);
+    // Record the locus and cache the payload the way a real fetch does, so
+    // per-tile views resolve for every tile showing this locus.
+    track._readsLocusSig = _readsLocusSig();
+    {
+      const w = _tileWindow(gsFocusedTile());
+      gsCacheChunk(sampleId, "", w.contig, w.s, w.e, rawReads, []);
+    }
     // initSmartTrackWebGPU (started by createSmartTrack) is async; wait for the
     // per-track renderer to come up before we paint.
     for (let i = 0; i < 80 && !state.smartTrackRenderers.has(track.id); i++) {
@@ -3247,5 +3491,236 @@ if (typeof window !== "undefined") {
     const track = createSmartTrack(s, selectedAlleles || new Set());
     return fetchReadsForSmartTrack(track.id, s, selectedAlleles || new Set(), sampleId)
       .then(() => track.id, () => track.id);
+  };
+
+  // Test seam: diploid/multi-BAM load via the production spawn path (one track
+  // per BAM URL in read_bam_index / sample_mapping).
+  window.__GS_TEST_spawnSample = function (sampleId, strategy, selectedAlleles, opts) {
+    const s = strategy || "best_evidence";
+    const alleles = selectedAlleles instanceof Set
+      ? selectedAlleles
+      : new Set(selectedAlleles || []);
+    return Promise.all(spawnSmartTracksForSample(sampleId, s, alleles, null, opts || {}));
+  };
+
+  window.__GS_TEST_renderAll = function () { renderAll(); };
+  /**
+   * Async-vs-sync layout check for the first tile/track: the layout the viewer
+   * shows (possibly built by a background job) vs a fresh synchronous one.
+   */
+  window.__GS_TEST_layoutCompare = function () {
+    const tile = state.tiles[0], track = state.smartTracks[0];
+    const v = gsResolveTrackView(track, tile);
+    if (!v) return null;
+    const sync = processReadsData(v.reads, { display: track.readDisplay });
+    const sig = (L) => {
+      let h = 0;
+      for (let i = 0; i < L.reads.length; i++) h = (Math.imul(h, 31) + L.reads[i].row * 7 + (L.reads[i].start | 0)) | 0;
+      return { n: L.reads.length, rows: L.rowCount, h };
+    };
+    return { pending: !!v.pending, rowsIn: v.reads ? v.reads.query_name.length : 0, async: sig(v.layout), sync: sig(sync) };
+  };
+  /**
+   * GPU state for tests: whether the shared device is up, how many devices /
+   * pipelines / canvases exist, and how many primitives the bound tile's tracks
+   * and flow renderers hold from their last paint.
+   */
+  window.__GS_TEST_gpuStats = function () {
+    const sh = (typeof gsGpuShared === "function") ? gsGpuShared() : null;
+    return {
+      ready: !!(sh && sh.device),
+      epoch: sh ? sh.epoch : 0,
+      pipelines: sh ? sh.pipelines.size : 0,
+      cores: sh ? sh.cores.size : 0,
+      tracks: instancedRenderer.getStats(),
+      flow: flowInstancedRenderer.getStats(),
+      ribbons: flowRibbonRenderer.instances.length,
+      culledTracks: (state.tiles || []).reduce((n, t) => n + (t._smartRenderers
+        ? [...t._smartRenderers.values()].filter((r) => r._culled).length : 0), 0),
+    };
+  };
+  window.__GS_TEST_send = function (type, data, t) { return sendCommMessage(type, data, t); };
+
+  /** Simulate a hole: drop cached chunks whose key contains `pinSubstr` and intersect `sig`'s window. */
+  window.__GS_TEST_dropReads = function (pinSubstr, sig) {
+    const p = _sigParts(sig);
+    let n = 0;
+    for (const c of Array.from(_chunks.values())) {
+      if (!c.key.includes(pinSubstr)) continue;
+      if (p && (c.contig !== p.contig || c.end < p.start || c.start > p.end)) continue;
+      if (gsDropChunk(c.key)) n++;
+    }
+    return n;
+  };
+
+  /**
+   * What each tile's view holds per smart track (data, not pixels): the locus
+   * signature it is showing, whether that is the tile's exact window, and how
+   * many reads in the tile's window carry an SA tag / soft-clip element.
+   * Returns { [tileId]: { [trackId]: {sig, exact, nReads, nSa, nClip, loading} } }.
+   */
+  window.__GS_TEST_tileViews = function () {
+    const out = {};
+    for (const tile of (state.tiles || [])) {
+      const rows = {};
+      for (const track of (state.smartTracks || [])) {
+        const v = gsResolveTrackView(track, tile);
+        const reads = (v && v.layout && v.layout.reads) || [];
+        const inWin = reads.filter((r) => r.end >= tile.startBp && r.start <= tile.endBp);
+        rows[track.id] = {
+          sig: v ? v.sig : null,
+          exact: v ? !!v.exact : false,
+          nReads: inWin.length,
+          nAll: reads.length,
+          nSa: inWin.filter((r) => r.saTag).length,
+          nClip: inWin.filter((r) => (r.elements || []).some((e) => e.type === 4)).length,
+          loading: gsTrackTileLoading(track, tile),
+          state: gsTrackTileViewState(track, tile, v),
+        };
+      }
+      out[tile.id] = rows;
+    }
+    return out;
+  };
+
+  /**
+   * RGBA pixels of any painted canvas: a 2D canvas is read directly; a WebGPU
+   * canvas (which has no 2D context and cannot be read after its frame) via the
+   * shadow copy taken at presentation.
+   */
+  function _gsCanvasPixels(cv) {
+    let ctx = null;
+    try { ctx = cv.getContext("2d"); } catch (_) {}
+    if (!ctx) {
+      // WebGPU canvas: the shadow copy taken when it was last presented
+      // (window.__GS_TEST_CAPTURE, set by the test harness page).
+      const shadow = cv._gsShadow;
+      if (!shadow) return new Uint8ClampedArray(0);
+      ctx = shadow.getContext("2d", { willReadFrequently: true });
+      return ctx.getImageData(0, 0, shadow.width, shadow.height).data;
+    }
+    return ctx.getImageData(0, 0, cv.width, cv.height).data;
+  }
+
+  /** Amber soft-clip marker pixels (245,158,11) painted in each tile/track container. */
+  window.__GS_TEST_tileAmber = function () {
+    const out = {};
+    for (const tile of (state.tiles || [])) {
+      const root = (typeof gsTileRootEl === "function") ? gsTileRootEl(tile.id) : null;
+      const rows = {};
+      if (root) {
+        root.querySelectorAll(".smart-track-container").forEach((c) => {
+          let n = 0;
+          c.querySelectorAll("canvas.canvas, canvas.webgpu-canvas, canvas.text-overlay").forEach((cv) => {
+            if (!cv.width || !cv.height || cv.style.display === "none") return;
+            try {
+              const d = _gsCanvasPixels(cv);
+              for (let i = 0; i < d.length; i += 4) {
+                if (d[i + 3] > 100 && Math.abs(d[i] - 245) < 12 && Math.abs(d[i + 1] - 158) < 14 && d[i + 2] < 60) n++;
+              }
+            } catch (_) {}
+          });
+          rows[c.dataset.trackId] = (rows[c.dataset.trackId] || 0) + n;
+        });
+      }
+      out[tile.id] = rows;
+    }
+    return out;
+  };
+
+  /**
+   * Painted-pixel dump per tile per smart track: number of non-transparent
+   * pixels across each track's canvases (2D, WebGPU and text overlay) inside that
+   * tile's DOM. Tests use
+   * this (not cache keys) to assert that a column actually SHOWS its reads.
+   * Returns { [tileId]: { [trackId]: inkPixels } }.
+   */
+  window.__GS_TEST_tileInk = function () {
+    const out = {};
+    for (const tile of (state.tiles || [])) {
+      const root = (typeof gsTileRootEl === "function") ? gsTileRootEl(tile.id) : null;
+      const rows = {};
+      if (root) {
+        root.querySelectorAll(".smart-track-container").forEach((c) => {
+          const tid = c.dataset.trackId;
+          let ink = 0;
+          c.querySelectorAll("canvas.canvas, canvas.webgpu-canvas, canvas.text-overlay").forEach((cv) => {
+            if (!cv.width || !cv.height || cv.style.display === "none") return;
+            try {
+              const d = _gsCanvasPixels(cv);
+              for (let i = 3; i < d.length; i += 4) if (d[i] > 0) ink++;
+            } catch (_) { /* tainted / lost context */ }
+          });
+          rows[tid] = Math.max(rows[tid] || 0, ink);
+        });
+      }
+      out[tile.id] = rows;
+    }
+    return out;
+  };
+
+  /** Headless dump for multi-tile read-race assertions (cache / inflight / freeze). */
+  window.__GS_TEST_readsRaceDump = function () {
+    const bar = document.getElementById("statusBar");
+    const countSa = (reads) => {
+      if (!reads || !reads.length) return 0;
+      let n = 0;
+      for (const r of reads) {
+        if (r && r.saTag) n += 1;
+      }
+      return n;
+    };
+    const tracks = (state.smartTracks || []).map((t) => {
+      const liveReads = (t.readsLayout && t.readsLayout.reads) ? t.readsLayout.reads : [];
+      const perTile = {};
+      for (const tile of (state.tiles || [])) {
+        if (!tile || tile.blank) continue;
+        const lay = (typeof smartTrackReadsLayoutForTile === "function")
+          ? smartTrackReadsLayoutForTile(t, tile)
+          : null;
+        const rs = (lay && lay.reads) ? lay.reads : [];
+        perTile[tile.id] = { nReads: rs.length, nSa: countSa(rs) };
+      }
+      return {
+        id: t.id,
+        sampleId: t.sampleId,
+        loading: !!t.loading,
+        loadingLocusSig: t._loadingLocusSig || null,
+        readsLocusSig: t._readsLocusSig || null,
+        nReads: liveReads.length,
+        nSa: countSa(liveReads),
+        bamPin: (typeof _trackBamPin === "function") ? _trackBamPin(t) : (t.requestedBamUrl || ""),
+        perTile,
+      };
+    });
+    return {
+      cacheKeys: Array.from(_chunks.keys()),
+      inflightKeys: Array.from(_inflightChunks.keys()),
+      queuedKeys: _readsQueue.map((d) => d && d.key).filter(Boolean),
+      fetchActive: _batchInFlight ? 1 : 0,
+      schedulerPending: !!(_reconcileTimer || _pumpTimer || _gsSmartReadsLoadTimer || gsJobsPending()),
+      readLoadsInFlight: _readLoadsInFlight,
+      tracks,
+      tiles: (state.tiles || []).map((t) => {
+        const root = (typeof gsTileRootEl === "function")
+          ? gsTileRootEl(t.id)
+          : document.querySelector(`.gs-tile[data-tile-id="${t.id}"]`);
+        const containers = root ? root.querySelectorAll(".smart-track-container").length : 0;
+        return {
+          id: t.id,
+          letter: t.letter,
+          contig: t.contig,
+          startBp: t.startBp,
+          endBp: t.endBp,
+          focused: t.id === state.focusedTileId,
+          nRenderers: (t._smartRenderers instanceof Map) ? t._smartRenderers.size : 0,
+          nContainers: containers,
+          nScrollWrappers: root ? root.querySelectorAll(".gs-smart-scroll").length : 0,
+        };
+      }),
+      focusedTileId: state.focusedTileId,
+      statusText: bar ? (bar.textContent || "") : "",
+      statusBusy: !!(bar && bar.classList.contains("indeterminate")),
+    };
   };
 }

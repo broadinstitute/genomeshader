@@ -89,7 +89,13 @@ def test_actions_hidden_at_rest_visible_on_focus(browser):
     assert at_rest["actionsPE"] == "none", at_rest
 
     page.focus(SMART_ITEM)
-    page.wait_for_timeout(150)
+    # Wait for the opacity transition to settle rather than guessing a delay; real
+    # Chrome's transition clock differs from the old headless shell's.
+    page.wait_for_function(
+        """(sel) => parseFloat(getComputedStyle(
+             document.querySelector(sel).querySelector('.smart-track-item-actions')).opacity) > 0.99""",
+        arg=SMART_ITEM, timeout=3000,
+    )
     focused = page.evaluate(
         """(sel) => {
           const item = document.querySelector(sel);
@@ -103,8 +109,8 @@ def test_actions_hidden_at_rest_visible_on_focus(browser):
         }""",
         SMART_ITEM,
     )
-    assert focused["actionsOpacity"] == 1.0, focused
-    assert focused["gripOpacity"] == 1.0, focused
+    assert focused["actionsOpacity"] == pytest.approx(1.0, abs=0.02), focused
+    assert focused["gripOpacity"] == pytest.approx(1.0, abs=0.02), focused
     assert focused["actionsPE"] == "auto", focused
     page.close()
 
@@ -184,23 +190,32 @@ def test_title_fills_when_actions_hidden(browser):
           const header = item.querySelector('.smart-track-item-header');
           const actions = item.querySelector('.smart-track-item-actions');
           const status = item.querySelector('.smart-track-item-status');
+          const nav = item.querySelector('.smart-track-item-nav');
           const nameBox = name.getBoundingClientRect();
           const headerBox = header.getBoundingClientRect();
           const statusBox = status.getBoundingClientRect();
+          const navBox = nav.getBoundingClientRect();
+          const gap = parseFloat(getComputedStyle(header).columnGap) || 0;
+          const statusMargin = parseFloat(getComputedStyle(status).marginLeft) || 0;
+          // nav | gap | name | gap | status-margin | status
+          const nameSlot = (statusBox.left - navBox.right) - 2 * gap - statusMargin;
           return {
             nameWidth: nameBox.width,
             headerWidth: headerBox.width,
             statusWidth: statusBox.width,
+            nameSlot: nameSlot,
             actionsInFlow: getComputedStyle(actions).position !== 'absolute',
             actionsOpacity: parseFloat(getComputedStyle(actions).opacity),
           };
         }""",
         SMART_ITEM,
     )
-    # Name should claim nearly all space between nav and status (actions overlay).
+    # Name should fill the flex slot between nav and status. That slot is the
+    # distance between those boxes minus the header's two gaps and the status
+    # margin; a fraction of the whole row fails on a narrow sidebar.
     assert widths["actionsInFlow"] is False, widths
     assert widths["actionsOpacity"] == 0.0, widths
-    assert widths["nameWidth"] > widths["headerWidth"] * 0.55, widths
+    assert abs(widths["nameWidth"] - widths["nameSlot"]) <= 1, widths
     page.close()
 
 

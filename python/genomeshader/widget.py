@@ -62,9 +62,9 @@ def _html_dir() -> Path:
 # (widget-comms.js) stands in for the classic-Notebook comm (jupyter-comms.js).
 _SCRIPT_ORDER = [
     "cleanup.js", "webgpu-core.js", "webgpu-renderer.js", "webgpu-bezier.js",
-    "widget-comms.js", "dom-utils.js", "ui-state.js", "view-state.js",
+    "widget-comms.js", "dom-utils.js", "ui-state.js", "tiles.js", "tile-ui.js", "view-state.js",
     "allele-reorder.js",
-    "read-display.js", "track-groups.js", "smart-tracks.js", "rendering.js", "tracks.js", "interaction.js", "main.js",
+    "read-display.js", "track-groups.js", "reads-cache.js", "smart-tracks.js", "rendering.js", "tracks.js", "interaction.js", "main.js",
     "ucsc-tracks.js", "comments.js",
 ]
 
@@ -144,6 +144,18 @@ def _container_override_css(cid: str) -> str:
         f"{c} .tracks {{ position:absolute !important; left:0 !important; right:0 !important;"
         f" top:0 !important; height:var(--tracks-h,280px) !important; width:100% !important; }}",
         f"{c} #tracksContainer {{ position:relative !important; width:100% !important; height:100% !important; }}",
+        f"{c} .gs-tile-strip {{ position:absolute !important; inset:0 !important; right:48px !important; display:flex !important;"
+        f" flex-direction:row !important; overflow-x:auto !important; }}",
+        f"{c} .gs-tile {{ position:relative !important; height:100% !important; min-width:280px !important; }}",
+        f"{c} .gs-tile-body {{ position:relative !important; flex:1 !important; min-height:0 !important; }}",
+        f"{c} .gs-add-tile-btn {{ position:absolute !important;"
+        f" right:calc(48px + 6px) !important; top:calc(36px + (100% - 36px) / 2) !important;"
+        f" transform:translateY(-50%) !important; z-index:150 !important; pointer-events:auto !important;"
+        f" display:inline-flex !important; align-items:center !important; justify-content:center !important;"
+        f" width:36px !important; height:36px !important; padding:0 0 3px 0 !important; margin:0 !important;"
+        f" box-sizing:border-box !important; line-height:1 !important; font-size:20px !important; }}",
+        f"{c} .app:not(.sidebar-right-collapsed) .gs-add-tile-btn {{"
+        f" right:calc(var(--sidebar-right-w,240px) + 6px) !important; }}",
         # SVG text/vector layer (reference letters, gene shapes) must sit ABOVE
         # the WebGPU raster layer (solid base-color blocks); otherwise the solid
         # blocks hide the letters. pointer-events:none so it never blocks canvas
@@ -187,7 +199,9 @@ def _build_esm() -> str:
         "    window.GENOMESHADER_VIEW_ID = model.get('view_id') || 'gswidget';\n"
         "    window.GENOMESHADER_JUPYTER_ORIGIN = '';\n"
         "    const __pending = new Map();\n"
-        "    model.on('msg:custom', function (msg) {\n"
+        "    window.__GS_TRANSPORT_BINARY = true;\n"
+        "    model.on('msg:custom', function (msg, buffers) {\n"
+        "      if (msg && buffers && buffers.length) msg._buffers = buffers;\n"
         "      if (msg && msg.request_id && __pending.has(msg.request_id)) {\n"
         "        const resolve = __pending.get(msg.request_id);\n"
         "        __pending.delete(msg.request_id); resolve(msg);\n"
@@ -201,7 +215,7 @@ def _build_esm() -> str:
         "        model.send(Object.assign({ type: type, request_id: id }, data || {}));\n"
         "        setTimeout(function () {\n"
         "          if (__pending.has(id)) { __pending.delete(id); reject(new Error('Request timeout')); }\n"
-        "        }, timeoutMs || (type === 'fetch_reads' || type === 'fetch_track_data' ? 120000 : 30000));\n"
+        "        }, timeoutMs || (type === 'fetch_reads' || type === 'fetch_reads_batch' || type === 'fetch_track_data' ? 120000 : 30000));\n"
         "      });\n"
         "    };\n"
         "    const viewId = window.GENOMESHADER_VIEW_ID;\n"
@@ -303,6 +317,24 @@ class GenomeShaderWidget(anywidget.AnyWidget):
                 hint = self._shader._report_fetch_failure(
                     "reads", e, sample=content.get("sample_id"))
                 self.send({"type": "fetch_reads_error", "request_id": request_id,
+                           "error": str(e), "hint": hint})
+        elif msg_type == "fetch_reads_batch":
+            try:
+                results = self._shader._fetch_reads_batch_payload(content.get("items") or [])
+                buffers = None
+                if content.get("accept_binary"):
+                    # Binary columns on the widget's buffer channel (no JSON parse in the
+                    # browser). Any chunk the codec cannot represent exactly stays JSON.
+                    try:
+                        from . import reads_codec
+                        results, buffers = reads_codec.encode_batch_items(results)
+                    except Exception:
+                        buffers = None
+                self.send({"type": "fetch_reads_batch_response", "request_id": request_id,
+                           "items": results}, buffers or None)
+            except Exception as e:  # whole-batch failure; per-item errors ride in `items`
+                hint = self._shader._report_fetch_failure("reads", e, sample=None)
+                self.send({"type": "fetch_reads_batch_error", "request_id": request_id,
                            "error": str(e), "hint": hint})
         elif msg_type == "fetch_carriers":
             # Who carries this allele (on demand — used when the per-sample
