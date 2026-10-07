@@ -16,6 +16,9 @@ node_modules/
 package.json
 package-lock.json
 
+# Headless Playwright failure screenshots (written on assert failure only)
+python/tests/headless/_artifacts/
+
 # Local research journal — never committed
 JOURNAL.md
 JOURNAL/

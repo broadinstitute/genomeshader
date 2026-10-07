@@ -3,7 +3,7 @@
 class BezierRibbonRenderer {
   constructor(webgpuCore, opts = {}) {
     this.core = webgpuCore;
-    this.device = webgpuCore.device;
+    this._epoch = -1;
 
     this.segments = Math.max(8, Math.min(128, opts.segments ?? 40)); // smooth, not too heavy
     this.pipeline = null;
@@ -14,6 +14,8 @@ class BezierRibbonRenderer {
 
     this._init();
   }
+
+  get device() { return this.core.device; }
 
   clear() {
     this.instances.length = 0;
@@ -35,7 +37,22 @@ class BezierRibbonRenderer {
     });
   }
 
+  // Pipelines are shared across every renderer on the device; only the bind
+  // group (this canvas's projection uniform) and instance buffer are ours.
   _init() {
+    const shared = this.core.shared;
+    this._epoch = shared.epoch;
+    this.instanceBuffer = null;
+    this._scratch = null;
+    this.pipeline = shared.pipeline("bezier", () => this._buildPipeline());
+    this._ubo = this.core.projectionBuffer;
+    this.bindGroup = this.device.createBindGroup({
+      layout: this.pipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: this._ubo } }],
+    });
+  }
+
+  _buildPipeline() {
     const wgsl = `
       struct Uniforms {
         projection: mat4x4<f32>,
@@ -107,7 +124,7 @@ class BezierRibbonRenderer {
 
     const module = this.device.createShaderModule({ code: wgsl });
 
-    this.pipeline = this.device.createRenderPipeline({
+    return this.device.createRenderPipeline({
       layout: "auto",
       vertex: {
         module,
@@ -145,11 +162,6 @@ class BezierRibbonRenderer {
       },
       primitive: { topology: "triangle-strip" },
     });
-
-    this.bindGroup = this.device.createBindGroup({
-      layout: this.pipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.core.projectionBuffer } }],
-    });
   }
 
   _ensureInstanceBuffer() {
@@ -166,12 +178,17 @@ class BezierRibbonRenderer {
   }
 
   render(encoder, renderPass) {
-    if (!this.pipeline || this.instances.length === 0) return;
+    if (this.instances.length === 0) return;
+    // Device replaced, or this canvas's projection uniform was recreated.
+    if (this._epoch !== this.core.shared.epoch || this._ubo !== this.core.projectionBuffer) this._init();
+    if (!this.pipeline) return;
 
     this._ensureInstanceBuffer();
 
-    // Pack instances -> Float32Array
-    const data = new Float32Array(this.instances.length * 20);
+    // Pack instances -> Float32Array (scratch reused between frames)
+    const need = this.instances.length * 20;
+    if (!this._scratch || this._scratch.length < need) this._scratch = new Float32Array(Math.max(need, 1024));
+    const data = this._scratch;
     let o = 0;
     for (const inst of this.instances) {
       const push2 = (p) => { data[o++] = p[0]; data[o++] = p[1]; };
@@ -180,7 +197,7 @@ class BezierRibbonRenderer {
       data[o++] = inst.color[0]; data[o++] = inst.color[1]; data[o++] = inst.color[2]; data[o++] = inst.color[3];
     }
 
-    this.device.queue.writeBuffer(this.instanceBuffer, 0, data);
+    this.device.queue.writeBuffer(this.instanceBuffer, 0, data.buffer, data.byteOffset, need * 4);
 
     renderPass.setPipeline(this.pipeline);
     renderPass.setBindGroup(0, this.bindGroup);

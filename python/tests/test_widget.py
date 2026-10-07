@@ -716,3 +716,57 @@ def test_widget_ucsc_list_includes_groups():
     esm = _build_esm()
     assert "ucsc-track-group" in esm
     assert "__GS_TEST_ucscSetListing" in esm
+
+
+def _batch_items():
+    reads = {"query_name": ["a", "b"], "element_type": [0, 0], "reference_start": [10, 20],
+             "reference_end": [110, 120], "is_forward": [True, False]}
+    return [{"reads": reads, "count": 2, "bam_urls": ["gs://b/S1.bam"], "sample_id": "S1"}]
+
+
+def test_esm_forwards_message_buffers_to_the_viewer():
+    esm = _build_esm()
+    assert "function (msg, buffers)" in esm and "msg._buffers = buffers" in esm
+    assert "window.__GS_TRANSPORT_BINARY = true" in esm
+
+
+def test_widget_batch_reads_stay_json_unless_binary_is_requested():
+    shader = Mock()
+    shader._fetch_reads_batch_payload.return_value = _batch_items()
+    w = GenomeShaderWidget(shader, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, buffers=None, **k: sent.append((m, buffers))
+    w._on_custom_msg(w, {"type": "fetch_reads_batch", "request_id": "b1", "items": [{}]}, [])
+    msg, buffers = sent[0]
+    assert msg["type"] == "fetch_reads_batch_response" and not buffers
+    assert msg["items"][0]["reads"]["query_name"] == ["a", "b"] and "reads_bin" not in msg["items"][0]
+
+
+def test_widget_batch_reads_go_binary_when_asked():
+    pytest.importorskip("numpy")
+    from genomeshader import reads_codec
+    shader = Mock()
+    shader._fetch_reads_batch_payload.return_value = _batch_items()
+    w = GenomeShaderWidget(shader, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, buffers=None, **k: sent.append((m, buffers))
+    w._on_custom_msg(w, {"type": "fetch_reads_batch", "request_id": "b2", "items": [{}],
+                         "accept_binary": True}, [])
+    msg, buffers = sent[0]
+    item = msg["items"][0]
+    assert buffers and "reads" not in item and item["count"] == 2 and item["sample_id"] == "S1"
+    assert reads_codec.decode_reads(item["reads_bin"], buffers) == _batch_items()[0]["reads"]
+
+
+def test_widget_batch_reads_fall_back_to_json_if_the_codec_breaks(monkeypatch):
+    from genomeshader import reads_codec
+    monkeypatch.setattr(reads_codec, "encode_batch_items", lambda items: (_ for _ in ()).throw(RuntimeError("boom")))
+    shader = Mock()
+    shader._fetch_reads_batch_payload.return_value = _batch_items()
+    w = GenomeShaderWidget(shader, config={}, view_id="v")
+    sent = []
+    w.send = lambda m, buffers=None, **k: sent.append((m, buffers))
+    w._on_custom_msg(w, {"type": "fetch_reads_batch", "request_id": "b3", "items": [{}],
+                         "accept_binary": True}, [])
+    msg, buffers = sent[0]
+    assert not buffers and msg["items"][0]["reads"]["query_name"] == ["a", "b"]

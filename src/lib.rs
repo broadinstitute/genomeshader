@@ -11,7 +11,8 @@ pub mod storage_gcs;
 pub mod storage_local;
 pub mod variants;
 
-use stage::fetch_reads_from_bam_urls;
+use stage::{fetch_reads_from_bam_urls, fetch_reads_from_bam_urls_quiet};
+use rayon::prelude::*;
 use storage_gcs::*;
 
 use std::{
@@ -148,6 +149,7 @@ impl Session {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn filter_reads_df(
         &self,
         df: DataFrame,
@@ -518,24 +520,44 @@ impl Session {
         ref_seq: Option<&[u8]>,
         ref_seq_start: u32,
     ) -> PyResult<DataFrame> {
+        self.get_reads_with_cache_impl(chr, start, stop, reads_urls, bam_paths, ref_seq, ref_seq_start, true)
+    }
+
+    /// `use_gag=false` is for callers that already hold the process-wide stderr gag
+    /// (the parallel batch path) — a second `Gag::stderr()` would panic.
+    fn get_reads_with_cache_impl(
+        &self,
+        chr: &str,
+        start: u64,
+        stop: u64,
+        reads_urls: &[Url],
+        bam_paths: &[String],
+        ref_seq: Option<&[u8]>,
+        ref_seq_start: u32,
+        use_gag: bool,
+    ) -> PyResult<DataFrame> {
         let cache_path = std::env::temp_dir();
 
         let request_cache = self.request_cache_file(&cache_path, chr, start, stop, bam_paths);
+        // The cache key is the EXACT (chr, start, stop, BAM set), so a hit is returned
+        // as stored: identical to what the fresh fetch returned. (It used to be
+        // re-filtered by row coordinates, which silently dropped element rows — soft
+        // clips, SNPs — lying outside the window, so the same request gave a different
+        // payload on a hit than on a miss. That is fatal for chunked caching.)
         if request_cache.exists() {
-            let cached_df = self.read_parquet_df(&request_cache)?;
-            return self.filter_reads_df(cached_df, start, stop, bam_paths);
+            return self.read_parquet_df(&request_cache);
         }
 
         if let Some(remote_uri) = self.gcs_cache_uri_for_reads_request(chr, start, stop, bam_paths) {
             self.try_download_gcs_cache(&remote_uri, &request_cache);
             if request_cache.exists() {
-                let cached_df = self.read_parquet_df(&request_cache)?;
-                return self.filter_reads_df(cached_df, start, stop, bam_paths);
+                return self.read_parquet_df(&request_cache);
             }
         }
 
         let cohort = String::from("all");
-        let fetched = fetch_reads_from_bam_urls(
+        let fetch_fn = if use_gag { fetch_reads_from_bam_urls } else { fetch_reads_from_bam_urls_quiet };
+        let fetched = fetch_fn(
             &reads_urls.to_vec(),
             &cohort,
             &chr.to_string(),
@@ -1077,6 +1099,85 @@ impl Session {
             &l_fmt.0, l_fmt.1, l_fmt.2, &reads_urls, &bam_paths, ref_bytes, ref_start,
         )?;
         Ok(PyDataFrame(df))
+    }
+
+    /// Fetch MANY (locus, BAM url(s)) chunks at once, in parallel.
+    ///
+    /// Each request is `(locus, bam_urls, reference, ref_start)` — exactly the
+    /// arguments of `fetch_reads_for_locus`. The requests are fanned out with rayon
+    /// (and each request's BAMs fan out again inside), with the GIL RELEASED, so a
+    /// viewer asking for N tracks x M chunks pays roughly one round of object-storage
+    /// latency instead of N*M. Every request keeps its own parquet / GCS cache key
+    /// (chunk + BAM), so a chunk fetched once is never read from storage again.
+    ///
+    /// Returns one `(DataFrame | None, error | None)` per request, in order; one bad
+    /// request never fails the others.
+    #[pyo3(signature = (requests))]
+    fn fetch_reads_batch(
+        &self,
+        py: Python<'_>,
+        requests: Vec<(String, Vec<String>, Option<String>, u32)>,
+    ) -> PyResult<Vec<(Option<PyDataFrame>, Option<String>)>> {
+        // Prepare (parse locus + URLs) up front: a malformed request becomes that
+        // request's error rather than aborting the batch.
+        struct Prepared {
+            chr: String,
+            start: u64,
+            stop: u64,
+            urls: Vec<Url>,
+            bam_paths: Vec<String>,
+            reference: Option<String>,
+            ref_start: u32,
+        }
+        let prepared: Vec<Result<Prepared, String>> = requests
+            .into_iter()
+            .map(|(locus, bam_urls, reference, ref_start)| {
+                let (chr, start, stop) = self
+                    .parse_locus(locus.clone())
+                    .map_err(|e| e.to_string())?;
+                if bam_urls.is_empty() {
+                    return Err("No BAM file URLs provided. Cannot fetch reads without BAM files.".to_string());
+                }
+                let mut urls = Vec::with_capacity(bam_urls.len());
+                for u in &bam_urls {
+                    let url = if u.starts_with("file://") || u.starts_with("gs://")
+                        || u.starts_with("s3://") || u.starts_with("http") {
+                        Url::parse(u).map_err(|e| format!("Invalid BAM URL '{}': {}", u, e))?
+                    } else {
+                        Url::from_file_path(u).map_err(|_| format!("Invalid BAM file path '{}'", u))?
+                    };
+                    urls.push(url);
+                }
+                let bam_paths = urls.iter().map(|u| u.to_string()).collect();
+                Ok(Prepared { chr, start, stop, urls, bam_paths, reference, ref_start })
+            })
+            .collect();
+
+        let this: &Session = self;
+        let outcomes: Vec<Result<DataFrame, String>> = py.allow_threads(|| {
+            // ONE stderr gag for the whole batch (a Gag can only exist once).
+            let _gag = gag::Gag::stderr().ok();
+            prepared
+                .par_iter()
+                .map(|p| match p {
+                    Err(e) => Err(e.clone()),
+                    Ok(p) => this
+                        .get_reads_with_cache_impl(
+                            &p.chr, p.start, p.stop, &p.urls, &p.bam_paths,
+                            p.reference.as_ref().map(|s| s.as_bytes()), p.ref_start, false,
+                        )
+                        .map_err(|e| e.to_string()),
+                })
+                .collect()
+        });
+
+        Ok(outcomes
+            .into_iter()
+            .map(|r| match r {
+                Ok(df) => (Some(PyDataFrame(df)), None),
+                Err(e) => (None, Some(e)),
+            })
+            .collect())
     }
 
     /// Get the list of attached read files

@@ -342,15 +342,20 @@ function getInsertionGapBpForLookupEntry(entry) {
   return getInsertionPaintBpForLookupEntry(entry) * INSERTION_GAP_EXPANSION_FACTOR;
 }
 
-function isInsertionPosWithinCurrentView(pos) {
+function isInsertionPosWithinCurrentView(pos, tile) {
   const posNum = Number(pos);
   if (!Number.isFinite(posNum) || !state) return false;
-  return posNum >= state.startBp && posNum <= state.endBp;
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  return posNum >= t.startBp && posNum <= t.endBp;
 }
 
-function getTotalExpandedInsertionGapBp(expandedInsertions) {
-  const expanded = expandedInsertions || (state && state.expandedInsertions);
+function getTotalExpandedInsertionGapBp(expandedInsertions, tile) {
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  const expanded = expandedInsertions || (t && t.expandedInsertions) || (state && state.expandedInsertions);
   if (!expanded) return 0;
+  // No expanded insertion (the usual case): nothing to sum. This runs once per
+  // painted coordinate, so scanning the insertion list here dominated repaints.
+  if (expanded.size === 0) return 0;
 
   if (insertionVariantsLookup && insertionVariantsLookup.length > 0) {
     let totalBp = 0;
@@ -359,7 +364,7 @@ function getTotalExpandedInsertionGapBp(expandedInsertions) {
       const id = String(entry.id);
       if (countedIds.has(id)) continue;
       if (!expanded.has(id)) continue;
-      if (!isInsertionPosWithinCurrentView(entry.pos)) continue;
+      if (!isInsertionPosWithinCurrentView(entry.pos, t)) continue;
       countedIds.add(id);
       totalBp += getInsertionGapBpForLookupEntry(entry);
     }
@@ -371,7 +376,7 @@ function getTotalExpandedInsertionGapBp(expandedInsertions) {
   for (const variant of variants) {
     const id = String(variant.id);
     if (countedIds.has(id)) continue;
-    if (expanded.has(id) && isInsertion(variant) && isInsertionPosWithinCurrentView(variant.pos)) {
+    if (expanded.has(id) && isInsertion(variant) && isInsertionPosWithinCurrentView(variant.pos, t)) {
       countedIds.add(id);
       totalBp += getInsertionGapBpForVariant(variant);
     }
@@ -379,11 +384,13 @@ function getTotalExpandedInsertionGapBp(expandedInsertions) {
   return totalBp;
 }
 
-function getDisplayPxPerBp() {
-  const pxPerBp = (state && Number.isFinite(state.pxPerBp) && state.pxPerBp > 0) ? state.pxPerBp : 1;
-  const span = (state && Number.isFinite(state.endBp - state.startBp)) ? (state.endBp - state.startBp) : 0;
+function getDisplayPxPerBp(tile) {
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  const pxPerBp = (t && Number.isFinite(t.pxPerBp) && t.pxPerBp > 0) ? t.pxPerBp : 1;
+  const span = (t && Number.isFinite(t.endBp - t.startBp)) ? (t.endBp - t.startBp) : 0;
   if (!(span > 0)) return pxPerBp;
-  const totalGapBp = getTotalExpandedInsertionGapBp(state && state.expandedInsertions);
+  const expanded = (t && t.expandedInsertions instanceof Set) ? t.expandedInsertions : (state && state.expandedInsertions);
+  const totalGapBp = getTotalExpandedInsertionGapBp(expanded, t);
   const effectiveSpan = span + totalGapBp;
   if (!(effectiveSpan > 0)) return pxPerBp;
   return pxPerBp * (span / effectiveSpan);
@@ -406,7 +413,7 @@ function getInsertionPaintPxForLookupEntry(entry) {
 }
 
 function getGapAfterBpPx(bp, expandedInsertions) {
-  if (!expandedInsertions) return 0;
+  if (!expandedInsertions || expandedInsertions.size === 0) return 0;
   const bpNum = Number(bp);
   if (!Number.isFinite(bpNum)) return 0;
   if (!isInsertionPosWithinCurrentView(bpNum)) return 0;
@@ -458,9 +465,10 @@ function getAccumulatedGapPx(bp, expandedInsertions) {
   return getAccumulatedGapBp(bp, expandedInsertions) * getDisplayPxPerBp();
 }
 
-function getAccumulatedGapBp(bp, expandedInsertions) {
-  if (!expandedInsertions) return 0;
-  const viewStart = (state && Number.isFinite(state.startBp)) ? state.startBp : -Infinity;
+function getAccumulatedGapBp(bp, expandedInsertions, tile) {
+  if (!expandedInsertions || expandedInsertions.size === 0) return 0;
+  const t = (typeof gsActiveTile === "function") ? gsActiveTile(tile) : state;
+  const viewStart = (t && Number.isFinite(t.startBp)) ? t.startBp : -Infinity;
   const bpNum = Number(bp);
   if (!Number.isFinite(bpNum)) return 0;
 
@@ -553,6 +561,164 @@ gsApplyAnnotationTrackFromConfig("repeats_track", "repeats", "RepeatMasker", "in
 console.log(`Loaded ${gsAnnotationFeatures("genes").length} gene models for genes track`);
 console.log(`Loaded ${gsAnnotationFeatures("repeats").length} repeats for RepeatMasker track`);
 
+// Per-contig annotation snapshots so multi-tile pan/focus does not blank the
+// other column when viewport fetch overwrites the global genes/repeats/reference.
+const _gsAnnoByContig = {
+  genes: new Map(),
+  repeats: new Map(),
+  reference: new Map(),
+  // data_bounds is the genomic origin of the reference string, so it must travel
+  // with it: one global value made whichever tile's viewport load landed last
+  // mis-index every other contig's sequence (its reference bases vanished).
+  bounds: new Map(),
+};
+// ---------------------------------------------------------------------------
+// Reference sequence, as SEGMENTS per contig
+// ---------------------------------------------------------------------------
+// One string per contig (replaced by every viewport response) could only ever hold
+// the most recent window: variants counted as "covered" for an earlier window, no
+// reference was refetched, and its bases were gone — and two tiles on the SAME
+// contig (the breakpoint case) could never both have bases. Instead every loaded
+// window is kept as a segment {start, seq} (sequence[i] is genomic position
+// start + i), overlapping/adjacent segments merge, and each tile looks up the
+// segment covering ITS window.
+const _gsRefSegs = new Map();          // contig -> [{start, seq, t}] sorted, disjoint
+let _gsRefTick = 0;
+const GS_REF_MAX_CHARS_PER_CONTIG = 4000000;
+
+function gsAddReferenceSegment(contig, start, seq) {
+  if (!contig || typeof seq !== "string" || !seq.length || !Number.isFinite(start)) return;
+  let segs = _gsRefSegs.get(contig);
+  if (!segs) { segs = []; _gsRefSegs.set(contig, segs); }
+  let ns = start, nseq = seq;
+  const keep = [];
+  for (const g of segs) {
+    const gEnd = g.start + g.seq.length, nEnd = ns + nseq.length;
+    if (g.start <= nEnd && ns <= gEnd) {            // overlap or adjacent: union them
+      const head = g.start < ns ? g.seq.slice(0, ns - g.start) : "";
+      const tail = gEnd > nEnd ? g.seq.slice(nEnd - g.start) : "";
+      ns = Math.min(g.start, ns);
+      nseq = head + nseq + tail;
+    } else keep.push(g);
+  }
+  keep.push({ start: ns, seq: nseq, t: ++_gsRefTick });
+  keep.sort((a, b) => a.start - b.start);
+  // Bound memory: drop the least recently added segments that no open tile shows.
+  let total = keep.reduce((n, g) => n + g.seq.length, 0);
+  if (total > GS_REF_MAX_CHARS_PER_CONTIG) {
+    const shown = (g) => (typeof state !== "undefined" && state.tiles || []).some((t) =>
+      t && t.contig === contig && t.endBp >= g.start && t.startBp <= g.start + g.seq.length);
+    for (const g of keep.slice().sort((a, b) => a.t - b.t)) {
+      if (total <= GS_REF_MAX_CHARS_PER_CONTIG) break;
+      if (shown(g)) continue;
+      keep.splice(keep.indexOf(g), 1);
+      total -= g.seq.length;
+    }
+  }
+  _gsRefSegs.set(contig, keep);
+}
+
+/** The segment of `contig` covering most of [viewStart, viewEnd], or null. */
+function gsReferenceFor(contig, viewStart, viewEnd) {
+  const segs = _gsRefSegs.get(contig);
+  if (!segs) return null;
+  let best = null, bestOv = 0;
+  for (const g of segs) {
+    const ov = Math.min(g.start + g.seq.length, viewEnd + 1) - Math.max(g.start, viewStart);
+    if (ov > bestOv) { bestOv = ov; best = g; }
+  }
+  return best;
+}
+
+/** Is [viewStart, viewEnd] fully inside one loaded reference segment? */
+function gsReferenceCovers(contig, viewStart, viewEnd) {
+  const g = gsReferenceFor(contig, viewStart, viewEnd);
+  return !!g && g.start <= viewStart && g.start + g.seq.length >= viewEnd + 1;
+}
+
+(function _gsSeedAnnoByContig() {
+  try {
+    const cfg = window.GENOMESHADER_CONFIG || {};
+    const m = String(cfg.region || "").match(/^([^:]+):/);
+    const contig = m ? m[1] : (typeof state !== "undefined" && state.contig);
+    if (!contig) return;
+    if (cfg.genes_track) _gsAnnoByContig.genes.set(contig, cfg.genes_track);
+    if (cfg.repeats_track) _gsAnnoByContig.repeats.set(contig, cfg.repeats_track);
+    if (typeof cfg.reference_data === "string") {
+      _gsAnnoByContig.reference.set(contig, cfg.reference_data);
+    }
+    if (cfg.data_bounds && typeof cfg.data_bounds.start === "number") {
+      _gsAnnoByContig.bounds.set(contig, cfg.data_bounds);
+    }
+    if (typeof cfg.reference_data === "string" && cfg.data_bounds && typeof cfg.data_bounds.start === "number") {
+      gsAddReferenceSegment(contig, cfg.data_bounds.start, cfg.reference_data);
+    }
+  } catch (_) {}
+})();
+
+function gsStoreAnnotationsForContig(contig, payload) {
+  if (!contig || !payload) return;
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  if (payload.genes_track && typeof payload.genes_track === "object") {
+    _gsAnnoByContig.genes.set(contig, payload.genes_track);
+  }
+  if (payload.repeats_track && typeof payload.repeats_track === "object") {
+    _gsAnnoByContig.repeats.set(contig, payload.repeats_track);
+  }
+  if (typeof payload.reference_data === "string") {
+    _gsAnnoByContig.reference.set(contig, payload.reference_data);
+  }
+  if (payload.data_bounds && typeof payload.data_bounds.start === "number") {
+    _gsAnnoByContig.bounds.set(contig, payload.data_bounds);
+    if (typeof payload.reference_data === "string") {
+      gsAddReferenceSegment(contig, payload.data_bounds.start, payload.reference_data);
+    }
+  }
+  // Also accept direct cfg fields when seeding.
+  if (payload === cfg) {
+    if (cfg.genes_track) _gsAnnoByContig.genes.set(contig, cfg.genes_track);
+    if (cfg.repeats_track) _gsAnnoByContig.repeats.set(contig, cfg.repeats_track);
+    if (typeof cfg.reference_data === "string") {
+      _gsAnnoByContig.reference.set(contig, cfg.reference_data);
+    }
+    if (cfg.data_bounds && typeof cfg.data_bounds.start === "number") {
+      _gsAnnoByContig.bounds.set(contig, cfg.data_bounds);
+    }
+  }
+}
+
+/** Swap global annotation cfg to the snapshot for this contig (multi-tile paint). */
+function gsRestoreAnnotationsForContig(contig) {
+  if (!contig) return;
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const genes = _gsAnnoByContig.genes.get(contig);
+  if (genes) {
+    cfg.genes_track = genes;
+    gsSetAnnotationTrack(genes);
+  }
+  const repeats = _gsAnnoByContig.repeats.get(contig);
+  if (repeats) {
+    cfg.repeats_track = repeats;
+    gsSetAnnotationTrack(repeats);
+  }
+  const ref = _gsAnnoByContig.reference.get(contig);
+  if (typeof ref === "string") {
+    cfg.reference_data = ref;
+    if (typeof referenceSequence !== "undefined") referenceSequence = ref;
+  }
+  // The sequence's origin/extent: always restored WITH the sequence (see above).
+  const bounds = _gsAnnoByContig.bounds.get(contig);
+  if (bounds) {
+    cfg.data_bounds = bounds;
+    if (typeof dataBounds !== "undefined") dataBounds = bounds;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.gsStoreAnnotationsForContig = gsStoreAnnotationsForContig;
+  window.gsRestoreAnnotationsForContig = gsRestoreAnnotationsForContig;
+}
+
 // Reference sequence: load from config or use empty string as fallback
 let referenceSequence = "";
 if (window.GENOMESHADER_CONFIG && window.GENOMESHADER_CONFIG.reference_data) {
@@ -630,16 +796,46 @@ if (typeof window !== "undefined") {
 // fetch is needed. Pure; the pan/zoom trigger + comm fetch are browser-wired.
 function _gsRegionKey(r) { return `${r.contig}:${r.start}-${r.end}`; }
 
-function gsWindowStoreUpdate(regions, newRegion, centerBp, keepSpan) {
+function gsWindowStoreUpdate(regions, newRegion, centerBp, keepSpan, protectKeys, maxRegions) {
   regions = Array.isArray(regions) ? regions.slice() : [];
   const nk = _gsRegionKey(newRegion);
   regions = regions.filter((r) => _gsRegionKey(r) !== nk);
   regions.push(newRegion);
   const kept = [], evicted = [];
+  const protect = protectKeys instanceof Set ? protectKeys : null;
   for (const r of regions) {
+    const key = _gsRegionKey(r);
     const mid = (Number(r.start) + Number(r.end)) / 2;
-    if (_gsRegionKey(r) !== nk && Math.abs(mid - centerBp) > keepSpan) evicted.push(r);
+    // Never evict windows that cover an open multi-tile column, and never evict
+    // a different contig solely because genomic coords are far apart — that was
+    // wiping tile A's variants when opening a linked tile on another chromosome.
+    if (protect && protect.has(key)) {
+      kept.push(r);
+      continue;
+    }
+    if (key !== nk && r.contig !== newRegion.contig) {
+      kept.push(r);
+      continue;
+    }
+    if (key !== nk && Math.abs(mid - centerBp) > keepSpan) evicted.push(r);
     else kept.push(r);
+  }
+  // Count cap (same contig, unprotected): the distance rule alone no longer bounds
+  // memory now that zooming in keeps wide windows. Drop the FARTHEST beyond the cap.
+  if (Number.isFinite(maxRegions) && maxRegions > 0) {
+    const evictable = kept.filter((r) => {
+      const key = _gsRegionKey(r);
+      return key !== nk && r.contig === newRegion.contig && !(protect && protect.has(key));
+    });
+    const room = maxRegions - (kept.length - evictable.length);
+    if (evictable.length > room) {
+      evictable.sort((a, b) =>
+        Math.abs((a.start + a.end) / 2 - centerBp) - Math.abs((b.start + b.end) / 2 - centerBp));
+      for (const r of evictable.slice(Math.max(0, room))) {
+        evicted.push(r);
+        kept.splice(kept.indexOf(r), 1);
+      }
+    }
   }
   return { regions: kept, evicted };
 }
@@ -668,6 +864,7 @@ if (typeof window !== "undefined") {
 // render from GENOMESHADER_CONFIG.variant_tracks; we rebuild that from the kept
 // windows (union, deduped by variant id). Uses the pure store cores above
 // (overscanRegion / gsRegionCovered / gsWindowStoreUpdate).
+const GS_VP_MIN_WINDOW_BP = 4000;        // smallest window a viewport fetch requests
 const GS_VP_OVERSCAN = 0.5;      // fetch viewport ± 50% on each side
 const GS_VP_MAX_SPAN_BP = 1000000; // above this span, skip loading individual variants (zoom gate)
 // Settle window: only load variants after the view has been still (no scroll /
@@ -731,9 +928,13 @@ function gsSeriousFailureModal(message, title) {
 }
 
 function _gsVpKeepSpan() {
-  // Keep windows whose center is within ~3 viewport spans of the current center.
-  return Math.max(1, state.endBp - state.startBp) * 3;
+  // Keep windows whose center is within ~3 viewport spans of the current center —
+  // but never less than a fixed floor: zooming IN must not evict the wide windows
+  // that zooming back OUT will want (reloading is the worst case, not the default).
+  return Math.max(Math.max(1, state.endBp - state.startBp) * 3, GS_VP_KEEP_FLOOR_BP);
 }
+const GS_VP_KEEP_FLOOR_BP = 500000;
+const GS_VP_MAX_REGIONS = 8;             // windows kept per contig (LRU by distance)
 
 function _gsVpRebuildTracks() {
   // Union the kept windows' variant_tracks into config, deduped by variant id
@@ -790,6 +991,10 @@ async function gsLoadVariantsForViewport(force) {
     __GS_DEBUG("vp_skip", { reason: "disabled" });
     return;
   }
+  if (typeof gsIsConnected === "function" && !gsIsConnected()) {
+    __GS_DEBUG("vp_skip", { reason: "disconnected" });
+    return;
+  }
   const contig = state.contig;
   const vs = Math.floor(state.startBp), ve = Math.ceil(state.endBp);
   if (!contig || !(ve > vs)) {
@@ -812,6 +1017,15 @@ async function gsLoadVariantsForViewport(force) {
     return; // coverage skip
   }
   const win = overscanRegion(vs, ve, GS_VP_OVERSCAN);
+  // Never fetch a tiny window. At base-level zoom the view (+50%) is ~100 bp, so
+  // moving a few hundred bp left it uncovered until a kernel round trip finished
+  // (seconds when the kernel is busy loading reads) and the reference bases blanked.
+  // The reference and nearby variants are cheap: load a few kb around the view.
+  if (win.end - win.start < GS_VP_MIN_WINDOW_BP) {
+    const mid = (win.start + win.end) / 2;
+    win.start = Math.floor(mid - GS_VP_MIN_WINDOW_BP / 2);
+    win.end = Math.ceil(mid + GS_VP_MIN_WINDOW_BP / 2);
+  }
   // Clamp to the contig so a pan near an end doesn't request off-contig coords.
   const chrLen = Number((cfg.chrom_lengths || {})[contig])
     || (typeof chrLengths !== "undefined" ? Number(chrLengths[contig]) : 0) || 0;
@@ -842,6 +1056,21 @@ async function gsLoadVariantsForViewport(force) {
   }
   const _t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
   __GS_DEBUG("vp_fetch_start", { reqKey: reqKey });
+  // Safety: if the Jupyter comm never resolves, clear the busy bar + in-flight
+  // lock so later pans are not stuck forever on "Loading variants…".
+  let _vpStatusOwned = true;
+  let _vpSafetyTimer = setTimeout(() => {
+    if (_gsVpInFlight !== reqKey) return;
+    console.warn("viewport variant load timed out client-side:", reqKey);
+    _gsVpInFlight = null;
+    if (_vpStatusOwned) {
+      _vpStatusOwned = false;
+      _gsVpStatusInFlight = Math.max(0, _gsVpStatusInFlight - 1);
+    }
+    if (_gsVpStatusInFlight === 0 && window.__GS_STATUS) {
+      window.__GS_STATUS("Variant load timed out — pan or retry", { autoHide: 4000 });
+    }
+  }, 120000);
   try {
     const fetchArgs = { contig, start: win.start, end: win.end };
     if (typeof compositeSampleIds === "function") {
@@ -864,7 +1093,22 @@ async function gsLoadVariantsForViewport(force) {
         ms: Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - _t0) });
       const region = { contig, start: win.start, end: win.end };
       _gsVpData.set(_gsRegionKey(region), resp.variant_tracks);
-      const upd = gsWindowStoreUpdate(_gsVpRegions, region, (vs + ve) / 2, _gsVpKeepSpan());
+      // Protect any stored window that covers an open tile's locus.
+      const protectKeys = new Set();
+      try {
+        for (const tile of (state.tiles || [])) {
+          if (!tile || tile.blank) continue;
+          for (const r of _gsVpRegions) {
+            if (r.contig === tile.contig
+                && Number(r.start) <= tile.startBp
+                && Number(r.end) >= tile.endBp) {
+              protectKeys.add(_gsRegionKey(r));
+            }
+          }
+        }
+      } catch (_) {}
+      const upd = gsWindowStoreUpdate(
+        _gsVpRegions, region, (vs + ve) / 2, _gsVpKeepSpan(), protectKeys, GS_VP_MAX_REGIONS);
       _gsVpRegions = upd.regions;
       for (const ev of upd.evicted) _gsVpData.delete(_gsRegionKey(ev));
       if (Array.isArray(resp.insertion_variants_lookup)) {
@@ -885,6 +1129,9 @@ async function gsLoadVariantsForViewport(force) {
         cfg.repeats_track = resp.repeats_track;
         gsSetAnnotationTrack(resp.repeats_track);
       }
+      if (typeof gsStoreAnnotationsForContig === "function") {
+        gsStoreAnnotationsForContig(contig, resp);
+      }
       if (Array.isArray(resp.ideogram_data)) cfg.ideogram_data = resp.ideogram_data;
       if (resp.data_bounds && typeof resp.data_bounds.start === "number") {
         cfg.data_bounds = resp.data_bounds; dataBounds = resp.data_bounds;
@@ -898,6 +1145,7 @@ async function gsLoadVariantsForViewport(force) {
       }
     }
   } catch (e) {
+    if (e && e.gsDisconnected) return;      // user pressed Disconnect mid-load: not an error
     console.warn("viewport variant load failed:", e);
     __GS_DEBUG("vp_fetch_error", { reqKey: reqKey, error: String(e && e.message || e) });
     const hint = (e && e.cause) ? String(e.cause)
@@ -906,8 +1154,12 @@ async function gsLoadVariantsForViewport(force) {
     gsSeriousFailureModal(
       "Failed to load variants for this region. " + hint, "Variant load failed");
   } finally {
+    if (_vpSafetyTimer) clearTimeout(_vpSafetyTimer);
     if (_gsVpInFlight === reqKey) _gsVpInFlight = null;
-    _gsVpStatusInFlight = Math.max(0, _gsVpStatusInFlight - 1);
+    if (_vpStatusOwned) {
+      _vpStatusOwned = false;
+      _gsVpStatusInFlight = Math.max(0, _gsVpStatusInFlight - 1);
+    }
     // Only clear the busy bar when the last overlapping load settles; a
     // success/failure message above (autoHide) supersedes it when shown.
     if (_gsVpStatusInFlight === 0 && window.__GS_STATUS) {
@@ -1005,6 +1257,7 @@ function _gsApplyTrackDataResponse(resp) {
 async function gsLoadDataTracksForViewport() {
   if (!Array.isArray(state.dataTracks) || !state.dataTracks.length) return;
   if (typeof sendCommMessage !== "function") return;
+  if (typeof gsIsConnected === "function" && !gsIsConnected()) return;
   const contig = state.contig;
   const start = Math.floor(state.startBp);
   const end = Math.ceil(state.endBp);
@@ -1198,8 +1451,10 @@ function gsSwitchContig(contig) {
   state.startBp = 1;
   state.endBp = 1 + span;
   if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+  if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   gsResetRegionData();
   if (typeof updateDocumentTitle === "function") updateDocumentTitle();
+  if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof renderAll === "function") renderAll();
   gsRequestNavigate(state.contig, Math.floor(state.startBp), Math.ceil(state.endBp));
 }
@@ -1291,6 +1546,7 @@ function gsGoToLocus(text) {
   state.startBp = start;
   state.endBp = end;
   if (typeof clampToChromosomeBounds === "function") clampToChromosomeBounds();
+  if (typeof gsPullAliasesIntoFocused === "function") gsPullAliasesIntoFocused();
   // Committed: drop the staged box + dirty flag so the bar re-syncs to the view
   // and Go greys out again.
   state.__pendingLocus = null;
@@ -1298,6 +1554,8 @@ function gsGoToLocus(text) {
   if (contigChanged) gsResetRegionData();
   if (typeof updateDocumentTitle === "function") updateDocumentTitle();
   if (typeof gsSyncLocusBar === "function") gsSyncLocusBar();
+  if (typeof gsUpdateLocusBarMode === "function") gsUpdateLocusBarMode();
+  if (typeof gsUpdateTileChrome === "function") gsUpdateTileChrome();
   if (typeof renderAll === "function") renderAll();
   gsRequestNavigate(state.contig, Math.floor(state.startBp), Math.ceil(state.endBp));
   return true;
@@ -1335,7 +1593,10 @@ async function gsResolveFeatureAndGo(query) {
     }
     return true;
   } catch (e) {
-    if (window.__GS_STATUS) window.__GS_STATUS("Gene search failed", { autoHide: 4000 });
+    if (window.__GS_STATUS) {
+      window.__GS_STATUS(e && e.gsDisconnected ? "Disconnected — gene search unavailable" : "Gene search failed",
+        { autoHide: 4000 });
+    }
     return false;
   }
 }
@@ -1620,10 +1881,33 @@ function gsInitLocusBar() {
       gsSetViewLock(!(state.lockView === true));
     });
   }
+  const connectBtn = document.getElementById("locusConnectBtn");
+  if (connectBtn && !connectBtn.__gsWired) {
+    connectBtn.__gsWired = true;
+    connectBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (typeof gsSetConnected === "function") gsSetConnected(!gsIsConnected());
+    });
+  }
+  gsUpdateConnectButton();
   gsSyncViewLockButton();
   gsUpdateGoButton();
   gsSyncLocusBar();
 }
+
+/** Reflect the connection state on the locus-bar toggle (is-active = disconnected). */
+function gsUpdateConnectButton() {
+  const off = typeof gsIsConnected === "function" ? !gsIsConnected() : false;
+  const label = off ? "Connect — resume loading data" : "Disconnect — stop loading data";
+  const btn = document.getElementById("locusConnectBtn");
+  if (btn) {
+    btn.classList.toggle("is-active", off);
+    btn.setAttribute("aria-pressed", off ? "true" : "false");
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+  }
+}
+if (typeof window !== "undefined") window.gsUpdateConnectButton = gsUpdateConnectButton;
 
 function gsSyncViewLockButton() {
   const on = state.lockView === true;
@@ -1658,6 +1942,11 @@ if (typeof window !== "undefined") {
 }
 
 async function gsRequestNavigate(contig, start, end) {
+  if (typeof gsIsConnected === "function" && !gsIsConnected()) {
+    // Offline: the view moves locally and shows whatever is cached; nothing is requested.
+    if (window.__GS_STATUS) window.__GS_STATUS("Disconnected — showing cached data only", { autoHide: 2500 });
+    return;
+  }
   if (typeof sendCommMessage !== "function") {
     if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad(0);
     return;
@@ -1679,6 +1968,7 @@ async function gsRequestNavigate(contig, start, end) {
     if (resp) gsApplyNavigatePayload(resp);
     if (window.__GS_STATUS) window.__GS_STATUS(false);
   } catch (e) {
+    if (e && e.gsDisconnected) { if (window.__GS_STATUS) window.__GS_STATUS(false); return; }
     console.warn("navigate failed:", e);
     if (typeof gsScheduleViewportVariantLoad === "function") gsScheduleViewportVariantLoad(0);
     gsSeriousFailureModal(
@@ -1713,6 +2003,21 @@ function gsApplyNavigatePayload(p) {
   if (typeof p.start === "number" && typeof p.end === "number") {
     cfg.data_bounds = { start: p.start, end: p.end };
     dataBounds = { start: p.start, end: p.end };
+  }
+  // Snapshot what this jump delivered for ITS contig. Multi-tile painting restores
+  // each tile's reference / genes / repeats / bounds from these per-contig snapshots
+  // (gsRestoreAnnotationsForContig); a jump that only updated the globals left the
+  // tile's older snapshot in place, so the next paint swapped stale data back in
+  // and the tile lost its reference bases and annotations. The bounds are stored
+  // only together with a reference sequence (they are that sequence's origin).
+  {
+    const contig = (typeof p.contig === "string" && p.contig) ? p.contig : state.contig;
+    const snap = { genes_track: p.genes_track, repeats_track: p.repeats_track };
+    if (typeof p.reference_data === "string") {
+      snap.reference_data = p.reference_data;
+      if (typeof p.start === "number" && typeof p.end === "number") snap.data_bounds = { start: p.start, end: p.end };
+    }
+    gsStoreAnnotationsForContig(contig, snap);
   }
   if (Array.isArray(p.insertion_variants_lookup)) {
     cfg.insertion_variants_lookup = p.insertion_variants_lookup;
@@ -1753,6 +2058,7 @@ function gsApplyNavigatePayload(p) {
 
 if (typeof window !== "undefined") {
   window.gsSwitchContig = gsSwitchContig;
+  window.__GS_TEST_requestNavigate = (contig, start, end) => gsRequestNavigate(contig, start, end);
   window.gsPopulateContigSelect = gsPopulateContigSelect;
   window.gsAnnotationFeatures = gsAnnotationFeatures;
   window.gsSetAnnotationTrack = gsSetAnnotationTrack;

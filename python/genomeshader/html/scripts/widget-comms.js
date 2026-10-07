@@ -31,9 +31,25 @@ function _gsCommSummary(obj) {
   return s;
 }
 
+// Kernel requests that LOAD data. While the user is Disconnected these are refused
+// locally (no round-trip); everything else (comments, cache clear, debug) still works.
+const GS_DATA_FETCH_TYPES = new Set([
+  'fetch_reads', 'fetch_reads_batch', 'fetch_variants', 'fetch_track_data',
+  'fetch_carriers', 'navigate', 'resolve_feature', 'ucsc_genomes', 'ucsc_list', 'ucsc_track',
+]);
+function gsCommBlocked(type) {
+  return !!(typeof window !== 'undefined' && window.__GS_OFFLINE && GS_DATA_FETCH_TYPES.has(type));
+}
+function gsBlockedCommError(type) {
+  const e = new Error('Disconnected (' + type + ' not sent)');
+  e.gsDisconnected = true;
+  return e;
+}
+
 // Every comm round-trip is logged (send -> recv/error) with latency when debug
 // is on, so a session's kernel traffic is fully reconstructable from the log.
 function sendCommMessage(type, data, timeoutMs) {
+  if (gsCommBlocked(type)) return Promise.reject(gsBlockedCommError(type));
   // Never log the debug-log transport itself — __GS_DEBUG sends `debug_log`
   // through here, so logging it would recurse infinitely.
   const _log = (ev, f) => { if (type !== 'debug_log' && typeof window.__GS_DEBUG === 'function') window.__GS_DEBUG(ev, f); };

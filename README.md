@@ -5,7 +5,7 @@ navigate between variant sites — each shown with its alleles sized by cohort
 frequency (the "alleuvial" flow) — then deep-dive from a variant into the reads
 of the samples that carry it. It runs in the notebook as a Jupyter
 [anywidget](https://anywidget.dev) (classic Notebook, JupyterLab, Notebook 7, VS
-Code, Colab, Terra), is GPU-accelerated (WebGPU with an SVG fallback), and is
+Code, Colab, Terra), is GPU-accelerated (**WebGPU is required** — there is no Canvas2D/SVG fallback), and is
 reference-agnostic (human and non-human assemblies).
 
 The stack: a **Rust** data engine (rust-htslib BAM/VCF, indexed region seek,
@@ -97,16 +97,21 @@ pytest -q                  # from the python/ dir, or: pytest python/tests -q
 ### Headless UI tests
 
 `python/tests/headless/` renders the actual ~15k-line viewer in **headless
-Chromium** via [Playwright](https://playwright.dev/python/) and asserts on
-layout, coordinates, and interaction behavior — the class of regressions the
-unit tests can't reach (blank renders, misaligned tracks, render storms, broken
-orientations).
+Chrome with WebGPU** via [Playwright](https://playwright.dev/python/) and
+asserts on layout, coordinates, interaction behavior and painted pixels — the
+class of regressions the unit tests can't reach (blank renders, misaligned
+tracks, render storms, broken orientations).
+
+The viewer requires WebGPU, and Playwright's bundled Chromium has it compiled
+out, so the suite uses the real Chrome channel (`python/tests/headless/conftest.py`
+adds the flags; the test modules are unchanged). On a machine with a GPU nothing
+else is needed; on a GPU-less runner set `GS_WEBGPU_SOFTWARE=1` to use SwiftShader.
 
 **Setup** (one-time browser download):
 
 ```bash
 pip install playwright anywidget      # or: pip install -e '.[test-ui]'
-python -m playwright install chromium
+python -m playwright install chrome
 ```
 
 **Run:**
@@ -116,8 +121,13 @@ pytest python/tests/headless -q
 ```
 
 The suite **skips cleanly** if Playwright or the browser isn't installed, so a
-plain `pytest -q` is unaffected. CI installs the browser and runs it as an extra
-step in the `test` job (reusing the maturin build).
+plain `pytest -q` is unaffected. CI installs Chrome and runs it as an extra
+step in the `test` job (reusing the maturin build) with software WebGPU.
+
+`GS_VERIFY_PAINT=1 pytest python/tests/headless -q` additionally turns on the
+paint-signature verifier: the viewer skips repainting a smart track whose inputs
+are unchanged, and in this mode it repaints anyway and fails the test with
+`PAINT_KEY_MISS` if the pixels changed (i.e. the signature forgot an input).
 
 #### How the harness works
 
@@ -136,11 +146,13 @@ things that actually break:
   reproduce a sandboxed notebook output (VS Code / Colab / Terra), where
   `localStorage` throws. Use to guard the sandbox-render path.
 
-**Caveat:** WebGPU does not paint under swiftshader in headless Chromium, so
-*these* tests assert on the **SVG / DOM / interaction** layers (which do render),
-not on WebGPU pixels. For WebGPU pixel assertions on a real GPU, see
-[WebGPU pixel tests](#webgpu-pixel-tests-real-gpu). Signals the tests read: `window.__GS_READY` / `window.__GS_ERR`
-(load state), `#tracksSvg` children (tracks rendered), `window._alleleNodePositions`
+**Reading painted pixels:** a WebGPU canvas can only be read back in the task
+that painted it, so the harness page sets `window.__GS_TEST_CAPTURE`, which makes
+every GPU canvas keep a shadow 2D copy taken at presentation
+(`gsCaptureGpuCanvas`); `window.__GS_TEST_tileInk()` and friends read that.
+`window.__GS_TEST_gpuStats()` reports the shared device / pipeline / canvas counts
+and how many primitives the last paint queued. Signals the tests read: `window.__GS_READY` / `window.__GS_ERR`
+(load state), `#tracksSvg` children (ruler/labels), `window._alleleNodePositions`
 (flow node geometry, for hit-testing/alignment), and `window.__rc` (render count,
 when instrumented).
 
