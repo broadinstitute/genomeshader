@@ -23,6 +23,9 @@ dev = ["pytest"]
 # Headless UI tests (python/tests/headless). Also needs a browser binary:
 #   python -m playwright install chromium
 test-ui = ["pytest", "playwright", "anywidget"]
+# Static PNG export (export_png / dossier). Also needs Chrome:
+#   python -m playwright install chrome
+export = ["playwright"]
 
 [tool.maturin]
 python-source = "python"

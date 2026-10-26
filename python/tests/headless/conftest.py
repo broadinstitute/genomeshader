@@ -16,6 +16,7 @@ force Chrome's SwiftShader fallback adapter; it freezes the page or presents
 a blank canvas.
 """
 import os
+import sys
 
 import pytest
 
@@ -27,19 +28,13 @@ except Exception:  # pragma: no cover - playwright not installed; tests skip the
 # Console messages from viewer pages that flag a stale-paint bug (GS_VERIFY_PAINT=1).
 _PAINT_MISSES = []
 
-_GPU_ARGS = ["--enable-unsafe-webgpu", "--ignore-gpu-blocklist"]
-# Software WebGPU on CI uses the Vulkan ICD in VK_DRIVER_FILES (Mesa lavapipe),
-# not Chrome's SwiftShader fallback. SwiftShader either wedges requestAdapter or
-# presents a canvas that drawImage reads back as empty, so paint tests fail.
-# Headed (under Xvfb) so the canvas has a surface to present.
-_SOFTWARE_ARGS = [
-    "--use-angle=vulkan",
-    "--use-vulkan=native",
-    "--enable-features=Vulkan",
-    "--disable-gpu-sandbox",
-    "--disable-dev-shm-usage",
-    "--no-sandbox",
-]
+# One definition shared with the PNG exporter (see genomeshader/export.py for
+# why software WebGPU is lavapipe, headed, and never SwiftShader).
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from genomeshader.export import (  # noqa: E402
+    CHROME_SOFTWARE_WEBGPU_ARGS as _SOFTWARE_ARGS,
+    CHROME_WEBGPU_ARGS as _GPU_ARGS,
+)
 
 
 @pytest.fixture(scope="session", autouse=True)

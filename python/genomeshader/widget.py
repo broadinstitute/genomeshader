@@ -20,6 +20,8 @@ from pathlib import Path
 import anywidget
 import traitlets
 
+from .dispatch import OFFLOADED_TYPES, dispatch
+
 # Default show() height: 80% of the browser viewport (resolved in the widget JS).
 VIEWPORT_HEIGHT_FRAC = 0.8
 
@@ -174,23 +176,108 @@ def _container_override_css(cid: str) -> str:
 _CID_PLACEHOLDER = "__GSROOT__"
 
 
-def _build_esm() -> str:
+def _viewer_assets():
+    """(css, body, scripts) shared by the widget ESM and the standalone page."""
     base = _html_dir()
     scripts_dir = base / "scripts"
-
     css = (base / "styles.css").read_text(encoding="utf-8")
-    # Drop the global `html, body { ... }` rule so it can't restyle the notebook
-    # page; the widget container sets its own height.
+    # Drop the global `html, body { ... }` rule so it can't restyle the host
+    # page; the container sets its own height.
     css = re.sub(r"(?m)^\s*html\s*,\s*body\s*\{[^}]*\}\s*$", "", css)
-    # Container-scoped overrides (placeholder id swapped for the real one in JS).
-    override_css = _container_override_css(_CID_PLACEHOLDER)
     body = (base / "body.html").read_text(encoding="utf-8")
-
     scripts = "\n".join(
         (scripts_dir / name).read_text(encoding="utf-8")
         for name in _SCRIPT_ORDER
         if (scripts_dir / name).exists()
     )
+    return css, body, scripts
+
+
+def _script_json(obj) -> str:
+    """JSON safe to inline in a <script> element (no `</script>` breakout)."""
+    return json.dumps(obj).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def _figure_css(cid: str) -> str:
+    """Static-figure presentation: tracks only, no navigation or panel chrome."""
+    c = "#" + cid
+    return (
+        f"{c} #locusBar, {c} .sidebar-left, {c} .sidebar-right, {c} .gs-add-tile-btn"
+        " { display:none !important; }"
+        f" {c} .app {{ padding-top:0 !important; }}"
+        f" {c} .gs-tile-strip {{ right:0 !important; }}"
+    )
+
+
+def build_standalone_page(config: dict, view_id: str, token: str,
+                          width: int = None, height: int = None, figure: bool = False) -> str:
+    """A full HTML document running the viewer outside Jupyter.
+
+    `__GS_SEND` posts each request to the session's local HTTP API (`../api`,
+    relative so it also resolves behind jupyter-server-proxy), authenticated by
+    `token`. width/height fix the viewer size in CSS pixels; None fills the
+    window. Sets `window.__GS_READY` once the viewer has mounted, or
+    `window.__GS_ERR` if it failed to.
+    """
+    css, body, scripts = _viewer_assets()
+    cid = "genomeshader-root-" + re.sub(r"[^A-Za-z0-9_-]", "_", view_id or "gsview")
+    override_css = _container_override_css(cid) + ("\n" + _figure_css(cid) if figure else "")
+    w_css = f"{int(width)}px" if width else "100vw"
+    h_css = f"{int(height)}px" if height else "100vh"
+    send_js = (
+        "(function () {\n"
+        "  const TOKEN = " + _script_json(token) + ";\n"
+        "  const API = new URL('../api', window.location.href).href;\n"
+        "  const LONG = new Set(['fetch_reads', 'fetch_reads_batch', 'fetch_track_data']);\n"
+        "  window.__GS_SEND = function (type, data, timeoutMs) {\n"
+        "    const id = 'req_' + Math.random().toString(36).slice(2) + Date.now();\n"
+        "    const ctl = new AbortController();\n"
+        "    const timer = setTimeout(function () { ctl.abort(); }, timeoutMs || (LONG.has(type) ? 120000 : 30000));\n"
+        "    return fetch(API, {\n"
+        "      method: 'POST',\n"
+        "      headers: { 'Content-Type': 'application/json', 'X-GS-Token': TOKEN },\n"
+        "      body: JSON.stringify(Object.assign({ type: type, request_id: id }, data || {})),\n"
+        "      signal: ctl.signal,\n"
+        "    }).then(function (r) {\n"
+        "      if (r.status === 204) return { type: type + '_ack', request_id: id };\n"
+        "      if (!r.ok) throw new Error('Genomeshader API ' + r.status + ' for ' + type);\n"
+        "      return r.json();\n"
+        "    }).then(function (msg) {\n"
+        "      try { document.dispatchEvent(new CustomEvent('genomeshader_msg', { detail: msg })); } catch (e) {}\n"
+        "      return msg;\n"
+        "    }, function (e) {\n"
+        "      throw (e && e.name === 'AbortError') ? new Error('Request timeout') : e;\n"
+        "    }).finally(function () { clearTimeout(timer); });\n"
+        "  };\n"
+        "})();\n"
+    )
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>GenomeShader</title>"
+        "<style>html,body{margin:0;padding:0;background:var(--bg,#0b0d10);overflow:hidden;}</style>"
+        f"<style>{css}</style><style>{override_css}</style></head><body>"
+        f'<div id="{cid}" style="width:{w_css};height:{h_css};--gs-widget-h:{h_css};'
+        'position:relative;overflow:visible;background:var(--bg,#0b0d10);isolation:isolate;">'
+        f"{body}</div><script>\n"
+        f"window.GENOMESHADER_CONFIG = {_script_json(config)};\n"
+        f"window.GENOMESHADER_VIEW_ID = {_script_json(view_id)};\n"
+        "window.GENOMESHADER_JUPYTER_ORIGIN = '';\n"
+        "window.__GS_READY = false; window.__GS_ERR = null;\n"
+        + send_js +
+        "async function __runViewer__(rootEl) {\n" + scripts + "\n}\n"
+        f"__runViewer__(document.getElementById({_script_json(cid)}))"
+        ".then(function () { window.__GS_READY = true; })"
+        ".catch(function (e) { window.__GS_ERR = String(e && e.stack || e);"
+        " console.error('Genomeshader viewer error:', e); });\n"
+        "</script></body></html>"
+    )
+
+
+def _build_esm() -> str:
+    css, body, scripts = _viewer_assets()
+    # Container-scoped overrides (placeholder id swapped for the real one in JS).
+    override_css = _container_override_css(_CID_PLACEHOLDER)
 
     return (
         "export default {\n"
@@ -292,275 +379,20 @@ class GenomeShaderWidget(anywidget.AnyWidget):
     def _on_custom_msg(self, _widget, content, _buffers):
         if not isinstance(content, dict):
             return
-        msg_type = content.get("type")
-        request_id = content.get("request_id")
-        # Forensic log of every inbound comm (except the debug-log channel itself,
-        # which would be noise). Small fields only — never whole payloads.
-        if msg_type != "debug_log":
-            try:
-                self._shader._debug_log(
-                    "comm_recv", type=msg_type, request_id=request_id,
-                    contig=content.get("contig"), start=content.get("start"),
-                    end=content.get("end"), sample_id=content.get("sample_id"))
-            except Exception:
-                pass
-        if msg_type == "fetch_reads":
-            try:
-                payload = self._shader._fetch_reads_payload(
-                    sample_id=content.get("sample_id"),
-                    samples=content.get("samples"),
-                    locus=content.get("locus"),
-                    bam_url=content.get("bam_url"),
-                )
-                self.send({"type": "fetch_reads_response", "request_id": request_id, **payload})
-            except Exception as e:  # surfaced to the frontend as a reads error
-                hint = self._shader._report_fetch_failure(
-                    "reads", e, sample=content.get("sample_id"))
-                self.send({"type": "fetch_reads_error", "request_id": request_id,
-                           "error": str(e), "hint": hint})
-        elif msg_type == "fetch_reads_batch":
-            try:
-                results = self._shader._fetch_reads_batch_payload(content.get("items") or [])
-                buffers = None
-                if content.get("accept_binary"):
-                    # Binary columns on the widget's buffer channel (no JSON parse in the
-                    # browser). Any chunk the codec cannot represent exactly stays JSON.
-                    try:
-                        from . import reads_codec
-                        results, buffers = reads_codec.encode_batch_items(results)
-                    except Exception:
-                        buffers = None
-                self.send({"type": "fetch_reads_batch_response", "request_id": request_id,
-                           "items": results}, buffers or None)
-            except Exception as e:  # whole-batch failure; per-item errors ride in `items`
-                hint = self._shader._report_fetch_failure("reads", e, sample=None)
-                self.send({"type": "fetch_reads_batch_error", "request_id": request_id,
-                           "error": str(e), "hint": hint})
-        elif msg_type == "fetch_carriers":
-            # Who carries this allele (on demand — used when the per-sample
-            # variant payload is size-gated at scale).
-            try:
-                carriers = self._shader.fetch_carriers(
-                    contig=content.get("contig"),
-                    pos=content.get("pos"),
-                    ref=content.get("ref"),
-                    allele=content.get("allele"),
-                    track_id=content.get("track_id"),
-                    strategy=content.get("strategy", "random"),
-                    n=int(content.get("n", 200)),
-                )
-                self.send({"type": "fetch_carriers_response", "request_id": request_id,
-                           "carriers": carriers})
-            except Exception as e:
-                self.send({"type": "fetch_carriers_error", "request_id": request_id,
-                           "carriers": [], "error": str(e)})
-        elif msg_type == "fetch_variants":
-            # Viewport variant load (P2): fetch one window's variant payload on
-            # pan/zoom without a full re-render.
-            try:
-                self._shader._debug_log(
-                    "fetch_variants_recv", contig=content.get("contig"),
-                    start=content.get("start"), end=content.get("end"))
-                payload = self._shader.fetch_variants_payload(
-                    content.get("contig"), content.get("start"), content.get("end"),
-                    sample_ids=content.get("sample_ids"))
-                self.send({"type": "fetch_variants_response", "request_id": request_id, **payload})
-            except Exception as e:
-                hint = self._shader._report_fetch_failure(
-                    "variants", e, locus=f"{content.get('contig')}:{content.get('start')}-{content.get('end')}")
-                self.send({"type": "fetch_variants_error", "request_id": request_id,
-                           "error": str(e), "hint": hint})
-        elif msg_type == "fetch_track_data":
-            # Software-defined tracks (attach_data). Always offload — closures are
-            # assumed slow user code; even static filters stay off the zmq thread
-            # so other comm traffic isn't blocked.
-            track_id = content.get("track_id")
-            contig = content.get("contig")
-            start = content.get("start")
-            end = content.get("end")
-            max_points = content.get("max_points", 2000)
+        if content.get("type") in OFFLOADED_TYPES:
             shader = self._shader
 
             def _work():
-                try:
-                    payload = shader.fetch_track_data_payload(
-                        track_id, contig, start, end,
-                        max_points=max_points if max_points is not None else 2000)
-                    _send_on_ioloop(self, {
-                        "type": "fetch_track_data_response",
-                        "request_id": request_id,
-                        **payload,
-                    })
-                except Exception as e:
-                    try:
-                        hint = shader._report_fetch_failure(
-                            "track_data", e, track_id=track_id,
-                            locus=f"{contig}:{start}-{end}")
-                    except Exception:
-                        hint = None
-                    _send_on_ioloop(self, {
-                        "type": "fetch_track_data_error",
-                        "request_id": request_id,
-                        "error": str(e),
-                        "hint": hint,
-                    })
+                resp, _ = dispatch(shader, content)
+                if resp is not None:
+                    _send_on_ioloop(self, resp)
 
             _TRACK_DATA_EXECUTOR.submit(_work)
-        elif msg_type == "navigate":
-            # Contig/region switch: the full per-window payload (reference, genes,
-            # ideogram, repeats, variants) for a new locus, since those are
-            # per-window and static in the initial config.
-            try:
-                # with_variants=False: a jump returns reference/genes fast and
-                # defers the (slow, cohort-scale) variant decode to the frontend
-                # viewport loader so navigation never times out on it.
-                payload = self._shader.navigate_payload(
-                    content.get("contig"), content.get("start"), content.get("end"),
-                    with_variants=False)
-                self.send({"type": "navigate_response", "request_id": request_id, **payload})
-            except Exception as e:
-                hint = self._shader._report_fetch_failure(
-                    "region", e, region=f"{content.get('contig')}:{content.get('start')}-{content.get('end')}")
-                self.send({"type": "navigate_error", "request_id": request_id,
-                           "error": str(e), "hint": hint})
-        elif msg_type == "resolve_feature":
-            # Gene / transcript search-to-jump from the locus bar.
-            try:
-                matches = self._shader.resolve_feature(content.get("query"))
-                self.send({"type": "resolve_feature_response",
-                           "request_id": request_id, "matches": matches})
-            except Exception as e:
-                self.send({"type": "resolve_feature_response",
-                           "request_id": request_id, "matches": [], "error": str(e)})
-        elif msg_type == "debug_log":
-            # Frontend event log (loader decisions, fetch lifecycle) forwarded to
-            # the server-side debug file so timing/sizing/skip reasons land in one
-            # place. Fire-and-forget; only emitted by the frontend when debug is on.
-            try:
-                event = content.get("event", "frontend")
-                fields = content.get("fields") or {}
-                self._shader._debug_log("frontend." + str(event), **fields)
-            except Exception:
-                pass
-        elif msg_type == "clear_cache":
-            # Settings: user-requested wipe of the on-disk + in-memory local cache.
-            try:
-                stats = self._shader.clear_local_cache()
-                self.send({"type": "clear_cache_response", "request_id": request_id, **stats})
-            except Exception as e:
-                self.send({"type": "clear_cache_error", "request_id": request_id, "error": str(e)})
-        elif msg_type == "ucsc_genomes":
-            # Assembly picker: all UCSC assemblies + the best match for this build.
-            try:
-                info = self._shader.list_ucsc_genomes()
-                self.send({"type": "ucsc_genomes_response", "request_id": request_id,
-                           "genome_build": getattr(self._shader, "genome_build", ""),
-                           "genomes": info.get("genomes", []),
-                           "default": info.get("default", "")})
-            except Exception as e:
-                self.send({"type": "ucsc_genomes_response", "request_id": request_id,
-                           "genomes": [], "default": "", "error": str(e)})
-        elif msg_type == "ucsc_list":
-            # Tracks for a chosen UCSC assembly; available=False => none.
-            try:
-                payload = self._shader.list_ucsc_tracks(content.get("genome"))
-                tracks = (payload or {}).get("tracks") if isinstance(payload, dict) else payload
-                groups = (payload or {}).get("groups") if isinstance(payload, dict) else []
-                self.send({"type": "ucsc_list_response", "request_id": request_id,
-                           "available": payload is not None,
-                           "genome": content.get("genome"),
-                           "tracks": tracks or [],
-                           "groups": groups or []})
-            except Exception as e:
-                self.send({"type": "ucsc_list_response", "request_id": request_id,
-                           "available": False, "tracks": [], "groups": [], "error": str(e)})
-        elif msg_type == "ucsc_track":
-            try:
-                features = self._shader.ucsc_interval_track(
-                    content.get("track"), content.get("contig"),
-                    int(content.get("start")), int(content.get("end")),
-                    genome=content.get("genome"),
-                )
-                self.send({"type": "ucsc_track_response", "request_id": request_id,
-                           "track": content.get("track"),
-                           "label": content.get("label"),
-                           "features": features})
-            except Exception as e:
-                self.send({"type": "ucsc_track_error", "request_id": request_id,
-                           "track": content.get("track"), "error": str(e)})
-        elif msg_type == "comments_list":
-            try:
-                self.send({"type": "comments_response", "request_id": request_id,
-                           "author": self._shader._comment_author(),
-                           "comments": self._shader.list_comments()})
-            except Exception as e:
-                self.send({"type": "comments_response", "request_id": request_id,
-                           "comments": [], "error": str(e)})
-        elif msg_type == "comments_create":
-            try:
-                c = self._shader.create_comment(content.get("anchor") or {},
-                                                content.get("body") or "",
-                                                author=(content.get("author") or None))
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "create", "comment": c})
-            except Exception as e:
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "create", "error": str(e)})
-        elif msg_type == "comments_update":
-            try:
-                c = self._shader.update_comment(content.get("id"),
-                                                body=content.get("body"),
-                                                anchor=content.get("anchor"))
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "update", "comment": c})
-            except Exception as e:
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "update", "error": str(e)})
-        elif msg_type == "comments_reply":
-            try:
-                c = self._shader.reply_comment(content.get("id"),
-                                               body=content.get("body"),
-                                               author=(content.get("author") or None))
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "reply", "comment": c})
-            except Exception as e:
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "reply", "error": str(e)})
-        elif msg_type == "comments_reply_delete":
-            try:
-                c = self._shader.delete_reply(content.get("id"), content.get("reply_id"))
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "reply_delete", "comment": c})
-            except Exception as e:
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "reply_delete", "error": str(e)})
-        elif msg_type == "comments_read_get":
-            try:
-                self.send({"type": "comments_read_state", "request_id": request_id,
-                           "seen": self._shader.get_comment_read_state()})
-            except Exception as e:
-                self.send({"type": "comments_read_state", "request_id": request_id,
-                           "seen": {}, "error": str(e)})
-        elif msg_type == "comments_read_set":
-            try:
-                ok = self._shader.set_comment_read_state(content.get("seen") or {})
-                self.send({"type": "comments_read_saved", "request_id": request_id, "ok": ok})
-            except Exception as e:
-                self.send({"type": "comments_read_saved", "request_id": request_id, "error": str(e)})
-        elif msg_type == "comments_delete":
-            try:
-                ok = self._shader.delete_comment(content.get("id"))
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "delete", "id": content.get("id"), "ok": ok})
-            except Exception as e:
-                self.send({"type": "comments_changed", "request_id": request_id,
-                           "action": "delete", "id": content.get("id"), "error": str(e)})
-
-        # Resource-usage snapshot after every comm (debug mode only; no-op when
-        # debug is off). Lands next to the fetch timings so a memory/thread/cache
-        # trend across a session is visible in the debug log.
-        if msg_type and msg_type != "debug_log":
-            try:
-                self._shader._debug_log_resources(msg_type)
-            except Exception:
-                pass
+            return
+        resp, buffers = dispatch(self._shader, content)
+        if resp is None:
+            return
+        if buffers:
+            self.send(resp, buffers)
+        else:
+            self.send(resp)

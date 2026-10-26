@@ -67,6 +67,30 @@ thread you're in — durable across devices via the bucket), and **sort/filter**
 (recent activity / date / author / position; filter by author or anchor type).
 The current user is taken from the gcloud/Google identity.
 
+## Outside the notebook: browser tabs and static PNGs
+
+`gs.serve(locus)` returns a `http://127.0.0.1:<port>/view/<id>` URL for the
+viewer in any browser on the session's host. The page reaches the session over
+a local HTTP API (`POST /api`, same requests as the notebook comm), guarded by a
+per-session token.
+
+`gs.export_png(locus, "hit.png", samples=[...], seed="locus_id")` renders the
+same viewer in headless Chrome (Playwright, `python -m playwright install chrome`)
+with one read track per listed sample and writes a PNG; the same inputs give the
+same image. On a GPU-less Linux host use the lavapipe setup described under
+*Headless UI tests* below.
+
+For the FELIX hit dossier, `genomeshader.dossier.export_dossier(gs, loci_tsv,
+leads_tsv, pheno_cov_tsv, out_dir)` writes one PNG per locus plus
+`manifest.tsv`, showing `n_per_group` case and control carriers of each lead
+allele, chosen from all carriers with a shuffle seeded by `locus_id`. Each page
+spans the lead variant ±`flank_bp` (default 5 kb); `flank_bp=None` uses the
+dossier's own `window_start`..`window_end`.
+
+In the viewer, the **Balanced groups** strategy splits the sample budget across
+a metadata column (`selection_balance_column` in the config, else the colour
+facet). Setting `selection_seed` in the config makes every strategy reproducible.
+
 ## Testing
 
 Four layers. Rust + Python + headless-UI are the default CI gate
@@ -105,7 +129,11 @@ tracks, render storms, broken orientations).
 The viewer requires WebGPU, and Playwright's bundled Chromium has it compiled
 out, so the suite uses the real Chrome channel (`python/tests/headless/conftest.py`
 adds the flags; the test modules are unchanged). On a machine with a GPU nothing
-else is needed; on a GPU-less runner set `GS_WEBGPU_SOFTWARE=1` to use SwiftShader.
+else is needed. On a GPU-less Linux runner, set `GS_WEBGPU_SOFTWARE=1`, point
+`VK_DRIVER_FILES` at the Mesa **lavapipe** Vulkan ICD, and run under Xvfb
+(`scripts/setup_gpu_webgpu.sh` sets this up; see `.github/workflows/ci.yml`).
+Do not use Chrome's SwiftShader fallback: it either wedges `requestAdapter` or
+presents a canvas that reads back empty.
 
 **Setup** (one-time browser download):
 
