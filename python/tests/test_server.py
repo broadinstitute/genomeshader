@@ -147,6 +147,13 @@ def test_standalone_page_escapes_config_and_wires_transport():
     assert "comm_manager.new_comm" not in html
 
 
+def test_figure_page_drops_label_pill_shadows():
+    # Printed to PDF, a shadowed pill over a WebGPU canvas becomes a gray box.
+    fig = build_standalone_page({}, "v", "T", figure=True)
+    assert ".track-controls { box-shadow:none !important;" in fig
+    assert "box-shadow:none" not in build_standalone_page({}, "v", "T")
+
+
 def test_serve_returns_page_backed_by_session(tmp_path, monkeypatch):
     from unittest.mock import patch
     import genomeshader as G

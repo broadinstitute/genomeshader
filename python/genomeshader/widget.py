@@ -206,6 +206,10 @@ def _figure_css(cid: str) -> str:
         " { display:none !important; }"
         f" {c} .app {{ padding-top:0 !important; }}"
         f" {c} .gs-tile-strip {{ right:0 !important; }}"
+        # Chrome's PDF print flattens a label pill that overlaps a WebGPU canvas
+        # into a bitmap with its soft shadow, which PDF viewers (Preview) draw
+        # as a translucent gray box. Figures don't need the hover shadow.
+        f" {c} .track-controls {{ box-shadow:none !important; transition:none !important; }}"
     )
 
 
