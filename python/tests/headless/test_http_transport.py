@@ -32,6 +32,7 @@ class FakeSession:
 
     def __init__(self):
         self.batches = []
+        self.fail_samples = set()
         self._lock = threading.Lock()
         self._mock = Mock()
 
@@ -48,6 +49,9 @@ class FakeSession:
             s, e = int(s or 0), int(e or 0)
             bam = it.get("bam_url") or ""
             sample = it.get("sample_id")
+            if sample in self.fail_samples:
+                out.append({"error": f"simulated fetch failure for {sample}"})
+                continue
             q, rs, re_ = [], [], []
             if contig == "chr14" and CHR14_CONTIG[1] >= s and CHR14_CONTIG[0] <= e:
                 q.append(f"{sample}#{1 if '.hap1.' in bam else 2}#chr14")

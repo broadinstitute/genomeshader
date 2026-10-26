@@ -202,7 +202,7 @@ def _figure_css(cid: str) -> str:
     """Static-figure presentation: tracks only, no navigation or panel chrome."""
     c = "#" + cid
     return (
-        f"{c} #locusBar, {c} .sidebar-left, {c} .sidebar-right, {c} .gs-add-tile-btn"
+        f"{c} #locusBar, {c} .sidebar-left, {c} .sidebar-right, {c} .gs-add-tile-btn, {c} #statusBar"
         " { display:none !important; }"
         f" {c} .app {{ padding-top:0 !important; }}"
         f" {c} .gs-tile-strip {{ right:0 !important; }}"

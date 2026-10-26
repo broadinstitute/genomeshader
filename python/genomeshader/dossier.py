@@ -88,13 +88,16 @@ def _region(locus: dict, lead: dict, flank_bp: Optional[int]) -> str:
 
 def export_dossier(shader, loci_tsv, leads_tsv, pheno_cov_tsv, out_dir,
                    n_per_group: int = 4, flank_bp: Optional[int] = DEFAULT_FLANK_BP,
-                   width: int = 1600, height: int = 1000, loci: Optional[Iterable[str]] = None,
+                   width: int = 1600, height: Optional[int] = 1000, read_set: Optional[str] = None,
+                   loci: Optional[Iterable[str]] = None,
                    skip_existing: bool = True, id_col: str = "ID",
                    timeout_s: float = 300.0) -> Path:
     """Write `<out_dir>/<locus_id>.png` for every locus plus `manifest.tsv`.
 
     The window is the lead position +/- flank_bp; pass flank_bp=None for the
-    dossier's window_start..window_end. A locus that fails is recorded in the manifest and
+    dossier's window_start..window_end. `read_set` keeps one attach_reads label
+    per sample. A locus that fails is recorded in the manifest ("error"), one
+    whose page rendered with failed fetches or clipped tracks as "partial", and
     the run continues. Returns the manifest path.
     """
     from .export import chrome_launch_kwargs, export_locus_png
@@ -141,10 +144,12 @@ def export_dossier(shader, loci_tsv, leads_tsv, pheno_cov_tsv, out_dir,
             rec["status"] = "skipped"
             return rec
         out = export_locus_png(shader, rec["region"], png, samples=samples, width=width,
-                               height=height, seed=locus["locus_id"], browser=browser,
-                               timeout_s=timeout_s)
+                               height=height, seed=locus["locus_id"], read_set=read_set,
+                               browser=browser, timeout_s=timeout_s)
         empty = sorted({t["sample"] for t in out["tracks"] if not t["reads"]})
-        rec.update(status="ok", tracks_without_reads=",".join(empty))
+        problems = out.get("errors", []) + out.get("warnings", [])
+        rec.update(status="partial" if problems else "ok",
+                   tracks_without_reads=",".join(empty), error=" | ".join(problems))
         return rec
 
     def _run():

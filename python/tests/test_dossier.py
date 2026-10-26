@@ -149,6 +149,20 @@ def test_export_dossier_manifest(tmp_path, monkeypatch):
     row = D.read_tsv(again)[0]
     assert row["status"] == "skipped" and row["samples"] == ok["samples"]
 
+    # A page whose export reports failed fetches is "partial", with the reasons.
+    def failing_export(shader, region, out_path, samples=(), **kw):
+        open(out_path, "wb").write(b"png")
+        return {"path": str(out_path), "page_errors": [], "warnings": [],
+                "tracks": [], "errors": ["no read track for S03"]}
+
+    monkeypatch.setattr(E, "export_locus_png", failing_export)
+    part = D.export_dossier(
+        shader, tmp_path / "loci.tsv", tmp_path / "leads.tsv", tmp_path / "pheno.tsv",
+        tmp_path / "out_partial", loci=["MS_718__chr1_4642733"], read_set="pacbio")
+    prow = D.read_tsv(part)[0]
+    assert prow["status"] == "partial" and prow["error"] == "no read track for S03"
+    monkeypatch.setattr(E, "export_locus_png", fake_export)
+
     # flank_bp=None falls back to the dossier's own window.
     full = D.export_dossier(
         shader, tmp_path / "loci.tsv", tmp_path / "leads.tsv", tmp_path / "pheno.tsv",

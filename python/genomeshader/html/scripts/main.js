@@ -8549,6 +8549,10 @@ renderAll();
     window.__GS_INITIAL_LOAD = Promise.resolve([]);
     return;
   }
+  // initial_evidence: one read set (attach_reads label, e.g. "pacbio") per sample.
+  if (cfg.initial_evidence && state.sampleSelection) {
+    state.sampleSelection.evidenceFilter = String(cfg.initial_evidence);
+  }
   const promises = [];
   for (const id of ids) {
     promises.push(...spawnSmartTracksForSample(id, "best_evidence", new Set(), null, {}));

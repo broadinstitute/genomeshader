@@ -13,6 +13,7 @@ import json
 import math
 import numbers
 import secrets
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Optional
@@ -29,7 +30,9 @@ def _json_default(o):
         return float(o)
     if isinstance(o, (datetime.date, datetime.datetime)):
         return o.isoformat()
-    if hasattr(o, "tolist"):
+    # numpy arrays/scalars only: tolist() on an arbitrary object may return
+    # another unserializable object and recurse forever.
+    if type(o).__module__.split(".")[0] == "numpy" and hasattr(o, "tolist"):
         return o.tolist()
     if isinstance(o, (set, frozenset)):
         return list(o)
@@ -56,6 +59,15 @@ def encode_json(obj) -> bytes:
         return json.dumps(_scrub_nonfinite(plain), allow_nan=False).encode("utf-8")
 
 
+class _QuietServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # A page closing mid-request (tab closed, export finished) is routine;
+        # anything else still gets the default traceback.
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class ViewerServer:
     """Serves viewer pages and answers their requests from one session."""
 
@@ -68,7 +80,7 @@ class ViewerServer:
         # requests one at a time, so the HTTP path does too (except offloaded
         # user-code tracks, which the comm path also runs on a pool).
         self._dispatch_lock = threading.Lock()
-        self._httpd = ThreadingHTTPServer((host, port), self._handler_class())
+        self._httpd = _QuietServer((host, port), self._handler_class())
         self._httpd.daemon_threads = True
         self._thread: Optional[threading.Thread] = None
 
@@ -119,14 +131,19 @@ class ViewerServer:
                 pass
 
             def _send(self, status: int, body: bytes = b"", ctype: str = "application/json"):
-                self.send_response(status)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.end_headers()
-                if body:
-                    self.wfile.write(body)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    if body:
+                        self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    # The page went away (tab closed, export finished) while a
+                    # request was in flight; nobody is left to answer.
+                    self.close_connection = True
 
             def _error(self, status: int, message: str):
                 self._send(status, json.dumps({"error": message}).encode("utf-8"))

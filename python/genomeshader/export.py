@@ -55,8 +55,49 @@ _CLIP_JS = """() => {
 
 _TRACKS_JS = """() => {
   const d = window.__GS_TEST_readsRaceDump();
-  return d.tracks.map(t => ({sample: t.sampleId, bam: t.bamPin, reads: t.nReads}));
+  return {
+    tracks: d.tracks.map(t => ({sample: t.sampleId, bam: t.bamPin, reads: t.nReads})),
+    failures: d.failures || [],
+  };
 }"""
+
+# Height (px from the container top) where the last track ends. Track boxes
+# keep their layout size even when scrolled out of view, so this is stable
+# across container heights (unlike scrollHeight, which grows with the pane).
+_CONTENT_HEIGHT_JS = """() => {
+  const root = document.querySelector('[id^="genomeshader-root-"]');
+  if (!root) return 0;
+  const top = root.getBoundingClientRect().top;
+  let bottom = 0;
+  root.querySelectorAll('.smart-track-container, .track-control-container').forEach((el) => {
+    const r = el.getBoundingClientRect();
+    if (r.height > 0) bottom = Math.max(bottom, r.bottom);
+  });
+  return Math.ceil(bottom - top);
+}"""
+
+_FIT_PAD_PX = 8
+
+_RESIZE_JS = """(h) => {
+  const root = document.querySelector('[id^="genomeshader-root-"]');
+  root.style.height = h + 'px';
+  root.style.setProperty('--gs-widget-h', h + 'px');
+  window.dispatchEvent(new Event('resize'));
+}"""
+
+# Error dialogs (e.g. "Failed to load reads") are reported, then removed so
+# they never land in the figure.
+_TAKE_MODALS_JS = """() => {
+  const out = [];
+  document.querySelectorAll('.gs-modal-backdrop').forEach((b) => {
+    const t = b.querySelector('.gs-modal-title'), m = b.querySelector('.gs-modal-msg');
+    out.push(((t && t.textContent) || '') + ': ' + ((m && m.textContent) || ''));
+    b.remove();
+  });
+  return out;
+}"""
+
+MAX_FIT_HEIGHT = 8000
 
 
 class ExportError(RuntimeError):
@@ -76,12 +117,16 @@ def chrome_launch_kwargs(software: Optional[bool] = None) -> dict:
     }
 
 
-def _render_png(url: str, out_path: Path, width: int, height: int, theme: str,
-                device_scale: float, timeout_s: float, browser=None) -> dict:
+def _render_png(url: str, out_path: Path, width: int, height: Optional[int], theme: str,
+                device_scale: float, timeout_s: float, samples: Sequence[str],
+                browser=None) -> dict:
     from playwright.sync_api import sync_playwright
 
+    fit = height is None
+    start_h = height or 900
+
     def _shoot(b):
-        ctx = b.new_context(viewport={"width": width, "height": height},
+        ctx = b.new_context(viewport={"width": width, "height": start_h},
                             device_scale_factor=device_scale,
                             color_scheme="dark" if theme == "dark" else "light")
         try:
@@ -106,13 +151,38 @@ def _render_png(url: str, out_path: Path, width: int, height: int, theme: str,
             # wait_for_timeout here leaves the next page in the same browser
             # unable to produce frames (headless Chrome + WebGPU).
             page.evaluate(_SETTLE_JS)
+            warnings = []
+            h = start_h
+            for _ in range(4):
+                need = page.evaluate(_CONTENT_HEIGHT_JS) + _FIT_PAD_PX
+                if not fit:
+                    if need - _FIT_PAD_PX > h + 1:
+                        warnings.append(f"{need - _FIT_PAD_PX - h}px of tracks cut off at height={height}; "
+                                        "pass height=None to fit, or show fewer samples")
+                    break
+                if need > MAX_FIT_HEIGHT:
+                    warnings.append(f"content is {need}px tall; cut off at {MAX_FIT_HEIGHT}px")
+                    need = MAX_FIT_HEIGHT
+                if abs(need - h) <= 2:
+                    break
+                h = need
+                page.set_viewport_size({"width": width, "height": h})
+                page.evaluate(_RESIZE_JS, h)
+                page.evaluate(_SETTLE_JS)
             clip = page.evaluate(_CLIP_JS)
             if not clip:
                 raise ExportError("viewer layout not found")
-            tracks = page.evaluate(_TRACKS_JS)
+            state = page.evaluate(_TRACKS_JS)
+            problems = page.evaluate(_TAKE_MODALS_JS)
+            problems += [f"reads chunk failed ({f['attempts']}x): {f['key']}" for f in state["failures"]]
+            shown = {t["sample"] for t in state["tracks"]}
+            problems += [f"no read track for {s}" for s in samples if str(s) not in shown]
+            if problems:
+                page.evaluate(_SETTLE_JS)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(out_path), clip=clip)
-            return {"path": str(out_path), "tracks": tracks, "page_errors": errors}
+            return {"path": str(out_path), "tracks": state["tracks"], "errors": problems,
+                    "warnings": warnings, "page_errors": errors}
         finally:
             ctx.close()
 
@@ -127,14 +197,22 @@ def _render_png(url: str, out_path: Path, width: int, height: int, theme: str,
 
 
 def export_locus_png(shader, locus: str, out_path, samples: Sequence[str] = (),
-                     width: int = 1600, height: int = 1000, seed: Optional[str] = None,
-                     show_reads: bool = True, theme: str = "light", device_scale: float = 1.0,
+                     width: int = 1600, height: Optional[int] = 1000, seed: Optional[str] = None,
+                     read_set: Optional[str] = None, show_reads: bool = True,
+                     theme: str = "light", device_scale: float = 1.0,
                      timeout_s: float = 180.0, browser=None) -> dict:
     """Render `locus` with one track per sample in `samples` (in order) to a PNG.
 
+    `read_set` keeps one attach_reads label (e.g. "pacbio") per sample instead
+    of every attached BAM/CRAM. `height=None` grows the image to fit every
+    track; a fixed height that cuts tracks off is reported in "warnings".
     `seed` fixes any in-page sample selection (config.selection_seed). Pass an
     open Playwright `browser` to reuse one Chrome across many loci; it must be
-    used from the calling thread. Returns {"path", "tracks", "page_errors"}.
+    used from the calling thread.
+
+    Returns {"path", "tracks", "errors", "warnings", "page_errors"}. "errors"
+    lists failed read fetches and requested samples with no track; any error
+    dialog is removed from the image and reported here instead.
     """
     if theme not in ("light", "dark"):
         raise ValueError("theme must be 'light' or 'dark'")
@@ -158,21 +236,26 @@ def export_locus_png(shader, locus: str, out_path, samples: Sequence[str] = (),
     })
     if seed is not None:
         config["selection_seed"] = str(seed)
+    if read_set is not None:
+        config["initial_evidence"] = str(read_set)
     srv = shader.viewer_server()
     html = build_standalone_page(config, shader._last_view_id or "gsexport", srv.token,
-                                 width=width, height=height, figure=True)
+                                 width=width, height=height or 900, figure=True)
     url = srv.base_url + srv.add_page(html)
     out_path = Path(out_path)
+    samples = [str(s) for s in samples]
 
     if browser is not None:
-        return _render_png(url, out_path, width, height, theme, device_scale, timeout_s, browser)
+        return _render_png(url, out_path, width, height, theme, device_scale, timeout_s,
+                           samples, browser)
     # Playwright's sync API refuses to run on a thread with an asyncio loop
     # (any Jupyter kernel), so drive it from a fresh thread.
     box = {}
 
     def _run():
         try:
-            box["result"] = _render_png(url, out_path, width, height, theme, device_scale, timeout_s)
+            box["result"] = _render_png(url, out_path, width, height, theme, device_scale,
+                                        timeout_s, samples)
         except BaseException as e:  # re-raised on the caller's thread
             box["error"] = e
 

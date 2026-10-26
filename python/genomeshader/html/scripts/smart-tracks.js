@@ -3703,6 +3703,7 @@ if (typeof window !== "undefined") {
         reconcile: !!_reconcileTimer, pump: !!_pumpTimer,
         smartLoad: !!_gsSmartReadsLoadTimer, jobs: gsJobsPending(),
       },
+      failures: Array.from(_readsFailures.entries()).map(([key, f]) => ({ key, attempts: f.n })),
       readLoadsInFlight: _readLoadsInFlight,
       tracks,
       tiles: (state.tiles || []).map((t) => {

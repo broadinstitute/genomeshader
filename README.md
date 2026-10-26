@@ -77,15 +77,20 @@ per-session token.
 `gs.export_png(locus, "hit.png", samples=[...], seed="locus_id")` renders the
 same viewer in headless Chrome (Playwright, `python -m playwright install chrome`)
 with one read track per listed sample and writes a PNG; the same inputs give the
-same image. On a GPU-less Linux host use the lavapipe setup described under
-*Headless UI tests* below.
+same image. `read_set="pacbio"` keeps one `attach_reads` label per sample, and
+`height=None` sizes the image to its tracks. Check the returned `errors` before
+trusting an image: failed read fetches and samples with no track are reported
+there, and error dialogs are kept out of the PNG. On a GPU-less Linux host use
+the lavapipe setup described under *Headless UI tests* below.
 
 For the FELIX hit dossier, `genomeshader.dossier.export_dossier(gs, loci_tsv,
 leads_tsv, pheno_cov_tsv, out_dir)` writes one PNG per locus plus
 `manifest.tsv`, showing `n_per_group` case and control carriers of each lead
 allele, chosen from all carriers with a shuffle seeded by `locus_id`. Each page
 spans the lead variant ±`flank_bp` (default 5 kb); `flank_bp=None` uses the
-dossier's own `window_start`..`window_end`.
+dossier's own `window_start`..`window_end`. A page that rendered with failed
+fetches or clipped tracks is marked `partial` in the manifest, with the reason.
+The playground notebook has a runnable toy version against the SYN test data.
 
 In the viewer, the **Balanced groups** strategy splits the sample budget across
 a metadata column (`selection_balance_column` in the config, else the colour
