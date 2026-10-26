@@ -67,24 +67,29 @@ thread you're in — durable across devices via the bucket), and **sort/filter**
 (recent activity / date / author / position; filter by author or anchor type).
 The current user is taken from the gcloud/Google identity.
 
-## Outside the notebook: browser tabs and static PNGs
+## Outside the notebook: browser tabs and static figures
 
 `gs.serve(locus)` returns a `http://127.0.0.1:<port>/view/<id>` URL for the
 viewer in any browser on the session's host. The page reaches the session over
 a local HTTP API (`POST /api`, same requests as the notebook comm), guarded by a
 per-session token.
 
-`gs.export_png(locus, "hit.png", samples=[...], seed="locus_id")` renders the
-same viewer in headless Chrome (Playwright, `python -m playwright install chrome`)
-with one read track per listed sample and writes a PNG; the same inputs give the
-same image. `read_set="pacbio"` keeps one `attach_reads` label per sample, and
-`height=None` sizes the image to its tracks. Check the returned `errors` before
-trusting an image: failed read fetches and samples with no track are reported
-there, and error dialogs are kept out of the PNG. On a GPU-less Linux host use
-the lavapipe setup described under *Headless UI tests* below.
+`gs.export_figure(locus, "hit.pdf", samples=[...], seed="locus_id")` renders
+the same viewer in headless Chrome (`pip install 'genomeshader[export]' &&
+python -m playwright install chrome`) with one read track per listed sample. The
+suffix picks the format: **PDF** keeps text, ruler and annotations as vectors with
+the reads embedded as bitmaps at `device_scale` (default 2×); **PNG** is a
+screenshot at that scale. The same inputs give the same figure.
+`read_set="pacbio"` keeps one `attach_reads` label per sample, and `height=None`
+sizes the figure to its tracks. Check the returned `errors` before trusting a
+figure: failed read fetches and samples with no track are reported there, and
+error dialogs are kept out of it. On a GPU-less Linux host use the lavapipe setup
+described under *Headless UI tests* below; Chrome runs headed there and cannot
+print, so a PDF wraps a screenshot instead (`format == "pdf-raster"`).
 
 For the FELIX hit dossier, `genomeshader.dossier.export_dossier(gs, loci_tsv,
-leads_tsv, pheno_cov_tsv, out_dir)` writes one PNG per locus plus
+leads_tsv, pheno_cov_tsv, out_dir)` writes one PDF per locus (`fmt="png"` for
+PNG) plus
 `manifest.tsv`, showing `n_per_group` case and control carriers of each lead
 allele, chosen from all carriers with a shuffle seeded by `locus_id`. Each page
 spans the lead variant ±`flank_bp` (default 5 kb); `flank_bp=None` uses the

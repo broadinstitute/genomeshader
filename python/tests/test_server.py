@@ -141,6 +141,8 @@ def test_standalone_page_escapes_config_and_wires_transport():
     assert "new URL('../api', window.location.href)" in html
     assert "width:800px;height:600px" in html
     assert "async function __runViewer__(rootEl)" in html
+    # The viewer's own font, not the browser's default serif.
+    assert "font-family:ui-sans-serif,system-ui" in html
     # The page uses the HTTP transport, never the classic Notebook comm.
     assert "comm_manager.new_comm" not in html
 

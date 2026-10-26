@@ -119,7 +119,7 @@ def test_export_dossier_manifest(tmp_path, monkeypatch):
         return {"path": str(out_path), "page_errors": [],
                 "tracks": [{"sample": s, "bam": "", "reads": 0 if s == samples[0] else 3} for s in samples]}
 
-    monkeypatch.setattr(E, "export_locus_png", fake_export)
+    monkeypatch.setattr(E, "export_locus_figure", fake_export)
     shader = _Shader()
     manifest = D.export_dossier(
         shader, _write(tmp_path / "loci.tsv", LOCI), _write(tmp_path / "leads.tsv", LEADS),
@@ -129,6 +129,7 @@ def test_export_dossier_manifest(tmp_path, monkeypatch):
     ok = rows["MS_718__chr1_4642733"]
     # Default window: lead +/- 5 kb, not the 500 kb dossier window.
     assert ok["status"] == "ok" and ok["region"] == "chr1:4637733-4647733"
+    assert ok["file"] == "MS_718__chr1_4642733.pdf"  # PDF by default
     assert ok["lead"] == "chr1:4642733:C>T"
     # 28 carriers with reads; MS_718: S00-S09 case, S10-S24 control, S25+ NA.
     assert (ok["n_carriers"], ok["n_case_carriers"], ok["n_control_carriers"]) == ("28", "10", "15")
@@ -155,13 +156,13 @@ def test_export_dossier_manifest(tmp_path, monkeypatch):
         return {"path": str(out_path), "page_errors": [], "warnings": [],
                 "tracks": [], "errors": ["no read track for S03"]}
 
-    monkeypatch.setattr(E, "export_locus_png", failing_export)
+    monkeypatch.setattr(E, "export_locus_figure", failing_export)
     part = D.export_dossier(
         shader, tmp_path / "loci.tsv", tmp_path / "leads.tsv", tmp_path / "pheno.tsv",
         tmp_path / "out_partial", loci=["MS_718__chr1_4642733"], read_set="pacbio")
     prow = D.read_tsv(part)[0]
     assert prow["status"] == "partial" and prow["error"] == "no read track for S03"
-    monkeypatch.setattr(E, "export_locus_png", fake_export)
+    monkeypatch.setattr(E, "export_locus_figure", fake_export)
 
     # flank_bp=None falls back to the dossier's own window.
     full = D.export_dossier(

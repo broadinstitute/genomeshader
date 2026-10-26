@@ -1,4 +1,4 @@
-# dossier.py: one static PNG per GWAS hit for the FELIX hit dossier.
+# dossier.py: one static figure (PDF by default) per GWAS hit for the FELIX hit dossier.
 #
 # Inputs are the dossier tables (felix_dossier_loci.tsv, felix_dossier_leads.tsv)
 # and FELIX's pheno_cov.tsv (ID, covariates, then one 1/0/NA column per
@@ -18,7 +18,7 @@ CASE, CONTROL = "case", "control"
 DEFAULT_FLANK_BP = 5000
 
 MANIFEST_FIELDS = [
-    "locus_id", "phenotype", "region", "lead", "status", "png",
+    "locus_id", "phenotype", "region", "lead", "status", "file",
     "n_carriers", "n_case_carriers", "n_control_carriers", "samples", "tracks_without_reads", "error",
 ]
 
@@ -89,10 +89,11 @@ def _region(locus: dict, lead: dict, flank_bp: Optional[int]) -> str:
 def export_dossier(shader, loci_tsv, leads_tsv, pheno_cov_tsv, out_dir,
                    n_per_group: int = 4, flank_bp: Optional[int] = DEFAULT_FLANK_BP,
                    width: int = 1600, height: Optional[int] = 1000, read_set: Optional[str] = None,
+                   fmt: str = "pdf",
                    loci: Optional[Iterable[str]] = None,
                    skip_existing: bool = True, id_col: str = "ID",
                    timeout_s: float = 300.0) -> Path:
-    """Write `<out_dir>/<locus_id>.png` for every locus plus `manifest.tsv`.
+    """Write `<out_dir>/<locus_id>.<fmt>` (pdf or png) for every locus plus `manifest.tsv`.
 
     The window is the lead position +/- flank_bp; pass flank_bp=None for the
     dossier's window_start..window_end. `read_set` keeps one attach_reads label
@@ -100,8 +101,10 @@ def export_dossier(shader, loci_tsv, leads_tsv, pheno_cov_tsv, out_dir,
     whose page rendered with failed fetches or clipped tracks as "partial", and
     the run continues. Returns the manifest path.
     """
-    from .export import chrome_launch_kwargs, export_locus_png
+    from .export import chrome_launch_kwargs, export_locus_figure
 
+    if fmt not in ("pdf", "png"):
+        raise ValueError("fmt must be 'pdf' or 'png'")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     loci_rows = read_tsv(loci_tsv)
@@ -118,8 +121,8 @@ def export_dossier(shader, loci_tsv, leads_tsv, pheno_cov_tsv, out_dir,
     def _one(locus: dict, browser) -> dict:
         rec = {k: "" for k in MANIFEST_FIELDS}
         rec.update(locus_id=locus["locus_id"], phenotype=locus["phenotype"])
-        png = out_dir / f"{locus['locus_id']}.png"
-        rec["png"] = png.name
+        fig = out_dir / f"{locus['locus_id']}.{fmt}"
+        rec["file"] = fig.name
         lead = lead_variant(locus, leads_by_key)
         if lead is None:
             rec.update(status="error", error="no lead row in leads table")
@@ -140,10 +143,10 @@ def export_dossier(shader, loci_tsv, leads_tsv, pheno_cov_tsv, out_dir,
         samples = select_balanced(by_level, n_per_group, seed=locus["locus_id"])
         rec.update(n_carriers=len(carriers), n_case_carriers=len(by_level[CASE]),
                    n_control_carriers=len(by_level[CONTROL]), samples=",".join(samples))
-        if skip_existing and png.exists():
+        if skip_existing and fig.exists():
             rec["status"] = "skipped"
             return rec
-        out = export_locus_png(shader, rec["region"], png, samples=samples, width=width,
+        out = export_locus_figure(shader, rec["region"], fig, samples=samples, width=width,
                                height=height, seed=locus["locus_id"], read_set=read_set,
                                browser=browser, timeout_s=timeout_s)
         empty = sorted({t["sample"] for t in out["tracks"] if not t["reads"]})

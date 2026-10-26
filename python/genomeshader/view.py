@@ -6309,20 +6309,22 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
                                      width=width, height=height)
         return srv.base_url + srv.add_page(html)
 
-    def export_png(self, locus: str, out_path: str, samples: Sequence[str] = (),
-                   width: int = 1600, height: Optional[int] = 1000, seed: Optional[str] = None,
-                   read_set: Optional[str] = None, **kwargs) -> dict:
-        """Render `locus` to a PNG with one read track per sample in `samples`,
-        in order, using the real viewer in headless Chrome (needs Playwright +
-        Chrome; see genomeshader.export for GPU-less hosts). The same inputs give
-        the same image. `read_set` keeps one attach_reads label per sample;
-        `height=None` fits the image to its tracks. Returns {"path", "tracks",
-        "errors", "warnings", "page_errors"}; check "errors" before trusting an
-        image (failed read fetches, samples with no track).
+    def export_figure(self, locus: str, out_path: str, samples: Sequence[str] = (),
+                      width: int = 1600, height: Optional[int] = 1000, seed: Optional[str] = None,
+                      read_set: Optional[str] = None, **kwargs) -> dict:
+        """Render `locus` to a PDF or PNG (by `out_path` suffix) with one read
+        track per sample in `samples`, in order, using the real viewer in
+        headless Chrome (needs Playwright + Chrome; see genomeshader.export for
+        GPU-less hosts). PDF keeps text and vector graphics sharp. The same
+        inputs give the same picture. `read_set` keeps one attach_reads label
+        per sample; `height=None` fits the figure to its tracks. Returns
+        {"path", "format", "tracks", "errors", "warnings", "page_errors"};
+        check "errors" before trusting a figure (failed read fetches, samples
+        with no track).
         """
-        from .export import export_locus_png
-        return export_locus_png(self, locus, out_path, samples=samples, width=width,
-                                height=height, seed=seed, read_set=read_set, **kwargs)
+        from .export import export_locus_figure
+        return export_locus_figure(self, locus, out_path, samples=samples, width=width,
+                                   height=height, seed=seed, read_set=read_set, **kwargs)
 
     def save(
         self,

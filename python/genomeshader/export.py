@@ -1,4 +1,4 @@
-# export.py: static PNG of a locus, rendered by the real viewer in headless Chrome.
+# export.py: static PDF/PNG of a locus, rendered by the real viewer in headless Chrome.
 #
 # The viewer requires WebGPU, so export drives Google Chrome through Playwright
 # against a page served by the session's ViewerServer; reads arrive through the
@@ -117,9 +117,38 @@ def chrome_launch_kwargs(software: Optional[bool] = None) -> dict:
     }
 
 
-def _render_png(url: str, out_path: Path, width: int, height: Optional[int], theme: str,
-                device_scale: float, timeout_s: float, samples: Sequence[str],
-                browser=None) -> dict:
+def _write_figure(page, out_path: Path, clip: dict, device_scale: float) -> str:
+    """Write the page as PNG or PDF (by suffix); returns the format written.
+
+    PDF comes from Chrome's print path: text, SVG and DOM stay vector and the
+    WebGPU canvases are embedded as bitmaps at device_scale. Chrome only prints
+    to PDF when headless, so a headed browser (the GPU-less lavapipe setup)
+    falls back to a screenshot wrapped in a single-page PDF.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.suffix.lower() != ".pdf":
+        page.screenshot(path=str(out_path), clip=clip)
+        return "png"
+    try:
+        page.emulate_media(media="screen")
+        page.pdf(path=str(out_path), width=f"{clip['width']}px", height=f"{clip['height']}px",
+                 print_background=True, page_ranges="1",
+                 margin={"top": "0", "right": "0", "bottom": "0", "left": "0"})
+        return "pdf"
+    except Exception as e:
+        if "headless" not in str(e).lower():
+            raise
+    import io
+    from PIL import Image
+    img = Image.open(io.BytesIO(page.screenshot(clip=clip))).convert("RGB")
+    # Same physical size as the vector PDF: CSS px at 96 dpi.
+    img.save(str(out_path), "PDF", resolution=96.0 * device_scale)
+    return "pdf-raster"
+
+
+def _render_figure(url: str, out_path: Path, width: int, height: Optional[int], theme: str,
+                   device_scale: float, timeout_s: float, samples: Sequence[str],
+                   browser=None) -> dict:
     from playwright.sync_api import sync_playwright
 
     fit = height is None
@@ -179,10 +208,9 @@ def _render_png(url: str, out_path: Path, width: int, height: Optional[int], the
             problems += [f"no read track for {s}" for s in samples if str(s) not in shown]
             if problems:
                 page.evaluate(_SETTLE_JS)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            page.screenshot(path=str(out_path), clip=clip)
-            return {"path": str(out_path), "tracks": state["tracks"], "errors": problems,
-                    "warnings": warnings, "page_errors": errors}
+            fmt = _write_figure(page, out_path, clip, device_scale)
+            return {"path": str(out_path), "format": fmt, "tracks": state["tracks"],
+                    "errors": problems, "warnings": warnings, "page_errors": errors}
         finally:
             ctx.close()
 
@@ -196,12 +224,17 @@ def _render_png(url: str, out_path: Path, width: int, height: Optional[int], the
             b.close()
 
 
-def export_locus_png(shader, locus: str, out_path, samples: Sequence[str] = (),
-                     width: int = 1600, height: Optional[int] = 1000, seed: Optional[str] = None,
-                     read_set: Optional[str] = None, show_reads: bool = True,
-                     theme: str = "light", device_scale: float = 1.0,
-                     timeout_s: float = 180.0, browser=None) -> dict:
-    """Render `locus` with one track per sample in `samples` (in order) to a PNG.
+def export_locus_figure(shader, locus: str, out_path, samples: Sequence[str] = (),
+                        width: int = 1600, height: Optional[int] = 1000, seed: Optional[str] = None,
+                        read_set: Optional[str] = None, show_reads: bool = True,
+                        theme: str = "light", device_scale: float = 2.0,
+                        timeout_s: float = 180.0, browser=None) -> dict:
+    """Render `locus` with one track per sample in `samples` (in order) to a
+    PDF or PNG, chosen by `out_path`'s suffix.
+
+    PDF keeps text and vector graphics sharp at any zoom, with reads embedded as
+    bitmaps; PNG is a plain screenshot. `device_scale` sets the bitmap pixels
+    per CSS pixel for both (2 = retina-sharp; raise it for print).
 
     `read_set` keeps one attach_reads label (e.g. "pacbio") per sample instead
     of every attached BAM/CRAM. `height=None` grows the image to fit every
@@ -210,16 +243,21 @@ def export_locus_png(shader, locus: str, out_path, samples: Sequence[str] = (),
     open Playwright `browser` to reuse one Chrome across many loci; it must be
     used from the calling thread.
 
-    Returns {"path", "tracks", "errors", "warnings", "page_errors"}. "errors"
+    Returns {"path", "format", "tracks", "errors", "warnings", "page_errors"};
+    "format" is "png", "pdf", or "pdf-raster" (headed Chrome cannot print, so
+    the PDF wraps a screenshot). "errors"
     lists failed read fetches and requested samples with no track; any error
     dialog is removed from the image and reported here instead.
     """
     if theme not in ("light", "dark"):
         raise ValueError("theme must be 'light' or 'dark'")
+    out_path = Path(out_path)
+    if out_path.suffix.lower() not in (".pdf", ".png"):
+        raise ValueError("out_path must end in .pdf or .png")
     try:
         import playwright  # noqa: F401
     except ImportError as e:
-        raise ExportError("PNG export needs Playwright and Chrome: "
+        raise ExportError("Figure export needs Playwright and Chrome: "
                           "pip install 'genomeshader[export]' && python -m playwright install chrome") from e
 
     from .widget import build_standalone_page
@@ -242,20 +280,19 @@ def export_locus_png(shader, locus: str, out_path, samples: Sequence[str] = (),
     html = build_standalone_page(config, shader._last_view_id or "gsexport", srv.token,
                                  width=width, height=height or 900, figure=True)
     url = srv.base_url + srv.add_page(html)
-    out_path = Path(out_path)
     samples = [str(s) for s in samples]
 
     if browser is not None:
-        return _render_png(url, out_path, width, height, theme, device_scale, timeout_s,
-                           samples, browser)
+        return _render_figure(url, out_path, width, height, theme, device_scale, timeout_s,
+                              samples, browser)
     # Playwright's sync API refuses to run on a thread with an asyncio loop
     # (any Jupyter kernel), so drive it from a fresh thread.
     box = {}
 
     def _run():
         try:
-            box["result"] = _render_png(url, out_path, width, height, theme, device_scale,
-                                        timeout_s, samples)
+            box["result"] = _render_figure(url, out_path, width, height, theme, device_scale,
+                                           timeout_s, samples)
         except BaseException as e:  # re-raised on the caller's thread
             box["error"] = e
 

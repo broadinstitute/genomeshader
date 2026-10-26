@@ -255,7 +255,11 @@ def build_standalone_page(config: dict, view_id: str, token: str,
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>GenomeShader</title>"
-        "<style>html,body{margin:0;padding:0;background:var(--bg,#0b0d10);overflow:hidden;}</style>"
+        # The stylesheet's own html/body rule (font, colour) is stripped for the
+        # notebook host, which supplies a sans-serif; restore it here or text
+        # falls back to the browser default serif.
+        "<style>html,body{margin:0;padding:0;background:var(--bg,#0b0d10);overflow:hidden;"
+        "color:var(--text);font-family:ui-sans-serif,system-ui;}</style>"
         f"<style>{css}</style><style>{override_css}</style></head><body>"
         f'<div id="{cid}" style="width:{w_css};height:{h_css};--gs-widget-h:{h_css};'
         'position:relative;overflow:visible;background:var(--bg,#0b0d10);isolation:isolate;">'
