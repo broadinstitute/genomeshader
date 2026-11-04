@@ -107,10 +107,17 @@ def _fake_playwright():
 
 
 def test_export_dossier_manifest(tmp_path, monkeypatch):
-    import playwright.sync_api
+    import types
     import genomeshader.export as E
 
-    monkeypatch.setattr(playwright.sync_api, "sync_playwright", _fake_playwright)
+    # Stand-in Playwright so the driver logic runs without it (CI's unit job
+    # doesn't install it); the real browser path is covered in tests/headless.
+    pw = types.ModuleType("playwright")
+    pw_sync = types.ModuleType("playwright.sync_api")
+    pw_sync.sync_playwright = _fake_playwright
+    pw.sync_api = pw_sync
+    monkeypatch.setitem(sys.modules, "playwright", pw)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", pw_sync)
     exported = []
 
     def fake_export(shader, region, out_path, samples=(), **kw):
