@@ -5481,6 +5481,8 @@ function setupCanvasHover() {
       state.sampleSelection.evidenceFilter || '',
       candidates.join(','),
       Array.from(state.selectedAlleles).sort().join(','),
+      String((window.GENOMESHADER_CONFIG || {}).selection_seed ?? ''),
+      strategy === 'balanced_groups' ? (balanceColumn() || '') : '',
     ].join('|');
     if (sig === state.sampleSelection._resolvedSig
         && Array.isArray(state.sampleSelection.resolvedSamples)) {
@@ -5608,6 +5610,12 @@ function setupCanvasHover() {
       const compareOption = strategyEl.querySelector('option[value="compare_branches"]');
       if (compareOption) {
         compareOption.disabled = state.selectedAlleles.size < 2;
+      }
+      const balancedOption = strategyEl.querySelector('option[value="balanced_groups"]');
+      if (balancedOption) {
+        const col = balanceColumn();
+        balancedOption.disabled = !col;
+        balancedOption.textContent = col ? `Balanced by ${col}` : 'Balanced groups (needs metadata)';
       }
     }
     
@@ -6261,9 +6269,51 @@ function setupCanvasHover() {
     return totalScore;
   }
   
+  // mulberry32 seeded from an FNV-1a hash of the seed string.
+  function gsSeededRng(seedStr) {
+    const s = String(seedStr);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    let a = h >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // With config.selection_seed set (e.g. a dossier locus_id), every strategy is
+  // a pure function of (seed, strategy, count, candidates), so a regenerated
+  // page shows the same samples. Unseeded, selection stays Math.random.
+  function selectionRng(strategy, numSamples) {
+    const seed = (window.GENOMESHADER_CONFIG || {}).selection_seed;
+    if (seed == null || seed === '') return Math.random;
+    return gsSeededRng(`${seed}|${strategy}|${numSamples}`);
+  }
+
+  // Metadata column balanced_groups splits across: the configured column, else
+  // the Groups-tab colour facet, else the first groupable column.
+  function balanceColumn() {
+    const eligible = getGroupingEligibleColumns();
+    if (eligible.length === 0) return null;
+    const explicit = (state.sampleSelection && state.sampleSelection.balanceColumn)
+      || (window.GENOMESHADER_CONFIG || {}).selection_balance_column;
+    if (explicit && eligible.includes(explicit)) return explicit;
+    const color = getColorFacetKey();
+    if (color && eligible.includes(color)) return color;
+    return eligible[0];
+  }
+  if (typeof window !== 'undefined') window.__GS_balanceColumn = balanceColumn;
+
   // Helper: Select samples based on strategy
   // Returns an array of sample IDs to use for creating Smart Tracks
-  function selectSamplesForStrategy(strategy, candidates, numSamples) {
+  function selectSamplesForStrategy(strategy, candidates, numSamples, rng) {
+    rng = rng || selectionRng(strategy, numSamples);
     if (strategy === 'carriers_controls') {
       // Carriers + controls strategy: select a mix of carriers and controls
       // Carriers are samples with selected alleles (candidates)
@@ -6276,7 +6326,7 @@ function setupCanvasHover() {
         if (!candidates || candidates.length === 0) {
           return [];
         }
-        return selectSamplesForStrategy('random', candidates, numSamples);
+        return selectSamplesForStrategy('random', candidates, numSamples, rng);
       }
       
       // Compute controls: samples that are NOT in candidates
@@ -6295,7 +6345,7 @@ function setupCanvasHover() {
         if (carriers.length === 0) {
           return [];
         }
-        return selectSamplesForStrategy('random', carriers, numSamples);
+        return selectSamplesForStrategy('random', carriers, numSamples, rng);
       }
       
       // If no carriers available, just return controls
@@ -6304,7 +6354,7 @@ function setupCanvasHover() {
         const selectedSamples = [];
         const controlsCopy = [...controls];
         for (let i = 0; i < numSamples && controlsCopy.length > 0; i++) {
-          const randomIndex = Math.floor(Math.random() * controlsCopy.length);
+          const randomIndex = Math.floor(rng() * controlsCopy.length);
           selectedSamples.push(controlsCopy[randomIndex]);
           controlsCopy.splice(randomIndex, 1);
         }
@@ -6321,7 +6371,7 @@ function setupCanvasHover() {
       // Select carriers (random from candidates)
       const carriersCopy = [...carriers];
       for (let i = 0; i < numCarriers && carriersCopy.length > 0; i++) {
-        const randomIndex = Math.floor(Math.random() * carriersCopy.length);
+        const randomIndex = Math.floor(rng() * carriersCopy.length);
         selectedSamples.push(carriersCopy[randomIndex]);
         carriersCopy.splice(randomIndex, 1);
       }
@@ -6329,14 +6379,14 @@ function setupCanvasHover() {
       // Select controls (random from controls)
       const controlsCopy = [...controls];
       for (let i = 0; i < numControls && controlsCopy.length > 0; i++) {
-        const randomIndex = Math.floor(Math.random() * controlsCopy.length);
+        const randomIndex = Math.floor(rng() * controlsCopy.length);
         selectedSamples.push(controlsCopy[randomIndex]);
         controlsCopy.splice(randomIndex, 1);
       }
       
       // Shuffle the result so carriers and controls are interleaved
       for (let i = selectedSamples.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = Math.floor(rng() * (i + 1));
         [selectedSamples[i], selectedSamples[j]] = [selectedSamples[j], selectedSamples[i]];
       }
       
@@ -6355,7 +6405,7 @@ function setupCanvasHover() {
       const candidatesCopy = [...candidates]; // Copy to avoid mutating original
       const target = Math.min(numSamples, candidatesCopy.length);
       for (let i = 0; i < target; i++) {
-        const randomIndex = Math.floor(Math.random() * candidatesCopy.length);
+        const randomIndex = Math.floor(rng() * candidatesCopy.length);
         selectedSamples.push(candidatesCopy[randomIndex]);
         candidatesCopy.splice(randomIndex, 1);
       }
@@ -6368,7 +6418,7 @@ function setupCanvasHover() {
       
       if (selectedAlleles.size === 0) {
         // No alleles selected, fall back to random
-        return selectSamplesForStrategy('random', candidates, numSamples);
+        return selectSamplesForStrategy('random', candidates, numSamples, rng);
       }
       
       // Score all candidate samples
@@ -6386,7 +6436,7 @@ function setupCanvasHover() {
       if (validSamples.length === 0) {
         // No valid samples, fall back to random
         console.warn('No samples with valid evidence found, falling back to random selection');
-        return selectSamplesForStrategy('random', candidates, numSamples);
+        return selectSamplesForStrategy('random', candidates, numSamples, rng);
       }
       
       // Select top N samples
@@ -6443,7 +6493,7 @@ function setupCanvasHover() {
       if (variantsToConsider.length === 0) {
         // No variants to consider, fall back to random
         console.warn('No variants available for diversity calculation, falling back to random selection');
-        return selectSamplesForStrategy('random', candidates, numSamples);
+        return selectSamplesForStrategy('random', candidates, numSamples, rng);
       }
       
       // Compute genotype profile for each candidate sample
@@ -6531,7 +6581,7 @@ function setupCanvasHover() {
       const selectedProfiles = [];
       
       // Start with a random sample (or first candidate)
-      const firstSample = candidates[Math.floor(Math.random() * candidates.length)];
+      const firstSample = candidates[Math.floor(rng() * candidates.length)];
       selectedSamples.push(firstSample);
       selectedProfiles.push(candidateProfiles.get(firstSample));
       
@@ -6570,7 +6620,7 @@ function setupCanvasHover() {
       // If we still need more samples, fill with remaining candidates
       if (selectedSamples.length < numSamples && remainingCandidates.length > 0) {
         for (let i = selectedSamples.length; i < numSamples && remainingCandidates.length > 0; i++) {
-          const randomIndex = Math.floor(Math.random() * remainingCandidates.length);
+          const randomIndex = Math.floor(rng() * remainingCandidates.length);
           const sample = remainingCandidates.splice(randomIndex, 1)[0];
           selectedSamples.push(sample);
         }
@@ -6589,7 +6639,7 @@ function setupCanvasHover() {
       if (selectedAlleles.size < 2) {
         // Need at least 2 alleles to compare branches
         console.warn('Compare branches requires 2+ selected alleles, falling back to random selection');
-        return selectSamplesForStrategy('random', candidates, numSamples);
+        return selectSamplesForStrategy('random', candidates, numSamples, rng);
       }
       
       // Parse selected alleles into variant/allele pairs
@@ -6604,7 +6654,7 @@ function setupCanvasHover() {
       
       if (selectedAllelePairs.length < 2) {
         console.warn('Compare branches requires 2+ valid alleles, falling back to random selection');
-        return selectSamplesForStrategy('random', candidates, numSamples);
+        return selectSamplesForStrategy('random', candidates, numSamples, rng);
       }
       
       // Compute which alleles each sample has
@@ -6657,7 +6707,7 @@ function setupCanvasHover() {
         if (usedBranches.has(signature)) continue;
         
         // Pick a random sample from this branch
-        const randomIndex = Math.floor(Math.random() * sampleIds.length);
+        const randomIndex = Math.floor(rng() * sampleIds.length);
         selectedSamples.push(sampleIds[randomIndex]);
         usedBranches.add(signature);
       }
@@ -6671,11 +6721,11 @@ function setupCanvasHover() {
           // Pick a different sample from this branch if possible
           const availableSamples = sampleIds.filter(s => !selectedSamples.includes(s));
           if (availableSamples.length > 0) {
-            const randomIndex = Math.floor(Math.random() * availableSamples.length);
+            const randomIndex = Math.floor(rng() * availableSamples.length);
             selectedSamples.push(availableSamples[randomIndex]);
           } else if (sampleIds.length > 0) {
             // All samples from this branch already used, allow reuse
-            const randomIndex = Math.floor(Math.random() * sampleIds.length);
+            const randomIndex = Math.floor(rng() * sampleIds.length);
             selectedSamples.push(sampleIds[randomIndex]);
           }
           
@@ -6685,11 +6735,58 @@ function setupCanvasHover() {
       
       // Shuffle to mix branches (optional, but makes comparison more interesting)
       for (let i = selectedSamples.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = Math.floor(rng() * (i + 1));
         [selectedSamples[i], selectedSamples[j]] = [selectedSamples[j], selectedSamples[i]];
       }
       
       return selectedSamples;
+    } else if (strategy === 'balanced_groups') {
+      // Phenotype-aware contrast: share the budget round-robin across the levels
+      // of a metadata column (e.g. 4 case + 4 control carriers), backfilling from
+      // other levels when one runs short. Within a level, strongest evidence
+      // first; ties broken by a (seeded) shuffle. Unlabeled samples are skipped.
+      const column = balanceColumn();
+      if (!column) return selectSamplesForStrategy('best_evidence', candidates, numSamples, rng);
+      const selectedAlleles = state.selectedAlleles || new Set();
+      const combineMode = state.sampleSelection.combineMode || 'AND';
+      const order = [...candidates];
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      const score = new Map(order.map((id) => [id,
+        selectedAlleles.size ? computeEvidenceScore(id, selectedAlleles, combineMode) : 0]));
+      const ranked = order.filter((id) => score.get(id) >= 0)
+        .sort((a, b) => score.get(b) - score.get(a));
+      const byLevel = new Map();
+      for (const id of ranked) {
+        const level = getSampleGroupValue(id, column);
+        if (level == null || level === '(unlabeled)') continue;
+        if (!byLevel.has(level)) byLevel.set(level, []);
+        byLevel.get(level).push(id);
+      }
+      const spec = getGroupingColumnSpec(column);
+      const specOrder = (spec && Array.isArray(spec.values)) ? spec.values.map((v) => String(v.value)) : [];
+      const levels = [...byLevel.keys()].sort((a, b) => {
+        const ia = specOrder.indexOf(a), ib = specOrder.indexOf(b);
+        return (ia < 0 ? Infinity : ia) - (ib < 0 ? Infinity : ib) || a.localeCompare(b);
+      });
+      const picked = new Map(levels.map((l) => [l, []]));
+      let total = 0;
+      let progressed = true;
+      while (total < numSamples && progressed) {
+        progressed = false;
+        for (const level of levels) {
+          if (total >= numSamples) break;
+          const pool = byLevel.get(level), got = picked.get(level);
+          if (got.length < pool.length) {
+            got.push(pool[got.length]);
+            total++;
+            progressed = true;
+          }
+        }
+      }
+      return levels.flatMap((l) => picked.get(l));
     } else {
       // Unknown strategy: up to numSamples UNIQUE candidates (no cycling/dupes).
       return candidates.slice(0, numSamples);
@@ -8442,3 +8539,44 @@ window.addEventListener("resize", () => {
 });
 
 renderAll();
+
+// Programmatic first load (static export): one smart track per listed sample,
+// in list order. window.__GS_INITIAL_LOAD settles once every fetch has.
+(function gsLoadInitialSamples() {
+  const cfg = window.GENOMESHADER_CONFIG || {};
+  const ids = Array.isArray(cfg.initial_samples) ? cfg.initial_samples.map(String) : [];
+  if (ids.length === 0) {
+    window.__GS_INITIAL_LOAD = Promise.resolve([]);
+    return;
+  }
+  // initial_evidence: one read set (attach_reads label, e.g. "pacbio") per sample.
+  if (cfg.initial_evidence && state.sampleSelection) {
+    state.sampleSelection.evidenceFilter = String(cfg.initial_evidence);
+  }
+  const promises = [];
+  for (const id of ids) {
+    promises.push(...spawnSmartTracksForSample(id, "best_evidence", new Set(), null, {}));
+  }
+  // New tracks are inserted directly below the flow (newest on top); restore
+  // list order, and BAM order within a sample (hap1 above hap2).
+  const wanted = new Set(ids);
+  const smart = new Set(state.smartTracks || []);
+  const mine = state.tracks.filter((t) => smart.has(t) && wanted.has(String(t.sampleId)));
+  const rank = (t) => {
+    const urls = bamUrlsForSample(t.sampleId, { applyEvidence: false });
+    return ids.indexOf(String(t.sampleId)) * 1000 + Math.max(0, urls.indexOf(t.requestedBamUrl));
+  };
+  mine.sort((a, b) => rank(a) - rank(b));
+  const rest = state.tracks.filter((t) => !mine.includes(t));
+  const flowIdx = rest.findIndex((t) => t.id === "flow");
+  rest.splice(flowIdx >= 0 ? flowIdx + 1 : rest.length, 0, ...mine);
+  state.tracks.splice(0, state.tracks.length, ...rest);
+  if (cfg.initial_show_reads) {
+    for (const t of mine) {
+      t.collapsed = false;
+      if (t.readDisplay && t.readDisplay.visibility) t.readDisplay.visibility.reads = true;
+    }
+  }
+  renderAll();
+  window.__GS_INITIAL_LOAD = Promise.allSettled(promises);
+})();

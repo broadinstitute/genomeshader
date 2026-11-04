@@ -3699,6 +3699,11 @@ if (typeof window !== "undefined") {
       queuedKeys: _readsQueue.map((d) => d && d.key).filter(Boolean),
       fetchActive: _batchInFlight ? 1 : 0,
       schedulerPending: !!(_reconcileTimer || _pumpTimer || _gsSmartReadsLoadTimer || gsJobsPending()),
+      schedulerParts: {
+        reconcile: !!_reconcileTimer, pump: !!_pumpTimer,
+        smartLoad: !!_gsSmartReadsLoadTimer, jobs: gsJobsPending(),
+      },
+      failures: Array.from(_readsFailures.entries()).map(([key, f]) => ({ key, attempts: f.n })),
       readLoadsInFlight: _readLoadsInFlight,
       tracks,
       tiles: (state.tiles || []).map((t) => {

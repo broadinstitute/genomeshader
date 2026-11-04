@@ -254,19 +254,28 @@ impl Session {
     }
 
     fn write_parquet_df(&self, path: &PathBuf, mut df: DataFrame) -> PyResult<()> {
-        let file_w = std::fs::File::create(path).map_err(|e| {
+        // Write beside the target and rename into place, so a concurrent reader
+        // (another thread or process sharing the temp dir) never sees a partial file.
+        let tmp = path.with_extension(format!("parquet.{}.tmp", std::process::id()));
+        let file_w = std::fs::File::create(&tmp).map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Failed to create cache file '{}': {}", path.display(), e)
+                format!("Failed to create cache file '{}': {}", tmp.display(), e)
             )
         })?;
 
-        ParquetWriter::new(file_w).finish(&mut df).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+        if let Err(e) = ParquetWriter::new(file_w).finish(&mut df) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 format!("Failed to write cache file '{}': {}", path.display(), e)
-            )
-        })?;
+            ));
+        }
 
-        Ok(())
+        std::fs::rename(&tmp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Failed to move cache file into place '{}': {}", path.display(), e)
+            )
+        })
     }
 
     fn write_parquet_uri(&self, uri: &str, df: DataFrame) -> PyResult<()> {
@@ -544,14 +553,23 @@ impl Session {
         // re-filtered by row coordinates, which silently dropped element rows — soft
         // clips, SNPs — lying outside the window, so the same request gave a different
         // payload on a hit than on a miss. That is fatal for chunked caching.)
+        // An unreadable cache file (e.g. an empty frame written by an older build,
+        // or one uploaded to the GCS cache from such a build) is a miss: drop it
+        // and refetch rather than failing the track forever.
         if request_cache.exists() {
-            return self.read_parquet_df(&request_cache);
+            match self.read_parquet_df(&request_cache) {
+                Ok(df) => return Ok(df),
+                Err(_) => { let _ = std::fs::remove_file(&request_cache); }
+            }
         }
 
         if let Some(remote_uri) = self.gcs_cache_uri_for_reads_request(chr, start, stop, bam_paths) {
             self.try_download_gcs_cache(&remote_uri, &request_cache);
             if request_cache.exists() {
-                return self.read_parquet_df(&request_cache);
+                match self.read_parquet_df(&request_cache) {
+                    Ok(df) => return Ok(df),
+                    Err(_) => { let _ = std::fs::remove_file(&request_cache); }
+                }
             }
         }
 
@@ -576,9 +594,14 @@ impl Session {
             )
         })?;
 
-        self.write_parquet_df(&request_cache, fetched.clone())?;
-        if let Some(remote_uri) = self.gcs_cache_uri_for_reads_request(chr, start, stop, bam_paths) {
-            self.try_upload_gcs_cache(&request_cache, &remote_uri);
+        // Empty results are not cached: polars writes a zero-row frame of untyped
+        // columns that its own reader rejects ("Repetition level must be defined
+        // for a primitive type"), and an empty chunk is cheap to refetch.
+        if fetched.height() > 0 {
+            self.write_parquet_df(&request_cache, fetched.clone())?;
+            if let Some(remote_uri) = self.gcs_cache_uri_for_reads_request(chr, start, stop, bam_paths) {
+                self.try_upload_gcs_cache(&request_cache, &remote_uri);
+            }
         }
         Ok(fetched)
     }

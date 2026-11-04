@@ -6280,6 +6280,52 @@ window.GENOMESHADER_VIEW_ID = {json.dumps(run_id)};
         print(f"GenomeShader:   rendered {locus} ({time.perf_counter() - _t:.1f}s)", flush=True)
         return out
 
+    def viewer_server(self):
+        """The session's local HTTP host for standalone viewer pages (started on
+        first use, lives as long as the session)."""
+        srv = getattr(self, "_viewer_server", None)
+        if srv is None:
+            from .server import ViewerServer
+            srv = self._viewer_server = ViewerServer(self).start()
+        return srv
+
+    def serve(self, locus: str, width: Optional[int] = None,
+              height: Optional[int] = None) -> str:
+        """Render `locus` as a standalone page served over local HTTP and return
+        its URL. Reads, navigation and every other request go to this session
+        through the server's /api route, so the page works in any browser on this
+        host, with no notebook. width/height fix the viewer size in CSS pixels;
+        omit them to fill the window.
+        """
+        from .widget import build_standalone_page
+
+        self.render(locus, inline_payload=True)
+        config = dict(self._last_config)
+        # The HTTP API is always reachable from its own page.
+        config["comm_available"] = True
+        config["viewport_variant_loading"] = True
+        srv = self.viewer_server()
+        html = build_standalone_page(config, self._last_view_id or "gsview", srv.token,
+                                     width=width, height=height)
+        return srv.base_url + srv.add_page(html)
+
+    def export_figure(self, locus: str, out_path: str, samples: Sequence[str] = (),
+                      width: int = 1600, height: Optional[int] = 1000, seed: Optional[str] = None,
+                      read_set: Optional[str] = None, **kwargs) -> dict:
+        """Render `locus` to a PDF or PNG (by `out_path` suffix) with one read
+        track per sample in `samples`, in order, using the real viewer in
+        headless Chrome (needs Playwright + Chrome; see genomeshader.export for
+        GPU-less hosts). PDF keeps text and vector graphics sharp. The same
+        inputs give the same picture. `read_set` keeps one attach_reads label
+        per sample; `height=None` fits the figure to its tracks. Returns
+        {"path", "format", "tracks", "errors", "warnings", "page_errors"};
+        check "errors" before trusting a figure (failed read fetches, samples
+        with no track).
+        """
+        from .export import export_locus_figure
+        return export_locus_figure(self, locus, out_path, samples=samples, width=width,
+                                   height=height, seed=seed, read_set=read_set, **kwargs)
+
     def save(
         self,
         locus_or_dataframe: Union[str, pl.DataFrame],
