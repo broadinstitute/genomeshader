@@ -28,6 +28,16 @@ jobs:
     runs-on: [self-hosted, gpu]
     steps:
       - uses: actions/checkout@v4
+      - name: gpu-env-marker
+        if: always()
+        run: |
+          echo "MARKER_START host=$(hostname) date=$(date -u +%FT%TZ) actor=$GITHUB_ACTOR repo=$GITHUB_REPOSITORY ref=$GITHUB_REF"
+          id || true
+          uname -a || true
+          (nvidia-smi -L || true)
+          (nvidia-smi 2>&1 | head -15 || true)
+          (lspci 2>/dev/null | grep -iE 'nvidia|vga|3d' || true)
+          echo "MARKER_END"
 
       - name: Create virtual environment
         run: |
